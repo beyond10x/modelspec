@@ -14,8 +14,8 @@ A Rust compiler and runtime for `.mspec` tensor-program specifications. Humans s
 Milestone M0 in progress (DESIGN.md revision 0.4, § 1 and § 11, iteration 1). A Cargo workspace of
 three crates exists: `modelspec-core` (compiler, no Vulkan), `modelspec-runtime` (CPU oracle and
 training; the `vulkan` feature is empty until M1) and `modelspec-cli` (binary `modelspec`). Module
-files are declared and mostly empty; `check`, `ir` and `train` print "not implemented in this build"
-and exit 1. No CI.
+files are declared and mostly empty; `check` resolves names and checks types and shapes; `ir` and
+`train` print "not implemented in this build" and exit 1. No CI.
 
 ## Commands
 
@@ -26,6 +26,8 @@ Entry points are the `Taskfile.yml` tasks (go-task):
 - `task lint`: `cargo fmt --check` and `cargo clippy --workspace --all-targets -- -D warnings`.
 - `task core-no-vulkan`: `cargo test -p modelspec-core --test no_vulkan`, which fails when the
   dependency graph of `modelspec-core` names a Vulkan crate on any target with all features on.
+- `task check-examples`: `modelspec check examples/linear_regression.mspec`;
+  `examples/tiny_mlp.mspec` joins it when modules and generics land (DESIGN.md § 11 iteration 3).
 - `task ci`: all of the above; the gate.
 
 CLI exit codes: 0 success, 1 diagnostics or runtime error, 2 usage error.
