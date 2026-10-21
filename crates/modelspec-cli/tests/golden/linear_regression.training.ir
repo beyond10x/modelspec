@@ -1,0 +1,20 @@
+param @LinearReg.w: Tensor<f32, [4, 1]> = xavier_uniform {v0}
+optimizer sgd lr = 0.1
+forward %0: Tensor<f32, [8, 4]> = Input "x"
+forward %1: Tensor<f32, [8, 1]> = Input "y"
+forward %2: Tensor<f32, [4, 1]> = ParamRead @LinearReg.w {!0 read @LinearReg.w v0}
+forward %3: Tensor<f32, [8, 1]> = MatMul %0, %2
+loss %4: Tensor<f32, []> = Mse %3, %1
+loss %5: Tensor<f32, []> = Scalar 1.0
+forward %6: Tensor<f32, [8, 1]> = Sub %3, %1
+forward %7: Tensor<f32, []> = Scalar 0.25
+gradient %8: Tensor<f32, []> = Mul %5, %7
+gradient %9: Tensor<f32, [8, 1]> = Mul %6, %8
+forward %10: Tensor<f32, [4, 8]> = Transpose %0
+gradient %11: Tensor<f32, [4, 1]> = MatMul %10, %9
+optimizer %12: Tensor<f32, []> = Scalar 0.1
+optimizer %13: Tensor<f32, [4, 1]> = Mul %12, %11
+optimizer %14: Tensor<f32, [4, 1]> = Sub %2, %13 {!1 write @LinearReg.w v1}
+output %4 loss
+output %11 gradient @LinearReg.w
+output %14 update @LinearReg.w

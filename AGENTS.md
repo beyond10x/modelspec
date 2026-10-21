@@ -15,8 +15,9 @@ Milestone M0 in progress (DESIGN.md revision 0.6, § 1 and § 11, iteration 1). 
 three crates exists: `modelspec-core` (compiler, no Vulkan), `modelspec-runtime` (CPU oracle and
 training; the `vulkan` feature is empty until M1) and `modelspec-cli` (binary `modelspec`). Module
 files are declared and mostly empty; `check` resolves names and checks types and shapes;
-`ir <file> --stage tensor` prints the verified Tensor IR (`tensor` is the only stage); `train`
-prints "not implemented in this build" and exits 1. No CI.
+`ir <file> --stage tensor|training` prints the verified Tensor IR or the verified training step;
+`train <file> --backend cpu` trains on the CPU reference (DESIGN.md § 8), and `--backend vulkan`
+is refused with E-TARGET-001 until M1. No CI.
 
 ## Commands
 

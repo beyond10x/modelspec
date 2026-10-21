@@ -1,7 +1,7 @@
 # ModelSpec — Design Specification
 
 **Status:** Proposed / pre-implementation  
-**Revision:** 0.6 (2026-10-21): derivation of parameter, teacher and synthetic-data draws defined (§ 2.3); 0.5: a train loss calls `model.forward` exactly once (§ 2.1)  
+**Revision:** 0.6 (2026-10-21): derivation of parameter, teacher and synthetic-data draws defined (§ 2.3), M0 `train` output and codes (§ 8, § 8.1); 0.5: a train loss calls `model.forward` exactly once (§ 2.1)  
 **Implementation language:** Rust  
 **Initial execution target:** NVIDIA RTX 3090 via Vulkan compute / SPIR-V  
 **Principle:** Specify *what* to compute; the compiler determines *how* to execute it.
@@ -418,7 +418,7 @@ modelspec infer examples/linear_regression.mspec --checkpoint run.msckpt --input
 modelspec bench examples/linear_regression.mspec --backend vulkan --warmup 100 --iterations 1000
 ```
 
-M0 CLI implements `check`, `ir`, and `train --backend cpu`. M1 adds device discovery, Vulkan compilation, GPU training, inference, and checkpoint compatibility. `inspect-device` must report each relevant capability (including whether cooperative matrices are actually supported), not infer it from `RTX 3090` as a product name.
+M0 CLI implements `check`, `ir`, and `train --backend cpu`. M0 `train` takes `steps`, `seed` and the optimizer from the `train` block, trains on synthetic data (§ 2.3) and prints an `init @<path>: <type> = [...]` line per parameter, a `step <k> loss <v>` line at step 0, every 50 steps and at the last step, and a `param @<path>: <type> = [...]` line per parameter. M1 adds device discovery, Vulkan compilation, GPU training, inference, and checkpoint compatibility. `inspect-device` must report each relevant capability (including whether cooperative matrices are actually supported), not infer it from `RTX 3090` as a product name.
 
 `--emit-spv` (or manifest output from `compile`) allows inspecting generated SPIR-V. Print readable tensor/training/kernel IR with stable IDs to make optimization decisions debuggable.
 
@@ -440,6 +440,8 @@ E-TARGET-034: no supported f16 storage/compute path on selected Vulkan device
   available: f32
   suggestion: compile with --compute=f32
 ```
+
+M0 codes for `train`: E-TARGET-001, the selected backend is not available in this build (refused before the file is read); E-DATA-001, the `train` block does not declare exactly one `input` and one `target`; E-DATA-002, the `target` is not of the model output type; E-DATA-003, a declared `input` or `target` is not read by the loss.
 
 Diagnostics distinguish user specification errors, compiler verification failures, missing GPU capabilities, unsupported features, runtime allocation failure, and device loss.
 

@@ -381,13 +381,16 @@ fn a_loss_with_a_nested_forward_call_is_refused_by_check_and_ir() {
 // The command line.
 
 #[test]
-fn a_stage_other_than_tensor_is_refused_as_a_usage_error() {
-    let output = modelspec(&["ir", EXAMPLE, "--stage", "training"]);
+fn a_stage_this_build_does_not_have_is_refused_as_a_usage_error() {
+    let output = modelspec(&["ir", EXAMPLE, "--stage", "kernel"]);
     assert_eq!(output.status.code(), Some(2));
     assert_eq!(text(&output.stdout), "");
     let stderr = text(&output.stderr);
-    assert!(stderr.contains("'training'"), "{stderr}");
-    assert!(stderr.contains("[possible values: tensor]"), "{stderr}");
+    assert!(stderr.contains("'kernel'"), "{stderr}");
+    assert!(
+        stderr.contains("[possible values: tensor, training]"),
+        "{stderr}"
+    );
 }
 
 #[test]

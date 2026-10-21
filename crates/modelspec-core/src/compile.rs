@@ -1,15 +1,19 @@
-//! The compiler driver: `.mspec` source to Typed HIR and to verified Tensor IR (DESIGN.md § 3,
-//! § 3.3 passes 1–3).
+//! The compiler driver: `.mspec` source to Typed HIR, to verified Tensor IR and to a verified
+//! training step (DESIGN.md § 3, § 3.1, § 3.3 passes 1–5).
 //!
 //! [`compile_hir`] parses, resolves and checks; [`compile_tensor`] then lowers, removes dead code
-//! and verifies. A source fault is reported as the diagnostics of the stage that found it. A
-//! program the verifier refuses after lowering, or a lowering failure on checked HIR, is a compiler
-//! bug and is reported under [`codes::COMPILER_BUG`], never as a user code (DESIGN.md § 8.1).
+//! and verifies; [`compile_training`] then differentiates the loss, attaches SGD and verifies the
+//! step, legal effects included. A source fault is reported as the diagnostics of the stage that
+//! found it. A program the verifier refuses after lowering, a lowering failure on checked HIR, or
+//! an autodiff or SGD failure on verified Tensor IR is a compiler bug and is reported under
+//! [`codes::COMPILER_BUG`], never as a user code (DESIGN.md § 8.1).
 
+use crate::autodiff::differentiate;
 use crate::diag::Diagnostic;
 use crate::hir::Hir;
 use crate::ir::tensor::TensorProgram;
-use crate::ir::verify::verify;
+use crate::ir::training::{TrainConfig, TrainingStep, attach_sgd};
+use crate::ir::verify::{verify, verify_step};
 use crate::lower::{self, LoweredProgram};
 use crate::passes::dce;
 
@@ -17,10 +21,59 @@ use crate::passes::dce;
 pub mod codes {
     use crate::diag::Code;
 
-    /// A compiler verification failure in the tensor pipeline, not a user error (DESIGN.md
-    /// § 8.1): lowering refused checked HIR, or the program its passes produced does not verify.
+    /// A compiler verification failure in the tensor or training pipeline, not a user error
+    /// (DESIGN.md § 8.1): lowering refused checked HIR, the program its passes produced does not
+    /// verify, or autodiff, SGD attachment or the step's verification refused verified Tensor IR.
     /// No source file is meant to reach it.
     pub const COMPILER_BUG: Code = Code::new("E-INTERNAL-002");
+}
+
+/// A `.mspec` file compiled for training.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CompiledTraining {
+    /// The verified training step: forward, loss, backward and the SGD subgraph, with its effect
+    /// tokens and state versions.
+    pub training: TrainingStep,
+    /// The Tensor IR before autodiff, with its `prediction` value: what the data loader runs.
+    pub forward: LoweredProgram,
+    /// The `train` block's SGD configuration and data declarations.
+    pub config: TrainConfig,
+}
+
+/// [`compile_tensor`], then [`differentiate`] of its loss, [`attach_sgd`] at the `train` block's
+/// learning rate and [`verify_step`].
+pub fn compile_training(path: &str, source: &str) -> Result<CompiledTraining, Vec<Diagnostic>> {
+    let hir = compile_hir(path, source)?;
+    let config = TrainConfig::from_hir(&hir.train);
+    let forward = tensor_stage(&hir, dce::eliminate)?;
+    let training = training_stage(&forward.program, config.lr)?;
+    Ok(CompiledTraining {
+        training,
+        forward,
+        config,
+    })
+}
+
+/// Differentiates the single output of `forward`, its loss, attaches SGD at `lr` and verifies
+/// the step.
+fn training_stage(forward: &TensorProgram, lr: f32) -> Result<TrainingStep, Vec<Diagnostic>> {
+    let [loss] = forward.outputs[..] else {
+        return Err(vec![compiler_bug(
+            "the lowered Tensor IR does not have the loss as its one output",
+            &format!("outputs: {}", forward.outputs.len()),
+        )]);
+    };
+    let training = differentiate(forward, loss)
+        .map_err(|error| vec![compiler_bug("autodiff refused verified Tensor IR", &error)])?;
+    let step = attach_sgd(training, lr).map_err(|error| {
+        vec![compiler_bug(
+            "SGD attachment refused the training program",
+            &error,
+        )]
+    })?;
+    verify_step(&step)
+        .map_err(|error| vec![compiler_bug("the training step does not verify", &error)])?;
+    Ok(step)
 }
 
 /// Parses, resolves and checks one source file; `path` names it in diagnostic spans. Returns
@@ -95,6 +148,68 @@ mod tests {
             "{diagnostic}"
         );
         diagnostic
+    }
+
+    fn the_training_bug(result: Result<TrainingStep, Vec<Diagnostic>>) -> Diagnostic {
+        the_compiler_bug(result.map(|_| example_lowered()))
+    }
+
+    fn example_lowered() -> LoweredProgram {
+        tensor_stage(&example_hir(), crate::passes::dce::eliminate).expect("the example lowers")
+    }
+
+    #[test]
+    fn compile_training_returns_the_verified_step_the_forward_program_and_the_config() {
+        let compiled = compile_training("linear_regression.mspec", EXAMPLE).expect("it compiles");
+        verify_step(&compiled.training).expect("the step verifies");
+        assert_eq!(compiled.forward, example_lowered());
+        assert_eq!(compiled.config, TrainConfig::from_hir(&example_hir().train));
+        assert_eq!(compiled.training.optimizer.lr, 0.1);
+        assert_eq!(compiled.training.optimizer.updates.len(), 1);
+        assert_eq!(
+            compiled.training.training.loss,
+            compiled.forward.program.outputs[0]
+        );
+    }
+
+    #[test]
+    fn compile_training_reports_source_faults_as_the_checker_does() {
+        let broken = EXAMPLE.replace("matmul(x, w)", "matmul(w, x)");
+        let checked = compile_hir("f.mspec", &broken).expect_err("the checker refuses it");
+        let trained = compile_training("f.mspec", &broken).expect_err("so does training");
+        assert_eq!(trained, checked);
+    }
+
+    #[test]
+    fn a_forward_program_without_a_single_output_is_a_compiler_bug() {
+        let mut program = example_lowered().program;
+        program.outputs.push(program.outputs[0]);
+        let diagnostic = the_training_bug(training_stage(&program, 0.1));
+        assert!(
+            diagnostic.to_string().contains("outputs: 2"),
+            "{diagnostic}"
+        );
+    }
+
+    #[test]
+    fn an_autodiff_failure_is_a_compiler_bug() {
+        let mut program = example_lowered().program;
+        program.outputs = vec![program.inputs[0]];
+        let diagnostic = the_training_bug(training_stage(&program, 0.1));
+        assert!(
+            diagnostic.message.contains("autodiff refused"),
+            "{diagnostic}"
+        );
+    }
+
+    #[test]
+    fn an_sgd_attachment_failure_is_a_compiler_bug() {
+        let program = example_lowered().program;
+        let diagnostic = the_training_bug(training_stage(&program, -0.1));
+        assert!(
+            diagnostic.to_string().contains("learning rate -0.1"),
+            "{diagnostic}"
+        );
     }
 
     #[test]

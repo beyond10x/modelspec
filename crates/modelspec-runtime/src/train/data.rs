@@ -6,12 +6,18 @@
 //! parameter's initializer on [`Stream::Teacher`]. The teacher parameters are the known solution
 //! training should approach. The prediction is read as the intermediate value `prediction` of
 //! the forward program, run on the CPU interpreter with a zero target.
+//!
+//! A declaration the loss does not read has no `Input` node after dead-code elimination, so the
+//! program could not take a value for it; it is refused at its declaration ([`E_DATA_003`])
+//! before anything runs.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use modelspec_core::diag::{Code, Diagnostic};
-use modelspec_core::ir::tensor::{Dim, ParamId, TensorProgram, TensorType, ValueId};
+use modelspec_core::hir::DataRole;
+use modelspec_core::ir::tensor::{Dim, ParamId, TensorOp, TensorType, ValueId};
 use modelspec_core::ir::training::TrainConfig;
+use modelspec_core::lower::LoweredProgram;
 use thiserror::Error;
 
 use super::init::{InitError, Stream, initialize, standard_normal};
@@ -21,6 +27,8 @@ use crate::cpu::{HostTensor, RuntimeError, evaluate_all};
 pub const E_DATA_001: Code = Code::new("E-DATA-001");
 /// The `target` is not of the model output type.
 pub const E_DATA_002: Code = Code::new("E-DATA-002");
+/// A declared `input` or `target` is not read by the loss.
+pub const E_DATA_003: Code = Code::new("E-DATA-003");
 
 /// The data of a synthetic run.
 #[derive(Clone, Debug, PartialEq)]
@@ -46,15 +54,19 @@ pub enum DataError {
     Runtime(#[from] RuntimeError),
 }
 
-/// The synthetic data of `config` for `forward`, whose value `prediction` is the model output.
+/// The synthetic data of `config` for the forward program `lowered`, whose value
+/// `lowered.prediction` is the model output.
 ///
-/// Refused with [`E_DATA_001`] unless the block declares exactly one `input` and one `target`,
-/// and with [`E_DATA_002`] unless the target has the type of `prediction`.
+/// Refused, in this order, with [`E_DATA_001`] unless the block declares exactly one `input` and
+/// one `target`, with [`E_DATA_002`] unless the target has the type of the prediction, and with
+/// [`E_DATA_003`] at the first declaration of `lowered.declared_inputs` the program has no
+/// `Input` node for.
 pub fn synthetic(
     config: &TrainConfig,
-    forward: &TensorProgram,
-    prediction: ValueId,
+    lowered: &LoweredProgram,
 ) -> Result<SyntheticData, DataError> {
+    let prediction = lowered.prediction;
+    let forward = &lowered.program;
     let ([input], [target]) = (&config.inputs[..], &config.targets[..]) else {
         return Err(DataError::Refused(
             Diagnostic::new(
@@ -76,6 +88,32 @@ pub fn synthetic(
                 .at(target.span.clone())
                 .with("target", target.ty.to_string())
                 .with("model output", output.to_string()),
+        ));
+    }
+    let read: BTreeSet<&str> = forward
+        .inputs
+        .iter()
+        .filter_map(|&value| match &forward.node(value)?.op {
+            TensorOp::Input { name } => Some(name.as_str()),
+            _ => None,
+        })
+        .collect();
+    if let Some(unread) = lowered
+        .declared_inputs
+        .iter()
+        .find(|d| !read.contains(d.name.as_str()))
+    {
+        let role = match unread.role {
+            DataRole::Input => "input",
+            DataRole::Target => "target",
+        };
+        return Err(DataError::Refused(
+            Diagnostic::new(
+                E_DATA_003,
+                format!("the {role} `{}` is not read by the loss", unread.name),
+            )
+            .at(unread.span.clone())
+            .with(role, unread.name.clone()),
         ));
     }
 
@@ -118,6 +156,7 @@ mod tests {
     use super::*;
     use crate::train::init::{initialize, standard_normal};
     use modelspec_core::diag::SourceSpan;
+    use modelspec_core::hir::HirData;
     use modelspec_core::ir::tensor::{Initializer, TensorProgramBuilder, TensorType};
     use modelspec_core::ir::training::DataDecl;
 
@@ -156,8 +195,25 @@ mod tests {
         )
     }
 
+    fn data(role: DataRole, name: &str, shape: &[u64], line: u32) -> HirData {
+        HirData {
+            role,
+            name: name.into(),
+            ty: TensorType::f32(shape),
+            span: span(line),
+        }
+    }
+
+    /// The declarations `input x: [8, 4]` (line 3) and `target y: [8, 1]` (line 4).
+    fn linear_declarations() -> Vec<HirData> {
+        vec![
+            data(DataRole::Input, "x", &[8, 4], 3),
+            data(DataRole::Target, "y", &[8, 1], 4),
+        ]
+    }
+
     /// `mse(matmul(x, w), y)` and its prediction `matmul(x, w)`.
-    fn linear() -> (TensorProgram, ValueId) {
+    fn linear() -> LoweredProgram {
         let mut b = TensorProgramBuilder::new();
         let w = b
             .declare_param(
@@ -172,16 +228,42 @@ mod tests {
         let h = b.matmul(x, w).unwrap();
         let loss = b.mse(h, y).unwrap();
         b.output(loss).unwrap();
-        (b.finish(), h)
+        LoweredProgram {
+            program: b.finish(),
+            prediction: h,
+            declared_inputs: linear_declarations(),
+        }
+    }
+
+    /// `mse(b, y)` with prediction `b`: the declared input `x` has no `Input` node, as after
+    /// dead-code elimination of a forward that ignores it.
+    fn ignores_x() -> LoweredProgram {
+        let mut b = TensorProgramBuilder::new();
+        let p = b
+            .declare_param(
+                "Const.b",
+                TensorType::f32(&[8, 1]),
+                Initializer::XavierUniform,
+            )
+            .unwrap();
+        let y = b.input("y", TensorType::f32(&[8, 1])).unwrap();
+        let p = b.param_read(p).unwrap();
+        let loss = b.mse(p, y).unwrap();
+        b.output(loss).unwrap();
+        LoweredProgram {
+            program: b.finish(),
+            prediction: p,
+            declared_inputs: linear_declarations(),
+        }
     }
 
     #[test]
     fn the_target_is_the_teacher_prediction_for_standard_normal_inputs() {
-        let (forward, prediction) = linear();
-        let data = synthetic(&linear_config(42), &forward, prediction).unwrap();
+        let forward = linear();
+        let data = synthetic(&linear_config(42), &forward).unwrap();
         let x_ty = TensorType::f32(&[8, 4]);
         let x = standard_normal(42, Stream::Data, "x", &x_ty).unwrap();
-        let teacher = initialize(&forward, 42, Stream::Teacher).unwrap();
+        let teacher = initialize(&forward.program, 42, Stream::Teacher).unwrap();
         assert_eq!(data.teacher, teacher);
         assert_eq!(data.inputs.keys().collect::<Vec<_>>(), vec!["x", "y"]);
         assert_eq!(data.inputs["x"], x);
@@ -200,25 +282,25 @@ mod tests {
 
     #[test]
     fn the_teacher_is_not_the_initial_state() {
-        let (forward, prediction) = linear();
-        let data = synthetic(&linear_config(42), &forward, prediction).unwrap();
-        let init = initialize(&forward, 42, Stream::Init).unwrap();
+        let forward = linear();
+        let data = synthetic(&linear_config(42), &forward).unwrap();
+        let init = initialize(&forward.program, 42, Stream::Init).unwrap();
         assert_ne!(data.teacher, init);
     }
 
     #[test]
     fn the_same_seed_makes_the_same_data() {
-        let (forward, prediction) = linear();
-        let a = synthetic(&linear_config(42), &forward, prediction).unwrap();
-        let b = synthetic(&linear_config(42), &forward, prediction).unwrap();
+        let forward = linear();
+        let a = synthetic(&linear_config(42), &forward).unwrap();
+        let b = synthetic(&linear_config(42), &forward).unwrap();
         assert_eq!(a, b);
     }
 
     #[test]
     fn another_seed_makes_other_data() {
-        let (forward, prediction) = linear();
-        let a = synthetic(&linear_config(42), &forward, prediction).unwrap();
-        let b = synthetic(&linear_config(43), &forward, prediction).unwrap();
+        let forward = linear();
+        let a = synthetic(&linear_config(42), &forward).unwrap();
+        let b = synthetic(&linear_config(43), &forward).unwrap();
         assert_ne!(a.inputs["x"], b.inputs["x"]);
         assert_ne!(a.teacher, b.teacher);
     }
@@ -232,13 +314,13 @@ mod tests {
 
     #[test]
     fn a_second_input_is_refused() {
-        let (forward, prediction) = linear();
+        let forward = linear();
         let c = config(
             42,
             vec![decl("x", &[8, 4], 3), decl("z", &[8, 4], 4)],
             vec![decl("y", &[8, 1], 5)],
         );
-        let d = refused(synthetic(&c, &forward, prediction));
+        let d = refused(synthetic(&c, &forward));
         assert_eq!(d.code, E_DATA_001);
         assert_eq!(d.span, Some(span(1)));
         assert_eq!(
@@ -252,16 +334,16 @@ mod tests {
 
     #[test]
     fn a_missing_target_is_refused() {
-        let (forward, prediction) = linear();
+        let forward = linear();
         let c = config(42, vec![decl("x", &[8, 4], 3)], vec![]);
-        let d = refused(synthetic(&c, &forward, prediction));
+        let d = refused(synthetic(&c, &forward));
         assert_eq!(d.code, E_DATA_001);
         assert!(d.to_string().ends_with("inputs: 1\n  targets: 0"), "{d}");
     }
 
     #[test]
     fn a_missing_input_or_a_second_target_is_refused() {
-        let (forward, prediction) = linear();
+        let forward = linear();
         for c in [
             config(42, vec![], vec![decl("y", &[8, 1], 4)]),
             config(
@@ -270,16 +352,16 @@ mod tests {
                 vec![decl("y", &[8, 1], 4), decl("t", &[8, 1], 5)],
             ),
         ] {
-            let d = refused(synthetic(&c, &forward, prediction));
+            let d = refused(synthetic(&c, &forward));
             assert_eq!(d.code, E_DATA_001, "{d}");
         }
     }
 
     #[test]
     fn a_target_not_of_the_model_output_type_is_refused() {
-        let (forward, prediction) = linear();
+        let forward = linear();
         let c = config(42, vec![decl("x", &[8, 4], 3)], vec![decl("y", &[8, 2], 4)]);
-        let d = refused(synthetic(&c, &forward, prediction));
+        let d = refused(synthetic(&c, &forward));
         assert_eq!(
             d.to_string(),
             "E-DATA-002: the target is not of the model output type\n  \
@@ -291,10 +373,54 @@ mod tests {
 
     #[test]
     fn an_undefined_prediction_is_an_error_not_a_panic() {
-        let (forward, _) = linear();
+        let mut forward = linear();
+        forward.prediction = ValueId(99);
         assert_eq!(
-            synthetic(&linear_config(42), &forward, ValueId(99)),
+            synthetic(&linear_config(42), &forward),
             Err(DataError::UndefinedPrediction(ValueId(99)))
         );
+    }
+
+    #[test]
+    fn an_input_the_program_does_not_read_is_refused_at_its_declaration() {
+        let d = refused(synthetic(&linear_config(42), &ignores_x()));
+        assert_eq!(d.code, E_DATA_003);
+        assert_eq!(d.span, Some(span(3)));
+        assert_eq!(
+            d.to_string(),
+            "E-DATA-003: the input `x` is not read by the loss\n  \
+             fit.mspec:3:5\n  \
+             input: x"
+        );
+    }
+
+    #[test]
+    fn a_target_the_program_does_not_read_is_refused_at_its_declaration() {
+        let mut forward = linear();
+        let y = forward.program.inputs[1];
+        let Some(node) = forward.program.nodes.iter_mut().find(|n| n.id == y) else {
+            panic!("y is a node");
+        };
+        node.op = TensorOp::Input { name: "t".into() };
+        let d = refused(synthetic(&linear_config(42), &forward));
+        assert_eq!(
+            d.to_string(),
+            "E-DATA-003: the target `y` is not read by the loss\n  \
+             fit.mspec:4:5\n  \
+             target: y"
+        );
+    }
+
+    #[test]
+    fn the_count_and_type_refusals_come_before_the_unread_refusal() {
+        let forward = ignores_x();
+        let two = config(
+            42,
+            vec![decl("x", &[8, 4], 3), decl("z", &[8, 4], 4)],
+            vec![decl("y", &[8, 1], 5)],
+        );
+        assert_eq!(refused(synthetic(&two, &forward)).code, E_DATA_001);
+        let wide = config(42, vec![decl("x", &[8, 4], 3)], vec![decl("y", &[8, 2], 4)]);
+        assert_eq!(refused(synthetic(&wide, &forward)).code, E_DATA_002);
     }
 }

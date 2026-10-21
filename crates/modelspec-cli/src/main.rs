@@ -18,9 +18,6 @@ pub const EXIT_FAILURE: u8 = 1;
 /// The process exits 2 on a usage error.
 pub const EXIT_USAGE: u8 = 2;
 
-/// Message of a subcommand this build does not implement yet.
-pub const NOT_IMPLEMENTED: &str = "not implemented in this build";
-
 #[derive(Parser)]
 #[command(
     name = "modelspec",
