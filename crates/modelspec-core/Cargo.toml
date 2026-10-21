@@ -1,0 +1,11 @@
+[package]
+name = "modelspec-core"
+description = "The ModelSpec compiler: parsing, checking, IR and autodiff, without Vulkan"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+logos.workspace = true
+thiserror.workspace = true

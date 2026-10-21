@@ -1,0 +1,26 @@
+version: "3"
+
+tasks:
+  build:
+    cmds:
+      - cargo build --workspace
+
+  test:
+    cmds:
+      - cargo test --workspace
+
+  lint:
+    cmds:
+      - cargo fmt --check
+      - cargo clippy --workspace --all-targets -- -D warnings
+
+  core-no-vulkan:
+    cmds:
+      - cargo test -p modelspec-core --test no_vulkan
+
+  ci:
+    cmds:
+      - task: build
+      - task: lint
+      - task: test
+      - task: core-no-vulkan
