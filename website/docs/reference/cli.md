@@ -37,9 +37,11 @@ Parse and type-check a `.mspec` file
 Usage: modelspec check <PATH>
 ```
 
-| Argument | Required | Default | Meaning |
-|---|---|---|---|
-| `<PATH>` | yes | none | The .mspec file to check. |
+Every argument is required and has no default.
+
+| Argument | Meaning |
+|---|---|
+| `<PATH>` | The .mspec file to check. |
 
 ## `modelspec ir`
 
@@ -49,10 +51,12 @@ Print the IR of a `.mspec` file at a stage
 Usage: modelspec ir --stage <STAGE> <PATH>
 ```
 
-| Argument | Required | Default | Meaning |
-|---|---|---|---|
-| `<PATH>` | yes | none | The .mspec file to lower. |
-| `--stage <STAGE>` | yes | none | The IR level to print. One of `tensor`: Tensor IR after lowering and dead-code elimination; `training`: Training IR: the Tensor IR with its reverse pass and SGD step attached. |
+Every argument is required and has no default.
+
+| Argument | Meaning |
+|---|---|
+| `<PATH>` | The .mspec file to lower. |
+| `--stage <STAGE>` | The IR level to print. One of:<br/>`tensor`: Tensor IR after lowering and dead-code elimination<br/>`training`: Training IR: the Tensor IR with its reverse pass and SGD step attached |
 
 ## `modelspec train`
 
@@ -62,7 +66,9 @@ Train a `.mspec` model
 Usage: modelspec train --backend <BACKEND> <PATH>
 ```
 
-| Argument | Required | Default | Meaning |
-|---|---|---|---|
-| `<PATH>` | yes | none | The .mspec file to train. |
-| `--backend <BACKEND>` | yes | none | The backend that runs the training step. One of `cpu`: The CPU interpreter; `vulkan`: Vulkan compute: not available in M0. |
+Every argument is required and has no default.
+
+| Argument | Meaning |
+|---|---|
+| `<PATH>` | The .mspec file to train. |
+| `--backend <BACKEND>` | The backend that runs the training step. One of:<br/>`cpu`: The CPU interpreter<br/>`vulkan`: Vulkan compute: not available in M0 |

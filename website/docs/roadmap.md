@@ -21,7 +21,7 @@ reference interpreter, and `modelspec check`, `ir` and `train --backend cpu`.
 
 ## M1: native Vulkan execution
 
-:::caution[Planned, not built]
+:::planned[Not built]
 
 None of this exists yet. There is no GPU code in the repository: `modelspec train --backend vulkan`
 is refused with `E-TARGET-001`, and the `vulkan` feature of `modelspec-runtime` is empty. The work is
@@ -47,7 +47,7 @@ The M1 acceptance criteria are the checklist in
 
 ## M2 to M4
 
-:::caution[Planned, not built]
+:::planned[Not built]
 
 Designed in DESIGN.md; no code and no stories yet.
 
@@ -65,7 +65,16 @@ with the M2 work.
 
 ## Excluded for now
 
-DESIGN.md § 1 excludes these from M0 and M1, and they may be considered later: distributed
-training, eager execution, user-written GPU assembly, runtime recursion and data-dependent control
-flow, variable-length control flow, and direct SASS emission. An optional PTX backend is an open
-question in DESIGN.md § 12 and would not meet the no-CUDA rule.
+[DESIGN.md § 1](https://github.com/beyond10x/modelspec/blob/main/DESIGN.md#initial-deliberate-exclusions)
+excludes these from the M0 and M1 design, and they may be considered later:
+
+- distributed training and automatic cross-device partitioning;
+- dynamic Python-like objects and implicit eager execution;
+- user-authored GPU assembly and direct SASS emission;
+- arbitrary runtime recursion, variable-length control flow and graph mutation during execution;
+- arbitrary-stride views;
+- a production data-loader ecosystem.
+
+[DESIGN.md § 2.4](https://github.com/beyond10x/modelspec/blob/main/DESIGN.md#24-control-flow-and-dynamism)
+also keeps runtime data-dependent `if` and `while` and dynamically ragged tensors out of scope. An
+optional PTX backend is an open question in DESIGN.md § 12 and would not meet the no-CUDA rule.

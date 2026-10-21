@@ -34,7 +34,7 @@ Tensor IR op `MatMul`, 2 operand(s).
 | Call | Result |
 |---|---|
 | `matmul(Tensor<f32, [8, 4]>, Tensor<f32, [4, 1]>)` | `Tensor<f32, [8, 1]>` |
-| `matmul(Tensor<f32, [8, 4]>, Tensor<f32, [3, 1]>)` | refused: `matmul contracting dimension mismatch: lhs Tensor<f32, [8, 4]>, rhs Tensor<f32, [3, 1]>, expected rhs dimension[0] = 4; got 3` |
+| `matmul(Tensor<f32, [8, 4]>, Tensor<f32, [3, 1]>)` | refused: `matmul contracting dimension mismatch`: `lhs Tensor<f32, [8, 4]>`, `rhs Tensor<f32, [3, 1]>`, `expected rhs dimension[0] = 4; got 3` |
 | `matmul(Tensor<f32, [8]>, Tensor<f32, [8, 1]>)` | refused: `MatMul needs a rank-2 operand; got Tensor<f32, [8]>` |
 
 ## `add`
@@ -45,7 +45,7 @@ Tensor IR op `Add`, 2 operand(s).
 |---|---|
 | `add(Tensor<f32, [8, 1]>, Tensor<f32, [8, 1]>)` | `Tensor<f32, [8, 1]>` |
 | `add(Tensor<f32, [8, 1]>, Tensor<f32, []>)` | `Tensor<f32, [8, 1]>` |
-| `add(Tensor<f32, [8, 1]>, Tensor<f32, [1, 8]>)` | refused: `Add operand shapes differ: lhs Tensor<f32, [8, 1]>, rhs Tensor<f32, [1, 8]>` |
+| `add(Tensor<f32, [8, 1]>, Tensor<f32, [1, 8]>)` | refused: `Add operand shapes differ`: `lhs Tensor<f32, [8, 1]>`, `rhs Tensor<f32, [1, 8]>` |
 
 ## `sub`
 
@@ -55,7 +55,7 @@ Tensor IR op `Sub`, 2 operand(s).
 |---|---|
 | `sub(Tensor<f32, [8, 1]>, Tensor<f32, [8, 1]>)` | `Tensor<f32, [8, 1]>` |
 | `sub(Tensor<f32, []>, Tensor<f32, [8, 1]>)` | `Tensor<f32, [8, 1]>` |
-| `sub(Tensor<f32, [8, 1]>, Tensor<f32, [8, 4]>)` | refused: `Sub operand shapes differ: lhs Tensor<f32, [8, 1]>, rhs Tensor<f32, [8, 4]>` |
+| `sub(Tensor<f32, [8, 1]>, Tensor<f32, [8, 4]>)` | refused: `Sub operand shapes differ`: `lhs Tensor<f32, [8, 1]>`, `rhs Tensor<f32, [8, 4]>` |
 
 ## `mul`
 
@@ -65,7 +65,7 @@ Tensor IR op `Mul`, 2 operand(s).
 |---|---|
 | `mul(Tensor<f32, [8, 4]>, Tensor<f32, [8, 4]>)` | `Tensor<f32, [8, 4]>` |
 | `mul(Tensor<f32, [8, 4]>, Tensor<f32, []>)` | `Tensor<f32, [8, 4]>` |
-| `mul(Tensor<f32, [8, 4]>, Tensor<f32, [4, 8]>)` | refused: `Mul operand shapes differ: lhs Tensor<f32, [8, 4]>, rhs Tensor<f32, [4, 8]>` |
+| `mul(Tensor<f32, [8, 4]>, Tensor<f32, [4, 8]>)` | refused: `Mul operand shapes differ`: `lhs Tensor<f32, [8, 4]>`, `rhs Tensor<f32, [4, 8]>` |
 
 ## `relu`
 
@@ -107,8 +107,8 @@ Tensor IR op `Mse`, 2 operand(s).
 | Call | Result |
 |---|---|
 | `mse(Tensor<f32, [8, 1]>, Tensor<f32, [8, 1]>)` | `Tensor<f32, []>` |
-| `mse(Tensor<f32, [8, 1]>, Tensor<f32, [1, 8]>)` | refused: `Mse operand shapes differ: lhs Tensor<f32, [8, 1]>, rhs Tensor<f32, [1, 8]>` |
-| `mse(Tensor<f32, [8, 1]>, Tensor<f32, []>)` | refused: `Mse operand shapes differ: lhs Tensor<f32, [8, 1]>, rhs Tensor<f32, []>` |
+| `mse(Tensor<f32, [8, 1]>, Tensor<f32, [1, 8]>)` | refused: `Mse operand shapes differ`: `lhs Tensor<f32, [8, 1]>`, `rhs Tensor<f32, [1, 8]>` |
+| `mse(Tensor<f32, [8, 1]>, Tensor<f32, []>)` | refused: `Mse operand shapes differ`: `lhs Tensor<f32, [8, 1]>`, `rhs Tensor<f32, []>` |
 
 ## Gradients
 

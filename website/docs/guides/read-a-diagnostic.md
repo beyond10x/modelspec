@@ -19,7 +19,7 @@ E-TYPE-012: matmul contracting dimension mismatch
 
 | Line | What it says |
 |---|---|
-| `E-TYPE-012: matmul contracting dimension mismatch` | the code, then the message. The code is what to search for: the [reference](../reference/diagnostics.md) lists it with its meaning |
+| `E-TYPE-012: matmul contracting dimension mismatch` | the code, then the message. The code is what to search for: the [reference](../reference/diagnostics.md#e-type-012) lists it with its meaning |
 | `crates/.../matmul_mismatch.mspec:6:16` | the file, line and column of the construct, both counted from 1. Here it is the `matmul(x, w)` call |
 | `lhs: ...`, `rhs: ...` | labelled details: the values the rule looked at, here the types of both operands |
 | `expected rhs dimension[0] = 4; got 3` | an unlabelled detail: what the rule needed and what it found |
@@ -52,7 +52,7 @@ three diagnostics for one file.
 | `E-TYPE` | type and shape checker | operands whose shapes do not fit, a wrong argument count, or a train-block rule such as the loss calling `model.forward` more than once |
 | `E-DATA` | `train`, after the check | the input and target do not fit the synthetic data loader |
 | `E-TARGET` | `train`, before the check | the backend is not available |
-| `E-INTERNAL` | the compiler | a compiler bug, not a mistake in the model; please report it with the file |
+| `E-INTERNAL` | the compiler | a compiler bug, not a mistake in the model; please [report it](https://github.com/beyond10x/modelspec/issues) with the file |
 
 The [diagnostic reference](../reference/diagnostics.md) lists every code with its meaning and the
 source file that declares it. It is generated from those declarations, so a code that exists is on

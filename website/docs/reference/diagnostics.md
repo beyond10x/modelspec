@@ -17,27 +17,27 @@ The parser of the M0 subset. A construct of the target language that M0 does not
 
 | Code | Meaning | Declared in |
 |---|---|---|
-| `E-SYNTAX-001` | A character no token starts with. | [`crates/modelspec-core/src/syntax/mod.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/syntax/mod.rs) |
-| `E-SYNTAX-002` | A token the grammar does not allow at this position. | [`crates/modelspec-core/src/syntax/mod.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/syntax/mod.rs) |
-| `E-SYNTAX-003` | The source ends inside an item. | [`crates/modelspec-core/src/syntax/mod.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/syntax/mod.rs) |
-| `E-SYNTAX-004` | `module`, which arrives with DESIGN.md § 11 iteration 3. | [`crates/modelspec-core/src/syntax/mod.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/syntax/mod.rs) |
-| `E-SYNTAX-005` | `layer`, which arrives with DESIGN.md § 11 iteration 3. | [`crates/modelspec-core/src/syntax/mod.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/syntax/mod.rs) |
-| `E-SYNTAX-006` | A generic parameter list such as `<B: dim>` after a model, train or function name. | [`crates/modelspec-core/src/syntax/mod.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/syntax/mod.rs) |
-| `E-SYNTAX-007` | Generic arguments such as `TinyMLP<64>` in a train block's `model` setting. | [`crates/modelspec-core/src/syntax/mod.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/syntax/mod.rs) |
-| `E-SYNTAX-008` | A named dimension such as `B` in a tensor type; M0 dimensions are integer literals. | [`crates/modelspec-core/src/syntax/mod.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/syntax/mod.rs) |
-| `E-SYNTAX-009` | An infix or prefix operator; M0 spells arithmetic as calls such as `add(a, b)`. | [`crates/modelspec-core/src/syntax/mod.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/syntax/mod.rs) |
-| `E-SYNTAX-010` | `const`, which arrives with DESIGN.md § 11 iteration 3. | [`crates/modelspec-core/src/syntax/mod.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/syntax/mod.rs) |
-| `E-SYNTAX-011` | `repeat`, which arrives with DESIGN.md § 11 iteration 3. | [`crates/modelspec-core/src/syntax/mod.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/syntax/mod.rs) |
-| `E-SYNTAX-012` | An element type other than `f32`. | [`crates/modelspec-core/src/syntax/mod.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/syntax/mod.rs) |
-| `E-SYNTAX-013` | An optimizer other than `sgd`. | [`crates/modelspec-core/src/syntax/mod.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/syntax/mod.rs) |
-| `E-SYNTAX-014` | A device other than `cpu` or `vulkan(<index>)`. | [`crates/modelspec-core/src/syntax/mod.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/syntax/mod.rs) |
-| `E-SYNTAX-015` | A numeric literal its position cannot hold. | [`crates/modelspec-core/src/syntax/mod.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/syntax/mod.rs) |
-| `E-SYNTAX-016` | A train setting name the M0 subset does not have. | [`crates/modelspec-core/src/syntax/mod.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/syntax/mod.rs) |
-| `E-SYNTAX-017` | A train setting given twice. | [`crates/modelspec-core/src/syntax/mod.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/syntax/mod.rs) |
-| `E-SYNTAX-018` | A train block without one of its required settings. | [`crates/modelspec-core/src/syntax/mod.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/syntax/mod.rs) |
-| `E-SYNTAX-019` | A second `model` or `train` item in one file. | [`crates/modelspec-core/src/syntax/mod.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/syntax/mod.rs) |
-| `E-SYNTAX-020` | A file without a `model` or a `train` item. | [`crates/modelspec-core/src/syntax/mod.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/syntax/mod.rs) |
-| `E-SYNTAX-021` | Argument lists nested more than `MAX_NESTING` deep. | [`crates/modelspec-core/src/syntax/mod.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/syntax/mod.rs) |
+| <a id="e-syntax-001"></a>`E-SYNTAX-001` | A character no token starts with. | [`crates/modelspec-core/src/syntax/mod.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/syntax/mod.rs) |
+| <a id="e-syntax-002"></a>`E-SYNTAX-002` | A token the grammar does not allow at this position. | [`crates/modelspec-core/src/syntax/mod.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/syntax/mod.rs) |
+| <a id="e-syntax-003"></a>`E-SYNTAX-003` | The source ends inside an item. | [`crates/modelspec-core/src/syntax/mod.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/syntax/mod.rs) |
+| <a id="e-syntax-004"></a>`E-SYNTAX-004` | `module`, which arrives with DESIGN.md § 11 iteration 3. | [`crates/modelspec-core/src/syntax/mod.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/syntax/mod.rs) |
+| <a id="e-syntax-005"></a>`E-SYNTAX-005` | `layer`, which arrives with DESIGN.md § 11 iteration 3. | [`crates/modelspec-core/src/syntax/mod.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/syntax/mod.rs) |
+| <a id="e-syntax-006"></a>`E-SYNTAX-006` | A generic parameter list such as `<B: dim>` after a model, train or function name. | [`crates/modelspec-core/src/syntax/mod.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/syntax/mod.rs) |
+| <a id="e-syntax-007"></a>`E-SYNTAX-007` | Generic arguments such as `TinyMLP<64>` in a train block's `model` setting. | [`crates/modelspec-core/src/syntax/mod.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/syntax/mod.rs) |
+| <a id="e-syntax-008"></a>`E-SYNTAX-008` | A named dimension such as `B` in a tensor type; M0 dimensions are integer literals. | [`crates/modelspec-core/src/syntax/mod.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/syntax/mod.rs) |
+| <a id="e-syntax-009"></a>`E-SYNTAX-009` | An infix or prefix operator; M0 spells arithmetic as calls such as `add(a, b)`. | [`crates/modelspec-core/src/syntax/mod.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/syntax/mod.rs) |
+| <a id="e-syntax-010"></a>`E-SYNTAX-010` | `const`, which arrives with DESIGN.md § 11 iteration 3. | [`crates/modelspec-core/src/syntax/mod.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/syntax/mod.rs) |
+| <a id="e-syntax-011"></a>`E-SYNTAX-011` | `repeat`, which arrives with DESIGN.md § 11 iteration 3. | [`crates/modelspec-core/src/syntax/mod.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/syntax/mod.rs) |
+| <a id="e-syntax-012"></a>`E-SYNTAX-012` | An element type other than `f32`. | [`crates/modelspec-core/src/syntax/mod.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/syntax/mod.rs) |
+| <a id="e-syntax-013"></a>`E-SYNTAX-013` | An optimizer other than `sgd`. | [`crates/modelspec-core/src/syntax/mod.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/syntax/mod.rs) |
+| <a id="e-syntax-014"></a>`E-SYNTAX-014` | A device other than `cpu` or `vulkan(<index>)`. | [`crates/modelspec-core/src/syntax/mod.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/syntax/mod.rs) |
+| <a id="e-syntax-015"></a>`E-SYNTAX-015` | A numeric literal its position cannot hold. | [`crates/modelspec-core/src/syntax/mod.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/syntax/mod.rs) |
+| <a id="e-syntax-016"></a>`E-SYNTAX-016` | A train setting name the M0 subset does not have. | [`crates/modelspec-core/src/syntax/mod.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/syntax/mod.rs) |
+| <a id="e-syntax-017"></a>`E-SYNTAX-017` | A train setting given twice. | [`crates/modelspec-core/src/syntax/mod.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/syntax/mod.rs) |
+| <a id="e-syntax-018"></a>`E-SYNTAX-018` | A train block without one of its required settings. | [`crates/modelspec-core/src/syntax/mod.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/syntax/mod.rs) |
+| <a id="e-syntax-019"></a>`E-SYNTAX-019` | A second `model` or `train` item in one file. | [`crates/modelspec-core/src/syntax/mod.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/syntax/mod.rs) |
+| <a id="e-syntax-020"></a>`E-SYNTAX-020` | A file without a `model` or a `train` item. | [`crates/modelspec-core/src/syntax/mod.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/syntax/mod.rs) |
+| <a id="e-syntax-021"></a>`E-SYNTAX-021` | Argument lists nested more than `MAX_NESTING` deep. | [`crates/modelspec-core/src/syntax/mod.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/syntax/mod.rs) |
 
 ## Names
 
@@ -45,14 +45,14 @@ Name resolution: variables, operators, the model a train block names and the fun
 
 | Code | Meaning | Declared in |
 |---|---|---|
-| `E-NAME-001` | A variable no enclosing scope binds. | [`crates/modelspec-core/src/resolve.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/resolve.rs) |
-| `E-NAME-002` | A call whose callee is not a built-in operator. | [`crates/modelspec-core/src/resolve.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/resolve.rs) |
-| `E-NAME-003` | A model parameter or function whose name an earlier model item already declares. | [`crates/modelspec-core/src/resolve.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/resolve.rs) |
-| `E-NAME-004` | A function argument or `let` binding a name its function's scope already binds. | [`crates/modelspec-core/src/resolve.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/resolve.rs) |
-| `E-NAME-005` | An `input` or `target` declaration whose name an earlier one already declares. | [`crates/modelspec-core/src/resolve.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/resolve.rs) |
-| `E-NAME-006` | A train block's `model` setting naming no model of the file. | [`crates/modelspec-core/src/resolve.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/resolve.rs) |
-| `E-NAME-007` | A member call whose receiver is not `model` in a train block. | [`crates/modelspec-core/src/resolve.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/resolve.rs) |
-| `E-NAME-008` | `model.<name>(...)` where the model has no function `<name>`. | [`crates/modelspec-core/src/resolve.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/resolve.rs) |
+| <a id="e-name-001"></a>`E-NAME-001` | A variable no enclosing scope binds. | [`crates/modelspec-core/src/resolve.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/resolve.rs) |
+| <a id="e-name-002"></a>`E-NAME-002` | A call whose callee is not a built-in operator. | [`crates/modelspec-core/src/resolve.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/resolve.rs) |
+| <a id="e-name-003"></a>`E-NAME-003` | A model parameter or function whose name an earlier model item already declares. | [`crates/modelspec-core/src/resolve.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/resolve.rs) |
+| <a id="e-name-004"></a>`E-NAME-004` | A function argument or `let` binding a name its function's scope already binds. | [`crates/modelspec-core/src/resolve.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/resolve.rs) |
+| <a id="e-name-005"></a>`E-NAME-005` | An `input` or `target` declaration whose name an earlier one already declares. | [`crates/modelspec-core/src/resolve.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/resolve.rs) |
+| <a id="e-name-006"></a>`E-NAME-006` | A train block's `model` setting naming no model of the file. | [`crates/modelspec-core/src/resolve.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/resolve.rs) |
+| <a id="e-name-007"></a>`E-NAME-007` | A member call whose receiver is not `model` in a train block. | [`crates/modelspec-core/src/resolve.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/resolve.rs) |
+| <a id="e-name-008"></a>`E-NAME-008` | `model.<name>(...)` where the model has no function `<name>`. | [`crates/modelspec-core/src/resolve.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/resolve.rs) |
 
 ## Types and shapes
 
@@ -60,23 +60,23 @@ The type and shape checker. Operator rules come from the operator registry ([Ope
 
 | Code | Meaning | Declared in |
 |---|---|---|
-| `E-TYPE-001` | An operator or model function called with the wrong number of arguments. | [`crates/modelspec-core/src/types.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/types.rs) |
-| `E-TYPE-002` | A named argument (`a = x`) to an operator or a model function. | [`crates/modelspec-core/src/types.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/types.rs) |
-| `E-TYPE-003` | `add`, `sub`, `mul` or `mse` operands of different shapes, neither of them rank 0. | [`crates/modelspec-core/src/types.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/types.rs) |
-| `E-TYPE-004` | A `matmul` or `transpose` operand that is not rank 2. | [`crates/modelspec-core/src/types.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/types.rs) |
-| `E-TYPE-005` | An integer literal where a tensor is expected. | [`crates/modelspec-core/src/types.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/types.rs) |
-| `E-TYPE-006` | A float literal that is not a finite `f32`. | [`crates/modelspec-core/src/types.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/types.rs) |
-| `E-TYPE-007` | A function whose `return` expression's type differs from its declared result type. | [`crates/modelspec-core/src/types.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/types.rs) |
-| `E-TYPE-008` | A model function argument whose type differs from the parameter's declared type. | [`crates/modelspec-core/src/types.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/types.rs) |
-| `E-TYPE-009` | A train block's `loss` that is not rank 0. | [`crates/modelspec-core/src/types.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/types.rs) |
-| `E-TYPE-010` | An `sgd` learning rate that is not a positive finite `f32`. | [`crates/modelspec-core/src/types.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/types.rs) |
-| `E-TYPE-011` | A train block's `steps` of 0. | [`crates/modelspec-core/src/types.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/types.rs) |
-| `E-TYPE-012` | `matmul([M, K], [K', N])` with `K != K'` (DESIGN.md § 8.1). | [`crates/modelspec-core/src/types.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/types.rs) |
-| `E-TYPE-013` | A parameter initializer other than `xavier_uniform()`. | [`crates/modelspec-core/src/types.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/types.rs) |
-| `E-TYPE-014` | `xavier_uniform()` on a parameter that is not rank 2. | [`crates/modelspec-core/src/types.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/types.rs) |
-| `E-TYPE-015` | A tensor type with a dimension of 0 (DESIGN.md § 2.2). | [`crates/modelspec-core/src/types.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/types.rs) |
-| `E-TYPE-016` | A tensor type whose element or byte count overflows `u64` (DESIGN.md § 2.2). | [`crates/modelspec-core/src/types.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/types.rs) |
-| `E-TYPE-017` | A train block's loss that does not call `model.forward` exactly once: the prediction is the value of that one call. | [`crates/modelspec-core/src/types.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/types.rs) |
+| <a id="e-type-001"></a>`E-TYPE-001` | An operator or model function called with the wrong number of arguments. | [`crates/modelspec-core/src/types.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/types.rs) |
+| <a id="e-type-002"></a>`E-TYPE-002` | A named argument (`a = x`) to an operator or a model function. | [`crates/modelspec-core/src/types.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/types.rs) |
+| <a id="e-type-003"></a>`E-TYPE-003` | `add`, `sub`, `mul` or `mse` operands of different shapes, neither of them rank 0. | [`crates/modelspec-core/src/types.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/types.rs) |
+| <a id="e-type-004"></a>`E-TYPE-004` | A `matmul` or `transpose` operand that is not rank 2. | [`crates/modelspec-core/src/types.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/types.rs) |
+| <a id="e-type-005"></a>`E-TYPE-005` | An integer literal where a tensor is expected. | [`crates/modelspec-core/src/types.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/types.rs) |
+| <a id="e-type-006"></a>`E-TYPE-006` | A float literal that is not a finite `f32`. | [`crates/modelspec-core/src/types.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/types.rs) |
+| <a id="e-type-007"></a>`E-TYPE-007` | A function whose `return` expression's type differs from its declared result type. | [`crates/modelspec-core/src/types.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/types.rs) |
+| <a id="e-type-008"></a>`E-TYPE-008` | A model function argument whose type differs from the parameter's declared type. | [`crates/modelspec-core/src/types.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/types.rs) |
+| <a id="e-type-009"></a>`E-TYPE-009` | A train block's `loss` that is not rank 0. | [`crates/modelspec-core/src/types.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/types.rs) |
+| <a id="e-type-010"></a>`E-TYPE-010` | An `sgd` learning rate that is not a positive finite `f32`. | [`crates/modelspec-core/src/types.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/types.rs) |
+| <a id="e-type-011"></a>`E-TYPE-011` | A train block's `steps` of 0. | [`crates/modelspec-core/src/types.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/types.rs) |
+| <a id="e-type-012"></a>`E-TYPE-012` | `matmul([M, K], [K', N])` with `K != K'` (DESIGN.md § 8.1). | [`crates/modelspec-core/src/types.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/types.rs) |
+| <a id="e-type-013"></a>`E-TYPE-013` | A parameter initializer other than `xavier_uniform()`. | [`crates/modelspec-core/src/types.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/types.rs) |
+| <a id="e-type-014"></a>`E-TYPE-014` | `xavier_uniform()` on a parameter that is not rank 2. | [`crates/modelspec-core/src/types.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/types.rs) |
+| <a id="e-type-015"></a>`E-TYPE-015` | A tensor type with a dimension of 0 (DESIGN.md § 2.2). | [`crates/modelspec-core/src/types.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/types.rs) |
+| <a id="e-type-016"></a>`E-TYPE-016` | A tensor type whose element or byte count overflows `u64` (DESIGN.md § 2.2). | [`crates/modelspec-core/src/types.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/types.rs) |
+| <a id="e-type-017"></a>`E-TYPE-017` | A train block's loss that does not call `model.forward` exactly once: the prediction is the value of that one call. | [`crates/modelspec-core/src/types.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/types.rs) |
 
 ## Training data
 
@@ -84,9 +84,9 @@ The synthetic data loader of `modelspec train`, which runs after a file checks.
 
 | Code | Meaning | Declared in |
 |---|---|---|
-| `E-DATA-001` | The `train` block does not declare exactly one `input` and one `target`. | [`crates/modelspec-runtime/src/train/data.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-runtime/src/train/data.rs) |
-| `E-DATA-002` | The `target` is not of the model output type. | [`crates/modelspec-runtime/src/train/data.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-runtime/src/train/data.rs) |
-| `E-DATA-003` | A declared `input` or `target` is not read by the loss. | [`crates/modelspec-runtime/src/train/data.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-runtime/src/train/data.rs) |
+| <a id="e-data-001"></a>`E-DATA-001` | The `train` block does not declare exactly one `input` and one `target`. | [`crates/modelspec-runtime/src/train/data.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-runtime/src/train/data.rs) |
+| <a id="e-data-002"></a>`E-DATA-002` | The `target` is not of the model output type. | [`crates/modelspec-runtime/src/train/data.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-runtime/src/train/data.rs) |
+| <a id="e-data-003"></a>`E-DATA-003` | A declared `input` or `target` is not read by the loss. | [`crates/modelspec-runtime/src/train/data.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-runtime/src/train/data.rs) |
 
 ## Target
 
@@ -94,7 +94,7 @@ Backend selection of `modelspec train`, before the file is read.
 
 | Code | Meaning | Declared in |
 |---|---|---|
-| `E-TARGET-001` | The selected backend is not available in this build. | [`crates/modelspec-cli/src/train.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-cli/src/train.rs) |
+| <a id="e-target-001"></a>`E-TARGET-001` | The selected backend is not available in this build. | [`crates/modelspec-cli/src/train.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-cli/src/train.rs) |
 
 ## Compiler bugs
 
@@ -102,5 +102,5 @@ Internal codes. No source file is meant to reach them; one that does is a bug to
 
 | Code | Meaning | Declared in |
 |---|---|---|
-| `E-INTERNAL-001` | A compiler verification failure, not a user error (DESIGN.md § 8.1): the checker reached a state its own rules exclude, such as a registry dtype mismatch while M0 has only `f32`. Not in `ALL`; no source file is meant to reach it. | [`crates/modelspec-core/src/types.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/types.rs) |
-| `E-INTERNAL-002` | A compiler verification failure in the tensor or training pipeline, not a user error (DESIGN.md § 8.1): lowering refused checked HIR, the program its passes produced does not verify, or autodiff, SGD attachment or the step's verification refused verified Tensor IR. No source file is meant to reach it. | [`crates/modelspec-core/src/compile.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/compile.rs) |
+| <a id="e-internal-001"></a>`E-INTERNAL-001` | A compiler verification failure, not a user error (DESIGN.md § 8.1): the checker reached a state its own rules exclude, such as a registry dtype mismatch while M0 has only `f32`. Not in `ALL`; no source file is meant to reach it. | [`crates/modelspec-core/src/types.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/types.rs) |
+| <a id="e-internal-002"></a>`E-INTERNAL-002` | A compiler verification failure in the tensor or training pipeline, not a user error (DESIGN.md § 8.1): lowering refused checked HIR, the program its passes produced does not verify, or autodiff, SGD attachment or the step's verification refused verified Tensor IR. No source file is meant to reach it. | [`crates/modelspec-core/src/compile.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/compile.rs) |

@@ -258,6 +258,17 @@ fn artifact_status(root: &Path, label: &str, artifact: &str) -> Result<String, S
         .ok_or_else(|| format!("{label}: {artifact} has no status"))
 }
 
+/// The sentence that names a shipped capability's evidence on the page.
+fn held_by(evidence: Evidence) -> String {
+    match evidence {
+        Evidence::Test(reference) => match reference.rsplit_once("::") {
+            Some((file, function)) => format!("Held by test {function} in {file}."),
+            None => format!("Held by {reference}."),
+        },
+        Evidence::Task(task) => format!("Held by task {task}."),
+    }
+}
+
 /// The status document for `capabilities` in the repository at `root`, and any warnings.
 pub fn document_for(
     root: &Path,
@@ -271,7 +282,7 @@ pub fn document_for(
         let detail = match (capability.status, capability.evidence, capability.artifact) {
             ("shipped", Some(evidence), _) => {
                 check_evidence(root, label, evidence)?;
-                capability.detail.to_owned()
+                format!("{} {}", capability.detail, held_by(evidence))
             }
             ("shipped", None, _) => {
                 return Err(format!("{label}: a shipped capability names its evidence"));
@@ -381,9 +392,19 @@ mod tests {
     fn shipped_items_need_a_test_or_task_that_exists() {
         let root = repo("shipped");
         let test = Evidence::Test("crates/x/tests/cli.rs::no_arguments_exits_2");
-        assert!(document_for(&root, &[item("shipped", Some(test), None)], AS_OF).is_ok());
+        let (text, _) = document_for(&root, &[item("shipped", Some(test), None)], AS_OF).unwrap();
+        let document: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(
+            document["items"][0]["detail"],
+            "Detail. Held by test no_arguments_exits_2 in crates/x/tests/cli.rs."
+        );
         let task = Evidence::Task("core-no-vulkan");
-        assert!(document_for(&root, &[item("shipped", Some(task), None)], AS_OF).is_ok());
+        let (text, _) = document_for(&root, &[item("shipped", Some(task), None)], AS_OF).unwrap();
+        let document: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(
+            document["items"][0]["detail"],
+            "Detail. Held by task core-no-vulkan."
+        );
         for missing in [
             Evidence::Test("crates/x/tests/cli.rs::gone"),
             Evidence::Test("crates/x/tests/nowhere.rs::no_arguments_exits_2"),

@@ -12,16 +12,20 @@ prebuilt binary, for Linux on x86_64, and its SHA-256 checksum. There is no macO
 aarch64 binary; on those, [build from source](#build-from-source).
 
 ```sh
-curl -fsSLO https://github.com/beyond10x/modelspec/releases/download/0.1.0/modelspec-0.1.0-x86_64-unknown-linux-gnu
-curl -fsSLO https://github.com/beyond10x/modelspec/releases/download/0.1.0/modelspec-0.1.0-x86_64-unknown-linux-gnu.sha256
-sha256sum -c modelspec-0.1.0-x86_64-unknown-linux-gnu.sha256
-install -m 755 modelspec-0.1.0-x86_64-unknown-linux-gnu ~/.local/bin/modelspec
+base=https://github.com/beyond10x/modelspec/releases/download/0.1.0
+bin=modelspec-0.1.0-x86_64-unknown-linux-gnu
+curl -fsSLO "$base/$bin"
+curl -fsSLO "$base/$bin.sha256"
+sha256sum -c "$bin.sha256"
+install -D -m 755 "$bin" ~/.local/bin/modelspec
 modelspec --version
 ```
 
 `sha256sum -c` prints `modelspec-0.1.0-x86_64-unknown-linux-gnu: OK`, and `modelspec --version`
-prints `modelspec 0.1.0`. The binary needs nothing beyond the C library; no GPU driver is needed
-for anything 0.1.0 does.
+prints `modelspec 0.1.0`. `install -D` creates `~/.local/bin` if it is missing; that directory
+must be on your `PATH` for the last line to find the binary. The binary links only the C runtime
+(`libc`, `libm` and `libgcc_s`), which every glibc Linux system has; no GPU driver is needed for
+anything 0.1.0 does.
 
 ## Check and train the example
 

@@ -107,7 +107,8 @@ model TinyMLP<B: dim> {
 | `layer` | a named module instance, elaborated statically; each instance owns its own weights | refused, `E-SYNTAX-005` |
 | `<B: dim>`, `[B, 32]` | a generic dimension, resolved at compile time | refused, `E-SYNTAX-006` to `E-SYNTAX-008` |
 | `const` | an immutable scalar or tensor | refused, `E-SYNTAX-010` |
-| `infer`, `target` | an inference signature, and backend constraints kept out of model semantics | later milestones |
+| `infer` | an inference signature | refused, `E-SYNTAX-002` (`expected model or train`) |
+| `target` (top level) | backend constraints kept out of model semantics | later milestones; `target y:` inside `train` is M0 |
 
 The parser does not answer these with a generic syntax error. Each construct beyond M0 has its own
 code naming what is missing, and [Syntax beyond M0](../examples/beyond-m0.md) shows the output. The

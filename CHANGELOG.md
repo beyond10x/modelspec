@@ -9,6 +9,18 @@ history.
 
 ## [Unreleased]
 
+### Changed
+
+- Diagnostics reference: every code has its own anchor, such as `reference/diagnostics#e-type-012`
+- CLI reference: an argument table without optional arguments drops the Required and Default columns, and each possible value of `--stage` and `--backend` has its own line
+- Operators reference: the message of a refused call wraps between its parts
+- `website/data/status.json` and the Status page: each shipped capability names the test or task that holds it
+- Getting started: the install block uses `install -D` and says `~/.local/bin` must be on `PATH`; the binary links `libc`, `libm` and `libgcc_s`
+- Roadmap: planned milestones carry the `planned` badge, and the exclusions list all of DESIGN.md § 1 and § 2.4
+- Write a model: step 2 says where `forward` goes, and step 4 shows the `E-TYPE-012` output
+- The language: `infer` is refused with `E-SYNTAX-002`; a top-level `target` is later, `target y:` in `train` is M0
+- Pitch deck `docs/pitch/`: slides 13 and 15 show the 0.1.0 release, slide 8's loop arrows meet their boxes, tap, swipe and Escape work, and a portrait phone gets a notice
+
 ## [0.1.0] - 2026-10-21
 
 The M0 semantic core (`epic:m0-semantic-core`, DESIGN.md revision 0.6). There is no GPU or Vulkan

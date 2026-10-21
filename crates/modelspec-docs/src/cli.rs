@@ -37,7 +37,8 @@ fn sentence(text: String) -> String {
     }
 }
 
-/// What an argument may be: its possible values with their help, or nothing.
+/// What an argument may be: its possible values with their help, one per line of the cell, or
+/// nothing.
 fn possible_values(arg: &clap::Arg) -> String {
     let values: Vec<String> = arg
         .get_possible_values()
@@ -51,7 +52,7 @@ fn possible_values(arg: &clap::Arg) -> String {
     if values.is_empty() {
         String::new()
     } else {
-        format!(" One of {}.", values.join("; "))
+        format!(" One of:<br/>{}", values.join("<br/>"))
     }
 }
 
@@ -140,7 +141,18 @@ pub fn page_for(mut root: clap::Command) -> String {
             command.render_usage().to_string().trim_end()
         ));
         let rows = arguments(command);
-        if !rows.is_empty() {
+        if rows.is_empty() {
+            continue;
+        }
+        if rows.iter().all(|row| row[1] == "yes" && row[2] == "none") {
+            out.push_str(
+                "\nEvery argument is required and has no default.\n\n\
+                 | Argument | Meaning |\n|---|---|\n",
+            );
+            for row in rows {
+                out.push_str(&format!("| {} | {} |\n", row[0], row[3]));
+            }
+        } else {
             out.push_str("\n| Argument | Required | Default | Meaning |\n|---|---|---|---|\n");
             for row in rows {
                 out.push_str(&format!("| {} |\n", row.join(" | ")));
@@ -167,9 +179,13 @@ mod tests {
         assert!(page.contains("| [`modelspec check`](#modelspec-check) |"));
         assert!(page.contains("## `modelspec train`"));
         assert!(page.contains("Usage: modelspec train --backend <BACKEND> <PATH>"));
-        assert!(page.contains("| `<PATH>` | yes | none | The .mspec file to check. |"));
-        assert!(page.contains("`cpu`: The CPU interpreter"));
-        assert!(page.contains("`training`: Training IR"));
+        assert!(page.contains(
+            "Every argument is required and has no default.\n\n| Argument | Meaning |\n|---|---|\n\
+             | `<PATH>` | The .mspec file to check. |"
+        ));
+        assert!(!page.contains("| Required |"));
+        assert!(page.contains("One of:<br/>`cpu`: The CPU interpreter"));
+        assert!(page.contains("<br/>`training`: Training IR"));
         assert!(page.contains("| `2` | a usage error |"));
         assert!(!page.contains("modelspec help"));
     }

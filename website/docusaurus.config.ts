@@ -26,7 +26,7 @@ function pitchDeck(): Plugin {
 
 const config: Config = {
   title: 'ModelSpec',
-  tagline: 'Specify what a tensor program computes; the compiler decides how it runs.',
+  tagline: 'Specify what the model computes. The compiler decides how it runs.',
   favicon: 'img/mark.svg',
 
   future: {

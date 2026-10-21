@@ -8,7 +8,8 @@ description: Build a two-layer model with a relu in the M0 subset, step by step,
 This guide builds a model with two weight matrices and a `relu` between them, in the M0 subset of
 the language. The finished file is the example [Two layers with relu](../examples/two-layer-relu.md),
 whose page shows everything the command line prints for it. You need the `modelspec` binary
-([Getting started](../getting-started.md)).
+([Getting started](../getting-started.md)): the release has a prebuilt one for Linux x86_64 only,
+and on other systems you build it from source.
 
 ## 1. The model and its parameters
 
@@ -28,7 +29,7 @@ name the IR and the training output use for it, and what its initial value is dr
 
 ## 2. The forward function
 
-Add `forward` inside the model:
+Put `forward` inside the model, after the two `param` lines and before the model's closing `}`:
 
 ```modelspec
     fn forward(x: Tensor<f32, [16, 4]>)
@@ -70,9 +71,18 @@ modelspec check two_layer.mspec
 ```
 
 It prints nothing and exits `0`. Now break it on purpose: change `w2` to `Tensor<f32, [4, 1]>`
-and check again. The second `matmul` no longer fits, and `check` prints `E-TYPE-012` with both
-operand types, `[16, 8]` and `[4, 1]`, and exits `1`. [Read a diagnostic](./read-a-diagnostic.md)
-explains each line. Change it back.
+and check again. The second `matmul` no longer fits, and `check` prints this on stderr and exits
+`1`:
+
+```text
+E-TYPE-012: matmul contracting dimension mismatch
+  two_layer.mspec:8:16
+  lhs: Tensor<f32, [16, 8]>
+  rhs: Tensor<f32, [4, 1]>
+  expected rhs dimension[0] = 8; got 4
+```
+
+[Read a diagnostic](./read-a-diagnostic.md) explains each line. Change it back.
 
 ## 5. Look at the IR
 

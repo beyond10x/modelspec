@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ModelSpec: specify what to compute, compile how to run it</title>
+<title>ModelSpec: specify what the model computes; the compiler decides how it runs</title>
 <style>
 :root {
   --bg: #0e1116;
@@ -137,19 +137,25 @@ svg text { font-family: var(--sans); }
 .humbox li::before { content: ""; position: absolute; left: 0; top: 14px; width: 14px; height: 14px; border-radius: 3px; background: var(--hum); }
 
 .s3 li { font-size: 29px; }
-.hud { position: fixed; right: 14px; bottom: 10px; font: 13px var(--mono); color: #4a525c; z-index: 5; }
+.hud { position: fixed; right: 14px; bottom: 10px; font: 13px var(--mono); color: #8b949e; z-index: 5; }
+
+.narrow {
+  display: none; position: fixed; left: 0; right: 0; top: 0; z-index: 6; padding: 12px 16px;
+  font: 15px/1.4 var(--sans); color: var(--fg); background: var(--panel2); border-bottom: 1px solid var(--line); text-align: center;
+}
+@media (orientation: portrait) and (max-width: 900px) { .narrow { display: block; } }
 
 /* all-slides layout (press p) */
 body.all { overflow: auto; }
 body.all .slide { display: block; position: relative; left: auto; top: auto; margin: 0 auto 24px; transform: none; zoom: var(--sa, .5); }
-body.all .hud { display: none; }
+body.all .hud, body.all .narrow { display: none; }
 
 @media print {
   @page { size: 1600px 900px; margin: 0; }
   html, body { height: auto; overflow: visible; background: var(--bg); }
   * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
   .slide, body.all .slide { display: block; position: relative; left: 0; top: 0; margin: 0; transform: none; zoom: 1; break-after: page; page-break-after: always; }
-  .hud { display: none; }
+  .hud, .narrow { display: none; }
 }
 </style>
 </head>
@@ -160,7 +166,7 @@ body.all .hud { display: none; }
   <div class="title-wrap">
     <div class="kicker">Vision · 2026-10-21</div>
     <h1>ModelSpec</h1>
-    <p class="promise">Specify <b>what</b> to compute.<br>The compiler decides <b>how</b> to run it.</p>
+    <p class="promise">Specify <b>what</b> the model computes.<br>The compiler decides <b>how</b> it runs.</p>
     <p class="sub">A declarative language and a Rust compiler for differentiable tensor programs. One <code>.mspec</code> file is the whole training step.</p>
     <div class="chips">
       <span class="chip">Rust</span>
@@ -305,8 +311,8 @@ body.all .hud { display: none; }
     <div><span class="i">5</span><span><b>Training is compiled</b><span class="mut">Forward, loss, backward, optimizer: one <code>train_step</code></span></span></div>
     <div><span class="i">6</span><span><b>Hardware features are queried</b><span class="mut">No assumed extension, dtype or matrix shape</span></span></div>
     <div><span class="i">7</span><span><b>Testable at every lowering stage</b><span class="mut">Introspection, differential tests, profiling</span></span></div>
-    <div><span class="i dimt">→</span><span><b class="mut">Correctness before speed</b><span class="mut">Near-optimal performance is a long-term goal, not a v1 guarantee</span></span></div>
   </div>
+  <p class="mut" style="font-size:26px;margin-top:40px">And a priority, not an invariant: correctness before speed. Near-optimal performance is a long-term goal, not a v1 guarantee.</p>
   <aside class="notes">DESIGN.md section 0. A change that breaks one is refused (AGENTS.md).</aside>
 </section>
 
@@ -358,12 +364,12 @@ body.all .hud { display: none; }
         <marker id="ah2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#9aa4ae"/></marker>
       </defs>
       <g stroke="#9aa4ae" stroke-width="2.5" fill="none" marker-end="url(#ah2)">
-        <path d="M630,93.2 A380 220 0 0 1 744.3,131.5"/>
-        <path d="M874.2,261.8 A380 220 0 0 1 874.2,338.2"/>
-        <path d="M744.3,468.5 A380 220 0 0 1 630,506.7"/>
-        <path d="M370,506.7 A380 220 0 0 1 255.7,468.5"/>
-        <path d="M125.8,338.2 A380 220 0 0 1 125.8,261.8"/>
-        <path d="M255.7,131.5 A380 220 0 0 1 370,93.2"/>
+        <path d="M630,82 Q829,82 829,147"/>
+        <path d="M829,232 L829,367"/>
+        <path d="M829,452 Q829,520 631,520"/>
+        <path d="M370,520 Q171,520 171,453"/>
+        <path d="M171,368 L171,233"/>
+        <path d="M171,148 Q171,82 369,82"/>
       </g>
       <g font-size="26" font-weight="650" fill="#e6e8eb" text-anchor="middle">
         <rect x="370" y="40" width="260" height="84" rx="12" fill="#161b22" stroke="#58c4b4" stroke-width="2"/>
@@ -471,7 +477,7 @@ body.all .hud { display: none; }
   <div class="road">
     <div class="ms now"><div class="id">M0</div><div class="nm">Semantic core</div>
       <ul><li>Parser, type + shape checker</li><li>Tensor SSA IR</li><li>CPU interpreter</li><li>Reverse-mode autodiff, SGD</li></ul>
-      <div class="st" style="color:var(--m0)">in progress</div></div>
+      <div class="st" style="color:var(--m0)">released as 0.1.0</div></div>
     <div class="ms next"><div class="id">M1</div><div class="nm">Native Vulkan execution</div>
       <ul><li>Rust Vulkan runtime</li><li>Generated SPIR-V kernels</li><li>End-to-end f32 training on RTX 3090</li><li>Checkpoints</li></ul>
       <div class="st" style="color:var(--m1)">not started</div></div>
@@ -483,31 +489,31 @@ body.all .hud { display: none; }
       <ul><li>Cooperative-matrix Tensor Core path</li><li>Mixed precision</li><li>Autotuning</li></ul></div>
   </div>
   <p class="mut" style="font-size:26px;margin-top:34px">M1 is the first milestone that meets the RTX 3090 training goal. Everything after M1 is incremental.</p>
-  <aside class="notes">README milestones; DESIGN.md section 1. Status labels from the coordinator's status of 2026-10-21.</aside>
+  <aside class="notes">README milestones; DESIGN.md section 1. Status labels from website/data/status.json and the planning store (epic:m1-vulkan-execution is a draft), 2026-10-21.</aside>
 </section>
 
 <!-- 13 -->
 <section class="slide" data-n="13">
   <div class="kicker">Status · 2026-10-21</div>
-  <h2>Where M0 stands</h2>
+  <h2>M0 is released as 0.1.0</h2>
   <div class="stats">
-    <div class="stat"><div class="v">6 of 8</div><div class="l">wave m0 units merged into the integration branch (aa020fa)</div></div>
-    <div class="stat"><div class="v">359</div><div class="l">test cases in the gate at aa020fa, exit 0</div></div>
-    <div class="stat"><div class="v">2</div><div class="l">units in adversarial review</div></div>
-    <div class="stat"><div class="v">0</div><div class="l">models trained so far</div></div>
+    <div class="stat"><div class="v">0.1.0</div><div class="l">released 2026-10-21, with a Linux x86_64 binary</div></div>
+    <div class="stat"><div class="v">12</div><div class="l">capabilities shipped, each held by a named test or task</div></div>
+    <div class="stat"><div class="v">4</div><div class="l">capabilities planned for M1, not built</div></div>
+    <div class="stat"><div class="v">9.69 → 5.6e-11</div><div class="l">example loss, step 0 to step 500, seed 42, CPU</div></div>
   </div>
   <div class="grid2" style="gap:28px">
     <div class="card" style="padding:24px 28px">
-      <h3 style="font-size:26px">Merged: units 1–6</h3>
-      <p style="font-size:23px">Workspace · tensor IR · parser · type and shape checker · CPU interpreter · reverse-mode autodiff with finite-difference gradient checks</p>
+      <h3 style="font-size:26px">Shipped in 0.1.0</h3>
+      <p style="font-size:23px">Parser · type and shape checker · verified tensor IR · reverse-mode autodiff · SGD step · CPU interpreter · <code>modelspec check</code>, <code>ir</code>, <code>train --backend cpu</code></p>
     </div>
     <div class="card" style="padding:24px 28px">
-      <h3 style="font-size:26px">In review: units 7–8</h3>
-      <p style="font-size:23px">7: lowering to tensor IR (<code>modelspec ir --stage tensor</code>)<br>8: CPU SGD training (<code>modelspec train</code>)</p>
+      <h3 style="font-size:26px">Not built</h3>
+      <p style="font-size:23px">Any GPU execution: <code>--backend vulkan</code> is refused with <code style="white-space:nowrap">E-TARGET-001</code></p>
     </div>
   </div>
   <p class="mut" style="font-size:24px;margin-top:26px">M1 (Vulkan on the RTX 3090) has not started.</p>
-  <aside class="notes">Coordinator-verified status, 2026-10-21. Use only these numbers.</aside>
+  <aside class="notes">Sources: CHANGELOG.md [0.1.0]; website/data/status.json (12 shipped, 4 planned); the recorded loss in website/docs/getting-started.md; epic:m1-vulkan-execution is a draft with no stories.</aside>
 </section>
 
 <!-- 14 -->
@@ -539,11 +545,11 @@ body.all .hud { display: none; }
   <h2>Next steps</h2>
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:48px;align-items:start">
     <div>
-      <div class="kicker">1 · Close M0</div>
+      <div class="kicker">1 · M0, done</div>
       <ul class="bul">
-        <li>Units 7 and 8 through adversarial review</li>
+        <li>Released as 0.1.0 on 2026-10-21</li>
         <li>First training run: linear regression on CPU<br><span class="mut">seed 42 · 500 steps</span></li>
-        <li>Passes if final loss ≤ 10<sup>−3</sup> × step-0 loss</li>
+        <li>Final loss 5.6 × 10<sup>−11</sup> from 9.69, inside the 10<sup>−3</sup> × step-0 bar</li>
       </ul>
     </div>
     <div>
@@ -559,10 +565,11 @@ body.all .hud { display: none; }
       <p class="mut" style="font-size:22px;margin-top:8px">6 of the 9 M1 acceptance criteria. The other 3: a .mspec without Python, the compiler, CPU training.</p>
     </div>
   </div>
-  <aside class="notes">Coordinator status (first run criteria); DESIGN.md section 9, M1 acceptance criteria. The three not listed: a .mspec defines a linear model or MLP, loss and SGD without Python; the compiler parses, checks, builds IR, gradients and optimizer step; the CPU backend trains and validates gradients.</aside>
+  <aside class="notes">First-run bar from story:m0-cpu-sgd-training; the loss from website/docs/getting-started.md; DESIGN.md section 9, M1 acceptance criteria. The three not listed: a .mspec defines a linear model or MLP, loss and SGD without Python; the compiler parses, checks, builds IR, gradients and optimizer step; the CPU backend trains and validates gradients.</aside>
 </section>
 
-<div class="hud">← → space · p: all slides</div>
+<div class="narrow">The slides are 16:9: turn the device sideways to read them. Tap the right or left half, or swipe, to change slides.</div>
+<div class="hud">← → space · tap or swipe · p: all slides · esc</div>
 
 <script>
 (function () {
@@ -590,6 +597,23 @@ body.all .hud { display: none; }
     else if (k === 'Home') { show(0); e.preventDefault(); }
     else if (k === 'End') { show(n - 1); e.preventDefault(); }
     else if (k === 'p' || k === 'P') { document.body.classList.toggle('all'); if (!document.body.classList.contains('all')) slides[i].scrollIntoView(); }
+    else if (k === 'Escape' && document.body.classList.contains('all')) { document.body.classList.remove('all'); slides[i].scrollIntoView(); }
+  });
+  var touchX = null, touchY = null, swipedAt = 0;
+  document.addEventListener('touchstart', function (e) {
+    if (e.touches.length !== 1) { touchX = null; return; }
+    touchX = e.touches[0].clientX; touchY = e.touches[0].clientY;
+  }, { passive: true });
+  document.addEventListener('touchend', function (e) {
+    if (touchX === null || document.body.classList.contains('all')) return;
+    var dx = e.changedTouches[0].clientX - touchX, dy = e.changedTouches[0].clientY - touchY;
+    touchX = null;
+    if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy)) { swipedAt = Date.now(); show(dx < 0 ? i + 1 : i - 1); }
+  });
+  document.addEventListener('click', function (e) {
+    if (document.body.classList.contains('all') || Date.now() - swipedAt < 600) return;
+    if (e.target.closest && e.target.closest('a')) return;
+    show(e.clientX > window.innerWidth / 2 ? i + 1 : i - 1);
   });
   window.addEventListener('resize', fit);
   window.addEventListener('hashchange', function () { show(fromHash()); });

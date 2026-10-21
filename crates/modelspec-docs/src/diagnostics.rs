@@ -234,8 +234,9 @@ pub fn page(root: &Path) -> Result<String> {
         }
         for code in &listed {
             out.push_str(&format!(
-                "| `{code}` | {} | [`{file}`]({SOURCE}/{file}) |\n",
+                "| <a id=\"{anchor}\"></a>`{code}` | {} | [`{file}`]({SOURCE}/{file}) |\n",
                 doc_of(&source, code, stage.file)?,
+                anchor = code.to_lowercase(),
                 file = stage.file,
             ));
         }
@@ -277,9 +278,16 @@ mod tests {
             "E-DATA-003",
             "E-TARGET-001",
         ] {
-            assert!(page.contains(&format!("| `{code}` |")), "{code}");
+            let anchor = code.to_lowercase();
+            assert!(
+                page.contains(&format!("| <a id=\"{anchor}\"></a>`{code}` |")),
+                "{code}"
+            );
         }
-        assert!(page.contains("| `E-INTERNAL-001` |") && page.contains("| `E-INTERNAL-002` |"));
+        assert!(
+            page.contains("| <a id=\"e-internal-001\"></a>`E-INTERNAL-001` |")
+                && page.contains("| <a id=\"e-internal-002\"></a>`E-INTERNAL-002` |")
+        );
         assert_eq!(page.matches("## Compiler bugs").count(), 1);
     }
 }

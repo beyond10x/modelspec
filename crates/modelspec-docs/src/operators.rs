@@ -79,6 +79,37 @@ fn call(name: &str, operands: &[TensorType]) -> String {
     format!("{name}({})", operands.join(", "))
 }
 
+/// `message` as code spans split after each `: ` and `, ` outside `<>`, `[]` and `()`, so a table
+/// cell can wrap between the parts of a long refusal.
+fn wrappable(message: &str) -> String {
+    let mut parts: Vec<(String, &str)> = Vec::new();
+    let mut current = String::new();
+    let mut depth = 0usize;
+    let mut chars = message.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '<' | '[' | '(' => depth += 1,
+            '>' | ']' | ')' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+        if depth == 0 && matches!(c, ':' | ',') && chars.peek() == Some(&' ') {
+            chars.next();
+            let separator = if c == ':' { ": " } else { ", " };
+            parts.push((std::mem::take(&mut current), separator));
+        } else {
+            current.push(c);
+        }
+    }
+    parts.push((current, ""));
+    parts
+        .into_iter()
+        .filter(|(part, _)| !part.is_empty())
+        .map(|(part, separator)| format!("`{part}`{separator}"))
+        .collect::<String>()
+        .trim_end()
+        .to_owned()
+}
+
 /// The registry's answer for `op` on operands of `shapes`.
 fn typed(
     op: &modelspec_core::ir::tensor::TensorOp,
@@ -160,9 +191,9 @@ pub fn page(root: &Path) -> Result<String> {
                 ));
             };
             details.push_str(&format!(
-                "| `{}` | refused: `{}` |\n",
+                "| `{}` | refused: {} |\n",
                 call(name, &operands),
-                cell(&error)
+                wrappable(&cell(&error))
             ));
         }
         let (example, result) = first.ok_or_else(|| format!("{name}: no accepted example"))?;
@@ -205,8 +236,23 @@ mod tests {
         assert!(page.contains(
             "| `matmul(Tensor<f32, [8, 4]>, Tensor<f32, [4, 1]>)` | `Tensor<f32, [8, 1]>` |"
         ));
-        assert!(page.contains("expected rhs dimension[0] = 4; got 3"));
+        assert!(page.contains(
+            "refused: `matmul contracting dimension mismatch`: `lhs Tensor<f32, [8, 4]>`, \
+             `rhs Tensor<f32, [3, 1]>`, `expected rhs dimension[0] = 4; got 3` |"
+        ));
         assert!(page.contains("| `MatMul` | `G @ transpose(B)` | `transpose(A) @ G` |"));
+    }
+
+    #[test]
+    fn a_refusal_splits_only_outside_brackets() {
+        assert_eq!(
+            wrappable("A differ: lhs Tensor<f32, [8, 1]>, rhs X"),
+            "`A differ`: `lhs Tensor<f32, [8, 1]>`, `rhs X`"
+        );
+        assert_eq!(
+            wrappable("needs rank 2; got T<f32, [8]>"),
+            "`needs rank 2; got T<f32, [8]>`"
+        );
     }
 
     #[test]

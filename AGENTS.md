@@ -61,6 +61,8 @@ workspace version and nothing is on a registry.
   CHANGELOG section as notes, `modelspec-<version>-x86_64-unknown-linux-gnu` and its `.sha256`.
 - A release is finished when the tag, the green `release` run and the Release with both assets are
   verified. Never move or delete a pushed tag; fix forward with the next version.
+- Atlas is never on this path. No push, PR landing, release or docs deploy here waits for an Atlas
+  pipeline or an Atlas PR; catalog updates in Atlas land on their own schedule afterwards.
 
 ## Planning and specification
 

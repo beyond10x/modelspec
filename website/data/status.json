@@ -4,84 +4,84 @@
   "items": [
     {
       "area": "Language",
-      "detail": "One model and one train block per file; the printer's output parses back to an equal AST.",
+      "detail": "One model and one train block per file; the printer's output parses back to an equal AST. Held by test every_node_kind_round_trips_to_an_equal_ast_up_to_spans in crates/modelspec-core/tests/syntax.rs.",
       "href": "/docs/concepts/language",
       "label": "The M0 subset parses and prints canonically",
       "status": "shipped"
     },
     {
       "area": "Language",
-      "detail": "module, layer, generics, symbolic dimensions and infix operators each have their own E-SYNTAX code.",
+      "detail": "module, layer, generics, symbolic dimensions and infix operators each have their own E-SYNTAX code. Held by test every_syntax_code_has_exactly_one_fixture in crates/modelspec-core/tests/syntax.rs.",
       "href": "/docs/examples/beyond-m0",
       "label": "Syntax beyond M0 is refused construct by construct",
       "status": "shipped"
     },
     {
       "area": "Checking",
-      "detail": "modelspec check prints every E-NAME and E-TYPE diagnostic with its span; each code has a fixture.",
+      "detail": "modelspec check prints every E-NAME and E-TYPE diagnostic with its span; each code has a fixture. Held by test every_name_and_type_code_has_a_fixture_named_for_it in crates/modelspec-cli/tests/check.rs.",
       "href": "/docs/reference/diagnostics",
       "label": "Names, types and shapes are checked before anything runs",
       "status": "shipped"
     },
     {
       "area": "Checking",
-      "detail": "E-TYPE-012 prints the lhs and rhs types and the contracting dimension it expected.",
+      "detail": "E-TYPE-012 prints the lhs and rhs types and the contracting dimension it expected. Held by test matmul_mismatch_prints_the_design_diagnostic in crates/modelspec-cli/tests/check.rs.",
       "href": "/docs/examples/shape-error",
       "label": "A matmul shape error names both operands",
       "status": "shipped"
     },
     {
       "area": "Compiler",
-      "detail": "modelspec ir --stage tensor prints the verified, dead-code-eliminated Tensor IR byte for byte.",
+      "detail": "modelspec ir --stage tensor prints the verified, dead-code-eliminated Tensor IR byte for byte. Held by test ir_stage_tensor_prints_exactly_the_golden in crates/modelspec-cli/tests/ir_tensor.rs.",
       "href": "/docs/concepts/pipeline",
       "label": "Tensor IR lowering with a golden print",
       "status": "shipped"
     },
     {
       "area": "Compiler",
-      "detail": "Every gradient rule is checked against central finite differences.",
+      "detail": "Every gradient rule is checked against central finite differences. Held by test two_layer_relu in crates/modelspec-runtime/tests/gradients.rs.",
       "href": "/docs/reference/operators",
       "label": "Reverse-mode autodiff for all nine operators",
       "status": "shipped"
     },
     {
       "area": "Compiler",
-      "detail": "modelspec ir --stage training prints forward, backward and optimizer subgraphs and their effects.",
+      "detail": "modelspec ir --stage training prints forward, backward and optimizer subgraphs and their effects. Held by test ir_stage_training_prints_the_golden in crates/modelspec-cli/tests/train_linear.rs.",
       "href": "/docs/concepts/pipeline",
       "label": "Training IR with an SGD step and versioned parameter effects",
       "status": "shipped"
     },
     {
       "area": "Training",
-      "detail": "Seeded initialization and synthetic data; two runs with one seed print identical bytes.",
+      "detail": "Seeded initialization and synthetic data; two runs with one seed print identical bytes. Held by test two_runs_with_seed_42_print_identical_bytes in crates/modelspec-cli/tests/train_linear.rs.",
       "href": "/docs/concepts/training",
       "label": "Deterministic SGD training on the CPU reference interpreter",
       "status": "shipped"
     },
     {
       "area": "Training",
-      "detail": "examples/linear_regression.mspec reaches the teacher weights within the test's tolerance.",
+      "detail": "examples/linear_regression.mspec reaches the teacher weights within the test's tolerance. Held by test training_the_example_reaches_the_teacher in crates/modelspec-cli/tests/train_linear.rs.",
       "href": "/docs/examples/linear-regression",
       "label": "The example trains to its teacher",
       "status": "shipped"
     },
     {
       "area": "Training",
-      "detail": "modelspec train --backend vulkan exits 1 with E-TARGET-001 before the file is read.",
+      "detail": "modelspec train --backend vulkan exits 1 with E-TARGET-001 before the file is read. Held by test the_vulkan_backend_is_refused_in_m0 in crates/modelspec-cli/tests/train_linear.rs.",
       "href": "/docs/roadmap",
       "label": "The Vulkan backend is refused in M0",
       "status": "shipped"
     },
     {
       "area": "Project",
-      "detail": "task core-no-vulkan fails when any crate of modelspec-core's dependency tree is a Vulkan crate.",
+      "detail": "task core-no-vulkan fails when any crate of modelspec-core's dependency tree is a Vulkan crate. Held by task core-no-vulkan.",
       "href": "/docs/reference/crates",
       "label": "The semantic core carries no Vulkan dependency",
       "status": "shipped"
     },
     {
       "area": "Project",
-      "detail": "The exit status of every modelspec command, held by its own tests.",
+      "detail": "The exit status of every modelspec command, held by its own tests. Held by test no_arguments_exits_2 in crates/modelspec-cli/tests/exit_codes.rs.",
       "href": "/docs/reference/cli",
       "label": "A usage error exits 2, a diagnostic 1",
       "status": "shipped"

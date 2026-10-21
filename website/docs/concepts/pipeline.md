@@ -14,16 +14,23 @@ runs that on the CPU interpreter.
   -> lexer, parser                 Source AST         built
   -> name resolution               names bound        built
   -> type, shape and train checks  Typed HIR          built
-  -> lowering                      Tensor IR          built, verified, dead code removed
-  -> autodiff + optimizer step     Training IR        built, verified
-  -> CPU interpreter               a trained model    built (modelspec train --backend cpu)
-  -> fuse, schedule, tile          Kernel IR          M1 and M2, not built
-  -> SPIR-V + Vulkan pipelines     GPU execution      M1, not built
+  -> lowering                      Tensor IR          built
+  -> autodiff + optimizer step     Training IR        built
+  -> CPU interpreter               a trained model    built
+  -> fuse, schedule, tile          Kernel IR          M1, M2
+  -> SPIR-V + Vulkan pipelines     GPU execution      M1
 ```
 
+Both IR levels are verified when they are built, and dead code is removed from the Tensor IR.
+`modelspec train --backend cpu` runs the CPU interpreter. Kernel IR and GPU execution are not
+built.
+
 `modelspec check` runs the first three stages. `modelspec ir --stage tensor` and `--stage
-training` print the two IR levels, and both are what the tests compare byte for byte with their
-golden files.
+training` print the two IR levels, and the tests compare both byte for byte with their golden
+files,
+[`linear_regression.tensor.ir`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-cli/tests/golden/linear_regression.tensor.ir)
+and
+[`linear_regression.training.ir`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-cli/tests/golden/linear_regression.training.ir).
 
 ## Tensor IR
 
