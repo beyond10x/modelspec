@@ -1,0 +1,16 @@
+[package]
+name = "modelspec-cli"
+description = "The modelspec command-line interface"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "modelspec"
+path = "src/main.rs"
+
+[dependencies]
+modelspec-core.workspace = true
+modelspec-runtime.workspace = true
+clap.workspace = true

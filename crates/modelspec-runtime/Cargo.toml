@@ -1,0 +1,16 @@
+[package]
+name = "modelspec-runtime"
+description = "The ModelSpec runtime: CPU oracle interpreter and training loop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+default = []
+vulkan = []
+
+[dependencies]
+modelspec-core.workspace = true
+thiserror.workspace = true
+blake3.workspace = true

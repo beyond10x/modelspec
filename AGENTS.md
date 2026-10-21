@@ -5,8 +5,24 @@ A Rust compiler and runtime for `.mspec` tensor-program specifications. Humans s
 
 ## State
 
-Design only (DESIGN.md revision 0.3, 2026-10-21). No Cargo workspace, no code, no CI. The first
-implementation work is milestone M0 (DESIGN.md § 1 and § 11, iteration 1).
+Milestone M0 in progress (DESIGN.md revision 0.3, § 1 and § 11, iteration 1). A Cargo workspace of
+three crates exists: `modelspec-core` (compiler, no Vulkan), `modelspec-runtime` (CPU oracle and
+training; the `vulkan` feature is empty until M1) and `modelspec-cli` (binary `modelspec`). Module
+files are declared and mostly empty; `check`, `ir` and `train` print "not implemented in this build"
+and exit 1. No CI.
+
+## Commands
+
+Entry points are the `Taskfile.yml` tasks (go-task):
+
+- `task build`: `cargo build --workspace`.
+- `task test`: `cargo test --workspace`.
+- `task lint`: `cargo fmt --check` and `cargo clippy --workspace --all-targets -- -D warnings`.
+- `task core-no-vulkan`: `cargo test -p modelspec-core --test no_vulkan`, which fails when the
+  dependency graph of `modelspec-core` names a Vulkan crate on any target with all features on.
+- `task ci`: all of the above; the gate.
+
+CLI exit codes: 0 success, 1 diagnostics or runtime error, 2 usage error.
 
 ## Planning and specification
 
@@ -26,8 +42,9 @@ implementation work is milestone M0 (DESIGN.md § 1 and § 11, iteration 1).
 - DESIGN.md is the authority. A change to semantics, IR levels, the operator registry or an ADR in
   DESIGN.md § 12 is a design change: edit DESIGN.md in the same change and bump its revision line.
 - Keep the seven invariants in DESIGN.md § 0. A change that breaks one is refused, not worked around.
-- `modelspec-core` must build and test without Vulkan installed. Vulkan code sits behind the
-  `vulkan` Cargo feature (DESIGN.md § 7).
+- `modelspec-core` must build and test without Vulkan installed and has no Vulkan dependency under
+  any feature or target. Vulkan code sits behind the `vulkan` Cargo feature of `modelspec-runtime`
+  (DESIGN.md § 7).
 - No Python, PyTorch, CUDA API or CUDA toolkit dependency, in code, tests or tooling.
 - Correctness before speed: the CPU oracle and finite-difference gradient checks (DESIGN.md § 9,
   gates 1–3) exist before any GPU kernel is optimized.
