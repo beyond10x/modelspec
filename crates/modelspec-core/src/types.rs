@@ -10,14 +10,16 @@
 //! and the train-block rules: every declared tensor type has positive dimensions and element and
 //! byte counts within `u64`; a parameter is initialized by `xavier_uniform()` and is rank 2; a
 //! function's `return` has its declared type; a `model.<function>(args)` call matches the
-//! function's arguments; the loss is rank 0; the `sgd` learning rate is a positive finite `f32`;
+//! function's arguments; the loss is rank 0 and calls `model.forward` exactly once, counting calls
+//! nested in the arguments of another (the prediction is that call's value, DESIGN.md § 2.1);
+//! the `sgd` learning rate is a positive finite `f32`;
 //! `steps` is positive. The parser already enforces that `seed` fits `u64`, that the optimizer is
 //! `sgd` and that literals are finite `f64`s. A `vulkan(<index>)` device is not validated.
 
 use crate::diag::{Code, Diagnostic, SourceSpan};
 use crate::hir::{
-    ArgRef, DataRef, Device, Hir, HirArg, HirData, HirExpr, HirExprKind, HirFunction, HirLet,
-    HirModel, HirParam, HirTrain, LetRef,
+    ArgRef, DataRef, Device, FnRef, Hir, HirArg, HirData, HirExpr, HirExprKind, HirFunction,
+    HirLet, HirModel, HirParam, HirTrain, LetRef,
 };
 use crate::ir::tensor::{Initializer, TensorType};
 use crate::ops::{self, OpError};
@@ -73,6 +75,9 @@ pub mod codes {
         ZERO_DIMENSION = "E-TYPE-015";
         /// A tensor type whose element or byte count overflows `u64` (DESIGN.md § 2.2).
         COUNT_OVERFLOW = "E-TYPE-016";
+        /// A train block's loss that does not call `model.forward` exactly once: the prediction
+        /// is the value of that one call.
+        FORWARD_CALLS = "E-TYPE-017";
     }
 
     /// A compiler verification failure, not a user error (DESIGN.md § 8.1): the checker reached a
@@ -115,6 +120,26 @@ pub fn check(ast: &ast::Ast) -> Result<Hir, Vec<Diagnostic>> {
 fn source_order(mut diagnostics: Vec<Diagnostic>) -> Vec<Diagnostic> {
     diagnostics.sort_by_key(|d| d.span.as_ref().map(|s| (s.line, s.column)));
     diagnostics
+}
+
+/// Appends the span of every call of `forward` in `expr`, nested calls included.
+fn forward_calls(expr: &HirExpr, forward: FnRef, out: &mut Vec<SourceSpan>) {
+    match &expr.kind {
+        HirExprKind::Call { function, args } => {
+            if *function == forward {
+                out.push(expr.span.clone());
+            }
+            for arg in args {
+                forward_calls(arg, forward, out);
+            }
+        }
+        HirExprKind::Op { args, .. } => {
+            for arg in args {
+                forward_calls(arg, forward, out);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// The source name of an operator call, for messages: `matmul` rather than the IR's `MatMul`.
@@ -392,7 +417,8 @@ impl Checker {
                 );
                 None
             }
-            loss => loss,
+            Some(loss) => self.forward_called_once(loss, &t.name.name, names),
+            None => None,
         };
 
         let ast::Optimizer::Sgd { lr, lr_span } = &t.optimizer.value;
@@ -450,6 +476,53 @@ impl Checker {
             device,
             span: t.span.clone(),
         })
+    }
+
+    /// E-TYPE-017 unless the typed, rank-0 `loss` calls `model.forward` exactly once. No call is
+    /// reported at the loss; a second call at the second one in source order.
+    fn forward_called_once(
+        &mut self,
+        loss: HirExpr,
+        train: &str,
+        names: &ModelNames,
+    ) -> Option<HirExpr> {
+        let mut calls = Vec::new();
+        if let Some(forward) = names.function("forward") {
+            forward_calls(&loss, forward, &mut calls);
+        }
+        calls.sort_by_key(|span| (span.line, span.column));
+        match calls.as_slice() {
+            [_] => Some(loss),
+            [] => {
+                let reason = if names.function("forward").is_some() {
+                    "it does not call it".to_owned()
+                } else {
+                    format!("model `{}` has no function `forward`", names.name)
+                };
+                self.report(
+                    codes::FORWARD_CALLS,
+                    format!(
+                        "the loss of train block `{train}` must call `model.forward` exactly \
+                         once; {reason}"
+                    ),
+                    &loss.span,
+                );
+                None
+            }
+            [_, second, ..] => {
+                let second = second.clone();
+                self.report(
+                    codes::FORWARD_CALLS,
+                    format!(
+                        "the loss of train block `{train}` must call `model.forward` exactly \
+                         once; it calls it {} times",
+                        calls.len()
+                    ),
+                    &second,
+                );
+                None
+            }
+        }
     }
 
     // -----------------------------------------------------------------------------------------
