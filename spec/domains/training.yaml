@@ -10,18 +10,62 @@ types:
   - name: modelspec.training.OptimizerKind
     kind: enum
     naming:
-      summary: SGD only until M3 adds AdamW (DESIGN.md § 1).
-    variants: [Sgd]
+      summary: SGD from M0; AdamW with weight decay joins at M3 (DESIGN.md § 1, § 11 iteration 4; epic:bert-from-scratch). The CLI accepts only `sgd` until then.
+    variants: [Sgd, AdamW]
+
+  - name: modelspec.training.LearningRateSchedule
+    kind: struct
+    naming:
+      summary: How the learning rate varies over steps; a linear warmup over the first warmup_steps steps up to OptimizerConfig.learning_rate (epic:bert-from-scratch, AdamW with warmup).
+    # UNMAPPED: the epic names warmup only; the rate after warmup (constant, linear decay to zero,
+    # another shape) and whether warmup starts at zero are not settled. Open question.
+    fields:
+      - name: warmup_steps
+        type: Integer
+    invariants:
+      - warmup_steps >= 0
 
   - name: modelspec.training.OptimizerConfig
     kind: struct
     naming:
-      summary: Optimizer hyperparameters, recorded for reproducibility (DESIGN.md § 6.1).
+      summary: Optimizer hyperparameters, recorded for reproducibility (DESIGN.md § 6.1). The AdamW fields are present exactly when kind is AdamW (Loshchilov and Hutter, decoupled weight decay); its first and second moments are a checkpoint's optimizer slots (DESIGN.md § 6.2).
     fields:
       - name: kind
         type: modelspec.training.OptimizerKind
       - name: learning_rate
         type: Binary64
+        summary: The base learning rate; the peak rate when a schedule is present.
+      - name: weight_decay
+        type: Optional<Binary64>
+        summary: AdamW decoupled weight decay coefficient (epic:bert-from-scratch).
+      - name: beta1
+        type: Optional<Binary64>
+        summary: AdamW first-moment decay rate.
+      - name: beta2
+        type: Optional<Binary64>
+        summary: AdamW second-moment decay rate.
+      - name: epsilon
+        type: Optional<Binary64>
+        summary: AdamW denominator term.
+      - name: schedule
+        type: Optional<modelspec.training.LearningRateSchedule>
+        summary: Absent means a constant learning rate, as M0 SGD has.
+        # UNMAPPED: whether a schedule applies to SGD too or only to AdamW is not settled; it is
+        # admitted for both. Open question.
+    invariants:
+      - any:
+          - all:
+              - kind == Sgd
+              - not defined(weight_decay)
+              - not defined(beta1)
+              - not defined(beta2)
+              - not defined(epsilon)
+          - all:
+              - kind == AdamW
+              - defined(weight_decay)
+              - defined(beta1)
+              - defined(beta2)
+              - defined(epsilon)
 
   - name: modelspec.training.RngAlgorithm
     kind: enum
@@ -100,6 +144,13 @@ entities:
         target: modelspec.checkpoint.Checkpoint
         cardinality: one
         via: resumed_from_checkpoint_id
+      # The run's event stream: one event per step and per lifecycle change, each describing this
+      # run and meaningless without it (epic:training-observatory).
+      - name: events
+        kind: owns
+        target: modelspec.observatory.RunEvent
+        cardinality: many
+        via: training_run_id
     lifecycle:
       initial: Recorded
       states: [Recorded]

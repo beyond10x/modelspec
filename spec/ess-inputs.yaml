@@ -4,6 +4,8 @@ specification:
   - system.yaml
   - domains/artifact.yaml
   - domains/checkpoint.yaml
+  - domains/data.yaml
   - domains/device.yaml
+  - domains/observatory.yaml
   - domains/training.yaml
 scenarios: []

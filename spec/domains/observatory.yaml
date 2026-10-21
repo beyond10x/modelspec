@@ -1,0 +1,267 @@
+domain: modelspec.observatory
+
+summary: What the training observatory reads from a training run, the architecture it draws and the insights it shows (epic:training-observatory). The event stream of a run is its RunEvents in sequence order, served live as `text/event-stream` or replayed from a recorded run file.
+
+# UNMAPPED (live transport): the transport of the live stream (the `train` serve flag, its address,
+# the `text/event-stream` binding) is named by the epic but not settled ("name to be settled in
+# decomposition"); no component or `reached_by` is declared here. Open question for the owner.
+
+# UNMAPPED (recorded file): the recorded run file a stream replays from (its format, the flag that
+# writes it, and how a replay is started) is named by the epic but not settled; no file format is
+# declared here. Open question for the owner.
+
+types:
+  - name: modelspec.observatory.RunEventId
+    kind: newtype
+    of: Uuid
+
+  - name: modelspec.observatory.MetricSample
+    kind: struct
+    naming:
+      summary: One named metric value at a step, such as MLM accuracy (epic:training-observatory live metric charts, epic:bert-from-scratch evaluation).
+    fields:
+      - name: name
+        type: String
+      - name: value
+        type: Binary64
+
+  - name: modelspec.observatory.Histogram
+    kind: struct
+    naming:
+      summary: The distribution of one tensor's elements in bins; bin i counts the elements in [bin_edges[i], bin_edges[i+1]), so there is one more edge than counts, which ESS does not state here.
+    # UNMAPPED: the bin count and how the edges are chosen (fixed, per step, per tensor) are not
+    # settled by the epic. Open question.
+    fields:
+      - name: bin_edges
+        type: List<Binary64>
+      - name: counts
+        type: List<Integer>
+    invariants:
+      - forall: {in: counts, as: count, that: count >= 0}
+
+  - name: modelspec.observatory.StatisticsSubject
+    kind: enum
+    naming:
+      summary: Whether statistics describe a parameter's values or the gradient of the loss with respect to it (epic:training-observatory parameter/gradient histograms and norms).
+    variants: [Value, Gradient]
+
+  - name: modelspec.observatory.ParameterStatistics
+    kind: struct
+    naming:
+      summary: The norm and histogram of one parameter's values or gradient at a step, by its stable path (DESIGN.md § 2.3; epic:training-observatory).
+    fields:
+      - name: path
+        type: modelspec.checkpoint.ParameterPath
+      - name: subject
+        type: modelspec.observatory.StatisticsSubject
+      - name: norm
+        type: Binary64
+        # UNMAPPED: the epic says "norms" and not which norm (L2, max). Open question.
+      - name: histogram
+        type: modelspec.observatory.Histogram
+    invariants:
+      - norm >= 0
+
+  - name: modelspec.observatory.StepCompleted
+    kind: struct
+    naming:
+      summary: The event of one completed training step, one per step (epic:training-observatory). Its loss is the loss the CLI prints for that step (DESIGN.md § 8).
+    fields:
+      - name: step
+        type: Integer
+        summary: The step number the run reached, as TrainingRun.current_step (DESIGN.md § 6.1 step number).
+      - name: loss
+        type: Binary64
+        summary: The rank-0 loss value of the step (DESIGN.md § 2.2, § 8).
+      - name: metrics
+        type: List<modelspec.observatory.MetricSample>
+        summary: Metric samples of the step besides the loss; names are unique.
+      - name: parameters
+        type: List<modelspec.observatory.ParameterStatistics>
+        summary: Value and gradient statistics per parameter; the pair (path, subject) is unique, which ESS does not state here. A parameter the loss does not read has no gradient (DESIGN.md § 3.3 step 4).
+        # UNMAPPED: whether every step carries statistics or only sampled steps (the list then
+        # empty) is not settled by the epic. Open question.
+    # UNMAPPED: the epic shows activation statistics per step but does not say what they are keyed by
+    # (a Tensor IR value, a layer, a parameter path) or what they hold; not typed. Open question.
+    invariants:
+      - step >= 0
+      - distinct: {in: metrics, as: sample, by: sample.name}
+
+  - name: modelspec.observatory.RunEventBody
+    kind: union
+    tag: kind
+    naming:
+      summary: The typed event the training process sends, one per step and one per run lifecycle change (epic:training-observatory).
+    # UNMAPPED: RunStarted, RunFinished and RunFailed are lifecycle changes of the run, and
+    # TrainingRun's lifecycle has one state (Recorded) and no command that moves it; which states
+    # a run passes through, and what a started, finished or failed event carries (a failed run's
+    # diagnostic code, DESIGN.md § 8.1?), no source settles. They are unit variants until it is.
+    variants:
+      RunStarted:
+      StepCompleted: modelspec.observatory.StepCompleted
+      RunFinished:
+      RunFailed:
+
+  - name: modelspec.observatory.ModelGraphId
+    kind: newtype
+    of: Uuid
+
+  - name: modelspec.observatory.IrStage
+    kind: enum
+    naming:
+      summary: The IR level a graph is drawn from, as `modelspec ir --stage tensor|training` prints it (DESIGN.md § 3.1, § 8).
+    variants: [Tensor, Training]
+
+  - name: modelspec.observatory.TensorOperator
+    kind: enum
+    naming:
+      summary: The Tensor IR operations, ReluGrad and BroadcastScalar being internal gradient ops (DESIGN.md § 3.1, § 4; `TensorOp` in `modelspec-core/src/ir/tensor.rs`). The operators of epic:bert-from-scratch join as the compiler gains them.
+    variants: [Input, ParamRead, Scalar, Add, Sub, Mul, MatMul, Relu, Transpose, ReduceSum, ReduceMean, Mse, ReluGrad, BroadcastScalar]
+
+  - name: modelspec.observatory.Subgraph
+    kind: enum
+    naming:
+      summary: The Training IR subgraph of a node; Gradient is the backward computation (DESIGN.md § 3.1; `Subgraph` in `modelspec-core/src/ir/training.rs`).
+    variants: [Forward, Loss, Gradient, Optimizer]
+
+  - name: modelspec.observatory.GraphNode
+    kind: struct
+    naming:
+      summary: One operator of the graph and the tensor it defines, with its dtype and shape (DESIGN.md § 3.1, every tensor value has a shape, dtype and defining operation).
+    fields:
+      - name: value_id
+        type: Integer
+        summary: The SSA value the node defines, as Tensor IR prints it (DESIGN.md § 3.2 ValueId).
+      - name: op
+        type: modelspec.observatory.TensorOperator
+      - name: dtype
+        type: modelspec.checkpoint.DType
+      - name: shape
+        type: modelspec.checkpoint.Shape
+      - name: subgraph
+        type: Optional<modelspec.observatory.Subgraph>
+        summary: Present exactly on a node of a Training-stage graph, so forward and backward are told apart (epic:training-observatory).
+    invariants:
+      - value_id >= 0
+
+  - name: modelspec.observatory.GraphEdge
+    kind: struct
+    naming:
+      summary: One tensor flowing from the node that defines it to a node that reads it; its dtype and shape are its producer's (DESIGN.md § 3.2 TensorNode.operands).
+    fields:
+      - name: producer
+        type: Integer
+        summary: value_id of the node defining the tensor.
+      - name: consumer
+        type: Integer
+        summary: value_id of the node reading it.
+      - name: operand
+        type: Integer
+        summary: The position of the tensor among the consumer's operands, from 0; operand order matters (Sub, MatMul).
+    invariants:
+      - producer >= 0
+      - consumer >= 0
+      - operand >= 0
+
+  - name: modelspec.observatory.InsightId
+    kind: newtype
+    of: Uuid
+
+  - name: modelspec.observatory.InsightMethod
+    kind: enum
+    naming:
+      summary: The explainability method an insight was computed with; gradient times input saliency first, since the compiler already derives gradients (epic:training-observatory).
+    variants: [GradientTimesInput]
+
+entities:
+  - name: modelspec.observatory.Insight
+    naming:
+      summary: One explainability result for a selected input at a step of a run, such as gradient times input saliency (epic:training-observatory). Its values match a finite-difference check within 1e-2 (epic acceptance).
+    # UNMAPPED: what a "selected input" is (one row of the batch, a whole input tensor, a value the
+    # operator supplies) and how it is selected is not settled by the epic; only the input binding's
+    # name is typed. Open question.
+    identity:
+      name: insight_id
+      type: modelspec.observatory.InsightId
+    fields:
+      - name: training_run_id
+        type: modelspec.training.TrainingRunId
+      # UNMAPPED: an insight is "per step" of a run, but nothing says whether the run owns it or it
+      # stands on its own (references), or whether it is taken against the run or against a
+      # checkpoint of it. No relation entry is declared, so validate warns ESS-ENTITY-019 here.
+      # Open question for the owner.
+      - name: step
+        type: Integer
+        summary: The step whose parameters the insight was computed with (DESIGN.md § 6.1 step number).
+      - name: method
+        type: modelspec.observatory.InsightMethod
+      - name: input_name
+        type: String
+        summary: The name of the input binding the insight attributes to, a DataSpec.name of the run's artifact with role Input (DESIGN.md § 2).
+      - name: shape
+        type: modelspec.checkpoint.Shape
+        summary: The shape of the attribution, the selected input's.
+      - name: values
+        type: List<Binary64>
+        summary: The attribution per element of the selected input, in row-major order (DESIGN.md § 2.3); as many as the elements of shape, which ESS does not state here.
+    invariants:
+      - step >= 0
+    lifecycle:
+      initial: Computed
+      states: [Computed]
+      terminal: [Computed]
+
+  - name: modelspec.observatory.ModelGraph
+    naming:
+      summary: The architecture view of one compiled program, derived from its verified IR (epic:training-observatory). Every edge's producer and consumer is a node of the same graph, which ESS does not state here.
+    identity:
+      name: model_graph_id
+      type: modelspec.observatory.ModelGraphId
+    fields:
+      - name: artifact_id
+        type: modelspec.artifact.ArtifactId
+        summary: The compiled artifact whose IR (artifact ir_hash) the graph is drawn from; a run's graph is its artifact's (TrainingRun.artifact_id).
+      # UNMAPPED: a graph is derived from one artifact's IR, but nothing says whether it is the
+      # artifact's (owns, from CompiledArtifact) or stands on its own (references), nor whether an
+      # artifact has one graph per IrStage. No relation entry is declared, so validate warns
+      # ESS-ENTITY-019 here. Open question for the owner.
+      - name: stage
+        type: modelspec.observatory.IrStage
+      - name: nodes
+        type: List<modelspec.observatory.GraphNode>
+      - name: edges
+        type: List<modelspec.observatory.GraphEdge>
+    invariants:
+      - distinct: {in: nodes, as: node, by: node.value_id}
+      - any:
+          - all:
+              - stage == Training
+              - forall: {in: nodes, as: node, that: defined(node.subgraph)}
+          - all:
+              - stage == Tensor
+              - forall: {in: nodes, as: node, that: not defined(node.subgraph)}
+    lifecycle:
+      initial: Derived
+      states: [Derived]
+      terminal: [Derived]
+
+  - name: modelspec.observatory.RunEvent
+    naming:
+      summary: One event of a training run's stream, at its position in the stream. Sequence numbers are unique among the events of one run, which ESS does not state across entities here.
+    identity:
+      name: run_event_id
+      type: modelspec.observatory.RunEventId
+    fields:
+      - name: training_run_id
+        type: modelspec.training.TrainingRunId
+      - name: sequence
+        type: Integer
+        summary: Position of the event in its run's stream, from 0; a replay sends events in this order (epic:training-observatory, replayable from a recorded run file).
+      - name: body
+        type: modelspec.observatory.RunEventBody
+    invariants:
+      - sequence >= 0
+    lifecycle:
+      initial: Emitted
+      states: [Emitted]
+      terminal: [Emitted]

@@ -1,0 +1,118 @@
+domain: modelspec.data
+
+summary: The training data of a masked-language-model run, its tokenizer, vocabulary, corpus and masking policy (epic:bert-from-scratch). The tokenizer and data pipeline are Rust in the runtime or training host; a model specification does no I/O (DESIGN.md § 2.3).
+
+# UNMAPPED: where a run records the corpus, tokenizer and masking policy it trained with (fields of
+# TrainingRun, data bindings of the artifact, or a new record) is not settled, and neither is
+# whether masking is drawn per step from the run seed or fixed when the corpus is prepared. No
+# relation to modelspec.training.TrainingRun is declared. DESIGN.md § 12 lists the data interface
+# as an open design question. Open question for the owner.
+
+types:
+  - name: modelspec.data.TokenizerId
+    kind: newtype
+    of: Uuid
+
+  - name: modelspec.data.TokenizerKind
+    kind: enum
+    naming:
+      summary: The tokenization algorithm (epic:bert-from-scratch, "a WordPiece (or byte-level) tokenizer").
+    # UNMAPPED: the epic leaves WordPiece or byte-level open; both are listed until it is settled.
+    variants: [WordPiece, ByteLevel]
+
+  - name: modelspec.data.Vocabulary
+    kind: struct
+    naming:
+      summary: The tokens a tokenizer maps text to; a token's id is its position in tokens (about 30k for BERT-tiny, epic:bert-from-scratch). mask_token_id names the token 80/10/10 masking substitutes.
+    # UNMAPPED: special tokens beyond the mask token (classification, separator, padding, unknown)
+    # are not named by the epic. Open question.
+    fields:
+      - name: tokens
+        type: List<String>
+      - name: mask_token_id
+        type: Integer
+    invariants:
+      - distinct: {in: tokens, as: token}
+      - mask_token_id >= 0
+      - mask_token_id < tokens.count
+
+  - name: modelspec.data.DatasetId
+    kind: newtype
+    of: Uuid
+
+  - name: modelspec.data.SplitRole
+    kind: enum
+    naming:
+      summary: What a split is used for; MLM loss and accuracy are evaluated on the held-out split (epic:bert-from-scratch).
+    variants: [Train, HeldOut]
+
+  - name: modelspec.data.DatasetSplit
+    kind: struct
+    naming:
+      summary: One split of a corpus.
+    # UNMAPPED: how a split is made and identified (a fraction, a file, a content hash, a sequence
+    # count) is not settled by the epic. Open question.
+    fields:
+      - name: role
+        type: modelspec.data.SplitRole
+
+  - name: modelspec.data.MaskingPolicy
+    kind: struct
+    naming:
+      summary: The masked-language-modelling policy; of the selected tokens a fraction is replaced by the vocabulary's mask token, a fraction by a random token and the rest kept, 80/10/10 (epic:bert-from-scratch). The three fractions sum to 1, which ESS does not state here. Draws use the Philox key/counter derivation (DESIGN.md § 2.3).
+    # UNMAPPED: the selection rate (the share of tokens selected for prediction) is not stated by the
+    # epic, nor the Philox stream tag masking draws from (DESIGN.md § 2.3 defines tags 0 to 2 only).
+    # Open question.
+    fields:
+      - name: selection_rate
+        type: Binary64
+      - name: mask_fraction
+        type: Binary64
+      - name: random_fraction
+        type: Binary64
+      - name: keep_fraction
+        type: Binary64
+    invariants:
+      - selection_rate > 0
+      - selection_rate <= 1
+      - mask_fraction >= 0
+      - random_fraction >= 0
+      - keep_fraction >= 0
+
+entities:
+  - name: modelspec.data.Dataset
+    naming:
+      summary: The pre-training corpus, a small public one, and its splits (epic:bert-from-scratch "corpus/dataset"). Its data order in a run is deterministic from the run seed (DESIGN.md § 2.3).
+    # UNMAPPED: which public corpus, and whether a dataset holds raw text or token sequences packed
+    # by one tokenizer (then a relation to Tokenizer, whose ownership is also open), is not settled.
+    # Open question.
+    identity:
+      name: dataset_id
+      type: modelspec.data.DatasetId
+    fields:
+      - name: name
+        type: String
+      - name: splits
+        type: List<modelspec.data.DatasetSplit>
+    invariants:
+      - distinct: {in: splits, as: split, by: split.role}
+    lifecycle:
+      initial: Recorded
+      states: [Recorded]
+      terminal: [Recorded]
+
+  - name: modelspec.data.Tokenizer
+    naming:
+      summary: A tokenizer and the vocabulary it maps text to (epic:bert-from-scratch).
+    identity:
+      name: tokenizer_id
+      type: modelspec.data.TokenizerId
+    fields:
+      - name: kind
+        type: modelspec.data.TokenizerKind
+      - name: vocabulary
+        type: modelspec.data.Vocabulary
+    lifecycle:
+      initial: Recorded
+      states: [Recorded]
+      terminal: [Recorded]

@@ -5,5 +5,7 @@ version: v1
 domains:
   - modelspec.artifact
   - modelspec.checkpoint
+  - modelspec.data
   - modelspec.device
+  - modelspec.observatory
   - modelspec.training

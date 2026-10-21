@@ -1,7 +1,7 @@
 # ModelSpec — Design Specification
 
 **Status:** M0 implemented (iteration 1); M1 onwards proposed  
-**Revision:** 0.6 (2026-10-21): derivation of parameter, teacher and synthetic-data draws defined (§ 2.3), M0 `train` output and codes (§ 8, § 8.1); 0.5: a train loss calls `model.forward` exactly once (§ 2.1)  
+**Revision:** 0.7 (2026-10-21): M3 adds a small BERT-like masked-language-model proof model beside the GPT-like one (§ 1, § 11 iteration 4); 0.6: derivation of parameter, teacher and synthetic-data draws defined (§ 2.3), M0 `train` output and codes (§ 8, § 8.1); 0.5: a train loss calls `model.forward` exactly once (§ 2.1)  
 **Implementation language:** Rust  
 **Initial execution target:** NVIDIA RTX 3090 via Vulkan compute / SPIR-V  
 **Principle:** Specify *what* to compute; the compiler determines *how* to execute it.
@@ -33,7 +33,7 @@ We optimize for correctness and coherent architecture before raw speed. Near-opt
 | **M0: semantic core** | Parse, elaborate, type/shape check, typed SSA tensor IR, CPU reference interpreter, reverse-mode autodiff, SGD, simple linear/MLP training | GPU or performance |
 | **M1: native Vulkan execution** | Rust Vulkan device discovery/allocator/dispatch, SPIR-V elementwise + reduction + basic matmul kernels, compiled forward/backward/SGD, checkpoints | Tensor Core speed |
 | **M2: optimizing compiler** | Whole-step liveness, buffer reuse, elementwise fusion, tiling/shared-memory matmul, kernel scheduler, profiling + cache | All tensor ops |
-| **M3: neural-network essentials** | f16 where supported, AdamW, softmax, layer norm, embeddings, attention, causal masks, small GPT-like training | Large-scale distributed training |
+| **M3: neural-network essentials** | f16 where supported, AdamW, softmax, layer norm, embeddings, attention, causal and bidirectional masks, GELU, small GPT-like training and small BERT-like masked-language-model pre-training | Large-scale distributed training |
 | **M4: device specialization** | Cooperative-matrix Tensor Core path where available, mixed precision with FP32 accumulation/master state when needed, checkpoint/recompute planning, autotuning | Universal peak performance |
 
 M0 should be independently useful; M1 is the first milestone meeting the end-to-end RTX 3090 training goal. Everything above M1 is incremental.
@@ -502,7 +502,7 @@ Initial performance goals are **measured correctness and transparent baselines**
 
 **Iteration 3 — architecture and optimizations (months).** Elaboration for modules/layers/generics, optimizer IR, liveness and scratch reuse, fusion, tiled matmul, diagnostics, SPIR-V printing, benchmark harness and on-disk kernel cache.
 
-**Iteration 4 — Transformer path (later).** FP16/capability checks, AdamW, softmax/layer norm, embedding lookup, attention, causal masking, mixed precision, numerical loss-handling and cooperative-matrix specialization if the Vulkan driver exposes it.
+**Iteration 4 — Transformer path (later).** FP16/capability checks, AdamW, softmax/layer norm, embedding lookup, attention, causal and bidirectional masking, GELU, a masked-language-model head for a small BERT-like proof model beside the GPT-like one, mixed precision, numerical loss-handling and cooperative-matrix specialization if the Vulkan driver exposes it.
 
 If the architecture meets its tests, aggressive per-model specialization and autotuning can follow without changing the public specification format.
 
