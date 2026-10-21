@@ -7,6 +7,8 @@ SPIR-V. No Python, PyTorch or CUDA.
 
 **Status:** M0. `modelspec check`, `modelspec ir --stage tensor|training` and `modelspec train <file> --backend cpu` work on the M0 subset; the example below trains on the CPU reference. There is no Vulkan backend yet (M1).
 
+**Releases:** [GitHub Releases](https://github.com/beyond10x/modelspec/releases) carry the `modelspec` binary for Linux x86_64 and its SHA-256 checksum; [CHANGELOG.md](CHANGELOG.md) lists what each version changed.
+
 ```modelspec
 model LinearReg {
     param w: Tensor<f32, [4, 1]> = xavier_uniform();

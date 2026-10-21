@@ -1,6 +1,6 @@
 # ModelSpec — Design Specification
 
-**Status:** Proposed / pre-implementation  
+**Status:** M0 implemented (iteration 1); M1 onwards proposed  
 **Revision:** 0.6 (2026-10-21): derivation of parameter, teacher and synthetic-data draws defined (§ 2.3), M0 `train` output and codes (§ 8, § 8.1); 0.5: a train loss calls `model.forward` exactly once (§ 2.1)  
 **Implementation language:** Rust  
 **Initial execution target:** NVIDIA RTX 3090 via Vulkan compute / SPIR-V  

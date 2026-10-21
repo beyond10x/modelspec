@@ -1,4 +1,4 @@
-// Minimal ModelSpec M0 subset example (design target; no compiler yet).
+// Minimal ModelSpec M0 subset example; `modelspec check` and `modelspec train --backend cpu` run it.
 model LinearReg {
     param w: Tensor<f32, [4, 1]> = xavier_uniform();
 

@@ -11,13 +11,15 @@ A Rust compiler and runtime for `.mspec` tensor-program specifications. Humans s
 
 ## State
 
-Milestone M0 in progress (DESIGN.md revision 0.6, § 1 and § 11, iteration 1). A Cargo workspace of
-three crates exists: `modelspec-core` (compiler, no Vulkan), `modelspec-runtime` (CPU oracle and
-training; the `vulkan` feature is empty until M1) and `modelspec-cli` (binary `modelspec`). Module
-files are declared and mostly empty; `check` resolves names and checks types and shapes;
+Milestone M0 implemented (DESIGN.md revision 0.6, § 1 and § 11, iteration 1; wave `m0` closed);
+M1 (`epic:m1-vulkan-execution`) is next. A Cargo workspace of three crates: `modelspec-core`
+(parser, checker, Tensor IR, autodiff, lowering, DCE; no Vulkan), `modelspec-runtime` (CPU oracle
+and SGD training; the `vulkan` feature is empty until M1) and `modelspec-cli` (binary
+`modelspec`). `check` resolves names and checks types and shapes;
 `ir <file> --stage tensor|training` prints the verified Tensor IR or the verified training step;
 `train <file> --backend cpu` trains on the CPU reference (DESIGN.md § 8), and `--backend vulkan`
-is refused with E-TARGET-001 until M1. No CI.
+is refused with E-TARGET-001 until M1. CI: `check.yml` runs `task ci`; `shared-gates.yml` runs the
+common source gates.
 
 ## Commands
 
@@ -31,8 +33,30 @@ Entry points are the `Taskfile.yml` tasks (go-task):
 - `task check-examples`: `modelspec check examples/linear_regression.mspec`;
   `examples/tiny_mlp.mspec` joins it when modules and generics land (DESIGN.md § 11 iteration 3).
 - `task ci`: all of the above; the gate.
+- `task release-check TAG=<version>`: refuses unless the tag is a bare version, equals
+  `[workspace.package] version` in `Cargo.toml`, and `CHANGELOG.md` has `## [<version>] - <date>`.
 
 CLI exit codes: 0 success, 1 diagnostics or runtime error, 2 usage error.
+
+## Releases
+
+ModelSpec releases from source at bare-version tags (`0.1.0`, no `v`); every crate inherits the
+workspace version and nothing is on a registry.
+
+- `CHANGELOG.md` follows Keep a Changelog 1.1.0. Changes collect under `## [Unreleased]`, one line
+  per change a user sees, naming the public item in backticks and its story id where it fits.
+- A release commit on `main` sets `[workspace.package] version` in `Cargo.toml` and `Cargo.lock`,
+  turns `## [Unreleased]` into `## [<version>] - <date>` under a new empty `## [Unreleased]`, and
+  moves the link references at the bottom. `task release-check TAG=<version>` passes on it.
+- `check` and `Shared source gates` are green on that commit before it is tagged.
+- The tag is the bot's, on that commit:
+  `b10x-gates bot --repository beyond10x/modelspec -- tag -a <version> -m "ModelSpec <version>" <commit>`,
+  then `b10x-gates bot --repository beyond10x/modelspec -- push origin <version>`.
+- `.github/workflows/release.yml` runs on the tag: `release-check`, then `check.yml`, then it builds
+  the `modelspec` binary for Linux x86_64 and creates the GitHub Release with the version's
+  CHANGELOG section as notes, `modelspec-<version>-x86_64-unknown-linux-gnu` and its `.sha256`.
+- A release is finished when the tag, the green `release` run and the Release with both assets are
+  verified. Never move or delete a pushed tag; fix forward with the next version.
 
 ## Planning and specification
 
