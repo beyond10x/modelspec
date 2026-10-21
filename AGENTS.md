@@ -3,6 +3,12 @@
 A Rust compiler and runtime for `.mspec` tensor-program specifications. Humans start at
 [README.md](README.md); the design is [DESIGN.md](DESIGN.md).
 
+## Serves
+
+- **O6 — self-improvement, built into all of it.** Every compile and training run leaves a typed
+  record (artifact and source hashes, the deterministic setting, run steps and resume checkpoint in
+  `spec/`), so a change to the compiler can be re-measured against the same run before and after.
+
 ## State
 
 Milestone M0 in progress (DESIGN.md revision 0.3, § 1 and § 11, iteration 1). A Cargo workspace of
