@@ -19,8 +19,12 @@ scope:
 - confidence: cited
   path: crates/modelspec-core/src/ops.rs
 - confidence: cited
+  path: crates/modelspec-core/tests/autodiff_adversary.rs
+- confidence: cited
   path: crates/modelspec-runtime/tests/gradients.rs
-revision: 9
+- confidence: cited
+  path: crates/modelspec-runtime/tests/gradients_adversary.rs
+revision: 10
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-21T09:12:27Z", actor: "human:timo", revision: 8, decided_on: {"recorded":{"review_outcome":1}}}
 - {from: "proposed", to: "active", at: "2026-10-21T09:12:27Z", actor: "human:timo", revision: 9, decided_on: {"recorded":{"review_outcome":1}}}
