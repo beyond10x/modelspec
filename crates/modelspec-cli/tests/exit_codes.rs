@@ -50,8 +50,8 @@ fn check_on_a_missing_file_exits_1_with_a_diagnostic() {
 }
 
 #[test]
-fn unimplemented_ir_exits_1() {
-    assert_eq!(exit_code(&["ir", "model.mspec"]), 1);
+fn ir_on_a_missing_file_exits_1() {
+    assert_eq!(exit_code(&["ir", "model.mspec", "--stage", "tensor"]), 1);
 }
 
 #[test]
