@@ -6,12 +6,17 @@
 //! exactly once per use. Only nodes the loss depends on and that depend on a parameter read take
 //! part, so inputs and targets receive no gradient and a parameter the loss does not reach has
 //! none. Every gradient is `f32`, the program's dtype.
+//!
+//! [`differentiate_inputs`] runs the same walk with the same rules from any rank-0 target and
+//! gives the adjoint of named inputs instead, in a separate program; [`output_element_target`]
+//! builds such a target for one element of a model's prediction. The training program
+//! [`differentiate`] produces does not change.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use thiserror::Error;
 
-use crate::ir::tensor::{ParamId, TensorNode, TensorOp, TensorProgram, TensorType, ValueId};
+use crate::ir::tensor::{Dim, ParamId, TensorNode, TensorOp, TensorProgram, TensorType, ValueId};
 use crate::ir::training::{Subgraph, TrainingProgram};
 use crate::ir::verify::{TrainingVerifyError, VerifyError, verify, verify_training};
 use crate::ops::{self, GradientSink, OpError};
@@ -65,44 +70,14 @@ pub fn differentiate(
         });
     }
 
-    let trainable = trainable_nodes(nodes, &position);
+    let trainable = dependent_nodes(nodes, &position, |node| {
+        matches!(node.op, TensorOp::ParamRead { .. })
+    });
     let mut sink = Sink::new(forward, loss);
-    let mut adjoints: BTreeMap<ValueId, Vec<ValueId>> = BTreeMap::new();
     let mut reads: BTreeMap<ParamId, Vec<ValueId>> = BTreeMap::new();
-    if trainable[loss_at] {
-        sink.tag = Subgraph::Loss;
-        let seed = sink
-            .push(TensorOp::Scalar(1.0), &[])
-            .map_err(rule_error(loss))?;
-        sink.tag = Subgraph::Gradient;
-        sink.seed = Some(seed);
-        adjoints.insert(loss, vec![seed]);
-    }
-
-    for node in nodes[..=loss_at].iter().rev() {
-        let Some(contributions) = adjoints.remove(&node.id) else {
-            continue;
-        };
-        let g = sink.sum(&contributions).map_err(rule_error(node.id))?;
-        if let TensorOp::ParamRead { param } = node.op {
+    for (leaf, g) in reverse_walk(&mut sink, nodes, &position, &trainable, loss_at)? {
+        if let TensorOp::ParamRead { param } = nodes[position[&leaf]].op {
             reads.entry(param).or_default().push(g);
-            continue;
-        }
-        let wanted: Vec<bool> = node
-            .operands
-            .iter()
-            .map(|o| trainable[position[o]])
-            .collect();
-        let per_operand = ops::gradient(&mut sink, &node.op, &node.operands, g, &wanted)
-            .map_err(rule_error(node.id))?
-            .ok_or(AutodiffError::NoGradientRule {
-                node: node.id,
-                op: node.op.name(),
-            })?;
-        for (&operand, contribution) in node.operands.iter().zip(per_operand) {
-            if let Some(c) = contribution {
-                adjoints.entry(operand).or_default().push(c);
-            }
         }
     }
 
@@ -125,17 +100,319 @@ pub fn differentiate(
     Ok(training)
 }
 
-/// Per node position: the node depends on a parameter read.
+/// The reverse walk from the rank-0 value at position `target_at`: seeds it with `1.0` when it
+/// depends on a source (`reaches[target_at]`), then visits the nodes in reverse definition order,
+/// sums each node's incoming adjoints once and applies its gradient rule, asking only for the
+/// operands that depend on a source (`reaches`). Returns the summed adjoint of each `ParamRead`
+/// and `Input` node that received one, in the order the walk reached them.
 ///
-/// Loss reachability needs no mask: adjoints flow only from the seed through operands, so a node
-/// the loss does not depend on never receives one.
-fn trainable_nodes(nodes: &[TensorNode], position: &BTreeMap<ValueId, usize>) -> Vec<bool> {
-    let mut trainable = vec![false; nodes.len()];
-    for (i, node) in nodes.iter().enumerate() {
-        trainable[i] = matches!(node.op, TensorOp::ParamRead { .. })
-            || node.operands.iter().any(|o| trainable[position[o]]);
+/// Target reachability needs no mask: adjoints flow only from the seed through operands, so a
+/// node the target does not depend on never receives one.
+fn reverse_walk(
+    sink: &mut Sink,
+    nodes: &[TensorNode],
+    position: &BTreeMap<ValueId, usize>,
+    reaches: &[bool],
+    target_at: usize,
+) -> Result<Vec<(ValueId, ValueId)>, AutodiffError> {
+    let target = nodes[target_at].id;
+    let mut adjoints: BTreeMap<ValueId, Vec<ValueId>> = BTreeMap::new();
+    let mut leaves = Vec::new();
+    if reaches[target_at] {
+        sink.tag = Subgraph::Loss;
+        let seed = sink
+            .push(TensorOp::Scalar(1.0), &[])
+            .map_err(rule_error(target))?;
+        sink.tag = Subgraph::Gradient;
+        sink.seed = Some(seed);
+        adjoints.insert(target, vec![seed]);
     }
-    trainable
+
+    for node in nodes[..=target_at].iter().rev() {
+        let Some(contributions) = adjoints.remove(&node.id) else {
+            continue;
+        };
+        let g = sink.sum(&contributions).map_err(rule_error(node.id))?;
+        if matches!(node.op, TensorOp::ParamRead { .. } | TensorOp::Input { .. }) {
+            leaves.push((node.id, g));
+            continue;
+        }
+        let wanted: Vec<bool> = node.operands.iter().map(|o| reaches[position[o]]).collect();
+        let per_operand = ops::gradient(sink, &node.op, &node.operands, g, &wanted)
+            .map_err(rule_error(node.id))?
+            .ok_or(AutodiffError::NoGradientRule {
+                node: node.id,
+                op: node.op.name(),
+            })?;
+        for (&operand, contribution) in node.operands.iter().zip(per_operand) {
+            if let Some(c) = contribution {
+                adjoints.entry(operand).or_default().push(c);
+            }
+        }
+    }
+    Ok(leaves)
+}
+
+/// Per node position: the node is a source or depends on one through its operands.
+fn dependent_nodes(
+    nodes: &[TensorNode],
+    position: &BTreeMap<ValueId, usize>,
+    is_source: impl Fn(&TensorNode) -> bool,
+) -> Vec<bool> {
+    let mut reaches = vec![false; nodes.len()];
+    for (i, node) in nodes.iter().enumerate() {
+        reaches[i] = is_source(node) || node.operands.iter().any(|o| reaches[position[o]]);
+    }
+    reaches
+}
+
+/// The name an [`output_element_target`] gives the one-hot mask input it adds.
+pub const TARGET_MASK: &str = "target_mask";
+
+/// Why an input adjoint or an output-element target could not be built. A library error with no
+/// diagnostic code, like [`AutodiffError`].
+#[derive(Clone, Debug, PartialEq, Eq, Error)]
+pub enum InputAdjointError {
+    #[error("program does not verify: {0}")]
+    Verify(#[from] VerifyError),
+    #[error("target {target} is not defined")]
+    UndefinedTarget { target: ValueId },
+    #[error("target {target} is {ty}, not rank 0")]
+    TargetNotScalar { target: ValueId, ty: TensorType },
+    /// The name is not that of an `Input` node of the program. After dead-code elimination a
+    /// declared input the loss does not read has none.
+    #[error("`{name}` is not an input of the program")]
+    UnknownInput { name: String },
+    #[error("prediction {prediction} is not defined")]
+    UndefinedPrediction { prediction: ValueId },
+    #[error("an index of rank {got} for a prediction of rank {expected}")]
+    IndexRank { expected: usize, got: usize },
+    #[error("index {index:?} is out of bounds for {ty}")]
+    IndexOutOfBounds { index: Vec<u64>, ty: TensorType },
+    /// The program already has an input named [`TARGET_MASK`].
+    #[error("the program already has an input named `{TARGET_MASK}`")]
+    MaskNameTaken,
+    /// A new node needs a value id past `u32::MAX`.
+    #[error("no value id is left for the new nodes: ids run past u32::MAX")]
+    ValueIdsExhausted,
+    /// The reverse walk failed: an op without a gradient rule, or a rule's node the registry
+    /// refuses.
+    #[error(transparent)]
+    Autodiff(AutodiffError),
+    /// The generated program breaks a Tensor IR invariant: a compiler bug.
+    #[error("generated program does not verify: {0}")]
+    Generated(VerifyError),
+}
+
+impl From<AutodiffError> for InputAdjointError {
+    fn from(error: AutodiffError) -> Self {
+        match error {
+            AutodiffError::ValueIdsExhausted => InputAdjointError::ValueIdsExhausted,
+            other => InputAdjointError::Autodiff(other),
+        }
+    }
+}
+
+/// The adjoint of named inputs of a rank-0 target, in its own program.
+#[derive(Clone, Debug, PartialEq)]
+pub struct InputAdjoint {
+    /// The forward nodes unchanged, then the backward nodes. Outputs: the target, then each of
+    /// [`Self::adjoints`] in order. Inputs and parameter table are the forward program's.
+    pub program: TensorProgram,
+    /// The rank-0 target.
+    pub target: ValueId,
+    /// Each input asked for, by name in the order asked, and the value of its adjoint, which has
+    /// the input's type.
+    pub adjoints: Vec<(String, ValueId)>,
+}
+
+/// Differentiates the rank-0 value `target` of `forward` with respect to the inputs `inputs`
+/// (DESIGN.md § 3.3 pass 4, § 4).
+///
+/// The walk and the gradient-rule registry are those of [`differentiate`], with the named
+/// `Input` nodes as the sources in place of the parameter reads: only nodes the target depends
+/// on and that depend on a named input take part, so no parameter receives a gradient here. An
+/// input the target does not read has the adjoint zero, a `Scalar 0.0` broadcast to its shape
+/// with `BroadcastScalar` (the `Scalar` itself at rank 0). A name asked for twice is listed twice
+/// with one adjoint. The result passes [`verify`]; `forward` and every training program are left
+/// as they are.
+pub fn differentiate_inputs(
+    forward: &TensorProgram,
+    target: ValueId,
+    inputs: &[&str],
+) -> Result<InputAdjoint, InputAdjointError> {
+    verify(forward)?;
+    let nodes = &forward.nodes;
+    let position: BTreeMap<ValueId, usize> =
+        nodes.iter().enumerate().map(|(i, n)| (n.id, i)).collect();
+    let &target_at = position
+        .get(&target)
+        .ok_or(InputAdjointError::UndefinedTarget { target })?;
+    if nodes[target_at].ty.rank() != 0 {
+        return Err(InputAdjointError::TargetNotScalar {
+            target,
+            ty: nodes[target_at].ty.clone(),
+        });
+    }
+    let mut asked = Vec::with_capacity(inputs.len());
+    for &name in inputs {
+        let value = input_named(forward, name).ok_or_else(|| InputAdjointError::UnknownInput {
+            name: name.to_owned(),
+        })?;
+        asked.push((name, value));
+    }
+
+    let sources: BTreeSet<ValueId> = asked.iter().map(|&(_, v)| v).collect();
+    let reaches = dependent_nodes(nodes, &position, |node| sources.contains(&node.id));
+    let mut sink = Sink::new(forward, target);
+    let mut resolved: BTreeMap<ValueId, ValueId> =
+        reverse_walk(&mut sink, nodes, &position, &reaches, target_at)?
+            .into_iter()
+            .collect();
+    let mut zero = None;
+    let mut adjoints = Vec::with_capacity(asked.len());
+    for (name, value) in asked {
+        let adjoint = match resolved.get(&value) {
+            Some(&g) => g,
+            None => {
+                let z = match zero {
+                    Some(z) => z,
+                    None => *zero.insert(
+                        sink.push(TensorOp::Scalar(0.0), &[])
+                            .map_err(rule_error(value))?,
+                    ),
+                };
+                let shape = nodes[position[&value]].ty.shape.clone();
+                let g = if shape.is_empty() {
+                    z
+                } else {
+                    sink.push(TensorOp::BroadcastScalar { shape }, &[z])
+                        .map_err(rule_error(value))?
+                };
+                resolved.insert(value, g);
+                g
+            }
+        };
+        adjoints.push((name.to_owned(), adjoint));
+    }
+
+    let mut program = sink.program;
+    program.outputs = std::iter::once(target)
+        .chain(adjoints.iter().map(|&(_, v)| v))
+        .collect();
+    verify(&program).map_err(InputAdjointError::Generated)?;
+    Ok(InputAdjoint {
+        program,
+        target,
+        adjoints,
+    })
+}
+
+/// A rank-0 target for one element of a prediction, in its own program.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OutputTarget {
+    /// The forward nodes unchanged, then the [`TARGET_MASK`] input, `Mul prediction, mask` and
+    /// `ReduceSum` of it. Its one output is the target; its inputs are the forward program's,
+    /// then the mask.
+    pub program: TensorProgram,
+    /// The rank-0 target `sum(prediction * mask)`.
+    pub target: ValueId,
+    /// The [`TARGET_MASK`] input, of the prediction's type. The caller binds it to the one-hot
+    /// tensor with `1` at [`Self::offset`], so the target is that element.
+    pub mask: ValueId,
+    /// The row-major offset of the element.
+    pub offset: u64,
+}
+
+/// Builds the rank-0 target for element `index` of `prediction`, a value of `forward`, from
+/// existing ops: an `Input` named [`TARGET_MASK`] of the prediction's type, `Mul prediction,
+/// target_mask` and `ReduceSum`. The result passes [`verify`]; [`differentiate_inputs`] takes it
+/// with [`OutputTarget::target`].
+pub fn output_element_target(
+    forward: &TensorProgram,
+    prediction: ValueId,
+    index: &[u64],
+) -> Result<OutputTarget, InputAdjointError> {
+    verify(forward)?;
+    let ty = forward
+        .node(prediction)
+        .ok_or(InputAdjointError::UndefinedPrediction { prediction })?
+        .ty
+        .clone();
+    if input_named(forward, TARGET_MASK).is_some() {
+        return Err(InputAdjointError::MaskNameTaken);
+    }
+    if index.len() != ty.rank() {
+        return Err(InputAdjointError::IndexRank {
+            expected: ty.rank(),
+            got: index.len(),
+        });
+    }
+    let mut offset: u64 = 0;
+    for (&i, dim) in index.iter().zip(&ty.shape) {
+        let Dim::Static(n) = *dim else {
+            unreachable!("a verified program has no symbolic dimension")
+        };
+        if i >= n {
+            return Err(InputAdjointError::IndexOutOfBounds {
+                index: index.to_vec(),
+                ty: ty.clone(),
+            });
+        }
+        offset = offset * n + i;
+    }
+
+    let mut program = forward.clone();
+    let mut next = match forward.nodes.iter().map(|n| n.id.0).max() {
+        Some(largest) => largest.checked_add(1),
+        None => Some(0),
+    };
+    let mut append = |program: &mut TensorProgram,
+                      op: TensorOp,
+                      operands: &[ValueId]|
+     -> Result<ValueId, InputAdjointError> {
+        let id = ValueId(next.ok_or(InputAdjointError::ValueIdsExhausted)?);
+        next = id.0.checked_add(1);
+        let operand_types: Vec<&TensorType> = operands
+            .iter()
+            .map(|&o| &program.node(o).expect("an operand defined above").ty)
+            .collect();
+        let result = ops::infer(&op, &operand_types, Some(&ty))
+            .map_err(|source| AutodiffError::Rule { node: id, source })?;
+        program.nodes.push(TensorNode {
+            id,
+            op,
+            operands: operands.to_vec(),
+            ty: result,
+            source_span: None,
+        });
+        Ok(id)
+    };
+    let mask = append(
+        &mut program,
+        TensorOp::Input {
+            name: TARGET_MASK.to_owned(),
+        },
+        &[],
+    )?;
+    program.inputs.push(mask);
+    let product = append(&mut program, TensorOp::Mul, &[prediction, mask])?;
+    let target = append(&mut program, TensorOp::ReduceSum, &[product])?;
+    program.outputs = vec![target];
+    verify(&program).map_err(InputAdjointError::Generated)?;
+    Ok(OutputTarget {
+        program,
+        target,
+        mask,
+        offset,
+    })
+}
+
+/// The `Input` node of `program` named `name`.
+fn input_named(program: &TensorProgram, name: &str) -> Option<ValueId> {
+    program.inputs.iter().copied().find(|&v| {
+        matches!(&program.node(v).map(|n| &n.op), Some(TensorOp::Input { name: n }) if n == name)
+    })
 }
 
 /// The [`AutodiffError`] for a failed emission while differentiating `node`.
