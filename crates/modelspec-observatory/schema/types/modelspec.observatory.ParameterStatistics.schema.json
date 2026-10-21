@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/modelspec.observatory.ParameterStatistics",
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "8ee8183aac8b4c05dcb6ef664d0301c99254ddd158f28d8c457a1c2979f56ae6",
+    "contract_digest": "slice-sha256/2:01e05615c632e5fad4b3367493cb37089b7d71322344191c6ebbb8f753254d2e",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.checkpoint.ParameterPath": {
+      "title": "ParameterPath",
+      "description": "A stable canonical parameter path such as `TinyMLP.fc1.weight` (DESIGN.md § 2.3).",
+      "x-ess-name": "modelspec.checkpoint.ParameterPath",
+      "x-ess-kind": "newtype",
+      "type": "string"
+    },
+    "modelspec.observatory.Histogram": {
+      "title": "Histogram",
+      "description": "The distribution of one tensor's elements in bins; bin i counts the elements in [bin_edges[i], bin_edges[i+1]), so there is one more edge than counts, which ESS does not state here.",
+      "x-ess-name": "modelspec.observatory.Histogram",
+      "x-ess-kind": "struct",
+      "type": "object",
+      "properties": {
+        "bin_edges": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          }
+        },
+        "counts": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          }
+        }
+      },
+      "required": [
+        "bin_edges",
+        "counts"
+      ],
+      "additionalProperties": false,
+      "x-ess-invariants": [
+        "forall count in counts: (count >= 0)"
+      ]
+    },
+    "modelspec.observatory.ParameterStatistics": {
+      "title": "ParameterStatistics",
+      "description": "The norm and histogram of one parameter's values or gradient at a step, by its stable path (DESIGN.md § 2.3; epic:training-observatory).",
+      "x-ess-name": "modelspec.observatory.ParameterStatistics",
+      "x-ess-kind": "struct",
+      "type": "object",
+      "properties": {
+        "path": {
+          "$ref": "#/$defs/modelspec.checkpoint.ParameterPath"
+        },
+        "subject": {
+          "$ref": "#/$defs/modelspec.observatory.StatisticsSubject"
+        },
+        "norm": {
+          "type": "number"
+        },
+        "histogram": {
+          "$ref": "#/$defs/modelspec.observatory.Histogram"
+        }
+      },
+      "required": [
+        "path",
+        "subject",
+        "norm",
+        "histogram"
+      ],
+      "additionalProperties": false,
+      "x-ess-invariants": [
+        "norm >= 0"
+      ]
+    },
+    "modelspec.observatory.StatisticsSubject": {
+      "title": "StatisticsSubject",
+      "description": "Whether statistics describe a parameter's values or the gradient of the loss with respect to it (epic:training-observatory parameter/gradient histograms and norms).",
+      "x-ess-name": "modelspec.observatory.StatisticsSubject",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "Value",
+        "Gradient"
+      ]
+    }
+  }
+}

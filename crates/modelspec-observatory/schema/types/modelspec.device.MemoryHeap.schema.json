@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/modelspec.device.MemoryHeap",
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "8ee8183aac8b4c05dcb6ef664d0301c99254ddd158f28d8c457a1c2979f56ae6",
+    "contract_digest": "slice-sha256/2:e90cb98dd04e0bbd4594cf2bdf4e2d729e025ccab380efb06c540e88041284a3",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.device.MemoryHeap": {
+      "title": "MemoryHeap",
+      "description": "One Vulkan memory heap and its budget (DESIGN.md § 5.1 memory heaps/budgets).",
+      "x-ess-name": "modelspec.device.MemoryHeap",
+      "x-ess-kind": "struct",
+      "type": "object",
+      "properties": {
+        "size_bytes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "device_local": {
+          "type": "boolean"
+        },
+        "budget_bytes": {
+          "description": "VkPhysicalDeviceMemoryBudgetPropertiesEXT.heapBudget; absent where the driver does not expose VK_EXT_memory_budget (DESIGN.md § 0 invariant 6, § 5.1).",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "size_bytes",
+        "device_local"
+      ],
+      "additionalProperties": false,
+      "x-ess-invariants": [
+        "size_bytes > 0",
+        "(not (defined(budget_bytes)) or budget_bytes <= size_bytes)"
+      ]
+    }
+  }
+}

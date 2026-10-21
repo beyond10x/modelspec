@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/modelspec.observatory.StreamFrame",
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "8ee8183aac8b4c05dcb6ef664d0301c99254ddd158f28d8c457a1c2979f56ae6",
+    "contract_digest": "slice-sha256/2:5ff1e1bda88cc691506345143d77973cab408480af66b946e770df946f30a253",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.observatory.RunEventKind": {
+      "title": "RunEventKind",
+      "description": "The SSE `event:` name of a StreamFrame, the `kind` tag of its RunEvent's body (RunEventBody).",
+      "x-ess-name": "modelspec.observatory.RunEventKind",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "RunStarted",
+        "StepCompleted",
+        "RunFinished",
+        "RunFailed"
+      ]
+    },
+    "modelspec.observatory.StreamFrame": {
+      "title": "StreamFrame",
+      "description": "One Server-Sent Events frame of the live stream (epic:training-observatory, In scope, first bullet; story:observatory-live-event-stream, open question 1), the lines `event:`, `id:` and `data:` and a blank line. `GET /events` at the ServeAddress answers 200 with `Content-Type text/event-stream` and sends the run's events in sequence order from sequence 0, or from the one after a `Last-Event-ID` request header, then each new event as the run emits it, and closes the response after RunFinished or RunFailed; any other path answers 404. The process keeps serving after the run ends, so a client that connects late reads the whole stream, until the process is interrupted.",
+      "x-ess-name": "modelspec.observatory.StreamFrame",
+      "x-ess-kind": "struct",
+      "type": "object",
+      "properties": {
+        "event": {
+          "$ref": "#/$defs/modelspec.observatory.RunEventKind"
+        },
+        "id": {
+          "description": "The RunEvent's sequence.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "data": {
+          "description": "The JSON of one RunEvent on one line, valid against the JSON Schema `ess generate --kind schema` writes for it.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "event",
+        "id",
+        "data"
+      ],
+      "additionalProperties": false,
+      "x-ess-invariants": [
+        "id >= 0"
+      ]
+    }
+  }
+}

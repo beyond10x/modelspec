@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/modelspec.data.Vocabulary",
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "8ee8183aac8b4c05dcb6ef664d0301c99254ddd158f28d8c457a1c2979f56ae6",
+    "contract_digest": "slice-sha256/2:1da0621a43e87ad2534f30f4ad46ea58e3c1ea93bade3a451064b5a14442eb79",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.data.Vocabulary": {
+      "title": "Vocabulary",
+      "description": "The tokens a tokenizer maps text to; a token's id is its position in tokens (about 30k for BERT-tiny, epic:bert-from-scratch). mask_token_id names the token 80/10/10 masking substitutes.",
+      "x-ess-name": "modelspec.data.Vocabulary",
+      "x-ess-kind": "struct",
+      "type": "object",
+      "properties": {
+        "tokens": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "mask_token_id": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "tokens",
+        "mask_token_id"
+      ],
+      "additionalProperties": false,
+      "x-ess-invariants": [
+        "distinct token in tokens",
+        "mask_token_id >= 0",
+        "mask_token_id < tokens.count"
+      ]
+    }
+  }
+}

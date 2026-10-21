@@ -1,0 +1,15 @@
+[package]
+name = "modelspec-observatory"
+description = "The training observatory: the typed RunEvents of a training run and their live Server-Sent Events stream"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+jsonschema.workspace = true

@@ -1,0 +1,256 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DeviceProfile",
+  "description": "One Vulkan physical device as discovery recorded it (DESIGN.md § 5.1).",
+  "x-ess-name": "modelspec.device.DeviceProfile",
+  "x-ess-kind": "entity",
+  "type": "object",
+  "properties": {
+    "device_profile_id": {
+      "$ref": "#/$defs/modelspec.device.DeviceProfileId"
+    },
+    "vendor_id": {
+      "type": "integer"
+    },
+    "device_id": {
+      "type": "integer"
+    },
+    "device_uuid": {
+      "description": "Recorded if available (DESIGN.md § 5.1).",
+      "type": "string"
+    },
+    "driver_version": {
+      "type": "integer"
+    },
+    "subgroup_size": {
+      "type": "integer"
+    },
+    "subgroup_stages": {
+      "description": "VkPhysicalDeviceSubgroupProperties.supportedStages, by VkShaderStageFlagBits name (DESIGN.md § 5.1 subgroup properties).",
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "subgroup_operations": {
+      "description": "VkPhysicalDeviceSubgroupProperties.supportedOperations, by VkSubgroupFeatureFlagBits name (DESIGN.md § 5.1 subgroup properties).",
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "max_workgroup_invocations": {
+      "type": "integer"
+    },
+    "max_workgroup_size": {
+      "$ref": "#/$defs/modelspec.device.Extent3D",
+      "description": "VkPhysicalDeviceLimits.maxComputeWorkGroupSize, per dimension (DESIGN.md § 5.1 workgroup limits)."
+    },
+    "max_workgroup_count": {
+      "$ref": "#/$defs/modelspec.device.Extent3D",
+      "description": "VkPhysicalDeviceLimits.maxComputeWorkGroupCount, per dimension (DESIGN.md § 5.1 workgroup limits)."
+    },
+    "max_shared_memory_bytes": {
+      "description": "VkPhysicalDeviceLimits.maxComputeSharedMemorySize; tile sizes must fit it (DESIGN.md § 5.1, § 5.2).",
+      "type": "integer"
+    },
+    "f16_storage": {
+      "type": "boolean"
+    },
+    "f16_compute": {
+      "description": "Whether shaders may do f16 arithmetic (VkPhysicalDeviceShaderFloat16Int8Features.shaderFloat16); without it there is no f16 compute path (DESIGN.md § 5.1, § 8.1 E-TARGET-034).",
+      "type": "boolean"
+    },
+    "cooperative_matrix": {
+      "description": "Whether the driver exposes a cooperative-matrix extension (DESIGN.md § 5.2, M4).",
+      "type": "boolean"
+    },
+    "timestamp_queries": {
+      "type": "boolean"
+    },
+    "memory_heaps": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/modelspec.device.MemoryHeap"
+      }
+    },
+    "vulkan_api_version": {
+      "description": "VkPhysicalDeviceProperties.apiVersion, packed as Vulkan packs it (DESIGN.md § 5.1).",
+      "type": "integer"
+    },
+    "spirv_version": {
+      "description": "Highest SPIR-V version the device accepts, packed as in the SPIR-V header (DESIGN.md § 5.1).",
+      "type": "integer"
+    },
+    "max_storage_buffer_range": {
+      "description": "VkPhysicalDeviceLimits.maxStorageBufferRange (DESIGN.md § 5.1).",
+      "type": "integer"
+    },
+    "min_storage_buffer_offset_alignment": {
+      "description": "VkPhysicalDeviceLimits.minStorageBufferOffsetAlignment (DESIGN.md § 5.1).",
+      "type": "integer"
+    },
+    "cooperative_matrix_shapes": {
+      "description": "The actual supported matrix types and M/N/K shapes; empty when `cooperative_matrix` is false (DESIGN.md § 5.2).",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/modelspec.device.CooperativeMatrixShape"
+      }
+    },
+    "state": {
+      "$ref": "#/$defs/modelspec.device.DeviceProfile.State"
+    }
+  },
+  "required": [
+    "device_profile_id",
+    "vendor_id",
+    "device_id",
+    "driver_version",
+    "subgroup_size",
+    "subgroup_stages",
+    "subgroup_operations",
+    "max_workgroup_invocations",
+    "max_workgroup_size",
+    "max_workgroup_count",
+    "max_shared_memory_bytes",
+    "f16_storage",
+    "f16_compute",
+    "cooperative_matrix",
+    "timestamp_queries",
+    "memory_heaps",
+    "vulkan_api_version",
+    "spirv_version",
+    "max_storage_buffer_range",
+    "min_storage_buffer_offset_alignment",
+    "cooperative_matrix_shapes",
+    "state"
+  ],
+  "additionalProperties": false,
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "8ee8183aac8b4c05dcb6ef664d0301c99254ddd158f28d8c457a1c2979f56ae6",
+    "contract_digest": "slice-sha256/2:40b41a552a18d24c7aedf6586218f4152d3bf7bc3d221421e739dad767277ddd",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.device.CooperativeMatrixShape": {
+      "title": "CooperativeMatrixShape",
+      "description": "One VkCooperativeMatrixPropertiesKHR entry, component types by Vulkan enum name (DESIGN.md § 5.1).",
+      "x-ess-name": "modelspec.device.CooperativeMatrixShape",
+      "x-ess-kind": "struct",
+      "type": "object",
+      "properties": {
+        "m": {
+          "type": "integer"
+        },
+        "n": {
+          "type": "integer"
+        },
+        "k": {
+          "type": "integer"
+        },
+        "a_type": {
+          "type": "string"
+        },
+        "b_type": {
+          "type": "string"
+        },
+        "c_type": {
+          "type": "string"
+        },
+        "result_type": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "m",
+        "n",
+        "k",
+        "a_type",
+        "b_type",
+        "c_type",
+        "result_type"
+      ],
+      "additionalProperties": false
+    },
+    "modelspec.device.DeviceProfile.State": {
+      "title": "State",
+      "x-ess-name": "modelspec.device.DeviceProfile.State",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "Probed"
+      ]
+    },
+    "modelspec.device.DeviceProfileId": {
+      "title": "DeviceProfileId",
+      "x-ess-name": "modelspec.device.DeviceProfileId",
+      "x-ess-kind": "newtype",
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    },
+    "modelspec.device.Extent3D": {
+      "title": "Extent3D",
+      "description": "A size along the three workgroup dimensions x, y and z, each positive (DESIGN.md § 3.1 dispatch dimensions, § 5.1 workgroup limits).",
+      "x-ess-name": "modelspec.device.Extent3D",
+      "x-ess-kind": "struct",
+      "type": "object",
+      "properties": {
+        "x": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "y": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "z": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "x",
+        "y",
+        "z"
+      ],
+      "additionalProperties": false,
+      "x-ess-invariants": [
+        "x > 0",
+        "y > 0",
+        "z > 0"
+      ]
+    },
+    "modelspec.device.MemoryHeap": {
+      "title": "MemoryHeap",
+      "description": "One Vulkan memory heap and its budget (DESIGN.md § 5.1 memory heaps/budgets).",
+      "x-ess-name": "modelspec.device.MemoryHeap",
+      "x-ess-kind": "struct",
+      "type": "object",
+      "properties": {
+        "size_bytes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "device_local": {
+          "type": "boolean"
+        },
+        "budget_bytes": {
+          "description": "VkPhysicalDeviceMemoryBudgetPropertiesEXT.heapBudget; absent where the driver does not expose VK_EXT_memory_budget (DESIGN.md § 0 invariant 6, § 5.1).",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "size_bytes",
+        "device_local"
+      ],
+      "additionalProperties": false,
+      "x-ess-invariants": [
+        "size_bytes > 0",
+        "(not (defined(budget_bytes)) or budget_bytes <= size_bytes)"
+      ]
+    }
+  }
+}

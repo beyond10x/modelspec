@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/modelspec.data.MaskingPolicy",
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "8ee8183aac8b4c05dcb6ef664d0301c99254ddd158f28d8c457a1c2979f56ae6",
+    "contract_digest": "slice-sha256/2:0c68bea0bf0e280e4e31f21564330bc5e487d21893f62e03019bb00a00e0f418",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.data.MaskingPolicy": {
+      "title": "MaskingPolicy",
+      "description": "The masked-language-modelling policy; of the selected tokens a fraction is replaced by the vocabulary's mask token, a fraction by a random token and the rest kept, 80/10/10 (epic:bert-from-scratch). The three fractions sum to 1, which ESS does not state here. Draws use the Philox key/counter derivation (DESIGN.md § 2.3).",
+      "x-ess-name": "modelspec.data.MaskingPolicy",
+      "x-ess-kind": "struct",
+      "type": "object",
+      "properties": {
+        "selection_rate": {
+          "type": "number"
+        },
+        "mask_fraction": {
+          "type": "number"
+        },
+        "random_fraction": {
+          "type": "number"
+        },
+        "keep_fraction": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "selection_rate",
+        "mask_fraction",
+        "random_fraction",
+        "keep_fraction"
+      ],
+      "additionalProperties": false,
+      "x-ess-invariants": [
+        "selection_rate > 0",
+        "selection_rate <= 1",
+        "mask_fraction >= 0",
+        "random_fraction >= 0",
+        "keep_fraction >= 0"
+      ]
+    }
+  }
+}

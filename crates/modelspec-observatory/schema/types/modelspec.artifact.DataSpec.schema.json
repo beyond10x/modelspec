@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/modelspec.artifact.DataSpec",
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "8ee8183aac8b4c05dcb6ef664d0301c99254ddd158f28d8c457a1c2979f56ae6",
+    "contract_digest": "slice-sha256/2:75a39ddf9169b526623e4d9c3c9deae89cc82d86992f272ab078891f2d16c9ca",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.artifact.DataRole": {
+      "title": "DataRole",
+      "description": "Whether a bound tensor is a training input or a target (DESIGN.md § 2 `input`, `target`).",
+      "x-ess-name": "modelspec.artifact.DataRole",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "Input",
+        "Target"
+      ]
+    },
+    "modelspec.artifact.DataSpec": {
+      "title": "DataSpec",
+      "description": "One input or target tensor of the train specification, with the shape a batch must have (DESIGN.md § 2, § 6.1 tensor shapes).",
+      "x-ess-name": "modelspec.artifact.DataSpec",
+      "x-ess-kind": "struct",
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "role": {
+          "$ref": "#/$defs/modelspec.artifact.DataRole"
+        },
+        "dtype": {
+          "$ref": "#/$defs/modelspec.checkpoint.DType"
+        },
+        "shape": {
+          "$ref": "#/$defs/modelspec.checkpoint.Shape"
+        }
+      },
+      "required": [
+        "name",
+        "role",
+        "dtype",
+        "shape"
+      ],
+      "additionalProperties": false
+    },
+    "modelspec.checkpoint.DType": {
+      "title": "DType",
+      "description": "A tensor element type and its size in bytes; `f32` is the only M0/M1 dtype (DESIGN.md § 2.2).",
+      "x-ess-name": "modelspec.checkpoint.DType",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "F32"
+      ],
+      "x-ess-attributes": [
+        {
+          "kind": "integer",
+          "name": "size_bytes",
+          "type": "Integer",
+          "values": {
+            "F32": 4
+          }
+        }
+      ]
+    },
+    "modelspec.checkpoint.Shape": {
+      "title": "Shape",
+      "description": "A tensor shape; each dimension is a positive integer and rank 0 is a scalar (DESIGN.md § 2.2).",
+      "x-ess-name": "modelspec.checkpoint.Shape",
+      "x-ess-kind": "newtype",
+      "type": "array",
+      "items": {
+        "type": "integer"
+      },
+      "x-ess-invariants": [
+        "forall dim in value: (dim > 0)"
+      ]
+    }
+  }
+}

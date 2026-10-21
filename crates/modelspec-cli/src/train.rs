@@ -15,15 +15,28 @@
 //! cannot have, prints its diagnostics to stderr and exits 1; a file that cannot be read, a run
 //! that fails, or a run that cannot be written to stdout (a closed pipe, a full device) is
 //! reported on one line and exits 1.
+//!
+//! `--serve <addr>` also streams the run as `text/event-stream` at `http://<addr>/events`
+//! (`spec/domains/observatory.yaml`, `ServeAddress` and `StreamFrame`; [`modelspec_observatory`]).
+//! Once the file compiles the address is bound and `serving http://<bound address>/events` is
+//! printed on stderr; then the stream is `RunStarted`, one `StepCompleted` per loss, for each of the
+//! `steps + 1` the run records, and `RunFinished` once stdout is written, or `RunFailed` with the
+//! failure stderr reports. Stdout is byte for byte what the run prints without the flag. The
+//! process then keeps serving until it is interrupted, so a client that connects late reads the
+//! whole stream; a file that does not compile is reported and exits 1 without serving.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::io::Write;
+use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use modelspec_core::compile::{self, CompiledTraining};
 use modelspec_core::diag::{Code, Diagnostic};
 use modelspec_core::ir::tensor::ParamId;
+use modelspec_observatory::{
+    EVENTS_PATH, RunEventBody, RunFailed, RunStarted, Server, StepCompleted, TrainingRunId,
+};
 use modelspec_runtime::cpu::HostTensor;
 use modelspec_runtime::train::data::DataError;
 use modelspec_runtime::train::runner::{self, Run, RunError};
@@ -42,6 +55,11 @@ pub struct Args {
     /// The backend that runs the training step.
     #[arg(long, value_enum)]
     pub backend: Backend,
+    /// Stream the run's events as text/event-stream at path /events of ADDR, a loopback address
+    /// such as 127.0.0.1:8080 or localhost:8080 (port 0 picks a free one); the process keeps
+    /// serving after the run until it is interrupted.
+    #[arg(long, value_name = "ADDR", value_parser = modelspec_observatory::parse_serve_address)]
+    pub serve: Option<SocketAddr>,
 }
 
 /// A backend `modelspec train` can name.
@@ -82,28 +100,103 @@ pub fn run(args: Args, stdout: &mut dyn Write, stderr: &mut dyn Write) -> u8 {
             return crate::EXIT_FAILURE;
         }
     };
-    let run = match runner::run(&compiled) {
+    let server = match args.serve {
+        None => None,
+        Some(address) => match Server::bind(address, TrainingRunId::new()) {
+            Ok(server) => {
+                let _ = writeln!(
+                    stderr,
+                    "serving http://{}{EVENTS_PATH}",
+                    server.local_addr()
+                );
+                Some(server)
+            }
+            Err(error) => {
+                let _ = writeln!(
+                    stderr,
+                    "modelspec train {file}: cannot serve on {address}: {error}"
+                );
+                return crate::EXIT_FAILURE;
+            }
+        },
+    };
+    let _ = stderr.flush();
+    let emit = |body: RunEventBody| {
+        if let Some(server) = &server {
+            server.emit(body);
+        }
+    };
+    emit(RunEventBody::RunStarted(RunStarted {
+        steps: compiled.config.steps,
+        start_step: 0,
+    }));
+    let outcome = train(&file, &compiled, &emit, stdout, stderr);
+    let _ = stderr.flush();
+    let code = match outcome {
+        Ok(()) => {
+            emit(RunEventBody::RunFinished);
+            crate::EXIT_SUCCESS
+        }
+        Err(failed) => {
+            emit(RunEventBody::RunFailed(failed));
+            crate::EXIT_FAILURE
+        }
+    };
+    match server {
+        Some(server) => {
+            server.wait();
+            code
+        }
+        None => code,
+    }
+}
+
+/// Trains `compiled`, emits a `StepCompleted` for each loss as it is recorded and writes the run
+/// to stdout. A failure is reported on stderr and returned as the `RunFailed` that ends the stream.
+fn train(
+    file: &str,
+    compiled: &CompiledTraining,
+    emit: &dyn Fn(RunEventBody),
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+) -> Result<(), RunFailed> {
+    let observed = runner::run_observed(compiled, |step, loss| {
+        emit(RunEventBody::StepCompleted(StepCompleted {
+            step,
+            loss: f64::from(loss),
+            metrics: Vec::new(),
+            parameters: Vec::new(),
+        }));
+    });
+    let run = match observed {
         Ok(run) => run,
         Err(RunError::Data(DataError::Refused(diagnostic))) => {
             let _ = writeln!(stderr, "{diagnostic}");
-            return crate::EXIT_FAILURE;
+            return Err(RunFailed {
+                code: Some(diagnostic.code.to_string()),
+                message: diagnostic.message.clone(),
+            });
         }
         Err(error) => {
             let _ = writeln!(stderr, "modelspec train {file}: {error}");
-            return crate::EXIT_FAILURE;
+            return Err(RunFailed {
+                code: None,
+                message: error.to_string(),
+            });
         }
     };
     match stdout
-        .write_all(report(&compiled, &run).as_bytes())
+        .write_all(report(compiled, &run).as_bytes())
         .and_then(|()| stdout.flush())
     {
-        Ok(()) => crate::EXIT_SUCCESS,
+        Ok(()) => Ok(()),
         Err(error) => {
-            let _ = writeln!(
-                stderr,
-                "modelspec train {file}: cannot write the run: {error}"
-            );
-            crate::EXIT_FAILURE
+            let message = format!("cannot write the run: {error}");
+            let _ = writeln!(stderr, "modelspec train {file}: {message}");
+            Err(RunFailed {
+                code: None,
+                message,
+            })
         }
     }
 }

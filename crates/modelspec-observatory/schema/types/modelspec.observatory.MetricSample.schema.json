@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/modelspec.observatory.MetricSample",
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "8ee8183aac8b4c05dcb6ef664d0301c99254ddd158f28d8c457a1c2979f56ae6",
+    "contract_digest": "slice-sha256/2:5d20e9da1a90ee272af3fe030e95d223772bbb36f308e39c6dd28b8b2b555f86",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.observatory.MetricSample": {
+      "title": "MetricSample",
+      "description": "One named metric value at a step, such as MLM accuracy (epic:training-observatory live metric charts, epic:bert-from-scratch evaluation).",
+      "x-ess-name": "modelspec.observatory.MetricSample",
+      "x-ess-kind": "struct",
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "value": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "name",
+        "value"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

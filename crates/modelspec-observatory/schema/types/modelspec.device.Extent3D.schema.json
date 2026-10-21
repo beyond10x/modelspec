@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/modelspec.device.Extent3D",
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "8ee8183aac8b4c05dcb6ef664d0301c99254ddd158f28d8c457a1c2979f56ae6",
+    "contract_digest": "slice-sha256/2:cd9823ffb9599983a5046e5b6eb8b924ccc815490a316e4d688c47d9539f06e7",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.device.Extent3D": {
+      "title": "Extent3D",
+      "description": "A size along the three workgroup dimensions x, y and z, each positive (DESIGN.md § 3.1 dispatch dimensions, § 5.1 workgroup limits).",
+      "x-ess-name": "modelspec.device.Extent3D",
+      "x-ess-kind": "struct",
+      "type": "object",
+      "properties": {
+        "x": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "y": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "z": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "x",
+        "y",
+        "z"
+      ],
+      "additionalProperties": false,
+      "x-ess-invariants": [
+        "x > 0",
+        "y > 0",
+        "z > 0"
+      ]
+    }
+  }
+}

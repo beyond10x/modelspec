@@ -51,6 +51,17 @@ pub enum RunError {
 /// Runs `compiled.config.steps` SGD steps of `compiled.training` on synthetic data from
 /// `compiled.config.seed`.
 pub fn run(compiled: &CompiledTraining) -> Result<Run, RunError> {
+    run_observed(compiled, |_, _| {})
+}
+
+/// Runs as [`run`] does and calls `observe(k, loss)` with each loss as it is recorded, while the
+/// run goes on: `k` runs through `0..=steps` in order, and `loss` is `Run::losses[k]`. A run that
+/// stops early has observed the losses it recorded before it stopped; a run refused before its
+/// first step observes none.
+pub fn run_observed(
+    compiled: &CompiledTraining,
+    mut observe: impl FnMut(u64, f32),
+) -> Result<Run, RunError> {
     let config = &compiled.config;
     let forward = &compiled.forward.program;
     let initial = initialize(forward, config.seed, Stream::Init)?;
@@ -60,10 +71,12 @@ pub fn run(compiled: &CompiledTraining) -> Result<Run, RunError> {
     for step in 0..config.steps {
         let loss = sgd_step(&compiled.training, &data.inputs, &mut state)
             .map_err(|source| RunError::Step { step, source })?;
+        observe(step, loss);
         losses.push(loss);
     }
-    let last = evaluate(forward, &data.inputs, &state.values)?;
-    losses.push(last[0].data()[0]);
+    let last = evaluate(forward, &data.inputs, &state.values)?[0].data()[0];
+    observe(config.steps, last);
+    losses.push(last);
     Ok(Run {
         initial,
         losses,
@@ -168,6 +181,35 @@ mod tests {
         assert_eq!(run.state.values[&unused], run.initial[&unused]);
         assert_eq!(run.state.versions[&unused], StateVersion(0));
         assert_eq!(run.state.versions[&W], StateVersion(3));
+    }
+
+    #[test]
+    fn the_observer_sees_every_loss_in_step_order() {
+        let mut seen = Vec::new();
+        let run =
+            run_observed(&compiled(EXAMPLE, 3), |step, loss| seen.push((step, loss))).unwrap();
+        let expected: Vec<(u64, f32)> = (0..).zip(run.losses.iter().copied()).collect();
+        assert_eq!(seen, expected);
+        assert_eq!(seen.len(), 4);
+    }
+
+    #[test]
+    fn an_observed_run_is_the_run() {
+        let c = compiled(EXAMPLE, 5);
+        assert_eq!(run_observed(&c, |_, _| {}).unwrap(), run(&c).unwrap());
+    }
+
+    #[test]
+    fn a_refused_run_observes_no_loss() {
+        let source = EXAMPLE
+            .replace("return matmul(x, w);", "return w;")
+            .replace(
+                "param w: Tensor<f32, [4, 1]>",
+                "param w: Tensor<f32, [8, 1]>",
+            );
+        let mut seen = 0;
+        assert!(run_observed(&compiled(&source, 1), |_, _| seen += 1).is_err());
+        assert_eq!(seen, 0);
     }
 
     #[test]

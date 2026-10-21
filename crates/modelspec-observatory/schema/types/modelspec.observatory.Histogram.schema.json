@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/modelspec.observatory.Histogram",
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "8ee8183aac8b4c05dcb6ef664d0301c99254ddd158f28d8c457a1c2979f56ae6",
+    "contract_digest": "slice-sha256/2:066c0e7cba9188fbbed645cb6e2f361e35ef307bbe620806ec50dc24087751c5",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.observatory.Histogram": {
+      "title": "Histogram",
+      "description": "The distribution of one tensor's elements in bins; bin i counts the elements in [bin_edges[i], bin_edges[i+1]), so there is one more edge than counts, which ESS does not state here.",
+      "x-ess-name": "modelspec.observatory.Histogram",
+      "x-ess-kind": "struct",
+      "type": "object",
+      "properties": {
+        "bin_edges": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          }
+        },
+        "counts": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          }
+        }
+      },
+      "required": [
+        "bin_edges",
+        "counts"
+      ],
+      "additionalProperties": false,
+      "x-ess-invariants": [
+        "forall count in counts: (count >= 0)"
+      ]
+    }
+  }
+}

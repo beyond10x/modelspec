@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/modelspec.device.DeviceProfileId",
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "8ee8183aac8b4c05dcb6ef664d0301c99254ddd158f28d8c457a1c2979f56ae6",
+    "contract_digest": "slice-sha256/2:d4ad34008e9b0bc998bcdcd001cdd88f87da98f763398b386d56d2e31990e184",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.device.DeviceProfileId": {
+      "title": "DeviceProfileId",
+      "x-ess-name": "modelspec.device.DeviceProfileId",
+      "x-ess-kind": "newtype",
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    }
+  }
+}

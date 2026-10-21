@@ -1,10 +1,6 @@
 domain: modelspec.observatory
 
-summary: What the training observatory reads from a training run, the architecture it draws and the insights it shows (epic:training-observatory). The event stream of a run is its RunEvents in sequence order, served live as `text/event-stream` or replayed from a recorded run file.
-
-# UNMAPPED (live transport): the transport of the live stream (the `train` serve flag, its address,
-# the `text/event-stream` binding) is named by the epic but not settled ("name to be settled in
-# decomposition"); no component or `reached_by` is declared here. Open question for the owner.
+summary: What the training observatory reads from a training run, the architecture it draws and the insights it shows (epic:training-observatory). The event stream of a run is its RunEvents in sequence order, served live as `text/event-stream` (ServeAddress, StreamFrame) or replayed from a recorded run file.
 
 # UNMAPPED (recorded file): the recorded run file a stream replays from (its format, the flag that
 # writes it, and how a replay is started) is named by the epic but not settled; no file format is
@@ -65,7 +61,7 @@ types:
   - name: modelspec.observatory.StepCompleted
     kind: struct
     naming:
-      summary: The event of one completed training step, one per step (epic:training-observatory). Its loss is the loss the CLI prints for that step (DESIGN.md § 8).
+      summary: The event of one completed training step (epic:training-observatory), one for each of the steps + 1 losses a run records, steps start_step through start_step + steps in order; step k is the loss after k updates and the last is the loss of the final parameters (DESIGN.md § 8, the `step <k> loss <v>` lines; `train::runner` in modelspec-runtime). Its loss is the loss the CLI prints for that step (DESIGN.md § 8).
     fields:
       - name: step
         type: Integer
@@ -91,16 +87,67 @@ types:
     kind: union
     tag: kind
     naming:
-      summary: The typed event the training process sends, one per step and one per run lifecycle change (epic:training-observatory).
-    # UNMAPPED: RunStarted, RunFinished and RunFailed are lifecycle changes of the run, and
-    # TrainingRun's lifecycle has one state (Recorded) and no command that moves it; which states
-    # a run passes through, and what a started, finished or failed event carries (a failed run's
-    # diagnostic code, DESIGN.md § 8.1?), no source settles. They are unit variants until it is.
+      summary: The typed event the training process sends, one per step and one per run lifecycle change (epic:training-observatory). A run is started, then finished or failed, and its stream says so, RunStarted first, then one StepCompleted per recorded loss, then exactly one of RunFinished or RunFailed, last. These are not TrainingRun lifecycle states, which keep the one state Recorded of the record, because ESS moves an entity's state only by a command outcome (ESS-ENTITY-005), and this specification declares no commands. RunFinished carries nothing; the final loss is the last StepCompleted's. A run refused before its first step, such as by E-DATA-003, sends RunStarted then RunFailed and no StepCompleted.
     variants:
-      RunStarted:
+      RunStarted: modelspec.observatory.RunStarted
       StepCompleted: modelspec.observatory.StepCompleted
       RunFinished:
-      RunFailed:
+      RunFailed: modelspec.observatory.RunFailed
+
+  - name: modelspec.observatory.RunStarted
+    kind: struct
+    naming:
+      summary: The event of a run starting, the first of its stream (RunEventBody). It carries the two TrainingRun fields that say which steps follow, start_step through start_step + steps (DESIGN.md § 6); the other record fields are the run's artifact and record, which M0 does not write (story:m0-cpu-sgd-training, Out of scope).
+    fields:
+      - name: steps
+        type: Integer
+        summary: TrainingRun.steps, the steps of this invocation.
+      - name: start_step
+        type: Integer
+        summary: TrainingRun.start_step, the step of the first StepCompleted.
+    invariants:
+      - steps >= 0
+      - start_step >= 0
+
+  - name: modelspec.observatory.RunFailed
+    kind: struct
+    naming:
+      summary: The event of a run failing, the last of its stream (RunEventBody). A failure is a diagnostic or a runtime error (DESIGN.md § 8.1, diagnostics distinguish user specification errors from runtime failures).
+    fields:
+      - name: code
+        type: Optional<String>
+        summary: The diagnostic code that refused the run, such as E-DATA-003 (DESIGN.md § 8.1, M0 codes for `train`); absent for a runtime error, which has no code.
+      - name: message
+        type: String
+        summary: The failure on one line, the diagnostic's message or the runtime error as `modelspec train` reports it.
+
+  - name: modelspec.observatory.ServeAddress
+    kind: newtype
+    of: String
+    naming:
+      summary: The value of `modelspec train --serve <addr>` (epic:training-observatory, In scope, first bullet), a loopback socket address `<ip>:<port>` with an IPv4 address in 127.0.0.0/8, `[::1]` or `localhost` (127.0.0.1), so the stream is reachable from this machine only (epic, Out of scope, no remote access beyond localhost). Port 0 lets the system choose. Any other address is a usage error. Once bound the process prints `serving http://<bound address>/events` on stderr; stdout is what a run without the flag prints.
+
+  - name: modelspec.observatory.RunEventKind
+    kind: enum
+    naming:
+      summary: The SSE `event:` name of a StreamFrame, the `kind` tag of its RunEvent's body (RunEventBody).
+    variants: [RunStarted, StepCompleted, RunFinished, RunFailed]
+
+  - name: modelspec.observatory.StreamFrame
+    kind: struct
+    naming:
+      summary: One Server-Sent Events frame of the live stream (epic:training-observatory, In scope, first bullet; story:observatory-live-event-stream, open question 1), the lines `event:`, `id:` and `data:` and a blank line. `GET /events` at the ServeAddress answers 200 with `Content-Type text/event-stream` and sends the run's events in sequence order from sequence 0, or from the one after a `Last-Event-ID` request header, then each new event as the run emits it, and closes the response after RunFinished or RunFailed; any other path answers 404. The process keeps serving after the run ends, so a client that connects late reads the whole stream, until the process is interrupted.
+    fields:
+      - name: event
+        type: modelspec.observatory.RunEventKind
+      - name: id
+        type: Integer
+        summary: The RunEvent's sequence.
+      - name: data
+        type: String
+        summary: The JSON of one RunEvent on one line, valid against the JSON Schema `ess generate --kind schema` writes for it.
+    invariants:
+      - id >= 0
 
   - name: modelspec.observatory.ModelGraphId
     kind: newtype
