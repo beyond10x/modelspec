@@ -11,11 +11,17 @@ relations:
 - depends_on: story:m0-tensor-ir-core
 scope:
 - confidence: cited
+  path: AGENTS.md
+- confidence: cited
   path: Taskfile.yml
 - confidence: cited
   path: crates/modelspec-cli/src/check.rs
 - confidence: cited
   path: crates/modelspec-cli/tests/check.rs
+- confidence: cited
+  path: crates/modelspec-cli/tests/check_adversary.rs
+- confidence: cited
+  path: crates/modelspec-cli/tests/exit_codes.rs
 - confidence: cited
   path: crates/modelspec-core/src/hir.rs
 - confidence: cited
@@ -24,7 +30,7 @@ scope:
   path: crates/modelspec-core/src/types.rs
 - confidence: cited
   path: tests/language/check
-revision: 12
+revision: 13
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-21T09:12:26Z", actor: "human:timo", revision: 10, decided_on: {"recorded":{"review_outcome":2}}}
 - {from: "proposed", to: "active", at: "2026-10-21T09:12:27Z", actor: "human:timo", revision: 11, decided_on: {"recorded":{"review_outcome":2}}}
