@@ -7,8 +7,9 @@ use std::path::Path;
 use std::time::Duration;
 
 use modelspec_observatory::{
-    EventSequence, RunEventBody, RunFailed, RunStarted, Server, StepCompleted, TrainingRunId,
-    frame, parse_serve_address,
+    EventSequence, Histogram, MetricSample, ParameterStatistics, RunEventBody, RunFailed,
+    RunStarted, Server, StatisticsSubject, StepCompleted, TrainingRunId, frame,
+    parse_serve_address,
 };
 use serde_json::Value;
 
@@ -276,6 +277,120 @@ fn another_path_is_not_found_and_another_method_not_allowed() {
         response.starts_with("HTTP/1.1 405 Method Not Allowed\r\n"),
         "{response}"
     );
+}
+
+/// Every float a `RunEvent` carries is an `Optional<Binary64>` sent as `null` when it is NaN or
+/// ±inf (`spec/domains/observatory.yaml`; wave observatory-1 coordinator, 2026-10-21), so no
+/// `number` in the schema stands without a `null` beside it in its `anyOf`. Paths of the bare
+/// ones are collected into `bare`.
+fn bare_numbers(node: &Value, path: &str, nullable: bool, bare: &mut Vec<String>) {
+    match node {
+        Value::Object(map) => {
+            if map.get("type") == Some(&Value::from("number")) && !nullable {
+                bare.push(path.to_owned());
+            }
+            for (key, value) in map {
+                let here = format!("{path}/{key}");
+                match (key.as_str(), value) {
+                    ("anyOf", Value::Array(options)) => {
+                        let with_null = options
+                            .iter()
+                            .any(|o| o.get("type") == Some(&Value::from("null")));
+                        for (k, option) in options.iter().enumerate() {
+                            bare_numbers(option, &format!("{here}/{k}"), with_null, bare);
+                        }
+                    }
+                    _ => bare_numbers(value, &here, false, bare),
+                }
+            }
+        }
+        Value::Array(items) => {
+            for (k, item) in items.iter().enumerate() {
+                bare_numbers(item, &format!("{path}/{k}"), false, bare);
+            }
+        }
+        _ => {}
+    }
+}
+
+#[test]
+fn every_number_a_run_event_carries_admits_null() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("schema/entities/modelspec.observatory.RunEvent.schema.json");
+    let schema: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    let mut bare = Vec::new();
+    bare_numbers(&schema, "", false, &mut bare);
+    assert!(bare.is_empty(), "numbers without null: {bare:?}");
+    let text = schema.to_string();
+    assert!(
+        text.matches(r#"{"type":"number"}"#).count() >= 4,
+        "the walk saw the loss, a metric value, a norm and a bin edge: {text}"
+    );
+}
+
+/// A `StepCompleted` with `value`, its loss, a metric value, a norm and two bin edges.
+fn step_with_every_float(value: f64) -> RunEventBody {
+    RunEventBody::StepCompleted(StepCompleted {
+        step: 3,
+        loss: value,
+        metrics: vec![MetricSample {
+            name: "accuracy".into(),
+            value,
+        }],
+        parameters: vec![ParameterStatistics {
+            path: "LinearReg.w".into(),
+            subject: StatisticsSubject::Gradient,
+            norm: value,
+            histogram: Histogram {
+                bin_edges: vec![value, 1.0],
+                counts: vec![4],
+            },
+        }],
+    })
+}
+
+#[test]
+fn every_float_of_an_event_is_null_when_not_finite_and_validates() {
+    let validator = schema();
+    for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        let event = EventSequence::new(TrainingRunId::new()).event(step_with_every_float(value));
+        let json = serde_json::to_value(&event).unwrap();
+        let errors: Vec<String> = validator
+            .iter_errors(&json)
+            .map(|e| e.to_string())
+            .collect();
+        assert!(errors.is_empty(), "{value}: {json}: {errors:?}");
+        let step = &json["body"]["value"];
+        assert_eq!(step["loss"], Value::Null, "{value}");
+        assert_eq!(step["metrics"][0]["value"], Value::Null, "{value}");
+        assert_eq!(step["parameters"][0]["norm"], Value::Null, "{value}");
+        assert_eq!(
+            step["parameters"][0]["histogram"]["bin_edges"],
+            serde_json::json!([null, 1.0]),
+            "{value}"
+        );
+    }
+    let finite = EventSequence::new(TrainingRunId::new()).event(step_with_every_float(0.5));
+    let json = serde_json::to_value(&finite).unwrap();
+    assert!(validator.is_valid(&json), "{json}");
+    assert_eq!(json["body"]["value"]["loss"], 0.5);
+    assert_eq!(json["body"]["value"]["parameters"][0]["norm"], 0.5);
+}
+
+/// `null` reads back as NaN, so the types read every event they write.
+#[test]
+fn a_null_float_reads_back_as_nan() {
+    let event = EventSequence::new(TrainingRunId::new()).event(step_with_every_float(f64::INFINITY));
+    let text = serde_json::to_string(&event).unwrap();
+    let read: modelspec_observatory::RunEvent = serde_json::from_str(&text).unwrap();
+    let RunEventBody::StepCompleted(step) = read.body else {
+        panic!("{text}")
+    };
+    assert!(step.loss.is_nan());
+    assert!(step.metrics[0].value.is_nan());
+    assert!(step.parameters[0].norm.is_nan());
+    assert!(step.parameters[0].histogram.bin_edges[0].is_nan());
+    assert_eq!(step.parameters[0].histogram.bin_edges[1], 1.0);
 }
 
 #[test]

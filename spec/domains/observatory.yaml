@@ -19,7 +19,9 @@ types:
       - name: name
         type: String
       - name: value
-        type: Binary64
+        type: Optional<Binary64>
+        presence: null_when_absent
+        summary: The metric's value; null when it is NaN or ±inf, which Binary64 does not hold (wave observatory-1 coordinator, 2026-10-21).
 
   - name: modelspec.observatory.Histogram
     kind: struct
@@ -29,7 +31,8 @@ types:
     # settled by the epic. Open question.
     fields:
       - name: bin_edges
-        type: List<Binary64>
+        type: List<Optional<Binary64>>
+        summary: The bin edges in ascending order; an edge is null when it is NaN or ±inf, which Binary64 does not hold (wave observatory-1 coordinator, 2026-10-21).
       - name: counts
         type: List<Integer>
     invariants:
@@ -51,12 +54,16 @@ types:
       - name: subject
         type: modelspec.observatory.StatisticsSubject
       - name: norm
-        type: Binary64
+        type: Optional<Binary64>
+        presence: null_when_absent
+        summary: The norm; null when it is NaN or ±inf, which Binary64 does not hold (wave observatory-1 coordinator, 2026-10-21).
         # UNMAPPED: the epic says "norms" and not which norm (L2, max). Open question.
       - name: histogram
         type: modelspec.observatory.Histogram
     invariants:
-      - norm >= 0
+      - any:
+          - not defined(norm)
+          - norm >= 0
 
   - name: modelspec.observatory.StepCompleted
     kind: struct
@@ -67,8 +74,9 @@ types:
         type: Integer
         summary: The step number the run reached, as TrainingRun.current_step (DESIGN.md § 6.1 step number).
       - name: loss
-        type: Binary64
-        summary: The rank-0 loss value of the step (DESIGN.md § 2.2, § 8).
+        type: Optional<Binary64>
+        presence: null_when_absent
+        summary: The rank-0 loss value of the step (DESIGN.md § 2.2, § 8); null when the loss is NaN or ±inf, which Binary64 does not hold, as a diverging run records (wave observatory-1 coordinator, 2026-10-21). The CLI's `step <k> loss <v>` line on stdout for that step names which, `NaN`, `inf` or `-inf`.
       - name: metrics
         type: List<modelspec.observatory.MetricSample>
         summary: Metric samples of the step besides the loss; names are unique.
@@ -136,7 +144,7 @@ types:
   - name: modelspec.observatory.StreamFrame
     kind: struct
     naming:
-      summary: One Server-Sent Events frame of the live stream (epic:training-observatory, In scope, first bullet; story:observatory-live-event-stream, open question 1), the lines `event:`, `id:` and `data:` and a blank line. `GET /events` at the ServeAddress answers 200 with `Content-Type text/event-stream` and sends the run's events in sequence order from sequence 0, or from the one after a `Last-Event-ID` request header, then each new event as the run emits it, and closes the response after RunFinished or RunFailed; any other path answers 404. The process keeps serving after the run ends, so a client that connects late reads the whole stream, until the process is interrupted.
+      summary: One Server-Sent Events frame of the live stream (epic:training-observatory, In scope, first bullet; wave observatory-1 coordinator, 2026-10-21), the lines `event:`, `id:` and `data:` and a blank line. `GET /events` at the ServeAddress answers 200 with `Content-Type text/event-stream` and sends the run's events in sequence order from sequence 0, or from the one after a `Last-Event-ID` request header, then each new event as the run emits it, and closes the response after RunFinished or RunFailed; any other path answers 404. The process keeps serving after the run ends, so a client that connects late reads the whole stream; on SIGINT or SIGTERM after the run ends it stops serving and exits with the run's own status, 0 for a run that finished and 1 for a run that failed, the code `modelspec train` gives without the flag (wave observatory-1 coordinator, 2026-10-21); a signal before the run ends stops the process as it stops a run without the flag.
     fields:
       - name: event
         type: modelspec.observatory.RunEventKind

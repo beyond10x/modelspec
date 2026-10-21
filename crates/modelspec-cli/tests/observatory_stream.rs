@@ -360,6 +360,56 @@ fn a_data_refusal_ends_the_stream_with_run_failed() {
     );
 }
 
+/// Sends `signal` (`TERM`, `INT`) to the serving process and waits for it to exit.
+fn interrupt(served: &mut Served, signal: &str) -> std::process::ExitStatus {
+    let pid = served.child.id().to_string();
+    let sent = Command::new("kill")
+        .args(["-s", signal, &pid])
+        .status()
+        .expect("kill runs");
+    assert!(sent.success(), "kill -s {signal} {pid}: {sent}");
+    let start = std::time::Instant::now();
+    loop {
+        if let Some(status) = served.child.try_wait().expect("the status is read") {
+            return status;
+        }
+        assert!(
+            start.elapsed() < WAIT,
+            "the process still serves after SIG{signal}"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// `StreamFrame` (wave observatory-1 coordinator, 2026-10-21): after the run the process keeps
+/// serving, and on SIGINT or SIGTERM it stops and exits with the run's own status, 0 for a run
+/// that finished and 1 for one that failed, as `modelspec train` without the flag does.
+#[test]
+fn an_interrupted_server_exits_with_the_runs_status() {
+    let refused = source_file("unread_x_interrupted.mspec", UNREAD_X);
+    for (path, last, code) in [
+        (EXAMPLE, "RunFinished", 0),
+        (refused.as_str(), "RunFailed", 1),
+    ] {
+        for signal in ["TERM", "INT"] {
+            let mut served = Served::start(path);
+            let frames = read_stream(&served);
+            assert_eq!(kinds(&frames).last(), Some(&last), "{path}");
+            let status = interrupt(&mut served, signal);
+            let (stdout, _) = served.stop();
+            assert_eq!(
+                status.code(),
+                Some(code),
+                "{path} on SIG{signal}: {status}"
+            );
+            if code == 0 {
+                let plain = modelspec(&["train", EXAMPLE, "--backend", "cpu"]);
+                assert_eq!(text(&stdout), text(&plain.stdout), "SIG{signal}");
+            }
+        }
+    }
+}
+
 #[test]
 fn a_late_client_reads_the_same_stream() {
     let mut served = Served::start(EXAMPLE);

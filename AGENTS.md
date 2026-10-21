@@ -39,8 +39,8 @@ Entry points are the `Taskfile.yml` tasks (go-task):
   documentation site differs from what the code produces now; `task docs-generate` rewrites them.
 - `task spec-validate`: `ess specify validate --path .` from inside `spec/`.
 - `task schema-check`: `ess generate --kind schema --check` from inside `spec/`, which fails when
-  `crates/modelspec-observatory/schema/` differs from what the specification generates now;
-  `task schema-generate` rewrites it. A change to any file under `spec/` changes the schema's
+  a file the specification generates under `crates/modelspec-observatory/schema/` differs from it
+  or is missing; an extra file there passes. `task schema-generate` rewrites them. A change to any file under `spec/` changes the schema's
   provenance digest, so run `task schema-generate` in the same change.
 - `task ci`: all of the above; the gate.
 - `task website`: `npm ci` and `npm run build` in `website/` (Node 22; nothing else uses Node).
