@@ -9,6 +9,10 @@ history.
 
 ## [Unreleased]
 
+### Changed
+
+- CPU reference: `matmul` runs in loop order `i`, `k`, `j` with the same bits as 0.1.1, and the `mnist_shape` benchmark (`cargo bench -p modelspec-runtime --bench mnist_shape`) prints images/s for the 784 → 64 → 10 shape (`cpu-matmul-row-order`)
+
 ## [0.1.1] - 2026-10-21
 
 Documentation release: the website review's fixes and highlighted `modelspec` code blocks. The
