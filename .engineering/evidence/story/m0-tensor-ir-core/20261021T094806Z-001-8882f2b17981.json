@@ -1,0 +1,12 @@
+{
+  "at": "2026-10-21T09:48:06Z",
+  "actor": "human:timo",
+  "artifact": "story:m0-tensor-ir-core",
+  "kind": "story",
+  "revision": 9,
+  "change": {
+    "change": "evidence",
+    "kind": "verification",
+    "source": "b10x-build-slot task ci at impl/m0-tensor-ir-core dbf7465: exit 0; base 1c33fe0 17 cases, treatment 50 (tensor_ir 26, tensor_ir_adversary 7, no_vulkan 7, exit_codes 8, core unit 2)"
+  }
+}

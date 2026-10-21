@@ -18,8 +18,12 @@ scope:
 - confidence: cited
   path: crates/modelspec-core/src/ops.rs
 - confidence: cited
+  path: crates/modelspec-core/tests/golden/mse_matmul.tensor.ir
+- confidence: cited
   path: crates/modelspec-core/tests/tensor_ir.rs
-revision: 9
+- confidence: cited
+  path: crates/modelspec-core/tests/tensor_ir_adversary.rs
+revision: 10
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-21T09:12:25Z", actor: "human:timo", revision: 8, decided_on: {"recorded":{"review_outcome":1}}}
 - {from: "proposed", to: "active", at: "2026-10-21T09:12:26Z", actor: "human:timo", revision: 9, decided_on: {"recorded":{"review_outcome":1}}}
