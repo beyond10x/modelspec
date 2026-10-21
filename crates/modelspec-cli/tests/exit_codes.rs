@@ -39,8 +39,14 @@ fn subcommand_without_its_file_exits_2() {
 }
 
 #[test]
-fn unimplemented_check_exits_1() {
-    assert_eq!(exit_code(&["check", "model.mspec"]), 1);
+fn check_on_a_missing_file_exits_1_with_a_diagnostic() {
+    let output = Command::new(env!("CARGO_BIN_EXE_modelspec"))
+        .args(["check", "no-such-model.mspec"])
+        .output()
+        .expect("modelspec runs");
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("no-such-model.mspec"), "{stderr}");
 }
 
 #[test]
