@@ -1,0 +1,13 @@
+{
+  "at": "2026-10-21T20:43:57Z",
+  "actor": "human:timo",
+  "artifact": "story:observatory-input-adjoint",
+  "kind": "story",
+  "revision": 9,
+  "change": {
+    "change": "evidence",
+    "kind": "verification",
+    "source": "cargo test -p modelspec-core -p modelspec-runtime --test input_adjoint: VERIFIED, new behaviour; E0432 at ab9ed27, 414 passed 0 failed on 85bc574",
+    "reference": "~/.cache/modelspec-wave-observatory-1/observatory-input-adjoint/scratch/red-core.log, red-runtime.log vs coord-test.log"
+  }
+}
