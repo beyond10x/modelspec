@@ -1,0 +1,14 @@
+## What it adds
+
+- `spec/domains/device.yaml`: three boolean fields on `DeviceProfile`,
+  `shader_rounding_mode_rte_f32`, `shader_denorm_preserve_f32` and
+  `shader_signed_zero_inf_nan_preserve_f32`, each summarised as the driver value of the Vulkan
+  property of the same name; `ess specify validate --path .` from inside `spec/` passes.
+- `modelspec_core::device::DeviceProfile`, the plain data type of `spec/domains/device.yaml` with
+  its invariants, and its JSON form (`serde`, `serde_json` in `modelspec-core`). No Vulkan type
+  appears in it.
+- `crates/modelspec-runtime/src/vulkan/` behind the `vulkan` feature: an `ash` instance with the
+  loader opened at run time (no link-time dependency on `libvulkan`), physical-device enumeration,
+  selection of a compute-capable queue family, a compute-only logical device (no surface, no
+  swapchain), and `probe() -> DeviceProfile` filled from the Vulkan property and feature chains,
+  the three float-control values from `VkPhysicalDeviceFloatControlsProperties`.

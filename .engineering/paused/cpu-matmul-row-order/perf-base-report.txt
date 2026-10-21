@@ -1,0 +1,15 @@
+ 98.15% [.] modelspec_runtime::cpu::interpreter::run::<f32>
+ 0.46% [.] 0x0000000000176707
+ 0.26% [.] <alloc::vec::Vec<f32> as alloc::vec::spec_extend::SpecExtend<f32, core::iter::adapters::map::Map<core::iter::adapters::zip::Zip<core::slice::iter::Iter<f32>, core::slice::iter::Iter<f32>>, modelspec_runtime::cpu::interpreter::elementwise<f32, modelspec_runtime::cpu::interpreter::eval_node<f32>::{closure#2}>::{closure#0}>>>::spec_extend
+ 0.22% [.] <alloc::vec::Vec<f32> as alloc::vec::spec_extend::SpecExtend<f32, core::iter::adapters::map::Map<core::slice::iter::Iter<f32>, modelspec_runtime::cpu::interpreter::elementwise<f32, modelspec_runtime::cpu::interpreter::eval_node<f32>::{closure#3}>::{closure#2}>>>::spec_extend
+ 0.19% [.] 0x00000000001766a4
+ 0.14% [.] mnist_shape::main
+ 0.11% [k] 0xffffffff81801968
+ 0.05% [.] <alloc::vec::Vec<f32> as alloc::vec::spec_extend::SpecExtend<f32, core::iter::adapters::map::Map<core::iter::adapters::zip::Zip<core::slice::iter::Iter<f32>, core::slice::iter::Iter<f32>>, modelspec_runtime::cpu::interpreter::eval_node<f32>::{closure#6}>>>::spec_extend
+ 0.04% [.] malloc
+ 0.03% [.] <alloc::vec::Vec<f32> as alloc::vec::spec_extend::SpecExtend<f32, core::iter::adapters::map::Map<core::slice::iter::Iter<f32>, modelspec_runtime::cpu::interpreter::eval_node<f32>::{closure#4}>>>::spec_extend
+ 0.03% [.] cfree
+ 0.03% [.] modelspec_core::ir::verify::verify
+ 0.02% [k] 0xffffffff81801968
+ 0.02% [.] modelspec_core::ir::verify::verify_step
+ 0.01% [.] modelspec_core::ops::infer

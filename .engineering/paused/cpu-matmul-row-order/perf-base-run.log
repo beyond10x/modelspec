@@ -1,0 +1,2 @@
+mnist_shape: 200 steps of batch 100 after 20 warmup, 6.943 s, 34.715 ms/step, 2881 images/s
+mnist_shape: last loss 9.174772e-2 (bits 0x3dbbe63b), weights blake3 805f64bd99ba62372466603b07e7d457418d5121e1a3c4061b8bd886b8bb02df
