@@ -1,0 +1,9 @@
+format: ess/28
+system: modelspec
+version: v1
+
+domains:
+  - modelspec.artifact
+  - modelspec.checkpoint
+  - modelspec.device
+  - modelspec.training

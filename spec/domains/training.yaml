@@ -1,0 +1,42 @@
+domain: modelspec.training
+
+summary: The reproducibility record of one training run (DESIGN.md § 6.1).
+
+types:
+  - name: modelspec.training.TrainingRunId
+    kind: newtype
+    of: Uuid
+
+entities:
+  - name: modelspec.training.TrainingRun
+    naming:
+      summary: A run of one compiled artifact, with what § 6.1 says must be recorded to reproduce it.
+    identity:
+      name: training_run_id
+      type: modelspec.training.TrainingRunId
+    fields:
+      - name: artifact_id
+        type: modelspec.artifact.ArtifactId
+      - name: compiler_version
+        type: String
+      - name: seed
+        type: Integer
+      - name: steps
+        type: Integer
+        summary: TrainConfig.steps (DESIGN.md § 6).
+      - name: deterministic
+        type: Boolean
+        summary: Deterministic mode (DESIGN.md § 6.1).
+    # UNMAPPED: § 6.1 records "backend/device/driver". A CPU run has no Vulkan device, so the link
+    # to DeviceProfile is optional at least; whether it is a relation or a copied value is open.
+    # UNMAPPED: optimizer hyperparameters and RNG state have no designed shape yet (§ 6.1, § 2.3).
+    relations:
+      - name: artifact
+        kind: references
+        target: modelspec.artifact.CompiledArtifact
+        cardinality: one
+        via: artifact_id
+    lifecycle:
+      initial: Recorded
+      states: [Recorded]
+      terminal: [Recorded]

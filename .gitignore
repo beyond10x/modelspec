@@ -1,3 +1,4 @@
 target/
 build/
 *.msckpt
+.engineering/drafts/

@@ -1,0 +1,9 @@
+format: ess-inputs/2
+requires: ess 0.66.0
+specification:
+  - system.yaml
+  - domains/artifact.yaml
+  - domains/checkpoint.yaml
+  - domains/device.yaml
+  - domains/training.yaml
+scenarios: []

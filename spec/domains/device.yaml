@@ -1,0 +1,53 @@
+domain: modelspec.device
+
+summary: What `modelspec inspect-device` reports; queried from the driver, never inferred from a product name (DESIGN.md § 5.1, § 8).
+
+types:
+  - name: modelspec.device.DeviceProfileId
+    kind: newtype
+    of: Uuid
+
+  - name: modelspec.device.MemoryHeap
+    kind: struct
+    fields:
+      - name: size_bytes
+        type: Integer
+      - name: device_local
+        type: Boolean
+
+entities:
+  - name: modelspec.device.DeviceProfile
+    naming:
+      summary: One Vulkan physical device as discovery recorded it (DESIGN.md § 5.1).
+    identity:
+      name: device_profile_id
+      type: modelspec.device.DeviceProfileId
+    fields:
+      - name: vendor_id
+        type: Integer
+      - name: device_id
+        type: Integer
+      - name: device_uuid
+        type: Optional<String>
+        summary: Recorded if available (DESIGN.md § 5.1).
+      - name: driver_version
+        type: Integer
+      - name: subgroup_size
+        type: Integer
+      - name: max_workgroup_invocations
+        type: Integer
+      - name: f16_storage
+        type: Boolean
+      - name: cooperative_matrix
+        type: Boolean
+        summary: Whether the driver exposes a cooperative-matrix extension (DESIGN.md § 5.2, M4).
+      - name: timestamp_queries
+        type: Boolean
+      - name: memory_heaps
+        type: List<modelspec.device.MemoryHeap>
+    # UNMAPPED: § 5.1 also lists SPIR-V/Vulkan feature levels, the supported cooperative-matrix
+    # types and M/N/K shapes, and storage-buffer limits. Their representation is not designed yet.
+    lifecycle:
+      initial: Probed
+      states: [Probed]
+      terminal: [Probed]

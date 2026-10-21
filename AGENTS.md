@@ -8,6 +8,19 @@ A Rust compiler and runtime for `.mspec` tensor-program specifications. Humans s
 Design only (DESIGN.md revision 0.1, 2026-10-21). No Cargo workspace, no code, no CI. The first
 implementation work is milestone M0 (DESIGN.md § 1 and § 11, iteration 1).
 
+## Planning and specification
+
+- Work is planned in the AEP store under `.engineering/` through the `aep` CLI only
+  (`aep plan artifact list` to start). Never edit a store file by hand.
+- Spec-first: every data contract between compiler, runtime and files on disk (compiled artifact,
+  checkpoint, device profile, training-run record) is typed in `spec/` as ESS before code or stories
+  use it. Run `ess specify validate --path .` from inside `spec/` after each edit.
+  `spec/ess-inputs.yaml` pins the `ess` release; an older installed `ess` delegates to the pin only
+  when started inside `spec/`, and refuses `--path spec` from the repository root.
+- The `.mspec` language (grammar, types, shapes, gradient rules) is not an ESS domain; DESIGN.md
+  § 2–4 and the tests of DESIGN.md § 9 hold it.
+- Generated output (`ess generate`) goes outside `spec/`, beside it, never inside it.
+
 ## Rules
 
 - DESIGN.md is the authority. A change to semantics, IR levels, the operator registry or an ADR in

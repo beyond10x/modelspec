@@ -1,0 +1,73 @@
+domain: modelspec.artifact
+
+summary: What the compiler emits and the runtime loads without reparsing source (DESIGN.md § 7.1).
+
+types:
+  - name: modelspec.artifact.ArtifactId
+    kind: newtype
+    of: Uuid
+
+  - name: modelspec.artifact.KernelModuleId
+    kind: newtype
+    of: Uuid
+
+  - name: modelspec.artifact.ContentHash
+    kind: newtype
+    of: String
+    naming:
+      summary: A blake3 digest under explicit serialization and version rules (DESIGN.md § 7).
+
+  - name: modelspec.artifact.Backend
+    kind: enum
+    variants: [Cpu, Vulkan]
+
+entities:
+  - name: modelspec.artifact.CompiledArtifact
+    naming:
+      summary: A versioned compiler output holding a manifest, kernels and an execution plan (DESIGN.md § 7.1).
+    identity:
+      name: artifact_id
+      type: modelspec.artifact.ArtifactId
+    fields:
+      - name: format_version
+        type: Integer
+        summary: CompiledArtifact is versioned (DESIGN.md § 7.1).
+      - name: backend
+        type: modelspec.artifact.Backend
+      - name: ir_hash
+        type: modelspec.artifact.ContentHash
+        summary: Part of every kernel cache key (DESIGN.md § 5.3).
+      - name: fast_math
+        type: Boolean
+        summary: Recorded in the artifact hash (DESIGN.md § 3.3).
+    # UNMAPPED: DESIGN.md § 7.1 names the parts `manifest` and `plan` but not their fields. The
+    # execution DAG of § 3.1 (dispatches, copies, barriers, scratch allocations) is the likely plan;
+    # whether it is an entity, a struct or opaque bytes is open.
+    relations:
+      - name: kernels
+        kind: owns
+        target: modelspec.artifact.KernelModule
+        cardinality: many
+        via: artifact_id
+    lifecycle:
+      initial: Compiled
+      states: [Compiled]
+      terminal: [Compiled]
+
+  - name: modelspec.artifact.KernelModule
+    naming:
+      summary: One generated SPIR-V module of an artifact (DESIGN.md § 3, target lowering).
+    identity:
+      name: kernel_module_id
+      type: modelspec.artifact.KernelModuleId
+    fields:
+      - name: artifact_id
+        type: modelspec.artifact.ArtifactId
+      - name: entry_point
+        type: String
+      - name: spirv
+        type: Bytes
+    lifecycle:
+      initial: Emitted
+      states: [Emitted]
+      terminal: [Emitted]
