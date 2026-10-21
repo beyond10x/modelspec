@@ -1,0 +1,12 @@
+{
+  "at": "2026-10-21T13:15:42Z",
+  "actor": "human:timo",
+  "artifact": "story:m0-reverse-mode-autodiff",
+  "kind": "story",
+  "revision": 9,
+  "change": {
+    "change": "evidence",
+    "kind": "verification",
+    "source": "coordinator re-run of CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=line-tables-only b10x-build-slot task ci on unit commit d64f918: exit 0, 359 cases, 0 failed"
+  }
+}

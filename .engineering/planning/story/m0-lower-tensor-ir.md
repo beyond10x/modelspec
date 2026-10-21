@@ -2,14 +2,51 @@
 format: aep.planning-md/3
 id: story:m0-lower-tensor-ir
 kind: story
-status: draft
+status: implemented
 title: Lower Typed HIR to Tensor IR and modelspec ir --stage tensor
 relations:
 - decomposes: epic:m0-semantic-core
 - serves: vision:modelspec
 - depends_on: story:m0-check-types-shapes
 - depends_on: story:m0-tensor-ir-core
-revision: 2
+scope:
+- confidence: cited
+  path: AGENTS.md
+- confidence: cited
+  path: DESIGN.md
+- confidence: cited
+  path: crates/modelspec-cli/src/ir.rs
+- confidence: cited
+  path: crates/modelspec-cli/tests/check.rs
+- confidence: cited
+  path: crates/modelspec-cli/tests/exit_codes.rs
+- confidence: cited
+  path: crates/modelspec-cli/tests/golden/linear_regression.tensor.ir
+- confidence: cited
+  path: crates/modelspec-cli/tests/ir_tensor.rs
+- confidence: cited
+  path: crates/modelspec-cli/tests/ir_tensor_adversary.rs
+- confidence: cited
+  path: crates/modelspec-core/src/compile.rs
+- confidence: cited
+  path: crates/modelspec-core/src/lower.rs
+- confidence: cited
+  path: crates/modelspec-core/src/passes/dce.rs
+- confidence: cited
+  path: crates/modelspec-core/src/types.rs
+- confidence: cited
+  path: tests/language/check/E-TYPE-017-nested-forward-calls.mspec
+- confidence: cited
+  path: tests/language/check/E-TYPE-017-no-forward-call.mspec
+- confidence: cited
+  path: tests/language/check/E-TYPE-017-no-forward-function.mspec
+- confidence: cited
+  path: tests/language/check/E-TYPE-017-two-forward-calls.mspec
+revision: 21
+transitions:
+- {from: "draft", to: "proposed", at: "2026-10-21T09:12:27Z", actor: "human:timo", revision: 9}
+- {from: "proposed", to: "active", at: "2026-10-21T09:12:27Z", actor: "human:timo", revision: 10}
+- {from: "active", to: "implemented", at: "2026-10-21T14:53:41Z", actor: "human:timo", revision: 21, decided_on: {"recorded":{"test_result":1,"review_outcome":1,"verification":1}}}
 ---
 # Lower Typed HIR to Tensor IR and `modelspec ir --stage tensor`
 

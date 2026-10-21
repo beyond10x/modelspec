@@ -1,0 +1,9 @@
+//! The CPU backend: an interpreter of verified Tensor IR on host tensors, the reference oracle
+//! for every other backend (DESIGN.md § 9). Training IR is not interpreted here: its effect
+//! tokens and state versions are metadata, and the host runner applies parameter writes.
+
+pub mod interpreter;
+pub mod tensor;
+
+pub use interpreter::{Evaluation, RuntimeError, evaluate, evaluate_all};
+pub use tensor::{Element, HostTensor, TensorError};

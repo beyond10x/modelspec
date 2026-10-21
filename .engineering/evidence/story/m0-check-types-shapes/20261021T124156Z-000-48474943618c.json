@@ -1,0 +1,12 @@
+{
+  "at": "2026-10-21T12:41:56Z",
+  "actor": "human:timo",
+  "artifact": "story:m0-check-types-shapes",
+  "kind": "story",
+  "revision": 12,
+  "change": {
+    "change": "evidence",
+    "kind": "verification",
+    "source": "coordinator re-run of CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=line-tables-only b10x-build-slot task ci on unit commit 4c87751: exit 0, 302 cases, 0 failed"
+  }
+}

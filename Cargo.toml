@@ -1,0 +1,17 @@
+[workspace]
+members = ["crates/modelspec-core", "crates/modelspec-runtime", "crates/modelspec-cli"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+
+[workspace.dependencies]
+modelspec-core = { path = "crates/modelspec-core", version = "0.1.0" }
+modelspec-runtime = { path = "crates/modelspec-runtime", version = "0.1.0" }
+logos = "0.16"
+thiserror = "2.0"
+blake3 = "1"
+clap = { version = "4.6", features = ["derive"] }

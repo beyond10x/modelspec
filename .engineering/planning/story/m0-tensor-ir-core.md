@@ -2,13 +2,32 @@
 format: aep.planning-md/3
 id: story:m0-tensor-ir-core
 kind: story
-status: draft
+status: implemented
 title: Tensor IR, operator registry, verifier and printer
 relations:
 - decomposes: epic:m0-semantic-core
 - serves: vision:modelspec
 - depends_on: story:m0-workspace-foundation
-revision: 2
+scope:
+- confidence: cited
+  path: crates/modelspec-core/src/ir/print.rs
+- confidence: cited
+  path: crates/modelspec-core/src/ir/tensor.rs
+- confidence: cited
+  path: crates/modelspec-core/src/ir/verify.rs
+- confidence: cited
+  path: crates/modelspec-core/src/ops.rs
+- confidence: cited
+  path: crates/modelspec-core/tests/golden/mse_matmul.tensor.ir
+- confidence: cited
+  path: crates/modelspec-core/tests/tensor_ir.rs
+- confidence: cited
+  path: crates/modelspec-core/tests/tensor_ir_adversary.rs
+revision: 11
+transitions:
+- {from: "draft", to: "proposed", at: "2026-10-21T09:12:25Z", actor: "human:timo", revision: 8, decided_on: {"recorded":{"review_outcome":1}}}
+- {from: "proposed", to: "active", at: "2026-10-21T09:12:26Z", actor: "human:timo", revision: 9, decided_on: {"recorded":{"review_outcome":1}}}
+- {from: "active", to: "implemented", at: "2026-10-21T14:53:41Z", actor: "human:timo", revision: 11, decided_on: {"recorded":{"test_result":1,"review_outcome":2,"verification":1}}}
 ---
 # Tensor IR, operator registry, verifier and printer
 

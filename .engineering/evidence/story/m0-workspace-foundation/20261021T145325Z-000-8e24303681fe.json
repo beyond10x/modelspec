@@ -1,0 +1,12 @@
+{
+  "at": "2026-10-21T14:53:25Z",
+  "actor": "human:timo",
+  "artifact": "story:m0-workspace-foundation",
+  "kind": "story",
+  "revision": 17,
+  "change": {
+    "change": "evidence",
+    "kind": "test_result",
+    "source": "task ci on wave/m0 at ce1fe19: EXIT=0, 515 passed, 0 failed"
+  }
+}

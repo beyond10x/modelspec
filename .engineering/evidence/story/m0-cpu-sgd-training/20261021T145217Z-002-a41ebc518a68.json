@@ -1,0 +1,12 @@
+{
+  "at": "2026-10-21T14:52:17Z",
+  "actor": "human:timo",
+  "artifact": "story:m0-cpu-sgd-training",
+  "kind": "story",
+  "revision": 21,
+  "change": {
+    "change": "evidence",
+    "kind": "verification",
+    "source": "task ci at 1246dfc: EXIT=0, 515 passed, 0 failed; train examples/linear_regression.mspec --backend cpu: loss 9.693205 at step 0, 5.61e-11 at step 500"
+  }
+}

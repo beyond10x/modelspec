@@ -1,0 +1,12 @@
+{
+  "at": "2026-10-21T12:14:02Z",
+  "actor": "human:timo",
+  "artifact": "story:m0-cpu-interpreter",
+  "kind": "story",
+  "revision": 7,
+  "change": {
+    "change": "evidence",
+    "kind": "verification",
+    "source": "b10x-build-slot task ci at impl/m0-cpu-interpreter 07a302b: exit 0; base e7698c2 151 cases, treatment 237 (cpu_golden 80, cpu_adversary 6, syntax 90, syntax_adversary 11, tensor_ir 26, tensor_ir_adversary 7, no_vulkan 7, exit_codes 8, core unit 2)"
+  }
+}

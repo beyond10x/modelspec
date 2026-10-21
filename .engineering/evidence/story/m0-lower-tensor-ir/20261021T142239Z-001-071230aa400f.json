@@ -1,0 +1,12 @@
+{
+  "at": "2026-10-21T14:22:39Z",
+  "actor": "human:timo",
+  "artifact": "story:m0-lower-tensor-ir",
+  "kind": "story",
+  "revision": 10,
+  "change": {
+    "change": "evidence",
+    "kind": "verification",
+    "source": "task ci at 718d580: EXIT=0, 406 passed, 0 failed"
+  }
+}

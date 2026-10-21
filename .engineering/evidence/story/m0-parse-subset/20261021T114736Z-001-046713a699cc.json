@@ -1,0 +1,12 @@
+{
+  "at": "2026-10-21T11:47:36Z",
+  "actor": "human:timo",
+  "artifact": "story:m0-parse-subset",
+  "kind": "story",
+  "revision": 10,
+  "change": {
+    "change": "evidence",
+    "kind": "verification",
+    "source": "b10x-build-slot task ci at impl/m0-parse-subset 1ce1158: exit 0; base 1c8f16b 50 cases, treatment 151 (syntax 90, syntax_adversary 11, tensor_ir 26, tensor_ir_adversary 7, no_vulkan 7, exit_codes 8, core unit 2)"
+  }
+}

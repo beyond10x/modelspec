@@ -2,14 +2,33 @@
 format: aep.planning-md/3
 id: story:m0-reverse-mode-autodiff
 kind: story
-status: draft
+status: implemented
 title: Reverse-mode autodiff with f64 finite-difference gradient checks
 relations:
 - decomposes: epic:m0-semantic-core
 - serves: vision:modelspec
 - depends_on: story:m0-tensor-ir-core
 - depends_on: story:m0-cpu-interpreter
-revision: 2
+scope:
+- confidence: cited
+  path: crates/modelspec-core/src/autodiff.rs
+- confidence: cited
+  path: crates/modelspec-core/src/ir/training.rs
+- confidence: cited
+  path: crates/modelspec-core/src/ir/verify.rs
+- confidence: cited
+  path: crates/modelspec-core/src/ops.rs
+- confidence: cited
+  path: crates/modelspec-core/tests/autodiff_adversary.rs
+- confidence: cited
+  path: crates/modelspec-runtime/tests/gradients.rs
+- confidence: cited
+  path: crates/modelspec-runtime/tests/gradients_adversary.rs
+revision: 11
+transitions:
+- {from: "draft", to: "proposed", at: "2026-10-21T09:12:27Z", actor: "human:timo", revision: 8, decided_on: {"recorded":{"review_outcome":1}}}
+- {from: "proposed", to: "active", at: "2026-10-21T09:12:27Z", actor: "human:timo", revision: 9, decided_on: {"recorded":{"review_outcome":1}}}
+- {from: "active", to: "implemented", at: "2026-10-21T14:53:41Z", actor: "human:timo", revision: 11, decided_on: {"recorded":{"test_result":1,"review_outcome":2,"verification":1}}}
 ---
 # Reverse-mode autodiff with f64 finite-difference gradient checks
 
