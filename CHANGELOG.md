@@ -9,6 +9,11 @@ history.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-21
+
+Documentation release: the website review's fixes and highlighted `modelspec` code blocks. The
+compiler and runtime behave as in 0.1.0.
+
 ### Added
 
 - Documentation site: `modelspec` code blocks are syntax-highlighted; the word lists are `website/data/modelspec.grammar.json`, generated from `syntax::lexer::KEYWORDS`, `resolve::OPERATORS` and the parser
@@ -59,5 +64,6 @@ with `E-TARGET-001`.
 - `examples/linear_regression.mspec` checks and trains; `task check-examples` runs `modelspec check` on it
 - ESS contracts for the compiled artifact, checkpoint, device profile and training run in `spec/`
 
-[Unreleased]: https://github.com/beyond10x/modelspec/compare/0.1.0...HEAD
+[Unreleased]: https://github.com/beyond10x/modelspec/compare/0.1.1...HEAD
+[0.1.1]: https://github.com/beyond10x/modelspec/compare/0.1.0...0.1.1
 [0.1.0]: https://github.com/beyond10x/modelspec/releases/tag/0.1.0
