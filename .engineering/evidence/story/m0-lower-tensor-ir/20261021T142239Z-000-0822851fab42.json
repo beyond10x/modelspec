@@ -1,0 +1,14 @@
+{
+  "at": "2026-10-21T14:22:39Z",
+  "actor": "human:timo",
+  "artifact": "story:m0-lower-tensor-ir",
+  "kind": "story",
+  "revision": 10,
+  "change": {
+    "change": "evidence",
+    "kind": "review_outcome",
+    "source": "review-result:adversary-m0-lower-tensor-ir-pass-1",
+    "review": "review-result:adversary-m0-lower-tensor-ir-pass-1",
+    "outcome": "fixed"
+  }
+}
