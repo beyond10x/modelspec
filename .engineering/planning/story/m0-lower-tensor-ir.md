@@ -11,18 +11,38 @@ relations:
 - depends_on: story:m0-tensor-ir-core
 scope:
 - confidence: cited
+  path: AGENTS.md
+- confidence: cited
+  path: DESIGN.md
+- confidence: cited
   path: crates/modelspec-cli/src/ir.rs
+- confidence: cited
+  path: crates/modelspec-cli/tests/check.rs
+- confidence: cited
+  path: crates/modelspec-cli/tests/exit_codes.rs
 - confidence: cited
   path: crates/modelspec-cli/tests/golden/linear_regression.tensor.ir
 - confidence: cited
   path: crates/modelspec-cli/tests/ir_tensor.rs
+- confidence: cited
+  path: crates/modelspec-cli/tests/ir_tensor_adversary.rs
 - confidence: cited
   path: crates/modelspec-core/src/compile.rs
 - confidence: cited
   path: crates/modelspec-core/src/lower.rs
 - confidence: cited
   path: crates/modelspec-core/src/passes/dce.rs
-revision: 10
+- confidence: cited
+  path: crates/modelspec-core/src/types.rs
+- confidence: cited
+  path: tests/language/check/E-TYPE-017-nested-forward-calls.mspec
+- confidence: cited
+  path: tests/language/check/E-TYPE-017-no-forward-call.mspec
+- confidence: cited
+  path: tests/language/check/E-TYPE-017-no-forward-function.mspec
+- confidence: cited
+  path: tests/language/check/E-TYPE-017-two-forward-calls.mspec
+revision: 20
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-21T09:12:27Z", actor: "human:timo", revision: 9}
 - {from: "proposed", to: "active", at: "2026-10-21T09:12:27Z", actor: "human:timo", revision: 10}

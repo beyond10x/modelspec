@@ -1,7 +1,7 @@
 # ModelSpec — Design Specification
 
 **Status:** Proposed / pre-implementation  
-**Revision:** 0.5 (2026-10-21): derivation of parameter, teacher and synthetic-data draws defined (§ 2.3)  
+**Revision:** 0.6 (2026-10-21): derivation of parameter, teacher and synthetic-data draws defined (§ 2.3); 0.5: a train loss calls `model.forward` exactly once (§ 2.1)  
 **Implementation language:** Rust  
 **Initial execution target:** NVIDIA RTX 3090 via Vulkan compute / SPIR-V  
 **Principle:** Specify *what* to compute; the compiler determines *how* to execute it.
@@ -96,6 +96,8 @@ This is the **target language design**, not a claim that a parser already exists
 | `train` | Loss, optimizer, dataset interface, execution policy | Stateful training-step IR |
 | `infer` (later) | Inference signature and export policy | Read-only compiled execution graph |
 | `target` (later) | Optional capabilities/optimization constraints | Backend configuration, not model semantics |
+
+The loss of a `train` block calls `model.forward` exactly once, counting calls nested in its arguments; the checker refuses zero calls at the loss and a second call at that call (E-TYPE-017).
 
 ### 2.2 Type system and shapes
 
