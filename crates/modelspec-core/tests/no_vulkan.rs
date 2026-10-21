@@ -29,9 +29,12 @@ fn vulkan_crates_in(tree: &str) -> Vec<String> {
 }
 
 /// The guard's `cargo tree` arguments: every edge kind that ends up in a build of
-/// `modelspec-core` or its tests, on every target, with every feature enabled.
+/// `modelspec-core` or its tests, on every target, with every feature enabled. Colour is off so
+/// that `CARGO_TERM_COLOR=always`, which CI sets, cannot hide a crate name behind escape codes.
 const TREE_ARGS: &[&str] = &[
     "tree",
+    "--color",
+    "never",
     "-p",
     "modelspec-core",
     "-e",
