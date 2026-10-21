@@ -21,6 +21,8 @@ scope:
 - confidence: cited
   path: crates/modelspec-cli/src/main.rs
 - confidence: cited
+  path: crates/modelspec-cli/tests/exit_codes.rs
+- confidence: cited
   path: crates/modelspec-core/Cargo.toml
 - confidence: cited
   path: crates/modelspec-core/src/diag.rs
@@ -32,7 +34,7 @@ scope:
   path: crates/modelspec-runtime/Cargo.toml
 - confidence: cited
   path: crates/modelspec-runtime/src/lib.rs
-revision: 16
+revision: 17
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-21T09:12:24Z", actor: "human:timo", revision: 15, decided_on: {"recorded":{"review_outcome":2}}}
 - {from: "proposed", to: "active", at: "2026-10-21T09:12:25Z", actor: "human:timo", revision: 16, decided_on: {"recorded":{"review_outcome":2}}}
