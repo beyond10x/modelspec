@@ -55,6 +55,6 @@ fn ir_on_a_missing_file_exits_1() {
 }
 
 #[test]
-fn unimplemented_train_exits_1() {
-    assert_eq!(exit_code(&["train", "model.mspec"]), 1);
+fn train_on_a_missing_file_exits_1() {
+    assert_eq!(exit_code(&["train", "model.mspec", "--backend", "cpu"]), 1);
 }

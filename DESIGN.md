@@ -1,7 +1,7 @@
 # ModelSpec — Design Specification
 
 **Status:** Proposed / pre-implementation  
-**Revision:** 0.5 (2026-10-21): a train loss calls `model.forward` exactly once (§ 2.1)  
+**Revision:** 0.6 (2026-10-21): derivation of parameter, teacher and synthetic-data draws defined (§ 2.3), M0 `train` output and codes (§ 8, § 8.1); 0.5: a train loss calls `model.forward` exactly once (§ 2.1)  
 **Implementation language:** Rust  
 **Initial execution target:** NVIDIA RTX 3090 via Vulkan compute / SPIR-V  
 **Principle:** Specify *what* to compute; the compiler determines *how* to execute it.
@@ -120,6 +120,7 @@ All built-in operators define forward values, gradient rules, shape constraints,
 - Each parameter has a **stable canonical path**, e.g. `TinyMLP.fc1.weight`, independent of optimization order.
 - Two `Linear` instances own distinct weights. Explicit `share(a.weight)` (post-M1) is required for tied weights; accidental aliasing is disallowed.
 - Parameters have explicit initialization semantics; initial values are generated reproducibly from `global_seed + canonical_parameter_id` via the counter-based PRNG Philox4x32-10 (Salmon et al., SC 2011), **not** via compiler iteration order. `canonical_parameter_id` is the first 8 bytes of the `blake3` hash of the canonical path, read as a little-endian `u64`.
+- Derivation. A draw is addressed by key and counter alone. The key is `[seed as u32, (seed >> 32) as u32]` from the `train` block's `seed`. The counter is `[index, stream, id as u32, (id >> 32) as u32]`: the element index in row-major order, a stream tag, and the 64-bit id of what is drawn. The id is `canonical_parameter_id` for a parameter and the same `blake3` id of its name for a data input. The stream tags are `0` for initial parameters, `1` for the teacher parameters of M0 synthetic data (§ 9 gate 4) and `2` for M0 synthetic inputs. Element `i` takes the block `philox4x32_10(counter(i), key)`. A uniform draw maps word 0 to `u = (w + 0.5) / 2^32` in `(0, 1)`, and `xavier_uniform` of a `[In, Out]` parameter is `a * (2u - 1)` with `a = sqrt(6 / (In + Out))`. A standard normal draw is Box-Muller over words 0 and 1, `sqrt(-2 ln u0) * cos(2π u1)`. Each value is computed in `f64` and rounded to `f32`. A tensor with more than `2^32` elements, or `xavier_uniform` on a tensor that is not rank 2, is refused.
 - Randomness used in a forward pass (e.g. dropout, post-M2) is an explicit RNG state/token. This prevents common-subexpression elimination from incorrectly merging independent random draws.
 - A model specification does not do I/O. Dataset and checkpoint I/O belongs to the runtime or training host.
 
@@ -417,7 +418,7 @@ modelspec infer examples/linear_regression.mspec --checkpoint run.msckpt --input
 modelspec bench examples/linear_regression.mspec --backend vulkan --warmup 100 --iterations 1000
 ```
 
-M0 CLI implements `check`, `ir`, and `train --backend cpu`. M1 adds device discovery, Vulkan compilation, GPU training, inference, and checkpoint compatibility. `inspect-device` must report each relevant capability (including whether cooperative matrices are actually supported), not infer it from `RTX 3090` as a product name.
+M0 CLI implements `check`, `ir`, and `train --backend cpu`. M0 `train` takes `steps`, `seed` and the optimizer from the `train` block, trains on synthetic data (§ 2.3) and prints an `init @<path>: <type> = [...]` line per parameter, a `step <k> loss <v>` line at step 0, every 50 steps and at the last step, and a `param @<path>: <type> = [...]` line per parameter. M1 adds device discovery, Vulkan compilation, GPU training, inference, and checkpoint compatibility. `inspect-device` must report each relevant capability (including whether cooperative matrices are actually supported), not infer it from `RTX 3090` as a product name.
 
 `--emit-spv` (or manifest output from `compile`) allows inspecting generated SPIR-V. Print readable tensor/training/kernel IR with stable IDs to make optimization decisions debuggable.
 
@@ -439,6 +440,8 @@ E-TARGET-034: no supported f16 storage/compute path on selected Vulkan device
   available: f32
   suggestion: compile with --compute=f32
 ```
+
+M0 codes for `train`: E-TARGET-001, the selected backend is not available in this build (refused before the file is read); E-DATA-001, the `train` block does not declare exactly one `input` and one `target`; E-DATA-002, the `target` is not of the model output type; E-DATA-003, a declared `input` or `target` is not read by the loss.
 
 Diagnostics distinguish user specification errors, compiler verification failures, missing GPU capabilities, unsupported features, runtime allocation failure, and device loss.
 

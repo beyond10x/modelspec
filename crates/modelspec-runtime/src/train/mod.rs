@@ -1,4 +1,6 @@
-//! Training: parameter initialization, data loading, optimizers and the training loop.
+//! Training: deterministic parameter initialization ([`init`]), M0 synthetic teacher data
+//! ([`data`]), SGD steps on the CPU interpreter ([`optimizer`]) and the training loop
+//! ([`runner`]).
 
 pub mod data;
 pub mod init;

@@ -9,7 +9,9 @@ use std::fmt;
 use thiserror::Error;
 
 use crate::ir::tensor::{Dim, ParamId, TensorOp, TensorProgram, TensorType, ValueId};
-use crate::ir::training::{Subgraph, TrainingProgram};
+use crate::ir::training::{
+    Access, Effect, EffectToken, StateVersion, Subgraph, TrainingProgram, TrainingStep,
+};
 use crate::ops::{self, OpError};
 
 /// Where a type invariant failed: a value's type or a parameter table entry's.
@@ -267,10 +269,104 @@ pub enum TrainingVerifyError {
     MissingGradient { param: ParamId },
     #[error("a gradient is given for parameter {param}, which the loss does not read")]
     GradientForUnreachableParam { param: ParamId },
-    #[error("outputs {got:?} are not the loss then the gradients in parameter order {expected:?}")]
+    #[error(
+        "outputs {got:?} are not the loss, the gradients and the updates in parameter order \
+         {expected:?}"
+    )]
     OutputLayout {
         expected: Vec<ValueId>,
         got: Vec<ValueId>,
+    },
+    #[error("{node} is tagged optimizer in a training program without an optimizer step")]
+    OptimizerTagWithoutOptimizer { node: ValueId },
+    #[error("{node} is tagged {tag} but uses optimizer value {operand}")]
+    OptimizerValueUsed {
+        node: ValueId,
+        tag: Subgraph,
+        operand: ValueId,
+    },
+    #[error("an update is given for parameter {param}, which has no gradient")]
+    UpdateWithoutGradient { param: ParamId },
+    #[error("parameter {param} has a gradient but no update")]
+    MissingUpdate { param: ParamId },
+    #[error("the update of parameter {param} is {value}, which no node defines")]
+    UndefinedUpdate { param: ParamId, value: ValueId },
+    #[error("the update of parameter {param} is {got}; the parameter is {expected}")]
+    UpdateType {
+        param: ParamId,
+        expected: TensorType,
+        got: TensorType,
+    },
+    #[error("the update of parameter {param} is {value}, tagged {tag}, not optimizer")]
+    UpdateNotInOptimizer {
+        param: ParamId,
+        value: ValueId,
+        tag: Subgraph,
+    },
+    #[error("parameter {param} has no state version")]
+    MissingVersion { param: ParamId },
+    #[error("a state version is given for undeclared parameter {param}")]
+    VersionForUndeclaredParam { param: ParamId },
+    #[error("an effect is carried by {value}, which no node defines")]
+    EffectWithoutNode { value: ValueId },
+    #[error("{first} and {second} carry the same effect token {token}")]
+    DuplicateEffectToken {
+        token: EffectToken,
+        first: ValueId,
+        second: ValueId,
+    },
+    #[error("ParamRead {node} carries no read effect")]
+    ReadWithoutEffect { node: ValueId },
+    #[error("{value} carries a read of parameter {param} but is not a ParamRead of it")]
+    ReadEffectMismatch { value: ValueId, param: ParamId },
+    #[error("{value} reads parameter {param} at {got}; the step starts at {expected}")]
+    ReadOfOtherVersion {
+        value: ValueId,
+        param: ParamId,
+        expected: StateVersion,
+        got: StateVersion,
+    },
+    #[error("parameter {param} is written twice in one step, by {first} and {second}")]
+    SecondWrite {
+        param: ParamId,
+        first: ValueId,
+        second: ValueId,
+    },
+    #[error("{value} carries a write of parameter {param} but is not its update")]
+    WriteNotUpdate { value: ValueId, param: ParamId },
+    #[error("the update {value} of parameter {param} carries no write effect")]
+    UpdateWithoutWrite { param: ParamId, value: ValueId },
+    #[error(
+        "the write {write} of parameter {param} is ordered before its read {read} by {read_value} \
+         of the old version"
+    )]
+    WriteBeforeRead {
+        param: ParamId,
+        write: EffectToken,
+        read: EffectToken,
+        read_value: ValueId,
+    },
+    #[error(
+        "the write of parameter {param} produces {got}; the next version of {current} is the one after it"
+    )]
+    WrongNextVersion {
+        param: ParamId,
+        current: StateVersion,
+        got: StateVersion,
+    },
+    #[error("{node} ({op}) is tagged optimizer; a gradient, a ParamRead or an Input never is")]
+    MisplacedOptimizerTag { node: ValueId, op: &'static str },
+    #[error("the learning rate {} is not positive and finite", f32::from_bits(*lr_bits))]
+    LearningRate { lr_bits: u32 },
+    #[error(
+        "optimizer {node} is Scalar {}; the learning rate is {}",
+        f32::from_bits(*node_bits),
+        f32::from_bits(*lr_bits)
+    )]
+    LearningRateMismatch {
+        node: ValueId,
+        lr_bits: u32,
+        node_bits: u32,
     },
 }
 
@@ -280,7 +376,8 @@ pub enum TrainingVerifyError {
 /// tagged and every tag naming a node; the loss defined, tagged [`Subgraph::Loss`] and rank 0;
 /// no node tagged `Loss` but the loss and at most one backward seed, an operand-free
 /// `Scalar(1.0)`; every node that depends on the seed through its operands tagged
-/// [`Subgraph::Gradient`] and every other `Gradient` node refused; each gradient for a declared
+/// [`Subgraph::Gradient`] and every other `Gradient` node refused; no node tagged
+/// [`Subgraph::Optimizer`], which only a step ([`verify_step`]) has; each gradient for a declared
 /// parameter, defined, of its parameter's type, and the seed or a value depending on it; a
 /// gradient for exactly the parameters the loss reads; the outputs the loss then the gradients
 /// in `ParamId` order.
@@ -288,6 +385,27 @@ pub enum TrainingVerifyError {
 /// Dependence is on the seed alone, never on a tag: a node tagged `Loss` by mistake cannot make
 /// a node depend on the loss.
 pub fn verify_training(training: &TrainingProgram) -> Result<(), TrainingVerifyError> {
+    check_graph(training, false)?;
+    let mut expected = vec![training.loss];
+    expected.extend(training.gradients.values());
+    check_outputs(&training.program, expected)
+}
+
+fn check_outputs(
+    program: &TensorProgram,
+    expected: Vec<ValueId>,
+) -> Result<(), TrainingVerifyError> {
+    if program.outputs != expected {
+        return Err(TrainingVerifyError::OutputLayout {
+            expected,
+            got: program.outputs.clone(),
+        });
+    }
+    Ok(())
+}
+
+/// The rules of [`verify_training`] but the output layout; `Optimizer` tags only if `optimizer`.
+fn check_graph(training: &TrainingProgram, optimizer: bool) -> Result<(), TrainingVerifyError> {
     let program = &training.program;
     verify(program)?;
 
@@ -337,6 +455,9 @@ pub fn verify_training(training: &TrainingProgram) -> Result<(), TrainingVerifyE
             Subgraph::Forward if depends => {
                 return Err(TrainingVerifyError::ForwardDependsOnSeed { node: node.id });
             }
+            Subgraph::Optimizer if !optimizer => {
+                return Err(TrainingVerifyError::OptimizerTagWithoutOptimizer { node: node.id });
+            }
             _ => {}
         }
         if depends {
@@ -378,14 +499,246 @@ pub fn verify_training(training: &TrainingProgram) -> Result<(), TrainingVerifyE
     {
         return Err(TrainingVerifyError::GradientForUnreachableParam { param });
     }
+    Ok(())
+}
 
-    let mut expected = vec![loss];
+/// Checks every invariant of a training step, reporting the first failure.
+///
+/// Order: the rules of [`verify_training`] on `step.training`, with `Optimizer` tags allowed and
+/// the outputs the loss, the gradients, then the updates (every update first defined, since the
+/// layout names it); no `Optimizer` tag on a gradient, a `ParamRead` or an `Input`; no node
+/// outside the optimizer subgraph using an optimizer value; an update for exactly the parameters
+/// with a gradient, each of its parameter's type and tagged `Optimizer`; the learning rate
+/// positive and finite, and every `Scalar` of the optimizer subgraph that learning rate. Then the
+/// legal effects of DESIGN.md § 3.2: a
+/// state version for exactly the declared parameters; every effect carried by a defined node;
+/// effect tokens unique; every `ParamRead` carrying a read of its parameter at the step's version
+/// and every read carried by such a node; per parameter at most one write per step; every write
+/// carried by its parameter's update and every update carrying one; no write ordered before the
+/// last read of the old version; and every write producing exactly the next version.
+pub fn verify_step(step: &TrainingStep) -> Result<(), TrainingVerifyError> {
+    let training = &step.training;
+    let program = &training.program;
+    let optimizer = &step.optimizer;
+    check_graph(training, true)?;
+
+    for (&param, &value) in &optimizer.updates {
+        if program.node(value).is_none() {
+            return Err(TrainingVerifyError::UndefinedUpdate { param, value });
+        }
+    }
+    let mut expected = vec![training.loss];
     expected.extend(training.gradients.values());
-    if program.outputs != expected {
-        return Err(TrainingVerifyError::OutputLayout {
-            expected,
-            got: program.outputs.clone(),
-        });
+    expected.extend(optimizer.updates.values());
+    check_outputs(program, expected)?;
+
+    let tag = |v: ValueId| training.subgraphs[&v];
+    let gradients: BTreeSet<ValueId> = training.gradients.values().copied().collect();
+    for node in &program.nodes {
+        if tag(node.id) != Subgraph::Optimizer {
+            continue;
+        }
+        let leaf = matches!(node.op, TensorOp::ParamRead { .. } | TensorOp::Input { .. });
+        if leaf || gradients.contains(&node.id) {
+            return Err(TrainingVerifyError::MisplacedOptimizerTag {
+                node: node.id,
+                op: node.op.name(),
+            });
+        }
+    }
+    for node in &program.nodes {
+        let node_tag = tag(node.id);
+        if node_tag == Subgraph::Optimizer {
+            continue;
+        }
+        if let Some(&operand) = node
+            .operands
+            .iter()
+            .find(|&&o| tag(o) == Subgraph::Optimizer)
+        {
+            return Err(TrainingVerifyError::OptimizerValueUsed {
+                node: node.id,
+                tag: node_tag,
+                operand,
+            });
+        }
+    }
+
+    if let Some(&param) = optimizer
+        .updates
+        .keys()
+        .find(|p| !training.gradients.contains_key(p))
+    {
+        return Err(TrainingVerifyError::UpdateWithoutGradient { param });
+    }
+    if let Some(&param) = training
+        .gradients
+        .keys()
+        .find(|p| !optimizer.updates.contains_key(p))
+    {
+        return Err(TrainingVerifyError::MissingUpdate { param });
+    }
+    for (&param, &value) in &optimizer.updates {
+        let decl = &program.params[&param];
+        let node = program
+            .node(value)
+            .expect("every update is defined, checked above");
+        if node.ty != decl.ty {
+            return Err(TrainingVerifyError::UpdateType {
+                param,
+                expected: decl.ty.clone(),
+                got: node.ty.clone(),
+            });
+        }
+        let value_tag = tag(value);
+        if value_tag != Subgraph::Optimizer {
+            return Err(TrainingVerifyError::UpdateNotInOptimizer {
+                param,
+                value,
+                tag: value_tag,
+            });
+        }
+    }
+
+    let lr_bits = optimizer.lr.to_bits();
+    if !(optimizer.lr.is_finite() && optimizer.lr > 0.0) {
+        return Err(TrainingVerifyError::LearningRate { lr_bits });
+    }
+    for node in &program.nodes {
+        if let TensorOp::Scalar(value) = node.op
+            && tag(node.id) == Subgraph::Optimizer
+            && value.to_bits() != lr_bits
+        {
+            return Err(TrainingVerifyError::LearningRateMismatch {
+                node: node.id,
+                lr_bits,
+                node_bits: value.to_bits(),
+            });
+        }
+    }
+
+    check_effects(step)
+}
+
+/// The legal effects of DESIGN.md § 3.2, on a step whose graph and updates verify.
+fn check_effects(step: &TrainingStep) -> Result<(), TrainingVerifyError> {
+    let program = &step.training.program;
+    let optimizer = &step.optimizer;
+
+    if let Some(&param) = program
+        .params
+        .keys()
+        .find(|p| !optimizer.versions.contains_key(p))
+    {
+        return Err(TrainingVerifyError::MissingVersion { param });
+    }
+    if let Some(&param) = optimizer
+        .versions
+        .keys()
+        .find(|p| !program.params.contains_key(p))
+    {
+        return Err(TrainingVerifyError::VersionForUndeclaredParam { param });
+    }
+    if let Some(&value) = optimizer
+        .effects
+        .keys()
+        .find(|&&v| program.node(v).is_none())
+    {
+        return Err(TrainingVerifyError::EffectWithoutNode { value });
+    }
+
+    let effects = optimizer.effects_in_order();
+    for pair in effects.windows(2) {
+        let ((first, a), (second, b)) = (pair[0], pair[1]);
+        if a.token == b.token {
+            return Err(TrainingVerifyError::DuplicateEffectToken {
+                token: a.token,
+                first,
+                second,
+            });
+        }
+    }
+
+    for node in &program.nodes {
+        if let TensorOp::ParamRead { .. } = node.op {
+            let carries_read = optimizer
+                .effects
+                .get(&node.id)
+                .is_some_and(|e| e.access == Access::Read);
+            if !carries_read {
+                return Err(TrainingVerifyError::ReadWithoutEffect { node: node.id });
+            }
+        }
+    }
+    for &(value, effect) in &effects {
+        if effect.access != Access::Read {
+            continue;
+        }
+        let param = effect.param;
+        let node = program.node(value).expect("checked above");
+        if node.op != (TensorOp::ParamRead { param }) {
+            return Err(TrainingVerifyError::ReadEffectMismatch { value, param });
+        }
+        let expected = optimizer.versions[&param];
+        if effect.version != expected {
+            return Err(TrainingVerifyError::ReadOfOtherVersion {
+                value,
+                param,
+                expected,
+                got: effect.version,
+            });
+        }
+    }
+
+    let mut writes: BTreeMap<ParamId, (ValueId, Effect)> = BTreeMap::new();
+    for &(value, effect) in &effects {
+        if effect.access != Access::Write {
+            continue;
+        }
+        if let Some(&(first, _)) = writes.get(&effect.param) {
+            return Err(TrainingVerifyError::SecondWrite {
+                param: effect.param,
+                first,
+                second: value,
+            });
+        }
+        writes.insert(effect.param, (value, effect));
+    }
+    for (&param, &(value, _)) in &writes {
+        if optimizer.updates.get(&param) != Some(&value) {
+            return Err(TrainingVerifyError::WriteNotUpdate { value, param });
+        }
+    }
+    for (&param, &value) in &optimizer.updates {
+        if !writes.contains_key(&param) {
+            return Err(TrainingVerifyError::UpdateWithoutWrite { param, value });
+        }
+    }
+
+    for (&param, &(_, write)) in &writes {
+        let last_read = effects
+            .iter()
+            .rfind(|(_, e)| e.access == Access::Read && e.param == param);
+        if let Some(&(read_value, read)) = last_read
+            && read.token > write.token
+        {
+            return Err(TrainingVerifyError::WriteBeforeRead {
+                param,
+                write: write.token,
+                read: read.token,
+                read_value,
+            });
+        }
+    }
+    for (&param, &(_, write)) in &writes {
+        let current = optimizer.versions[&param];
+        if current.0.checked_add(1) != Some(write.version.0) {
+            return Err(TrainingVerifyError::WrongNextVersion {
+                param,
+                current,
+                got: write.version,
+            });
+        }
     }
     Ok(())
 }
