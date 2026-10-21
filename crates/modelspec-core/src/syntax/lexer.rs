@@ -7,6 +7,12 @@ use std::ops::Range;
 
 use logos::Logos;
 
+/// The reserved words: every `#[token]` of [`Token`] that is a word. The site's code highlighter
+/// is generated from this list.
+pub const KEYWORDS: &[&str] = &[
+    "model", "param", "fn", "let", "return", "train", "input", "target",
+];
+
 /// A token of the M0 subset, including the operator characters the parser rejects by name.
 #[derive(Logos, Clone, Copy, Debug, PartialEq, Eq)]
 #[logos(skip r"[ \t\r\n\f]+")]
@@ -115,4 +121,25 @@ pub fn lex(source: &str) -> Vec<Lexeme> {
             range,
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn keywords_are_the_word_tokens_of_the_lexer() {
+        let words: Vec<&str> = include_str!("lexer.rs")
+            .lines()
+            .filter_map(|line| line.trim().strip_prefix("#[token(\""))
+            .filter_map(|rest| rest.split('"').next())
+            .filter(|text| text.chars().all(|c| c.is_ascii_alphabetic()))
+            .collect();
+        assert_eq!(words, KEYWORDS);
+        for keyword in KEYWORDS {
+            let lexemes = lex(keyword);
+            assert_eq!(lexemes.len(), 1, "{keyword}");
+            assert_ne!(lexemes[0].token, Some(Token::Ident), "{keyword}");
+        }
+    }
 }

@@ -9,6 +9,10 @@ history.
 
 ## [Unreleased]
 
+### Added
+
+- Documentation site: `modelspec` code blocks are syntax-highlighted; the word lists are `website/data/modelspec.grammar.json`, generated from `syntax::lexer::KEYWORDS`, `resolve::OPERATORS` and the parser
+
 ### Changed
 
 - Diagnostics reference: every code has its own anchor, such as `reference/diagnostics#e-type-012`

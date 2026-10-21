@@ -6,13 +6,15 @@
 //! `modelspec-cli`, the diagnostic codes from the constants each compiler stage declares, the
 //! operator reference from the operator registry of `modelspec-core`, the crate list from
 //! `cargo metadata`, the example pages and the landing page's terminal from running the
-//! `modelspec` command line on the example models, and the status data from
+//! `modelspec` command line on the example models, the code highlighter's word lists from the
+//! lexer and the operator registry, and the status data from
 //! [`status::CAPABILITIES`].
 
 mod cli;
 mod crates;
 mod diagnostics;
 mod example;
+mod grammar;
 mod operators;
 mod status;
 
@@ -214,6 +216,7 @@ fn outputs(root: &Path) -> Result<(Vec<Output>, Vec<String>)> {
     let data = Pages::from([
         (status::FILE.to_owned(), status),
         (example::TERMINAL.to_owned(), examples.terminal),
+        (grammar::FILE.to_owned(), grammar::document()?),
     ]);
     Ok((
         vec![
