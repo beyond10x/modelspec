@@ -12,13 +12,25 @@ relations:
 - depends_on: story:m0-cpu-interpreter
 scope:
 - confidence: cited
+  path: AGENTS.md
+- confidence: cited
+  path: DESIGN.md
+- confidence: cited
   path: crates/modelspec-cli/src/ir.rs
+- confidence: cited
+  path: crates/modelspec-cli/src/main.rs
 - confidence: cited
   path: crates/modelspec-cli/src/train.rs
 - confidence: cited
+  path: crates/modelspec-cli/tests/exit_codes.rs
+- confidence: cited
   path: crates/modelspec-cli/tests/golden/linear_regression.training.ir
 - confidence: cited
+  path: crates/modelspec-cli/tests/ir_tensor.rs
+- confidence: cited
   path: crates/modelspec-cli/tests/train_linear.rs
+- confidence: cited
+  path: crates/modelspec-cli/tests/train_linear_adversary.rs
 - confidence: cited
   path: crates/modelspec-core/src/compile.rs
 - confidence: cited
@@ -30,14 +42,20 @@ scope:
 - confidence: cited
   path: crates/modelspec-core/tests/training_verify.rs
 - confidence: cited
+  path: crates/modelspec-core/tests/training_verify_adversary.rs
+- confidence: cited
   path: crates/modelspec-runtime/src/train/data.rs
 - confidence: cited
   path: crates/modelspec-runtime/src/train/init.rs
 - confidence: cited
+  path: crates/modelspec-runtime/src/train/mod.rs
+- confidence: cited
   path: crates/modelspec-runtime/src/train/optimizer.rs
 - confidence: cited
   path: crates/modelspec-runtime/src/train/runner.rs
-revision: 21
+- confidence: cited
+  path: crates/modelspec-runtime/tests/train_adversary.rs
+revision: 30
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-21T09:12:27Z", actor: "human:timo", revision: 20, decided_on: {"recorded":{"review_outcome":3}}}
 - {from: "proposed", to: "active", at: "2026-10-21T09:12:27Z", actor: "human:timo", revision: 21, decided_on: {"recorded":{"review_outcome":3}}}
