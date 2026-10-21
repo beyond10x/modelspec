@@ -11,7 +11,7 @@ A Rust compiler and runtime for `.mspec` tensor-program specifications. Humans s
 
 ## State
 
-Milestone M0 in progress (DESIGN.md revision 0.3, § 1 and § 11, iteration 1). A Cargo workspace of
+Milestone M0 in progress (DESIGN.md revision 0.4, § 1 and § 11, iteration 1). A Cargo workspace of
 three crates exists: `modelspec-core` (compiler, no Vulkan), `modelspec-runtime` (CPU oracle and
 training; the `vulkan` feature is empty until M1) and `modelspec-cli` (binary `modelspec`). Module
 files are declared and mostly empty; `check`, `ir` and `train` print "not implemented in this build"

@@ -10,12 +10,18 @@ relations:
 - depends_on: story:m0-tensor-ir-core
 scope:
 - confidence: cited
+  path: DESIGN.md
+- confidence: cited
   path: crates/modelspec-runtime/src/cpu/interpreter.rs
+- confidence: cited
+  path: crates/modelspec-runtime/src/cpu/mod.rs
 - confidence: cited
   path: crates/modelspec-runtime/src/cpu/tensor.rs
 - confidence: cited
+  path: crates/modelspec-runtime/tests/cpu_adversary.rs
+- confidence: cited
   path: crates/modelspec-runtime/tests/cpu_golden.rs
-revision: 7
+revision: 8
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-21T09:12:26Z", actor: "human:timo", revision: 6, decided_on: {"recorded":{"review_outcome":1}}}
 - {from: "proposed", to: "active", at: "2026-10-21T09:12:26Z", actor: "human:timo", revision: 7, decided_on: {"recorded":{"review_outcome":1}}}
