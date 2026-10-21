@@ -1,7 +1,7 @@
 # ModelSpec — Design Specification
 
 **Status:** Proposed / pre-implementation  
-**Revision:** 0.3 (2026-10-21): `deterministic` is a compile setting (§ 3.3, § 6.1); `canonical_parameter_id` defined (§ 2.3); a CPU artifact has no kernels or dispatches (§ 7.1); checkpoint header checksum and absolute tensor offsets defined (§ 6.2); `steps` counts per invocation (§ 6); compiler version recorded once, on the artifact (§ 6.1)  
+**Revision:** 0.4 (2026-10-21): reduction order policy of the CPU reference defined (§ 2.2)  
 **Implementation language:** Rust  
 **Initial execution target:** NVIDIA RTX 3090 via Vulkan compute / SPIR-V  
 **Principle:** Specify *what* to compute; the compiler determines *how* to execute it.
@@ -108,6 +108,7 @@ M0/M1 shape rules, intentionally strict:
 - `relu([*S]) -> [*S]`; `transpose([M,N]) -> [N,M]`.
 - `sum([*S]) -> []`, `mean([*S]) -> []` with an explicit specified reduction order policy.
 - `mse(a, b) -> []` iff `a` and `b` have identical shapes; defined as `sum((a-b)^2) / element_count(a)`.
+- Reduction order policy (the CPU reference, § 9 gate 2): a sum accumulates sequentially in row-major index order in the element type, starting from its first term, with every product, difference and partial sum rounded to the element type (no fused multiply-add); `matmul` accumulates each output element over the contracting index in ascending order the same way; `mean` is that sum divided by the element count converted to the element type; `mse` is that sum of `(a-b)^2` divided by the element count converted to the element type.
 - Empty shapes, negative dimension sizes, integer overflows in element/byte counts, and allocations over backend limits are hard errors.
 
 All built-in operators define forward values, gradient rules, shape constraints, precision behavior, and side effects in one operator registry (see §4). No implicit CPU fallback from a GPU-compiled plan without an explicit error or permitted fallback policy.
