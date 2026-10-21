@@ -2,7 +2,7 @@
 format: aep.planning-md/3
 id: story:m0-parse-subset
 kind: story
-status: active
+status: implemented
 title: Parse the M0 language subset
 relations:
 - decomposes: epic:m0-semantic-core
@@ -23,10 +23,11 @@ scope:
   path: crates/modelspec-core/tests/syntax_adversary.rs
 - confidence: cited
   path: tests/language/syntax
-revision: 11
+revision: 12
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-21T09:12:26Z", actor: "human:timo", revision: 9, decided_on: {"recorded":{"review_outcome":1}}}
 - {from: "proposed", to: "active", at: "2026-10-21T09:12:26Z", actor: "human:timo", revision: 10, decided_on: {"recorded":{"review_outcome":1}}}
+- {from: "active", to: "implemented", at: "2026-10-21T14:53:40Z", actor: "human:timo", revision: 12, decided_on: {"recorded":{"test_result":1,"review_outcome":2,"verification":1}}}
 ---
 # Parse the M0 language subset
 

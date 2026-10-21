@@ -2,7 +2,7 @@
 format: aep.planning-md/3
 id: story:m0-workspace-foundation
 kind: story
-status: active
+status: implemented
 title: 'Workspace foundation: three crates, Taskfile, a Vulkan-free core'
 relations:
 - decomposes: epic:m0-semantic-core
@@ -34,10 +34,11 @@ scope:
   path: crates/modelspec-runtime/Cargo.toml
 - confidence: cited
   path: crates/modelspec-runtime/src/lib.rs
-revision: 17
+revision: 18
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-21T09:12:24Z", actor: "human:timo", revision: 15, decided_on: {"recorded":{"review_outcome":2}}}
 - {from: "proposed", to: "active", at: "2026-10-21T09:12:25Z", actor: "human:timo", revision: 16, decided_on: {"recorded":{"review_outcome":2}}}
+- {from: "active", to: "implemented", at: "2026-10-21T14:53:40Z", actor: "human:timo", revision: 18, decided_on: {"recorded":{"test_result":1,"review_outcome":3,"verification":1}}}
 ---
 # Workspace foundation: three crates, Taskfile, a Vulkan-free core
 

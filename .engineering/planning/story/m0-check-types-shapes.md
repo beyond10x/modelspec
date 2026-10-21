@@ -2,7 +2,7 @@
 format: aep.planning-md/3
 id: story:m0-check-types-shapes
 kind: story
-status: active
+status: implemented
 title: Name resolution, type and shape checking, and modelspec check
 relations:
 - decomposes: epic:m0-semantic-core
@@ -30,10 +30,11 @@ scope:
   path: crates/modelspec-core/src/types.rs
 - confidence: cited
   path: tests/language/check
-revision: 13
+revision: 14
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-21T09:12:26Z", actor: "human:timo", revision: 10, decided_on: {"recorded":{"review_outcome":2}}}
 - {from: "proposed", to: "active", at: "2026-10-21T09:12:27Z", actor: "human:timo", revision: 11, decided_on: {"recorded":{"review_outcome":2}}}
+- {from: "active", to: "implemented", at: "2026-10-21T14:53:41Z", actor: "human:timo", revision: 14, decided_on: {"recorded":{"test_result":1,"review_outcome":3,"verification":1}}}
 ---
 # Name resolution, type and shape checking, and `modelspec check`
 
