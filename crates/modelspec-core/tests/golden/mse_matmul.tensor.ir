@@ -1,0 +1,7 @@
+param @LinearReg.w: Tensor<f32, [4, 1]> = xavier_uniform
+%0: Tensor<f32, [8, 4]> = Input "x"
+%1: Tensor<f32, [4, 1]> = ParamRead @LinearReg.w
+%2: Tensor<f32, [8, 1]> = MatMul %0, %1
+%3: Tensor<f32, [8, 1]> = Input "y"
+%4: Tensor<f32, []> = Mse %2, %3
+output %4
