@@ -1,7 +1,7 @@
 # ModelSpec — Design Specification
 
 **Status:** Proposed / pre-implementation  
-**Revision:** 0.4 (2026-10-21): reduction order policy of the CPU reference defined (§ 2.2)  
+**Revision:** 0.5 (2026-10-21): derivation of parameter, teacher and synthetic-data draws defined (§ 2.3)  
 **Implementation language:** Rust  
 **Initial execution target:** NVIDIA RTX 3090 via Vulkan compute / SPIR-V  
 **Principle:** Specify *what* to compute; the compiler determines *how* to execute it.
@@ -118,6 +118,7 @@ All built-in operators define forward values, gradient rules, shape constraints,
 - Each parameter has a **stable canonical path**, e.g. `TinyMLP.fc1.weight`, independent of optimization order.
 - Two `Linear` instances own distinct weights. Explicit `share(a.weight)` (post-M1) is required for tied weights; accidental aliasing is disallowed.
 - Parameters have explicit initialization semantics; initial values are generated reproducibly from `global_seed + canonical_parameter_id` via the counter-based PRNG Philox4x32-10 (Salmon et al., SC 2011), **not** via compiler iteration order. `canonical_parameter_id` is the first 8 bytes of the `blake3` hash of the canonical path, read as a little-endian `u64`.
+- Derivation. A draw is addressed by key and counter alone. The key is `[seed as u32, (seed >> 32) as u32]` from the `train` block's `seed`. The counter is `[index, stream, id as u32, (id >> 32) as u32]`: the element index in row-major order, a stream tag, and the 64-bit id of what is drawn. The id is `canonical_parameter_id` for a parameter and the same `blake3` id of its name for a data input. The stream tags are `0` for initial parameters, `1` for the teacher parameters of M0 synthetic data (§ 9 gate 4) and `2` for M0 synthetic inputs. Element `i` takes the block `philox4x32_10(counter(i), key)`. A uniform draw maps word 0 to `u = (w + 0.5) / 2^32` in `(0, 1)`, and `xavier_uniform` of a `[In, Out]` parameter is `a * (2u - 1)` with `a = sqrt(6 / (In + Out))`. A standard normal draw is Box-Muller over words 0 and 1, `sqrt(-2 ln u0) * cos(2π u1)`. Each value is computed in `f64` and rounded to `f32`. A tensor with more than `2^32` elements, or `xavier_uniform` on a tensor that is not rank 2, is refused.
 - Randomness used in a forward pass (e.g. dropout, post-M2) is an explicit RNG state/token. This prevents common-subexpression elimination from incorrectly merging independent random draws.
 - A model specification does not do I/O. Dataset and checkpoint I/O belongs to the runtime or training host.
 
