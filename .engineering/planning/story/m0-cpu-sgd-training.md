@@ -2,7 +2,7 @@
 format: aep.planning-md/3
 id: story:m0-cpu-sgd-training
 kind: story
-status: draft
+status: active
 title: SGD training step and modelspec train --backend cpu on linear regression
 relations:
 - decomposes: epic:m0-semantic-core
@@ -10,7 +10,37 @@ relations:
 - depends_on: story:m0-reverse-mode-autodiff
 - depends_on: story:m0-lower-tensor-ir
 - depends_on: story:m0-cpu-interpreter
-revision: 6
+scope:
+- confidence: cited
+  path: crates/modelspec-cli/src/ir.rs
+- confidence: cited
+  path: crates/modelspec-cli/src/train.rs
+- confidence: cited
+  path: crates/modelspec-cli/tests/golden/linear_regression.training.ir
+- confidence: cited
+  path: crates/modelspec-cli/tests/train_linear.rs
+- confidence: cited
+  path: crates/modelspec-core/src/compile.rs
+- confidence: cited
+  path: crates/modelspec-core/src/ir/print.rs
+- confidence: cited
+  path: crates/modelspec-core/src/ir/training.rs
+- confidence: cited
+  path: crates/modelspec-core/src/ir/verify.rs
+- confidence: cited
+  path: crates/modelspec-core/tests/training_verify.rs
+- confidence: cited
+  path: crates/modelspec-runtime/src/train/data.rs
+- confidence: cited
+  path: crates/modelspec-runtime/src/train/init.rs
+- confidence: cited
+  path: crates/modelspec-runtime/src/train/optimizer.rs
+- confidence: cited
+  path: crates/modelspec-runtime/src/train/runner.rs
+revision: 21
+transitions:
+- {from: "draft", to: "proposed", at: "2026-10-21T09:12:27Z", actor: "human:timo", revision: 20, decided_on: {"recorded":{"review_outcome":3}}}
+- {from: "proposed", to: "active", at: "2026-10-21T09:12:27Z", actor: "human:timo", revision: 21, decided_on: {"recorded":{"review_outcome":3}}}
 ---
 # SGD training step and `modelspec train --backend cpu` on linear regression
 

@@ -2,14 +2,30 @@
 format: aep.planning-md/3
 id: story:m0-lower-tensor-ir
 kind: story
-status: draft
+status: active
 title: Lower Typed HIR to Tensor IR and modelspec ir --stage tensor
 relations:
 - decomposes: epic:m0-semantic-core
 - serves: vision:modelspec
 - depends_on: story:m0-check-types-shapes
 - depends_on: story:m0-tensor-ir-core
-revision: 2
+scope:
+- confidence: cited
+  path: crates/modelspec-cli/src/ir.rs
+- confidence: cited
+  path: crates/modelspec-cli/tests/golden/linear_regression.tensor.ir
+- confidence: cited
+  path: crates/modelspec-cli/tests/ir_tensor.rs
+- confidence: cited
+  path: crates/modelspec-core/src/compile.rs
+- confidence: cited
+  path: crates/modelspec-core/src/lower.rs
+- confidence: cited
+  path: crates/modelspec-core/src/passes/dce.rs
+revision: 10
+transitions:
+- {from: "draft", to: "proposed", at: "2026-10-21T09:12:27Z", actor: "human:timo", revision: 9}
+- {from: "proposed", to: "active", at: "2026-10-21T09:12:27Z", actor: "human:timo", revision: 10}
 ---
 # Lower Typed HIR to Tensor IR and `modelspec ir --stage tensor`
 

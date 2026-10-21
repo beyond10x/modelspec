@@ -2,14 +2,30 @@
 format: aep.planning-md/3
 id: story:m0-check-types-shapes
 kind: story
-status: draft
+status: active
 title: Name resolution, type and shape checking, and modelspec check
 relations:
 - decomposes: epic:m0-semantic-core
 - serves: vision:modelspec
 - depends_on: story:m0-parse-subset
 - depends_on: story:m0-tensor-ir-core
-revision: 3
+scope:
+- confidence: cited
+  path: Taskfile.yml
+- confidence: cited
+  path: crates/modelspec-cli/src/check.rs
+- confidence: cited
+  path: crates/modelspec-core/src/hir.rs
+- confidence: cited
+  path: crates/modelspec-core/src/resolve.rs
+- confidence: cited
+  path: crates/modelspec-core/src/types.rs
+- confidence: cited
+  path: tests/language/check
+revision: 11
+transitions:
+- {from: "draft", to: "proposed", at: "2026-10-21T09:12:26Z", actor: "human:timo", revision: 10, decided_on: {"recorded":{"review_outcome":2}}}
+- {from: "proposed", to: "active", at: "2026-10-21T09:12:27Z", actor: "human:timo", revision: 11, decided_on: {"recorded":{"review_outcome":2}}}
 ---
 # Name resolution, type and shape checking, and `modelspec check`
 

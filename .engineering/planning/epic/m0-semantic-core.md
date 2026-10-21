@@ -2,12 +2,15 @@
 format: aep.planning-md/3
 id: epic:m0-semantic-core
 kind: epic
-status: draft
+status: active
 title: 'M0: semantic core (parse, check, tensor IR, autodiff, CPU training)'
 relations:
 - informed_by: executable-system-specification:modelspec-contracts
 - serves: vision:modelspec
-revision: 1
+revision: 3
+transitions:
+- {from: "draft", to: "proposed", at: "2026-10-21T09:12:27Z", actor: "human:timo", revision: 2}
+- {from: "proposed", to: "active", at: "2026-10-21T09:12:27Z", actor: "human:timo", revision: 3}
 ---
 # M0: semantic core
 

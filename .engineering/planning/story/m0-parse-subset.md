@@ -2,13 +2,29 @@
 format: aep.planning-md/3
 id: story:m0-parse-subset
 kind: story
-status: draft
+status: active
 title: Parse the M0 language subset
 relations:
 - decomposes: epic:m0-semantic-core
 - serves: vision:modelspec
 - depends_on: story:m0-workspace-foundation
-revision: 2
+scope:
+- confidence: cited
+  path: crates/modelspec-core/src/syntax/ast.rs
+- confidence: cited
+  path: crates/modelspec-core/src/syntax/lexer.rs
+- confidence: cited
+  path: crates/modelspec-core/src/syntax/mod.rs
+- confidence: cited
+  path: crates/modelspec-core/src/syntax/parser.rs
+- confidence: cited
+  path: crates/modelspec-core/tests/syntax.rs
+- confidence: cited
+  path: tests/language/syntax
+revision: 10
+transitions:
+- {from: "draft", to: "proposed", at: "2026-10-21T09:12:26Z", actor: "human:timo", revision: 9, decided_on: {"recorded":{"review_outcome":1}}}
+- {from: "proposed", to: "active", at: "2026-10-21T09:12:26Z", actor: "human:timo", revision: 10, decided_on: {"recorded":{"review_outcome":1}}}
 ---
 # Parse the M0 language subset
 
