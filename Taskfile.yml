@@ -22,6 +22,20 @@ tasks:
     cmds:
       - cargo run -q -p modelspec-cli -- check examples/linear_regression.mspec
 
+  docs-generate:
+    cmds:
+      - cargo run -q -p modelspec-docs -- generate
+
+  docs-check:
+    cmds:
+      - cargo run -q -p modelspec-docs -- generate --check
+
+  website:
+    dir: website
+    cmds:
+      - npm ci
+      - npm run build
+
   release-check:
     silent: true
     requires:
@@ -53,3 +67,4 @@ tasks:
       - task: test
       - task: core-no-vulkan
       - task: check-examples
+      - task: docs-check

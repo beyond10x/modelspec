@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="ModelSpec">
+  <rect width="64" height="64" rx="14" fill="#17202e"/>
+  <g fill="#7cc4f2">
+    <rect x="12" y="12" width="10" height="10" rx="2"/>
+    <rect x="27" y="12" width="10" height="10" rx="2" opacity="0.7"/>
+    <rect x="42" y="12" width="10" height="10" rx="2" opacity="0.4"/>
+    <rect x="12" y="27" width="10" height="10" rx="2" opacity="0.7"/>
+    <rect x="27" y="27" width="10" height="10" rx="2"/>
+    <rect x="42" y="27" width="10" height="10" rx="2" opacity="0.7"/>
+    <rect x="12" y="42" width="10" height="10" rx="2" opacity="0.4"/>
+    <rect x="27" y="42" width="10" height="10" rx="2" opacity="0.7"/>
+  </g>
+  <path d="M42 52 L52 42 M52 42 H45 M52 42 V49" stroke="#f2c46d" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

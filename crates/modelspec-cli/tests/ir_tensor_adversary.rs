@@ -58,7 +58,7 @@ fn param_id(program: &TensorProgram, path: &str) -> ParamId {
 }
 
 // ---------------------------------------------------------------------------------------------
-// The CLI contract: 0 success, 1 diagnostics or runtime error, 2 usage (main.rs, AGENTS.md).
+// The CLI contract: 0 success, 1 diagnostics or runtime error, 2 usage (src/lib.rs, AGENTS.md).
 // ---------------------------------------------------------------------------------------------
 
 /// `ir` is the first subcommand that writes to stdout. A write that fails is a runtime error

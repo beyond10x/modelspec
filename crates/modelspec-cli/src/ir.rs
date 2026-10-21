@@ -35,12 +35,12 @@ pub enum Stage {
 }
 
 /// Runs `modelspec ir` and returns the process exit code.
-pub fn run(args: Args) -> u8 {
+pub fn run(args: Args, stdout: &mut dyn Write, stderr: &mut dyn Write) -> u8 {
     let file = args.path.display().to_string();
     let source = match std::fs::read_to_string(&args.path) {
         Ok(source) => source,
         Err(error) => {
-            eprintln!("modelspec ir {file}: {error}");
+            let _ = writeln!(stderr, "modelspec ir {file}: {error}");
             return crate::EXIT_FAILURE;
         }
     };
@@ -54,24 +54,20 @@ pub fn run(args: Args) -> u8 {
     };
     match printed {
         Ok(ir) => {
-            let mut stdout = std::io::stdout().lock();
             match stdout
                 .write_all(ir.as_bytes())
                 .and_then(|()| stdout.flush())
             {
                 Ok(()) => crate::EXIT_SUCCESS,
                 Err(error) => {
-                    let _ = writeln!(
-                        std::io::stderr(),
-                        "modelspec ir {file}: cannot write the IR: {error}"
-                    );
+                    let _ = writeln!(stderr, "modelspec ir {file}: cannot write the IR: {error}");
                     crate::EXIT_FAILURE
                 }
             }
         }
         Err(diagnostics) => {
             for diagnostic in &diagnostics {
-                eprintln!("{diagnostic}");
+                let _ = writeln!(stderr, "{diagnostic}");
             }
             crate::EXIT_FAILURE
         }

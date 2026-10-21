@@ -54,9 +54,10 @@ pub enum Backend {
 }
 
 /// Runs `modelspec train` and returns the process exit code.
-pub fn run(args: Args) -> u8 {
+pub fn run(args: Args, stdout: &mut dyn Write, stderr: &mut dyn Write) -> u8 {
     if args.backend == Backend::Vulkan {
-        eprintln!(
+        let _ = writeln!(
+            stderr,
             "{}",
             Diagnostic::new(E_TARGET_001, "the vulkan backend is not available in M0")
                 .with("backend", "vulkan")
@@ -68,7 +69,7 @@ pub fn run(args: Args) -> u8 {
     let source = match std::fs::read_to_string(&args.path) {
         Ok(source) => source,
         Err(error) => {
-            eprintln!("modelspec train {file}: {error}");
+            let _ = writeln!(stderr, "modelspec train {file}: {error}");
             return crate::EXIT_FAILURE;
         }
     };
@@ -76,7 +77,7 @@ pub fn run(args: Args) -> u8 {
         Ok(compiled) => compiled,
         Err(diagnostics) => {
             for diagnostic in &diagnostics {
-                eprintln!("{diagnostic}");
+                let _ = writeln!(stderr, "{diagnostic}");
             }
             return crate::EXIT_FAILURE;
         }
@@ -84,15 +85,14 @@ pub fn run(args: Args) -> u8 {
     let run = match runner::run(&compiled) {
         Ok(run) => run,
         Err(RunError::Data(DataError::Refused(diagnostic))) => {
-            eprintln!("{diagnostic}");
+            let _ = writeln!(stderr, "{diagnostic}");
             return crate::EXIT_FAILURE;
         }
         Err(error) => {
-            eprintln!("modelspec train {file}: {error}");
+            let _ = writeln!(stderr, "modelspec train {file}: {error}");
             return crate::EXIT_FAILURE;
         }
     };
-    let mut stdout = std::io::stdout().lock();
     match stdout
         .write_all(report(&compiled, &run).as_bytes())
         .and_then(|()| stdout.flush())
@@ -100,7 +100,7 @@ pub fn run(args: Args) -> u8 {
         Ok(()) => crate::EXIT_SUCCESS,
         Err(error) => {
             let _ = writeln!(
-                std::io::stderr(),
+                stderr,
                 "modelspec train {file}: cannot write the run: {error}"
             );
             crate::EXIT_FAILURE

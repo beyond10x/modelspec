@@ -9,6 +9,8 @@ SPIR-V. No Python, PyTorch or CUDA.
 
 **Releases:** [GitHub Releases](https://github.com/beyond10x/modelspec/releases) carry the `modelspec` binary for Linux x86_64 and its SHA-256 checksum; [CHANGELOG.md](CHANGELOG.md) lists what each version changed.
 
+**Documentation:** <https://beyond10x.github.io/modelspec/>, with the [pitch deck](https://beyond10x.github.io/modelspec/pitch/) (source: [docs/pitch/index.html](docs/pitch/index.html)).
+
 ```modelspec
 model LinearReg {
     param w: Tensor<f32, [4, 1]> = xavier_uniform();
