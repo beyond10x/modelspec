@@ -1,7 +1,7 @@
 # ModelSpec — Design Specification
 
 **Status:** M0 implemented (iteration 1); M1 onwards proposed  
-**Revision:** 0.7 (2026-10-21): M3 adds a small BERT-like masked-language-model proof model beside the GPT-like one (§ 1, § 11 iteration 4); 0.6: derivation of parameter, teacher and synthetic-data draws defined (§ 2.3), M0 `train` output and codes (§ 8, § 8.1); 0.5: a train loss calls `model.forward` exactly once (§ 2.1)  
+**Revision:** 0.8 (2026-10-21): the input adjoint, the gradient of a rank-0 target with respect to named inputs in its own program (§ 3.3 pass 4, § 4); 0.7: M3 adds a small BERT-like masked-language-model proof model beside the GPT-like one (§ 1, § 11 iteration 4); 0.6: derivation of parameter, teacher and synthetic-data draws defined (§ 2.3), M0 `train` output and codes (§ 8, § 8.1); 0.5: a train loss calls `model.forward` exactly once (§ 2.1)  
 **Implementation language:** Rust  
 **Initial execution target:** NVIDIA RTX 3090 via Vulkan compute / SPIR-V  
 **Principle:** Specify *what* to compute; the compiler determines *how* to execute it.
@@ -215,7 +215,7 @@ Use *typed IDs* rather than vector positions in public APIs. The verifier checks
 1. Parse, resolve names, specialize compile-time dimension parameters.
 2. Verify tensor shapes/dtypes/effects; lower functions/layers to tensor graph.
 3. Canonicalization, constant propagation, algebraic simplification where IEEE floating-point rules allow, dead-code elimination.
-4. Expand the selected loss to a differentiable graph; reverse-mode autodiff over only loss-reachable trainable values.
+4. Expand the selected loss to a differentiable graph; reverse-mode autodiff over only loss-reachable trainable values. The input adjoint, the gradient of any rank-0 target with respect to named inputs, is the same walk in a separate program (§ 4); the training program does not change.
 5. Attach explicit optimizer-state computations and ordered parameter updates.
 6. Graph-wide dead-code elimination; forward/backward fusion candidates; liveness and recomputation analysis.
 7. Choose layout, partition into kernels, tile work, plan buffer lifetimes; **repeat** some optimization after layout/scheduling.
@@ -242,6 +242,8 @@ For output adjoint `G = dL/dY`:
 | `L = mse(Y,T)` | `dY = 2 * (Y-T) / numel(Y)`; targets receive no gradient |
 
 `transpose`, `where`, and scalar broadcasting are explicit internal gradient ops, even if the user-facing M0 language keeps simpler syntax. For shared graph subexpressions, **accumulate** every incoming adjoint exactly once. Treat parameters and trainable module state separately from temporary SSA tensors.
+
+**Input adjoint.** The input adjoint is the gradient of any rank-0 target with respect to named inputs instead of parameters, by the same walk and the same rules (`differentiate_inputs`). The target is the loss, or one element of the prediction built from existing ops as `sum(prediction * target_mask)`, where `target_mask` is a new input of the prediction's type that the caller binds to the one-hot tensor at the element's row-major offset (`output_element_target`). The result is a separate verified program whose outputs are the target, then the adjoint of each named input with that input's type; the training program, its outputs and what `ir --stage training` prints do not change. An input the target does not read is not refused: its adjoint is zero, `broadcast_scalar(0, shape)`. The `mse` target receives `-dY` only when it is itself named. Refused: a name that is not an input of the program (a declared input that dead-code elimination removed has none), a target that is not rank 0, a prediction that is not a value of the program, an index of the wrong rank or out of bounds, and a program that already has an input named `target_mask`.
 
 Initial strategy: retain forward intermediates required by AD; introduce recomputation/checkpoint planning after correctness is proven. Training state writes happen only after all old-state reads are complete. Gradients accumulate in `f32` for M0/M1.
 
