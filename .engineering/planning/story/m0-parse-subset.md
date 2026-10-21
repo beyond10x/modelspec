@@ -20,8 +20,10 @@ scope:
 - confidence: cited
   path: crates/modelspec-core/tests/syntax.rs
 - confidence: cited
+  path: crates/modelspec-core/tests/syntax_adversary.rs
+- confidence: cited
   path: tests/language/syntax
-revision: 10
+revision: 11
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-21T09:12:26Z", actor: "human:timo", revision: 9, decided_on: {"recorded":{"review_outcome":1}}}
 - {from: "proposed", to: "active", at: "2026-10-21T09:12:26Z", actor: "human:timo", revision: 10, decided_on: {"recorded":{"review_outcome":1}}}
