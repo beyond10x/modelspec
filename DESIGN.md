@@ -1,7 +1,7 @@
 # ModelSpec — Design Specification
 
 **Status:** Proposed / pre-implementation  
-**Revision:** 0.1 (2026-10-21)  
+**Revision:** 0.3 (2026-10-21): `deterministic` is a compile setting (§ 3.3, § 6.1); `canonical_parameter_id` defined (§ 2.3); a CPU artifact has no kernels or dispatches (§ 7.1); checkpoint header checksum and absolute tensor offsets defined (§ 6.2); `steps` counts per invocation (§ 6); compiler version recorded once, on the artifact (§ 6.1)  
 **Implementation language:** Rust  
 **Initial execution target:** NVIDIA RTX 3090 via Vulkan compute / SPIR-V  
 **Principle:** Specify *what* to compute; the compiler determines *how* to execute it.
@@ -116,7 +116,7 @@ All built-in operators define forward values, gradient rules, shape constraints,
 
 - Each parameter has a **stable canonical path**, e.g. `TinyMLP.fc1.weight`, independent of optimization order.
 - Two `Linear` instances own distinct weights. Explicit `share(a.weight)` (post-M1) is required for tied weights; accidental aliasing is disallowed.
-- Parameters have explicit initialization semantics; initial values are generated reproducibly from `global_seed + canonical_parameter_id` via a specified counter-based PRNG algorithm, **not** via compiler iteration order.
+- Parameters have explicit initialization semantics; initial values are generated reproducibly from `global_seed + canonical_parameter_id` via the counter-based PRNG Philox4x32-10 (Salmon et al., SC 2011), **not** via compiler iteration order. `canonical_parameter_id` is the first 8 bytes of the `blake3` hash of the canonical path, read as a little-endian `u64`.
 - Randomness used in a forward pass (e.g. dropout, post-M2) is an explicit RNG state/token. This prevents common-subexpression elimination from incorrectly merging independent random draws.
 - A model specification does not do I/O. Dataset and checkpoint I/O belongs to the runtime or training host.
 
@@ -217,7 +217,7 @@ Use *typed IDs* rather than vector positions in public APIs. The verifier checks
 7. Choose layout, partition into kernels, tile work, plan buffer lifetimes; **repeat** some optimization after layout/scheduling.
 8. Generate and validate SPIR-V, serialize execution manifest, instantiate Vulkan pipelines.
 
-Do not silently assume `a+b == b+a` at bit level, or reassociate floating-point reductions in deterministic mode. `fast_math = true` is a distinct opt-in compilation setting that is recorded in the artifact hash.
+Do not silently assume `a+b == b+a` at bit level, or reassociate floating-point reductions in deterministic mode. `fast_math = true` is a distinct opt-in compilation setting that is recorded in the artifact hash. `deterministic` is a compilation setting too: it fixes reduction order, so it is recorded in the artifact hash, and a run reads it from its artifact.
 
 ---
 
@@ -317,22 +317,22 @@ pub trait DeviceRuntime {
 }
 ```
 
-This interface is illustrative; use opaque handles rather than exposing raw Vulkan objects to the training host. The CPU backend implements equivalent observable training semantics for debugging.
+`steps` counts the steps of one invocation, so a run resumed at step `s` ends at `s + steps`. This interface is illustrative; use opaque handles rather than exposing raw Vulkan objects to the training host. The CPU backend implements equivalent observable training semantics for debugging.
 
 ### 6.1 Reproducibility
 
-Record source/compiler version, tensor shapes, optimizer hyperparameters, RNG algorithm/seed/state, model/parameter identifiers, step number, backend/device/driver, and compile flags. A seeded training run should be reproducible **under a documented fixed configuration**, not promised bit-identical across CPU and GPU or different drivers. `deterministic` mode disables nondeterministic algorithms where controllable, but driver-dependent floating-point behavior still applies.
+Record source/compiler version, tensor shapes, optimizer hyperparameters, RNG algorithm/seed/state, model/parameter identifiers, step number, backend/device/driver, and compile flags. A seeded training run should be reproducible **under a documented fixed configuration**, not promised bit-identical across CPU and GPU or different drivers. `deterministic` mode (a compile flag, § 3.3) disables nondeterministic algorithms where controllable, but driver-dependent floating-point behavior still applies.
 
 ### 6.2 Checkpoint format
 
 Versioned binary package `.msckpt`:
 
-- header: magic `MSCK`, format version, endian marker, manifest size, checksum/hash;
+- header: magic `MSCK`, format version, endian marker, manifest size, checksum/hash (`blake3` over the header and manifest bytes, the checksum field itself counted as zero bytes);
 - structured manifest (JSON for M1): compiler/model schema hash, parameter names, shapes, dtypes, offsets/lengths, optimizer state descriptors, RNG and step state;
 - contiguous little-endian tensor payload with explicit alignment;
 - optional verification hash of payload.
 
-Validate offset and size ranges against file size before mapping/allocating. Load into CPU backend even if checkpoint was made on GPU. Parameter-path migration between incompatible model definitions requires an explicit adapter; never silently reinterpret tensor bytes.
+Tensor offsets are absolute file offsets. Validate offset and size ranges against file size before mapping/allocating. Load into CPU backend even if checkpoint was made on GPU. Parameter-path migration between incompatible model definitions requires an explicit adapter; never silently reinterpret tensor bytes.
 
 ---
 
@@ -393,7 +393,7 @@ The **core compiler must compile and test without installing Vulkan**. A `vulkan
 ### 7.1 Key API and ownership rules
 
 - Compiler passes take immutable or explicitly mutable owned IR, never shared global mutable graph state.
-- The compiler emits a `CompiledArtifact { manifest, kernels, plan }`; the runtime never reparses source.
+- The compiler emits a `CompiledArtifact { manifest, kernels, plan }`; the runtime never reparses source. A CPU-backend artifact has no kernels and its plan has no dispatch steps.
 - `CompiledArtifact` is versioned. Untrusted serialized artifacts are validated before dispatch.
 - GPU resources are RAII-owned; destruction waits for or tracks in-flight use. Hide unsafe Vulkan calls behind compact, tested abstractions.
 - Every buffer view stores dtype, logical element count, allocation range, alignment, and device ownership; the public API prevents mixing incompatible buffer views.

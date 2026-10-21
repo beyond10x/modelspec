@@ -1,0 +1,14 @@
+{
+  "at": "2026-10-21T09:10:05Z",
+  "actor": "human:timo",
+  "artifact": "executable-system-specification:modelspec-contracts",
+  "kind": "executable-system-specification",
+  "revision": 4,
+  "change": {
+    "change": "evidence",
+    "kind": "review_outcome",
+    "source": "review-result:ess-design-review-1",
+    "review": "review-result:ess-design-review-1",
+    "outcome": "fixed"
+  }
+}

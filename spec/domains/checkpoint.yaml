@@ -19,7 +19,54 @@ types:
 
   - name: modelspec.checkpoint.DType
     kind: enum
-    variants: [F32]
+    naming:
+      summary: A tensor element type and its size in bytes; `f32` is the only M0/M1 dtype (DESIGN.md § 2.2).
+    attributes:
+      - name: size_bytes
+        type: Integer
+    variants:
+      - name: F32
+        attributes: {size_bytes: 4}
+
+  - name: modelspec.checkpoint.Shape
+    kind: newtype
+    of: List<Integer>
+    naming:
+      summary: A tensor shape; each dimension is a positive integer and rank 0 is a scalar (DESIGN.md § 2.2).
+    invariants:
+      - forall: {in: value, as: dim, that: dim > 0}
+
+  - name: modelspec.checkpoint.Endianness
+    kind: enum
+    naming:
+      summary: The header's endian marker; the payload is little-endian, so a reader refuses Big (DESIGN.md § 6.2).
+    variants: [Little, Big]
+
+  - name: modelspec.checkpoint.OptimizerSlot
+    kind: struct
+    naming:
+      summary: One optimizer state tensor of one parameter, addressed in the payload like a parameter (DESIGN.md § 6.2). Its offset and length are bounded by the file size and aligned like a ParameterRecord's, and the pair (path, slot) is unique in a checkpoint; ESS states neither here.
+    fields:
+      - name: path
+        type: modelspec.checkpoint.ParameterPath
+      - name: slot
+        type: String
+      - name: dtype
+        type: modelspec.checkpoint.DType
+        summary: Element type of the state tensor (DESIGN.md § 6.2 dtypes, § 6.2 never reinterpret tensor bytes).
+      - name: shape
+        type: modelspec.checkpoint.Shape
+        summary: Shape of the state tensor (DESIGN.md § 6.2 shapes).
+      - name: offset
+        type: Integer
+        summary: Absolute byte offset of the tensor from the start of the file, a multiple of the checkpoint's alignment (DESIGN.md § 6.2).
+      - name: length
+        type: Integer
+        summary: Length in bytes, equal to the product of `shape` times `dtype.size_bytes`; offset + length <= the checkpoint's file_size (DESIGN.md § 6.2).
+    invariants:
+      - offset >= 0
+      - length > 0
+      - length >= dtype.size_bytes
 
 entities:
   - name: modelspec.checkpoint.Checkpoint
@@ -29,21 +76,53 @@ entities:
       name: checkpoint_id
       type: modelspec.checkpoint.CheckpointId
     fields:
+      - name: magic
+        type: String
+        summary: Header magic, the four bytes `MSCK` (DESIGN.md § 6.2).
       - name: format_version
         type: Integer
+        summary: Header format version (DESIGN.md § 6.2).
+      - name: endian_marker
+        type: modelspec.checkpoint.Endianness
+        summary: Header endian marker (DESIGN.md § 6.2).
+      - name: manifest_size
+        type: Integer
+        summary: Header manifest size, in bytes, of the structured manifest (DESIGN.md § 6.2).
+      - name: header_checksum
+        type: modelspec.artifact.ContentHash
+        summary: Header checksum/hash, blake3 over the header and manifest bytes with this field's own bytes counted as zero (DESIGN.md § 6.2); required, unlike the optional payload_hash.
+      - name: file_size
+        type: Integer
+        summary: Size of the `.msckpt` file in bytes; every offset and length is validated against it before mapping or allocating (DESIGN.md § 6.2).
+      - name: alignment
+        type: Integer
+        summary: The explicit alignment, in bytes, of every tensor offset in the payload (DESIGN.md § 6.2).
       - name: schema_hash
         type: modelspec.artifact.ContentHash
-        summary: Compiler/model schema hash from the manifest (DESIGN.md § 6.2).
+        summary: Compiler/model schema hash from the manifest. The checkpoint loads only into an artifact with an equal schema_hash and the same parameter paths, dtypes and shapes; anything else needs an explicit adapter (DESIGN.md § 6.2).
       - name: step
         type: Integer
+        summary: The step state at which the checkpoint was written (DESIGN.md § 6.2).
       - name: payload_hash
         type: Optional<modelspec.artifact.ContentHash>
         summary: Optional verification hash of the payload (DESIGN.md § 6.2).
-    # UNMAPPED: DESIGN.md § 6.2 lists "RNG and step state" and "optimizer state descriptors" in the
-    # manifest without their shape. The RNG is a counter-based PRNG (§ 2.3) whose algorithm is not
-    # chosen yet. Open question for the owner.
-    # UNMAPPED: whether a checkpoint references the TrainingRun that wrote it, and with what
-    # cardinality. § 6.2 makes a checkpoint loadable on its own; nothing says it names its run.
+      - name: optimizer
+        type: modelspec.training.OptimizerConfig
+        summary: Optimizer hyperparameters, kept so a resumed run continues with the same optimizer (DESIGN.md § 6.1, § 9 gate 7).
+      - name: optimizer_slots
+        type: List<modelspec.checkpoint.OptimizerSlot>
+        summary: Optimizer state descriptors; empty for plain SGD (DESIGN.md § 6.2).
+      - name: rng
+        type: modelspec.training.RngState
+        summary: RNG state at `step` (DESIGN.md § 6.2).
+    invariants:
+      - 'magic == "MSCK"'
+      - format_version > 0
+      - endian_marker == Little
+      - manifest_size > 0
+      - file_size > manifest_size
+      - alignment > 0
+      - step >= 0
     relations:
       - name: parameters
         kind: owns
@@ -57,7 +136,7 @@ entities:
 
   - name: modelspec.checkpoint.ParameterRecord
     naming:
-      summary: One tensor in a checkpoint's payload, addressed by offset and length (DESIGN.md § 6.2).
+      summary: One tensor in a checkpoint's payload, addressed by offset and length (DESIGN.md § 6.2). Its path is unique among the records of its checkpoint (DESIGN.md § 2.3), and offset + length <= the checkpoint's file_size with offset a multiple of its alignment (DESIGN.md § 6.2); ESS states neither here.
     identity:
       name: parameter_record_id
       type: modelspec.checkpoint.ParameterRecordId
@@ -69,14 +148,17 @@ entities:
       - name: dtype
         type: modelspec.checkpoint.DType
       - name: shape
-        type: List<Integer>
+        type: modelspec.checkpoint.Shape
       - name: offset
         type: Integer
+        summary: Absolute byte offset of the tensor from the start of the file, a multiple of the checkpoint's alignment (DESIGN.md § 6.2).
       - name: length
         type: Integer
+        summary: Length in bytes, equal to the product of `shape` times `dtype.size_bytes`, so tensor bytes are never reinterpreted (DESIGN.md § 6.2).
     invariants:
       - offset >= 0
       - length > 0
+      - length >= dtype.size_bytes
     lifecycle:
       initial: Written
       states: [Written]

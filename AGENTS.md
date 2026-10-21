@@ -5,7 +5,7 @@ A Rust compiler and runtime for `.mspec` tensor-program specifications. Humans s
 
 ## State
 
-Design only (DESIGN.md revision 0.1, 2026-10-21). No Cargo workspace, no code, no CI. The first
+Design only (DESIGN.md revision 0.3, 2026-10-21). No Cargo workspace, no code, no CI. The first
 implementation work is milestone M0 (DESIGN.md § 1 and § 11, iteration 1).
 
 ## Planning and specification
@@ -32,5 +32,7 @@ implementation work is milestone M0 (DESIGN.md § 1 and § 11, iteration 1).
 - Correctness before speed: the CPU oracle and finite-difference gradient checks (DESIGN.md § 9,
   gates 1–3) exist before any GPU kernel is optimized.
 - The files in `examples/` are target syntax. Keep them in step with DESIGN.md § 2 until a parser
-  can check them, then make `modelspec check` on every example part of the gate.
+  can check them, then make `modelspec check` on every example part of the gate once the parser
+  supports its constructs: `linear_regression.mspec` from M0, `tiny_mlp.mspec` (modules, generics,
+  `vulkan(0)`) from DESIGN.md § 11 iteration 3.
 - Use `Taskfile.yml` (go-task) for build and test entry points once code exists; not a Makefile.

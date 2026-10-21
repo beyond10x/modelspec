@@ -6,6 +6,7 @@ status: draft
 title: 'M0: semantic core (parse, check, tensor IR, autodiff, CPU training)'
 relations:
 - informed_by: executable-system-specification:modelspec-contracts
+- serves: vision:modelspec
 revision: 1
 ---
 # M0: semantic core

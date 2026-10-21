@@ -7,13 +7,59 @@ types:
     kind: newtype
     of: Uuid
 
+  - name: modelspec.device.Extent3D
+    kind: struct
+    naming:
+      summary: A size along the three workgroup dimensions x, y and z, each positive (DESIGN.md § 3.1 dispatch dimensions, § 5.1 workgroup limits).
+    fields:
+      - name: x
+        type: Integer
+      - name: y
+        type: Integer
+      - name: z
+        type: Integer
+    invariants:
+      - x > 0
+      - y > 0
+      - z > 0
+
   - name: modelspec.device.MemoryHeap
     kind: struct
+    naming:
+      summary: One Vulkan memory heap and its budget (DESIGN.md § 5.1 memory heaps/budgets).
     fields:
       - name: size_bytes
         type: Integer
       - name: device_local
         type: Boolean
+      - name: budget_bytes
+        type: Optional<Integer>
+        summary: VkPhysicalDeviceMemoryBudgetPropertiesEXT.heapBudget; absent where the driver does not expose VK_EXT_memory_budget (DESIGN.md § 0 invariant 6, § 5.1).
+    invariants:
+      - size_bytes > 0
+      - any:
+          - not defined(budget_bytes)
+          - budget_bytes <= size_bytes
+
+  - name: modelspec.device.CooperativeMatrixShape
+    kind: struct
+    naming:
+      summary: One VkCooperativeMatrixPropertiesKHR entry, component types by Vulkan enum name (DESIGN.md § 5.1).
+    fields:
+      - name: m
+        type: Integer
+      - name: n
+        type: Integer
+      - name: k
+        type: Integer
+      - name: a_type
+        type: String
+      - name: b_type
+        type: String
+      - name: c_type
+        type: String
+      - name: result_type
+        type: String
 
 entities:
   - name: modelspec.device.DeviceProfile
@@ -34,10 +80,28 @@ entities:
         type: Integer
       - name: subgroup_size
         type: Integer
+      - name: subgroup_stages
+        type: List<String>
+        summary: VkPhysicalDeviceSubgroupProperties.supportedStages, by VkShaderStageFlagBits name (DESIGN.md § 5.1 subgroup properties).
+      - name: subgroup_operations
+        type: List<String>
+        summary: VkPhysicalDeviceSubgroupProperties.supportedOperations, by VkSubgroupFeatureFlagBits name (DESIGN.md § 5.1 subgroup properties).
       - name: max_workgroup_invocations
         type: Integer
+      - name: max_workgroup_size
+        type: modelspec.device.Extent3D
+        summary: VkPhysicalDeviceLimits.maxComputeWorkGroupSize, per dimension (DESIGN.md § 5.1 workgroup limits).
+      - name: max_workgroup_count
+        type: modelspec.device.Extent3D
+        summary: VkPhysicalDeviceLimits.maxComputeWorkGroupCount, per dimension (DESIGN.md § 5.1 workgroup limits).
+      - name: max_shared_memory_bytes
+        type: Integer
+        summary: VkPhysicalDeviceLimits.maxComputeSharedMemorySize; tile sizes must fit it (DESIGN.md § 5.1, § 5.2).
       - name: f16_storage
         type: Boolean
+      - name: f16_compute
+        type: Boolean
+        summary: Whether shaders may do f16 arithmetic (VkPhysicalDeviceShaderFloat16Int8Features.shaderFloat16); without it there is no f16 compute path (DESIGN.md § 5.1, § 8.1 E-TARGET-034).
       - name: cooperative_matrix
         type: Boolean
         summary: Whether the driver exposes a cooperative-matrix extension (DESIGN.md § 5.2, M4).
@@ -45,8 +109,30 @@ entities:
         type: Boolean
       - name: memory_heaps
         type: List<modelspec.device.MemoryHeap>
-    # UNMAPPED: § 5.1 also lists SPIR-V/Vulkan feature levels, the supported cooperative-matrix
-    # types and M/N/K shapes, and storage-buffer limits. Their representation is not designed yet.
+      - name: vulkan_api_version
+        type: Integer
+        summary: VkPhysicalDeviceProperties.apiVersion, packed as Vulkan packs it (DESIGN.md § 5.1).
+      - name: spirv_version
+        type: Integer
+        summary: Highest SPIR-V version the device accepts, packed as in the SPIR-V header (DESIGN.md § 5.1).
+      - name: max_storage_buffer_range
+        type: Integer
+        summary: VkPhysicalDeviceLimits.maxStorageBufferRange (DESIGN.md § 5.1).
+      - name: min_storage_buffer_offset_alignment
+        type: Integer
+        summary: VkPhysicalDeviceLimits.minStorageBufferOffsetAlignment (DESIGN.md § 5.1).
+      - name: cooperative_matrix_shapes
+        type: List<modelspec.device.CooperativeMatrixShape>
+        summary: The actual supported matrix types and M/N/K shapes; empty when `cooperative_matrix` is false (DESIGN.md § 5.2).
+    invariants:
+      - subgroup_size > 0
+      - max_workgroup_invocations > 0
+      - max_shared_memory_bytes > 0
+      - distinct: {in: subgroup_stages, as: stage}
+      - distinct: {in: subgroup_operations, as: operation}
+      - any:
+          - cooperative_matrix == true
+          - cooperative_matrix_shapes.count == 0
     lifecycle:
       initial: Probed
       states: [Probed]

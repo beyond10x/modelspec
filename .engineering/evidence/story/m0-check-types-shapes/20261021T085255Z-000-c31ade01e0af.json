@@ -1,0 +1,14 @@
+{
+  "at": "2026-10-21T08:52:55Z",
+  "actor": "human:timo",
+  "artifact": "story:m0-check-types-shapes",
+  "kind": "story",
+  "revision": 2,
+  "change": {
+    "change": "evidence",
+    "kind": "review_outcome",
+    "source": "review-result:m0-scope-round-1",
+    "review": "review-result:m0-scope-round-1",
+    "outcome": "fixed"
+  }
+}

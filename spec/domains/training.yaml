@@ -7,35 +7,99 @@ types:
     kind: newtype
     of: Uuid
 
+  - name: modelspec.training.OptimizerKind
+    kind: enum
+    naming:
+      summary: SGD only until M3 adds AdamW (DESIGN.md § 1).
+    variants: [Sgd]
+
+  - name: modelspec.training.OptimizerConfig
+    kind: struct
+    naming:
+      summary: Optimizer hyperparameters, recorded for reproducibility (DESIGN.md § 6.1).
+    fields:
+      - name: kind
+        type: modelspec.training.OptimizerKind
+      - name: learning_rate
+        type: Binary64
+
+  - name: modelspec.training.RngAlgorithm
+    kind: enum
+    naming:
+      summary: The counter-based PRNG of DESIGN.md § 2.3.
+    variants: [Philox4x32x10]
+
+  - name: modelspec.training.RngState
+    kind: struct
+    naming:
+      summary: RNG algorithm, seed and counter position (DESIGN.md § 2.3, § 6.1, § 6.2).
+    fields:
+      - name: algorithm
+        type: modelspec.training.RngAlgorithm
+      - name: seed
+        type: Integer
+      - name: counter
+        type: Integer
+
 entities:
   - name: modelspec.training.TrainingRun
     naming:
-      summary: A run of one compiled artifact, with what § 6.1 says must be recorded to reproduce it.
+      summary: A run of one compiled artifact, with what § 6.1 says must be recorded to reproduce it. Source hash, compiler version, tensor shapes, compile flags (fast_math, deterministic) and backend are read through the artifact.
     identity:
       name: training_run_id
       type: modelspec.training.TrainingRunId
     fields:
       - name: artifact_id
         type: modelspec.artifact.ArtifactId
-      - name: compiler_version
-        type: String
-      - name: seed
-        type: Integer
       - name: steps
         type: Integer
-        summary: TrainConfig.steps (DESIGN.md § 6).
-      - name: deterministic
-        type: Boolean
-        summary: Deterministic mode (DESIGN.md § 6.1).
-    # UNMAPPED: § 6.1 records "backend/device/driver". A CPU run has no Vulkan device, so the link
-    # to DeviceProfile is optional at least; whether it is a relation or a copied value is open.
-    # UNMAPPED: optimizer hyperparameters and RNG state have no designed shape yet (§ 6.1, § 2.3).
+        summary: TrainConfig.steps, the steps of this invocation counted from start_step, so the run ends at start_step + steps (DESIGN.md § 6).
+      - name: checkpoint_every
+        type: Optional<Integer>
+        summary: TrainConfig.checkpoint_every, a positive step interval; absent means no periodic checkpoints (DESIGN.md § 6).
+      - name: start_step
+        type: Integer
+        summary: The step number the run started at; 0 unless it resumed from a checkpoint (DESIGN.md § 6.1 step number, § 9 gate 7).
+      - name: current_step
+        type: Integer
+        summary: The step number the run has reached; current_step <= start_step + steps, where the run ends (DESIGN.md § 6, step counter; § 6.1 step number). ESS cannot add two facts, so this bound is not an invariant.
+      - name: resumed_from_checkpoint_id
+        type: Optional<modelspec.checkpoint.CheckpointId>
+        summary: The checkpoint a resumed run loaded; start_step equals its step (DESIGN.md § 6.2, § 9 gate 7).
+      - name: optimizer
+        type: modelspec.training.OptimizerConfig
+      - name: rng
+        type: modelspec.training.RngState
+        summary: The RNG state the run started from; rng.seed is the run's single seed (DESIGN.md § 6.1).
+      - name: device_profile_id
+        type: Optional<modelspec.device.DeviceProfileId>
+        summary: Present exactly when the artifact's backend is Vulkan; a CPU run has no Vulkan device (DESIGN.md § 6.1 backend/device/driver). ESS cannot state the rule across the two entities.
+    invariants:
+      - start_step >= 0
+      - current_step >= start_step
+      - steps >= 0
+      - any:
+          - not defined(checkpoint_every)
+          - checkpoint_every > 0
+      - any:
+          - defined(resumed_from_checkpoint_id)
+          - start_step == 0
     relations:
       - name: artifact
         kind: references
         target: modelspec.artifact.CompiledArtifact
         cardinality: one
         via: artifact_id
+      - name: device
+        kind: references
+        target: modelspec.device.DeviceProfile
+        cardinality: one
+        via: device_profile_id
+      - name: resumed_from
+        kind: references
+        target: modelspec.checkpoint.Checkpoint
+        cardinality: one
+        via: resumed_from_checkpoint_id
     lifecycle:
       initial: Recorded
       states: [Recorded]

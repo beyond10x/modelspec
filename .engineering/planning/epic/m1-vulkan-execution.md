@@ -7,6 +7,7 @@ title: 'M1: native Vulkan execution on the RTX 3090'
 relations:
 - depends_on: epic:m0-semantic-core
 - informed_by: executable-system-specification:modelspec-contracts
+- serves: vision:modelspec
 revision: 1
 ---
 # M1: native Vulkan execution

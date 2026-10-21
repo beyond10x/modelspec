@@ -21,10 +21,147 @@ types:
     kind: enum
     variants: [Cpu, Vulkan]
 
+  - name: modelspec.artifact.ParameterSpec
+    kind: struct
+    naming:
+      summary: One parameter the artifact reads and updates, by its stable path (DESIGN.md § 2.3, § 6.2).
+    fields:
+      - name: path
+        type: modelspec.checkpoint.ParameterPath
+      - name: canonical_parameter_id
+        type: Integer
+        summary: The first 8 bytes of blake3 of the canonical path, read little-endian as an unsigned 64-bit integer; with the global seed it selects the parameter's initial values (DESIGN.md § 2.3).
+      - name: dtype
+        type: modelspec.checkpoint.DType
+      - name: shape
+        type: modelspec.checkpoint.Shape
+    invariants:
+      - canonical_parameter_id >= 0
+      - canonical_parameter_id <= 18446744073709551615
+
+  - name: modelspec.artifact.DataRole
+    kind: enum
+    naming:
+      summary: Whether a bound tensor is a training input or a target (DESIGN.md § 2 `input`, `target`).
+    variants: [Input, Target]
+
+  - name: modelspec.artifact.DataSpec
+    kind: struct
+    naming:
+      summary: One input or target tensor of the train specification, with the shape a batch must have (DESIGN.md § 2, § 6.1 tensor shapes).
+    fields:
+      - name: name
+        type: String
+      - name: role
+        type: modelspec.artifact.DataRole
+      - name: dtype
+        type: modelspec.checkpoint.DType
+      - name: shape
+        type: modelspec.checkpoint.Shape
+
+  - name: modelspec.artifact.BufferView
+    kind: struct
+    naming:
+      summary: A typed view of a plan buffer (DESIGN.md § 7.1). size_bytes equals element_count times dtype.size_bytes and offset is a multiple of alignment; ESS states neither here. Device ownership (§ 7.1) is not yet typed.
+    fields:
+      - name: buffer
+        type: Integer
+        summary: The plan-local number of the allocation the view lies in (DESIGN.md § 3.1 resources).
+      - name: dtype
+        type: modelspec.checkpoint.DType
+      - name: element_count
+        type: Integer
+        summary: Logical element count (DESIGN.md § 7.1).
+      - name: offset
+        type: Integer
+        summary: Start of the allocation range, in bytes (DESIGN.md § 7.1).
+      - name: size_bytes
+        type: Integer
+        summary: Length of the allocation range, in bytes (DESIGN.md § 7.1).
+      - name: alignment
+        type: Integer
+        summary: Alignment of the view, in bytes (DESIGN.md § 7.1).
+    invariants:
+      - buffer >= 0
+      - element_count > 0
+      - offset >= 0
+      - size_bytes > 0
+      - size_bytes >= dtype.size_bytes
+      - alignment > 0
+
+  - name: modelspec.artifact.PlanOp
+    kind: enum
+    naming:
+      summary: The command kinds of the execution DAG (DESIGN.md § 3.1).
+    variants: [Allocate, Copy, Dispatch, Barrier, Complete]
+
+  - name: modelspec.artifact.PlanStep
+    kind: struct
+    naming:
+      summary: One command of the execution DAG (DESIGN.md § 3.1). A Dispatch names the kernel module it runs, one of its artifact's kernels (DESIGN.md § 7.1); ESS cannot state that the module belongs to the same artifact.
+    fields:
+      - name: op
+        type: modelspec.artifact.PlanOp
+      - name: kernel_module_id
+        type: Optional<modelspec.artifact.KernelModuleId>
+        summary: Present exactly on a Dispatch step (DESIGN.md § 7.1).
+      - name: workgroups
+        type: Optional<modelspec.device.Extent3D>
+        summary: Dispatch dimensions, the workgroup count per dimension; present exactly on a Dispatch step (DESIGN.md § 3.1).
+      - name: reads
+        type: List<modelspec.artifact.BufferView>
+        summary: The resources the step reads, such as a Copy's source (DESIGN.md § 3.1 resource dependencies).
+      - name: writes
+        type: List<modelspec.artifact.BufferView>
+        summary: The resources the step writes; for an Allocate step the scratch allocation it makes (DESIGN.md § 3.1 scratch allocations).
+      - name: depends_on
+        type: List<Integer>
+        summary: Positions in the plan of earlier steps this one waits on, the DAG's dependencies and barriers (DESIGN.md § 3.1). That each lies before this step is not stated in ESS.
+    invariants:
+      - forall: {in: depends_on, as: position, that: position >= 0}
+      - distinct: {in: depends_on, as: position}
+      - any:
+          - all: [op == Dispatch, defined(kernel_module_id), defined(workgroups)]
+          - all: [op != Dispatch, not defined(kernel_module_id), not defined(workgroups)]
+
+  - name: modelspec.artifact.KernelCacheKey
+    kind: struct
+    naming:
+      summary: The key a kernel configuration is cached under (DESIGN.md § 5.3).
+    fields:
+      - name: ir_hash
+        type: modelspec.artifact.ContentHash
+        summary: Hash of the kernel's IR (DESIGN.md § 5.3).
+      - name: shapes
+        type: List<modelspec.checkpoint.Shape>
+        summary: The shapes the kernel was specialized for (DESIGN.md § 5.3).
+      - name: dtype
+        type: modelspec.checkpoint.DType
+      - name: fast_math
+        type: Boolean
+        summary: Optimization setting (DESIGN.md § 3.3, § 5.3).
+      - name: deterministic
+        type: Boolean
+        summary: Optimization setting (DESIGN.md § 3.3, § 5.3).
+      - name: vendor_id
+        type: Integer
+        summary: GPU vendor identifier, as DeviceProfile.vendor_id (DESIGN.md § 5.3).
+      - name: device_id
+        type: Integer
+        summary: GPU device identifier, as DeviceProfile.device_id (DESIGN.md § 5.3).
+      - name: driver_version
+        type: Integer
+        summary: Driver identifier, as DeviceProfile.driver_version (DESIGN.md § 5.3).
+      - name: capabilities
+        type: List<String>
+        summary: The Vulkan extensions and SPIR-V capabilities the kernel uses, by name (DESIGN.md § 5.3 extension/capability set).
+    invariants:
+      - distinct: {in: capabilities, as: capability}
+
 entities:
   - name: modelspec.artifact.CompiledArtifact
     naming:
-      summary: A versioned compiler output holding a manifest, kernels and an execution plan (DESIGN.md § 7.1).
+      summary: A versioned compiler output holding a manifest, kernels and an execution plan (DESIGN.md § 7.1). A Cpu artifact has no kernels and no Dispatch steps (DESIGN.md § 7.1); ESS states the plan half here, not the kernels half.
     identity:
       name: artifact_id
       type: modelspec.artifact.ArtifactId
@@ -34,15 +171,44 @@ entities:
         summary: CompiledArtifact is versioned (DESIGN.md § 7.1).
       - name: backend
         type: modelspec.artifact.Backend
+      - name: artifact_hash
+        type: modelspec.artifact.ContentHash
+        summary: blake3 of the serialized artifact; it covers fast_math and deterministic (DESIGN.md § 3.3, § 7).
+      - name: source_hash
+        type: modelspec.artifact.ContentHash
+        summary: Hash of the `.mspec` source compiled; the source version (DESIGN.md § 6.1).
       - name: ir_hash
         type: modelspec.artifact.ContentHash
         summary: Part of every kernel cache key (DESIGN.md § 5.3).
       - name: fast_math
         type: Boolean
         summary: Recorded in the artifact hash (DESIGN.md § 3.3).
-    # UNMAPPED: DESIGN.md § 7.1 names the parts `manifest` and `plan` but not their fields. The
-    # execution DAG of § 3.1 (dispatches, copies, barriers, scratch allocations) is the likely plan;
-    # whether it is an entity, a struct or opaque bytes is open.
+      - name: deterministic
+        type: Boolean
+        summary: A compile setting; no floating-point reduction is reassociated, so it is recorded in the artifact hash (DESIGN.md § 3.3, § 6.1).
+      - name: compiler_version
+        type: String
+        summary: Manifest; recorded for reproducibility (DESIGN.md § 6.1).
+      - name: schema_hash
+        type: modelspec.artifact.ContentHash
+        summary: Manifest; the compiler/model schema hash a checkpoint is matched against (DESIGN.md § 6.2).
+      - name: parameters
+        type: List<modelspec.artifact.ParameterSpec>
+        summary: Manifest; parameter paths, dtypes and shapes, matched against a checkpoint's (DESIGN.md § 6.2); paths are unique and no two parameters alias (DESIGN.md § 2.3).
+      - name: data
+        type: List<modelspec.artifact.DataSpec>
+        summary: Manifest; the input and target tensors and their shapes (DESIGN.md § 2, § 6.1).
+      - name: plan
+        type: List<modelspec.artifact.PlanStep>
+        summary: The execution DAG in a valid execution order (DESIGN.md § 3.1, § 7.1).
+    invariants:
+      - distinct: {in: parameters, as: parameter, by: parameter.path}
+      - distinct: {in: parameters, as: parameter, by: parameter.canonical_parameter_id}
+      - distinct: {in: data, as: binding, by: binding.name}
+      - forall: {in: plan, as: step, that: {forall: {in: step.depends_on, as: position, that: position < plan.count}}}
+      - any:
+          - backend == Vulkan
+          - forall: {in: plan, as: step, that: step.op != Dispatch}
     relations:
       - name: kernels
         kind: owns
@@ -56,7 +222,7 @@ entities:
 
   - name: modelspec.artifact.KernelModule
     naming:
-      summary: One generated SPIR-V module of an artifact (DESIGN.md § 3, target lowering).
+      summary: One generated SPIR-V module of a Vulkan artifact (DESIGN.md § 3, target lowering; § 7.1).
     identity:
       name: kernel_module_id
       type: modelspec.artifact.KernelModuleId
@@ -67,6 +233,9 @@ entities:
         type: String
       - name: spirv
         type: Bytes
+      - name: cache_key
+        type: modelspec.artifact.KernelCacheKey
+        summary: The configuration cache key this module was built under (DESIGN.md § 5.3).
     lifecycle:
       initial: Emitted
       states: [Emitted]
