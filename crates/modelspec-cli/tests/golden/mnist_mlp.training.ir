@@ -1,0 +1,33 @@
+param @MnistMlp.w1: Tensor<f32, [784, 64]> = xavier_uniform {v0}
+param @MnistMlp.w2: Tensor<f32, [64, 10]> = xavier_uniform {v0}
+optimizer sgd lr = 0.1
+forward %0: Tensor<f32, [100, 784]> = Input "x"
+forward %1: Tensor<f32, [100, 10]> = Input "y"
+forward %2: Tensor<f32, [784, 64]> = ParamRead @MnistMlp.w1 {!0 read @MnistMlp.w1 v0}
+forward %3: Tensor<f32, [64, 10]> = ParamRead @MnistMlp.w2 {!1 read @MnistMlp.w2 v0}
+forward %4: Tensor<f32, [100, 64]> = MatMul %0, %2
+forward %5: Tensor<f32, [100, 64]> = Relu %4
+forward %6: Tensor<f32, [100, 10]> = MatMul %5, %3
+loss %7: Tensor<f32, []> = Mse %6, %1
+loss %8: Tensor<f32, []> = Scalar 1.0
+forward %9: Tensor<f32, [100, 10]> = Sub %6, %1
+forward %10: Tensor<f32, []> = Scalar 0.002
+gradient %11: Tensor<f32, []> = Mul %8, %10
+gradient %12: Tensor<f32, [100, 10]> = Mul %9, %11
+forward %13: Tensor<f32, [10, 64]> = Transpose %3
+gradient %14: Tensor<f32, [100, 64]> = MatMul %12, %13
+forward %15: Tensor<f32, [64, 100]> = Transpose %5
+gradient %16: Tensor<f32, [64, 10]> = MatMul %15, %12
+gradient %17: Tensor<f32, [100, 64]> = ReluGrad %4, %14
+forward %18: Tensor<f32, [784, 100]> = Transpose %0
+gradient %19: Tensor<f32, [784, 64]> = MatMul %18, %17
+optimizer %20: Tensor<f32, []> = Scalar 0.1
+optimizer %21: Tensor<f32, [784, 64]> = Mul %20, %19
+optimizer %22: Tensor<f32, [784, 64]> = Sub %2, %21 {!2 write @MnistMlp.w1 v1}
+optimizer %23: Tensor<f32, [64, 10]> = Mul %20, %16
+optimizer %24: Tensor<f32, [64, 10]> = Sub %3, %23 {!3 write @MnistMlp.w2 v1}
+output %7 loss
+output %19 gradient @MnistMlp.w1
+output %16 gradient @MnistMlp.w2
+output %22 update @MnistMlp.w1
+output %24 update @MnistMlp.w2
