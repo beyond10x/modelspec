@@ -240,8 +240,8 @@ pub fn train(
     let uploaded_before = device.bytes_uploaded();
     let downloaded_before = device.bytes_downloaded();
     let mut dispatches_per_step = 0;
-    let started = Instant::now();
-    {
+    let mut first_submit: Option<Instant> = None;
+    let started = {
         let loss = buffer(&buffers, &plan.loss_view)?;
         let mut chain = device.chain();
         let mut recording = device.record()?;
@@ -259,7 +259,9 @@ pub fn train(
         recording.barrier(Barrier::TransferToCompute);
         for k in 0..steps {
             if k > 0 && k % CHUNK_STEPS == 0 {
-                chain.submit(recording.finish()?)?;
+                let recorded = recording.finish()?;
+                first_submit.get_or_insert_with(Instant::now);
+                chain.submit(recorded)?;
                 recording = device.record()?;
             }
             let before = recording.dispatches();
@@ -287,8 +289,11 @@ pub fn train(
         recording.barrier(Barrier::TransferToTransfer);
         recording.copy_region(&losses, 0, &download, at, 4 * loss_slots)?;
         recording.barrier(Barrier::TransferToHost);
-        chain.finish(recording.finish()?)?.wait()?;
-    }
+        let recorded = recording.finish()?;
+        let started = *first_submit.get_or_insert_with(Instant::now);
+        chain.finish(recorded)?.wait()?;
+        started
+    };
     let elapsed = started.elapsed();
     let stats = RunStats {
         steps,

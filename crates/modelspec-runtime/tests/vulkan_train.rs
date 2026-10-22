@@ -159,10 +159,10 @@ fn assert_one_wait_and_the_counted_bytes(file: &str, runs: &Runs, steps: u64) {
         stats.host_waits, 1,
         "{file}: one host wait for the whole run"
     );
-    assert!(
-        stats.submits <= steps.div_ceil(CHUNK_STEPS).max(1),
-        "{file}: {} submits for {steps} steps",
-        stats.submits
+    assert_eq!(
+        stats.submits,
+        steps.div_ceil(CHUNK_STEPS).max(1),
+        "{file}: one submit per chunk of {CHUNK_STEPS} steps for {steps} steps"
     );
     assert_eq!(
         stats.bytes_uploaded,
