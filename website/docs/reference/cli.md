@@ -26,6 +26,7 @@ Generated from the clap definition of the `modelspec` command line in [`crates/m
 | Command | What it does |
 |---|---|
 | [`modelspec check`](#modelspec-check) | Parse and type-check a `.mspec` file |
+| [`modelspec inspect-device`](#modelspec-inspect-device) | Print the profile and negotiation verdict of each Vulkan physical device |
 | [`modelspec ir`](#modelspec-ir) | Print the IR of a `.mspec` file at a stage |
 | [`modelspec train`](#modelspec-train) | Train a `.mspec` model |
 
@@ -42,6 +43,20 @@ Every argument is required and has no default.
 | Argument | Meaning |
 |---|---|
 | `<PATH>` | The .mspec file to check. |
+
+## `modelspec inspect-device`
+
+Print the profile and negotiation verdict of each Vulkan physical device
+
+```text
+Usage: modelspec inspect-device [OPTIONS] --backend <BACKEND>
+```
+
+| Argument | Required | Default | Meaning |
+|---|---|---|---|
+| `--backend <BACKEND>` | yes | none | The backend whose devices are inspected. One of:<br/>`vulkan`: Vulkan compute |
+| `--device <INDEX>` | no | none | The index of one physical device, in the order the Vulkan loader lists them; without it every device is printed. |
+| `--format <FORMAT>` | no | `text` | The output format. One of:<br/>`text`: One `<field>: <value>` line per field, then the negotiation verdict<br/>`json`: The profile's JSON form, or a JSON array of profiles |
 
 ## `modelspec ir`
 

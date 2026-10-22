@@ -4,6 +4,7 @@
 
 pub mod autodiff;
 pub mod compile;
+pub mod device;
 pub mod diag;
 pub mod hir;
 pub mod ir;

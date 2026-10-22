@@ -1,0 +1,178 @@
+{
+  "device_profile_id": "391c9d5b-cdf2-48cd-87d4-03c7d2560763",
+  "vendor_id": 4318,
+  "device_id": 8708,
+  "device_uuid": "a3241aed-6b48-2e51-6378-b6d9d0255299",
+  "driver_version": 2559459584,
+  "subgroup_size": 32,
+  "subgroup_stages": [
+    "VK_SHADER_STAGE_VERTEX_BIT",
+    "VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT",
+    "VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT",
+    "VK_SHADER_STAGE_GEOMETRY_BIT",
+    "VK_SHADER_STAGE_FRAGMENT_BIT",
+    "VK_SHADER_STAGE_COMPUTE_BIT",
+    "VK_SHADER_STAGE_TASK_BIT_EXT",
+    "VK_SHADER_STAGE_MESH_BIT_EXT",
+    "VK_SHADER_STAGE_RAYGEN_BIT_KHR",
+    "VK_SHADER_STAGE_ANY_HIT_BIT_KHR",
+    "VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR",
+    "VK_SHADER_STAGE_MISS_BIT_KHR",
+    "VK_SHADER_STAGE_INTERSECTION_BIT_KHR",
+    "VK_SHADER_STAGE_CALLABLE_BIT_KHR"
+  ],
+  "subgroup_operations": [
+    "VK_SUBGROUP_FEATURE_BASIC_BIT",
+    "VK_SUBGROUP_FEATURE_VOTE_BIT",
+    "VK_SUBGROUP_FEATURE_ARITHMETIC_BIT",
+    "VK_SUBGROUP_FEATURE_BALLOT_BIT",
+    "VK_SUBGROUP_FEATURE_SHUFFLE_BIT",
+    "VK_SUBGROUP_FEATURE_SHUFFLE_RELATIVE_BIT",
+    "VK_SUBGROUP_FEATURE_CLUSTERED_BIT",
+    "VK_SUBGROUP_FEATURE_QUAD_BIT",
+    "VK_SUBGROUP_FEATURE_PARTITIONED_BIT_NV",
+    "VK_SUBGROUP_FEATURE_ROTATE_BIT",
+    "VK_SUBGROUP_FEATURE_ROTATE_CLUSTERED_BIT"
+  ],
+  "max_workgroup_invocations": 1024,
+  "max_workgroup_size": {
+    "x": 1024,
+    "y": 1024,
+    "z": 64
+  },
+  "max_workgroup_count": {
+    "x": 2147483647,
+    "y": 65535,
+    "z": 65535
+  },
+  "max_shared_memory_bytes": 49152,
+  "f16_storage": true,
+  "f16_compute": true,
+  "cooperative_matrix": true,
+  "timestamp_queries": true,
+  "memory_heaps": [
+    {
+      "size_bytes": 25769803776,
+      "device_local": true,
+      "budget_bytes": 25022758912
+    },
+    {
+      "size_bytes": 50483856384,
+      "device_local": false,
+      "budget_bytes": 50483856384
+    },
+    {
+      "size_bytes": 257949696,
+      "device_local": true,
+      "budget_bytes": 235077632
+    }
+  ],
+  "vulkan_api_version": 4211029,
+  "spirv_version": 67072,
+  "max_storage_buffer_range": 4294967295,
+  "min_storage_buffer_offset_alignment": 16,
+  "cooperative_matrix_shapes": [
+    {
+      "m": 16,
+      "n": 16,
+      "k": 16,
+      "a_type": "VK_COMPONENT_TYPE_FLOAT16_KHR",
+      "b_type": "VK_COMPONENT_TYPE_FLOAT16_KHR",
+      "c_type": "VK_COMPONENT_TYPE_FLOAT16_KHR",
+      "result_type": "VK_COMPONENT_TYPE_FLOAT16_KHR"
+    },
+    {
+      "m": 16,
+      "n": 8,
+      "k": 16,
+      "a_type": "VK_COMPONENT_TYPE_FLOAT16_KHR",
+      "b_type": "VK_COMPONENT_TYPE_FLOAT16_KHR",
+      "c_type": "VK_COMPONENT_TYPE_FLOAT16_KHR",
+      "result_type": "VK_COMPONENT_TYPE_FLOAT16_KHR"
+    },
+    {
+      "m": 16,
+      "n": 8,
+      "k": 8,
+      "a_type": "VK_COMPONENT_TYPE_FLOAT16_KHR",
+      "b_type": "VK_COMPONENT_TYPE_FLOAT16_KHR",
+      "c_type": "VK_COMPONENT_TYPE_FLOAT16_KHR",
+      "result_type": "VK_COMPONENT_TYPE_FLOAT16_KHR"
+    },
+    {
+      "m": 16,
+      "n": 16,
+      "k": 16,
+      "a_type": "VK_COMPONENT_TYPE_FLOAT16_KHR",
+      "b_type": "VK_COMPONENT_TYPE_FLOAT16_KHR",
+      "c_type": "VK_COMPONENT_TYPE_FLOAT32_KHR",
+      "result_type": "VK_COMPONENT_TYPE_FLOAT32_KHR"
+    },
+    {
+      "m": 16,
+      "n": 8,
+      "k": 16,
+      "a_type": "VK_COMPONENT_TYPE_FLOAT16_KHR",
+      "b_type": "VK_COMPONENT_TYPE_FLOAT16_KHR",
+      "c_type": "VK_COMPONENT_TYPE_FLOAT32_KHR",
+      "result_type": "VK_COMPONENT_TYPE_FLOAT32_KHR"
+    },
+    {
+      "m": 16,
+      "n": 8,
+      "k": 8,
+      "a_type": "VK_COMPONENT_TYPE_FLOAT16_KHR",
+      "b_type": "VK_COMPONENT_TYPE_FLOAT16_KHR",
+      "c_type": "VK_COMPONENT_TYPE_FLOAT32_KHR",
+      "result_type": "VK_COMPONENT_TYPE_FLOAT32_KHR"
+    },
+    {
+      "m": 16,
+      "n": 16,
+      "k": 32,
+      "a_type": "VK_COMPONENT_TYPE_UINT8_KHR",
+      "b_type": "VK_COMPONENT_TYPE_UINT8_KHR",
+      "c_type": "VK_COMPONENT_TYPE_UINT32_KHR",
+      "result_type": "VK_COMPONENT_TYPE_UINT32_KHR"
+    },
+    {
+      "m": 16,
+      "n": 16,
+      "k": 32,
+      "a_type": "VK_COMPONENT_TYPE_SINT8_KHR",
+      "b_type": "VK_COMPONENT_TYPE_SINT8_KHR",
+      "c_type": "VK_COMPONENT_TYPE_SINT32_KHR",
+      "result_type": "VK_COMPONENT_TYPE_SINT32_KHR"
+    },
+    {
+      "m": 16,
+      "n": 8,
+      "k": 32,
+      "a_type": "VK_COMPONENT_TYPE_UINT8_KHR",
+      "b_type": "VK_COMPONENT_TYPE_UINT8_KHR",
+      "c_type": "VK_COMPONENT_TYPE_UINT32_KHR",
+      "result_type": "VK_COMPONENT_TYPE_UINT32_KHR"
+    },
+    {
+      "m": 16,
+      "n": 8,
+      "k": 32,
+      "a_type": "VK_COMPONENT_TYPE_SINT8_KHR",
+      "b_type": "VK_COMPONENT_TYPE_SINT8_KHR",
+      "c_type": "VK_COMPONENT_TYPE_SINT32_KHR",
+      "result_type": "VK_COMPONENT_TYPE_SINT32_KHR"
+    },
+    {
+      "m": 16,
+      "n": 16,
+      "k": 16,
+      "a_type": "VK_COMPONENT_TYPE_BFLOAT16_KHR",
+      "b_type": "VK_COMPONENT_TYPE_BFLOAT16_KHR",
+      "c_type": "VK_COMPONENT_TYPE_FLOAT32_KHR",
+      "result_type": "VK_COMPONENT_TYPE_FLOAT32_KHR"
+    }
+  ],
+  "shader_rounding_mode_rte_f32": true,
+  "shader_denorm_preserve_f32": false,
+  "shader_signed_zero_inf_nan_preserve_f32": true
+}

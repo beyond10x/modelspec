@@ -23,17 +23,18 @@
       "type": "integer"
     },
     "subgroup_size": {
+      "description": "VkPhysicalDeviceSubgroupProperties.subgroupSize; absent where the driver does not state it (a device below Vulkan 1.1) (DESIGN.md § 5.1 subgroup properties).",
       "type": "integer"
     },
     "subgroup_stages": {
-      "description": "VkPhysicalDeviceSubgroupProperties.supportedStages, by VkShaderStageFlagBits name (DESIGN.md § 5.1 subgroup properties).",
+      "description": "VkPhysicalDeviceSubgroupProperties.supportedStages, by VkShaderStageFlagBits name; empty where `subgroup_size` is absent (DESIGN.md § 5.1 subgroup properties).",
       "type": "array",
       "items": {
         "type": "string"
       }
     },
     "subgroup_operations": {
-      "description": "VkPhysicalDeviceSubgroupProperties.supportedOperations, by VkSubgroupFeatureFlagBits name (DESIGN.md § 5.1 subgroup properties).",
+      "description": "VkPhysicalDeviceSubgroupProperties.supportedOperations, by VkSubgroupFeatureFlagBits name; empty where `subgroup_size` is absent (DESIGN.md § 5.1 subgroup properties).",
       "type": "array",
       "items": {
         "type": "string"
@@ -55,10 +56,11 @@
       "type": "integer"
     },
     "f16_storage": {
+      "description": "VkPhysicalDevice16BitStorageFeatures.storageBuffer16BitAccess; absent where the driver does not state it (a device below Vulkan 1.1) (DESIGN.md § 5.1).",
       "type": "boolean"
     },
     "f16_compute": {
-      "description": "Whether shaders may do f16 arithmetic (VkPhysicalDeviceShaderFloat16Int8Features.shaderFloat16); without it there is no f16 compute path (DESIGN.md § 5.1, § 8.1 E-TARGET-034).",
+      "description": "Whether shaders may do f16 arithmetic (VkPhysicalDeviceShaderFloat16Int8Features.shaderFloat16); absent where the driver does not state it (a device below Vulkan 1.2); without it there is no f16 compute path (DESIGN.md § 5.1, § 8.1 E-TARGET-034).",
       "type": "boolean"
     },
     "cooperative_matrix": {
@@ -97,6 +99,18 @@
         "$ref": "#/$defs/modelspec.device.CooperativeMatrixShape"
       }
     },
+    "shader_rounding_mode_rte_f32": {
+      "description": "The driver value of VkPhysicalDeviceFloatControlsProperties.shaderRoundingModeRTEFloat32; absent where the driver does not state it (a device below Vulkan 1.2) (DESIGN.md § 5.4).",
+      "type": "boolean"
+    },
+    "shader_denorm_preserve_f32": {
+      "description": "The driver value of VkPhysicalDeviceFloatControlsProperties.shaderDenormPreserveFloat32; absent where the driver does not state it (a device below Vulkan 1.2) (DESIGN.md § 5.4).",
+      "type": "boolean"
+    },
+    "shader_signed_zero_inf_nan_preserve_f32": {
+      "description": "The driver value of VkPhysicalDeviceFloatControlsProperties.shaderSignedZeroInfNanPreserveFloat32; absent where the driver does not state it (a device below Vulkan 1.2) (DESIGN.md § 5.4).",
+      "type": "boolean"
+    },
     "state": {
       "$ref": "#/$defs/modelspec.device.DeviceProfile.State"
     }
@@ -106,15 +120,12 @@
     "vendor_id",
     "device_id",
     "driver_version",
-    "subgroup_size",
     "subgroup_stages",
     "subgroup_operations",
     "max_workgroup_invocations",
     "max_workgroup_size",
     "max_workgroup_count",
     "max_shared_memory_bytes",
-    "f16_storage",
-    "f16_compute",
     "cooperative_matrix",
     "timestamp_queries",
     "memory_heaps",
@@ -129,8 +140,8 @@
   "x-ess-provenance": {
     "system": "modelspec",
     "specification_version": "v1",
-    "source_digest": "234f6a472e3807a40047accc727c1a09300421617ec3572a2b88aa81c79c672e",
-    "contract_digest": "slice-sha256/2:40b41a552a18d24c7aedf6586218f4152d3bf7bc3d221421e739dad767277ddd",
+    "source_digest": "5c9fb6600ad276af97d4257524b5473e0dacbed7ec52b740981bf822062d28b6",
+    "contract_digest": "slice-sha256/2:9b65f1756feb1356554a8ca0cffbc01e2b5ac1bd7a2baf2671e687f00f5a2341",
     "regenerate": "ess generate"
   },
   "$defs": {

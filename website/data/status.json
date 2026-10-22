@@ -1,5 +1,5 @@
 {
-  "asOf": "2026-10-21",
+  "asOf": "2026-10-22",
   "format": "b10x-status/1",
   "items": [
     {
@@ -88,7 +88,14 @@
     },
     {
       "area": "GPU",
-      "detail": "Device discovery, allocation, dispatch and synchronization through ash. Not built. Planned in epic:m1-vulkan-execution.",
+      "detail": "modelspec inspect-device --backend vulkan prints each device's profile as the driver reports it and the negotiation verdict: Vulkan 1.2, no optional feature, no extension. Held by test negotiate_on_the_fixture_returns_the_required_set in crates/modelspec-runtime/src/vulkan/negotiate.rs.",
+      "href": "/docs/reference/cli",
+      "label": "Vulkan device discovery and feature negotiation",
+      "status": "shipped"
+    },
+    {
+      "area": "GPU",
+      "detail": "Allocation, dispatch and synchronization through ash. Not built. Planned in epic:m1-vulkan-execution.",
       "href": "/docs/roadmap",
       "label": "Headless Vulkan runtime",
       "status": "planned"
@@ -111,7 +118,7 @@
       "area": "Command line",
       "detail": ".msckpt save and load. Not built. Planned in epic:m1-vulkan-execution.",
       "href": "/docs/roadmap",
-      "label": "Checkpoints and the compile, infer and inspect-device commands",
+      "label": "Checkpoints and the compile and infer commands",
       "status": "planned"
     }
   ],

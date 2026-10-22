@@ -183,8 +183,9 @@ mod tests {
             "Every argument is required and has no default.\n\n| Argument | Meaning |\n|---|---|\n\
              | `<PATH>` | The .mspec file to check. |"
         ));
-        let (before_train, train) = page.split_once("## `modelspec train`").unwrap();
-        assert!(!before_train.contains("| Required |"));
+        let (check, _) = page.split_once("## `modelspec inspect-device`").unwrap();
+        assert!(!check.contains("| Required |"));
+        let (_, train) = page.split_once("## `modelspec train`").unwrap();
         assert!(train.contains("| Argument | Required | Default | Meaning |"));
         assert!(train.contains("| `--serve <ADDR>` | no | none |"));
         assert!(page.contains("One of:<br/>`cpu`: The CPU interpreter"));

@@ -10,10 +10,15 @@ publish.workspace = true
 name = "modelspec"
 path = "src/main.rs"
 
+[features]
+default = ["vulkan"]
+vulkan = ["modelspec-runtime/vulkan"]
+
 [dependencies]
 modelspec-core.workspace = true
 modelspec-runtime.workspace = true
 clap.workspace = true
+serde_json.workspace = true
 modelspec-observatory.workspace = true
 ctrlc.workspace = true
 

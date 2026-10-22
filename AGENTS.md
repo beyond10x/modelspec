@@ -14,14 +14,16 @@ A Rust compiler and runtime for `.mspec` tensor-program specifications. Humans s
 Milestone M0 implemented (DESIGN.md revision 0.6, § 1 and § 11, iteration 1; wave `m0` closed);
 M1 (`epic:m1-vulkan-execution`) is next. A Cargo workspace of five crates: `modelspec-core`
 (parser, checker, Tensor IR, autodiff, lowering, DCE; no Vulkan), `modelspec-runtime` (CPU oracle
-and SGD training; the `vulkan` feature is empty until M1), `modelspec-observatory` (the typed
+and SGD training; the `vulkan` feature holds Vulkan device discovery and negotiation through
+`ash`), `modelspec-observatory` (the typed
 `RunEvent`s of a run and their Server-Sent Events stream; its JSON Schema under `schema/` is
 `ess generate` output), `modelspec-cli` (binary `modelspec`) and `modelspec-docs` (repository
 tooling: the derived pages of the documentation site).
 `check` resolves names and checks types and shapes;
 `ir <file> --stage tensor|training` prints the verified Tensor IR or the verified training step;
 `train <file> --backend cpu` trains on the CPU reference (DESIGN.md § 8), and `--backend vulkan`
-is refused with E-TARGET-001 until M1. CI: `check.yml` runs `task ci`; `shared-gates.yml` runs the
+is refused with E-TARGET-001 until M1. `inspect-device --backend vulkan` prints each device's
+profile and negotiation verdict; the device test runs on a GPU only with `--ignored`. CI: `check.yml` runs `task ci`; `shared-gates.yml` runs the
 common source gates; `pages.yml` and `b10x-docs-site.yml` build and publish the documentation site.
 
 ## Commands
@@ -33,6 +35,7 @@ Entry points are the `Taskfile.yml` tasks (go-task):
 - `task lint`: `cargo fmt --check` and `cargo clippy --workspace --all-targets -- -D warnings`.
 - `task core-no-vulkan`: `cargo test -p modelspec-core --test no_vulkan`, which fails when the
   dependency graph of `modelspec-core` names a Vulkan crate on any target with all features on.
+- `task cli-without-vulkan`: the `inspect-device` tests of a CLI built without the `vulkan` feature.
 - `task check-examples`: `modelspec check` on `examples/linear_regression.mspec` and
   `examples/mnist_mlp.mspec`; `examples/tiny_mlp.mspec` joins it when modules and generics land (DESIGN.md § 11 iteration 3).
 - `task docs-check`: `modelspec-docs generate --check`, which fails when a generated page of the
