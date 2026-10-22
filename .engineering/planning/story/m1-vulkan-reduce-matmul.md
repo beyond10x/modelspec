@@ -2,7 +2,7 @@
 format: aep.planning-md/3
 id: story:m1-vulkan-reduce-matmul
 kind: story
-status: active
+status: implemented
 title: SPIR-V reduction, transpose and naive matmul kernels, deterministic and checked against the CPU
 summary: The shape-fixed reduction rule in DESIGN.md and the spec, two-stage reduce, Mse loss sum, transpose and naive matmul kernels, emit_kernels for a whole artifact, within tolerance at the MNIST shapes, matmul and loss sum bit for bit on a device with the float controls
 relations:
@@ -28,10 +28,11 @@ scope:
   path: crates/modelspec-runtime/tests/vulkan_reduce_matmul.rs
 - confidence: cited
   path: spec/domains/artifact.yaml
-revision: 9
+revision: 10
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-22T07:42:33Z", actor: "human:timo", revision: 8, decided_on: {"recorded":{"review_outcome":4}}}
 - {from: "proposed", to: "active", at: "2026-10-22T07:42:34Z", actor: "human:timo", revision: 9, decided_on: {"recorded":{"review_outcome":4}}}
+- {from: "active", to: "implemented", at: "2026-10-22T08:41:16Z", actor: "human:timo", revision: 10, decided_on: {"recorded":{"test_result":2,"review_outcome":5}}}
 ---
 # SPIR-V reduction, transpose and naive matmul kernels, deterministic and checked against the CPU
 

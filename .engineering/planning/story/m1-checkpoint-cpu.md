@@ -2,7 +2,7 @@
 format: aep.planning-md/3
 id: story:m1-checkpoint-cpu
 kind: story
-status: active
+status: implemented
 title: 'Checkpoints on the CPU: .msckpt save and resume, and modelspec infer --backend cpu'
 summary: The .msckpt writer and validating reader, train --checkpoint, --checkpoint-every, --resume and --steps, byte-equal resume on the CPU, infer on a checkpoint, E-CKPT-001 to 004
 relations:
@@ -48,10 +48,11 @@ scope:
   path: website/docs/reference/cli.md
 - confidence: cited
   path: website/docs/reference/diagnostics.md
-revision: 8
+revision: 9
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-22T07:42:34Z", actor: "human:timo", revision: 7, decided_on: {"recorded":{"review_outcome":4}}}
 - {from: "proposed", to: "active", at: "2026-10-22T07:42:34Z", actor: "human:timo", revision: 8, decided_on: {"recorded":{"review_outcome":4}}}
+- {from: "active", to: "implemented", at: "2026-10-22T08:41:16Z", actor: "human:timo", revision: 9, decided_on: {"recorded":{"test_result":1,"review_outcome":6}}}
 ---
 # Checkpoints on the CPU: `.msckpt` save and resume, and `modelspec infer --backend cpu`
 

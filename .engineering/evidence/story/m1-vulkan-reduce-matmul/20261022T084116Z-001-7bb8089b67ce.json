@@ -1,0 +1,13 @@
+{
+  "at": "2026-10-22T08:41:16Z",
+  "actor": "human:timo",
+  "artifact": "story:m1-vulkan-reduce-matmul",
+  "kind": "story",
+  "revision": 9,
+  "change": {
+    "change": "evidence",
+    "kind": "test_result",
+    "source": "RTX 3090, MODELSPEC_VK_VALIDATION=1 cargo test -p modelspec-runtime --features vulkan --test vulkan_elementwise --test adversary_elementwise --test adversary_elementwise_2 --test vulkan_reduce_matmul --test adversary_reduce_matmul -- --ignored on wave/m1-c 1f57b4b: exit 0; class: tolerance; vulkan_reduce_matmul 39 cases run twice, 152551 elements, 0 outside tolerance, 0 of 39 differ between runs, 0 validation messages; adversary_reduce_matmul 292 cases run twice, 296494 elements, 0 failures",
+    "reference": "https://github.com/beyond10x/modelspec/commit/1f57b4b"
+  }
+}
