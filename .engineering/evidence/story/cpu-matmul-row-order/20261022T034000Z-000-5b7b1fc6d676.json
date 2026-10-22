@@ -1,0 +1,12 @@
+{
+  "at": "2026-10-22T03:40:00Z",
+  "actor": "human:timo",
+  "artifact": "story:cpu-matmul-row-order",
+  "kind": "story",
+  "revision": 9,
+  "change": {
+    "change": "evidence",
+    "kind": "metric_observation",
+    "source": "mnist_shape bench, base ab9ed27 and change c1c47c7 interleaved on core 3, 7 pairs: median 18.6 vs 1.226 ms/step (5,389 vs 81,544 img/s), 15.2x"
+  }
+}

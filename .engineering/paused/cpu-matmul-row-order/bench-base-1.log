@@ -1,0 +1,10 @@
+date: 2026-10-21T22:53:25+02:00
+loadavg: 34.29 28.43 24.84 50/6886 3951291
+commit: ab9ed275eb5f6ef12367d968e3ebf76de7958e76; interpreter.rs blake3-ish: f6a53de7085c3bf7b40452ab6b4bf4e05d4e5bb48759cd3338ef67b472bd673a  crates/modelspec-runtime/src/cpu/interpreter.rs
+command: taskset -c 3 b10x-build-slot cargo bench -p modelspec-runtime --bench mnist_shape
+b10x-build-slot: slot 3 of 3, 36G free
+    Finished `bench` profile [optimized] target(s) in 0.74s
+     Running benches/mnist_shape.rs (target/release/deps/mnist_shape-634d1d947bfe72db)
+mnist_shape: 200 steps of batch 100 after 20 warmup, 7.084 s, 35.422 ms/step, 2823 images/s
+mnist_shape: last loss 9.174772e-2 (bits 0x3dbbe63b), weights blake3 805f64bd99ba62372466603b07e7d457418d5121e1a3c4061b8bd886b8bb02df
+EXIT=0
