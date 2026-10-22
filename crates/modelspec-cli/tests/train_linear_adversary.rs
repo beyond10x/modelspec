@@ -288,11 +288,13 @@ fn the_compiled_step_matches_the_forward_and_central_differences() {
 // The CLI contract.
 // ---------------------------------------------------------------------------------------------
 
-/// `src/train.rs`: "`--backend vulkan` exits 1 with E-TARGET-001 before the file is read". With
-/// a file that does not exist, or one that does not check, the refusal is still E-TARGET-001.
+/// `src/train.rs`: built without the `vulkan` feature, "`--backend vulkan` exits 1 with
+/// E-TARGET-001 before the file is read". With a file that does not exist, or one that does not
+/// check, the refusal is still E-TARGET-001.
+#[cfg(not(feature = "vulkan"))]
 #[test]
 fn vulkan_is_refused_before_the_file_is_read() {
-    let want = "E-TARGET-001: the vulkan backend is not available in M0\n  \
+    let want = "E-TARGET-001: the vulkan backend is not available in this build\n  \
                 backend: vulkan\n  \
                 available: cpu\n";
     let broken = source_file(
@@ -304,6 +306,33 @@ fn vulkan_is_refused_before_the_file_is_read() {
         assert_eq!(output.status.code(), Some(1), "{path}");
         assert!(output.stdout.is_empty(), "{path}");
         assert_eq!(text(&output.stderr), want, "{path}");
+    }
+}
+
+/// With the `vulkan` feature, a file that does not exist or does not check is reported as on
+/// the CPU, before any Vulkan loader is opened: the run names the file or prints the
+/// diagnostic, never E-TARGET-002, with a loader path that does not exist.
+#[cfg(feature = "vulkan")]
+#[test]
+fn vulkan_reports_the_file_before_the_loader() {
+    let broken = source_file(
+        "broken_vulkan.mspec",
+        &LINEAR_REGRESSION.replace("matmul(x, w)", "matmul(w, x)"),
+    );
+    for path in ["no-such-model.mspec", broken.as_str()] {
+        let output = Command::new(env!("CARGO_BIN_EXE_modelspec"))
+            .args(["train", path, "--backend", "vulkan"])
+            .env(
+                "MODELSPEC_VULKAN_LIBRARY",
+                "/nonexistent/modelspec-test/libvulkan-missing.so.1",
+            )
+            .current_dir(repo_root())
+            .output()
+            .expect("modelspec runs");
+        let cpu = modelspec(&["train", path, "--backend", "cpu"]);
+        assert_eq!(output.status.code(), Some(1), "{path}");
+        assert!(output.stdout.is_empty(), "{path}");
+        assert_eq!(text(&output.stderr), text(&cpu.stderr), "{path}");
     }
 }
 

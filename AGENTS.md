@@ -14,16 +14,18 @@ A Rust compiler and runtime for `.mspec` tensor-program specifications. Humans s
 Milestone M0 implemented (DESIGN.md revision 0.6, § 1 and § 11, iteration 1; wave `m0` closed);
 M1 (`epic:m1-vulkan-execution`) is next. A Cargo workspace of five crates: `modelspec-core`
 (parser, checker, Tensor IR, autodiff, lowering, DCE; no Vulkan), `modelspec-runtime` (CPU oracle
-and SGD training; the `vulkan` feature holds Vulkan device discovery and negotiation through
-`ash`), `modelspec-observatory` (the typed
+and SGD training; the `vulkan` feature holds Vulkan device discovery, negotiation, SPIR-V
+emission and the training runner `vulkan::runner` through `ash` and `rspirv`), `modelspec-observatory` (the typed
 `RunEvent`s of a run and their Server-Sent Events stream; its JSON Schema under `schema/` is
 `ess generate` output), `modelspec-cli` (binary `modelspec`) and `modelspec-docs` (repository
 tooling: the derived pages of the documentation site).
 `check` resolves names and checks types and shapes;
 `ir <file> --stage tensor|training` prints the verified Tensor IR or the verified training step;
 `train <file> --backend cpu` trains on the CPU reference (DESIGN.md § 8), and `--backend vulkan`
-is refused with E-TARGET-001 until M1. `inspect-device --backend vulkan` prints each device's
-profile and negotiation verdict; the device test runs on a GPU only with `--ignored`. CI: `check.yml` runs `task ci`; `shared-gates.yml` runs the
+trains on one Vulkan device with one host wait per run (`--stats` prints its counters); a CLI
+built without the `vulkan` feature refuses it with E-TARGET-001. `inspect-device --backend vulkan`
+prints each device's profile and negotiation verdict; the device tests run on a GPU only with
+`--ignored`. CI: `check.yml` runs `task ci`; `shared-gates.yml` runs the
 common source gates; `pages.yml` and `b10x-docs-site.yml` build and publish the documentation site.
 
 ## Commands
@@ -39,10 +41,17 @@ Entry points are the `Taskfile.yml` tasks (go-task):
 - The device tests need a Vulkan device and are ignored by default:
   `MODELSPEC_VK_VALIDATION=1 cargo test -p modelspec-runtime --features vulkan --test vulkan_elementwise -- --ignored`.
   `MODELSPEC_VK_VALIDATION=1` creates the instance with the Khronos validation layer; each
-  message it reports fails the test.
+  message it reports fails the test. The training run on the device is
+  `MODELSPEC_VK_VALIDATION=1 cargo test --release -p modelspec-runtime --features vulkan --test vulkan_train -- --ignored`,
+  which prints µs per step and dispatches per step; `cargo test -p modelspec-cli --test train_vulkan -- --ignored`
+  compares the lines of `train --backend vulkan` with the CPU run.
+- `crates/modelspec-runtime/tests/no_cuda.rs` (in `task test`) fails when the runtime's
+  dependency graph names a CUDA crate or a built binary links a CUDA library.
 - `task core-no-vulkan`: `cargo test -p modelspec-core --test no_vulkan`, which fails when the
   dependency graph of `modelspec-core` names a Vulkan crate on any target with all features on.
-- `task cli-without-vulkan`: the `inspect-device` tests of a CLI built without the `vulkan` feature.
+- `task cli-without-vulkan`: the `inspect-device`, `train_linear` and `train_linear_adversary`
+  tests of a CLI built without the `vulkan` feature, which refuses `--backend vulkan` with
+  E-TARGET-001.
 - `task check-examples`: `modelspec check` on `examples/linear_regression.mspec` and
   `examples/mnist_mlp.mspec`; `examples/tiny_mlp.mspec` joins it when modules and generics land (DESIGN.md § 11 iteration 3).
 - `task docs-check`: `modelspec-docs generate --check`, which fails when a generated page of the

@@ -24,6 +24,11 @@ impl Buffer<'_> {
         self.bytes
     }
 
+    /// Whether the buffer is a mapped staging buffer rather than a device-local one.
+    pub fn is_staging(&self) -> bool {
+        self.mapped.is_some()
+    }
+
     /// Writes `values` at the start of a staging buffer.
     pub fn write_f32(&mut self, values: &[f32]) -> Result<(), ExecError> {
         let needed = std::mem::size_of_val(values) as u64;

@@ -26,11 +26,11 @@ E-TYPE-012: matmul contracting dimension mismatch
 
 Every diagnostic has this layout (DESIGN.md § 8.1): one line with the code and message, then the
 position when there is one, then one indented line per detail. A diagnostic that is not about a
-place in the file has no position. `E-TARGET-001` is one, because `--backend vulkan` is refused
-before the file is read:
+place in the file has no position. `E-TARGET-001` is one: a binary built without the `vulkan`
+feature refuses `--backend vulkan` before the file is read:
 
 ```text
-E-TARGET-001: the vulkan backend is not available in M0
+E-TARGET-001: the vulkan backend is not available in this build
   backend: vulkan
   available: cpu
 ```

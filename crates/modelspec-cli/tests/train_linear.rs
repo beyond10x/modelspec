@@ -184,17 +184,42 @@ fn seeds_42_and_43_print_different_initial_parameters() {
     assert_ne!(a, b);
 }
 
+/// Built without the `vulkan` feature (`cargo test -p modelspec-cli --no-default-features`),
+/// `--backend vulkan` is refused with E-TARGET-001 before the file is read.
+#[cfg(not(feature = "vulkan"))]
 #[test]
-fn the_vulkan_backend_is_refused_in_m0() {
-    let output = modelspec(&["train", EXAMPLE, "--backend", "vulkan"]);
-    assert_eq!(output.status.code(), Some(1));
+fn a_build_without_the_vulkan_feature_refuses_the_vulkan_backend() {
+    for path in [EXAMPLE, "no-such-model.mspec"] {
+        let output = modelspec(&["train", path, "--backend", "vulkan"]);
+        assert_eq!(output.status.code(), Some(1), "{path}");
+        assert!(output.stdout.is_empty(), "stdout: {}", text(&output.stdout));
+        assert_eq!(
+            text(&output.stderr),
+            "E-TARGET-001: the vulkan backend is not available in this build\n  \
+             backend: vulkan\n  \
+             available: cpu\n",
+            "{path}"
+        );
+    }
+}
+
+/// With the `vulkan` feature and no Vulkan loader, `--backend vulkan` compiles the file and then
+/// exits 1 with E-TARGET-002; no instance is created.
+#[cfg(feature = "vulkan")]
+#[test]
+fn a_missing_vulkan_loader_refuses_the_vulkan_backend_with_e_target_002() {
+    let loader = "/nonexistent/modelspec-test/libvulkan-missing.so.1";
+    let output = Command::new(env!("CARGO_BIN_EXE_modelspec"))
+        .args(["train", EXAMPLE, "--backend", "vulkan"])
+        .env("MODELSPEC_VULKAN_LIBRARY", loader)
+        .current_dir(repo_root())
+        .output()
+        .expect("modelspec runs");
+    let stderr = text(&output.stderr);
+    assert_eq!(output.status.code(), Some(1), "{stderr}");
+    assert!(stderr.starts_with("E-TARGET-002: "), "{stderr}");
+    assert!(stderr.contains(loader), "{stderr}");
     assert!(output.stdout.is_empty(), "stdout: {}", text(&output.stdout));
-    assert_eq!(
-        text(&output.stderr),
-        "E-TARGET-001: the vulkan backend is not available in M0\n  \
-         backend: vulkan\n  \
-         available: cpu\n"
-    );
 }
 
 #[test]

@@ -1,7 +1,8 @@
 //! The memory barriers between the steps of a recording.
 //!
 //! Each barrier makes the writes of one kind of step visible to the next: an upload to a
-//! dispatch, a dispatch to the next dispatch, a dispatch to a download, a download to the host.
+//! dispatch, a dispatch to the next dispatch, a dispatch to a download, a copy to a later copy
+//! that reads what it wrote, a download to the host.
 
 use ash::vk;
 
@@ -14,6 +15,8 @@ pub enum Barrier {
     ComputeToCompute,
     /// Dispatches wrote, before copies read.
     ComputeToTransfer,
+    /// Copies wrote, before later copies read.
+    TransferToTransfer,
     /// Copies wrote, before the host reads after the fence.
     TransferToHost,
 }
@@ -47,6 +50,12 @@ impl Barrier {
                 A::SHADER_WRITE,
                 S::TRANSFER,
                 A::TRANSFER_READ,
+            ),
+            Self::TransferToTransfer => (
+                S::TRANSFER,
+                A::TRANSFER_WRITE,
+                S::TRANSFER,
+                A::TRANSFER_READ | A::TRANSFER_WRITE,
             ),
             Self::TransferToHost => (S::TRANSFER, A::TRANSFER_WRITE, S::HOST, A::HOST_READ),
         }

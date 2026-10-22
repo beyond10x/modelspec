@@ -5,6 +5,17 @@
 //! [`Device::submit`] submits it to the device's one queue with a fence, and
 //! [`Submitted::wait`] waits on that fence: one host wait, counted by [`Device::host_waits`].
 //! Every buffer and pipeline a recording uses stays borrowed until its submission is waited on.
+//!
+//! A [`Chain`] submits several recordings to the queue one after the other without a fence and
+//! fences only the last ([`Chain::finish`]): a fence signals once every earlier submission to the
+//! queue has finished, so the one wait covers the whole chain. A [`DescriptorArena`] binds a
+//! dispatch's buffers once ([`DescriptorArena::bind`]) for a [`Bound`] dispatch that many
+//! recordings record ([`Recording::dispatch_bound`]). Each submission adds what it recorded to
+//! the device's counters: one submit, its dispatches, and the bytes of its copies from a staging
+//! buffer to a device-local one (uploaded) and back (downloaded).
+
+use std::cell::Cell;
+use std::marker::PhantomData;
 
 use ash::vk;
 use modelspec_core::ir::kernel::{Kernel, KernelKind, Operand};
@@ -15,12 +26,21 @@ use super::pipeline::{PUSH_CONSTANT_BYTES, Pipeline};
 use super::sync::Barrier;
 use super::{Device, ExecError};
 
+/// What one recording recorded, added to the device's counters when it is submitted.
+#[derive(Clone, Copy, Debug, Default)]
+struct Counts {
+    dispatches: u64,
+    uploaded: u64,
+    downloaded: u64,
+}
+
 /// The command pool, command buffer and descriptor pools of one recording.
 struct Commands<'r> {
     device: &'r Device<'r>,
     pool: vk::CommandPool,
     command: vk::CommandBuffer,
     descriptor_pools: Vec<vk::DescriptorPool>,
+    counts: Counts,
 }
 
 impl Drop for Commands<'_> {
@@ -47,11 +67,240 @@ pub struct Recorded<'r> {
     commands: Commands<'r>,
 }
 
-/// A submitted command buffer and the fence it signals.
+/// A submitted command buffer and the fence it signals, with the command buffers of a
+/// [`Chain`] submitted before it, which the fence also covers.
 pub struct Submitted<'r> {
     commands: Commands<'r>,
     fence: vk::Fence,
     waited: bool,
+    earlier: Vec<Commands<'r>>,
+}
+
+/// Command buffers submitted one after the other without a fence; [`Chain::finish`] fences the
+/// last. Dropped before then, it waits for the device to go idle: a host wait.
+pub struct Chain<'r> {
+    device: &'r Device<'r>,
+    pending: Vec<Commands<'r>>,
+}
+
+impl Device<'_> {
+    /// Adds the counts of a submitted recording to the device's counters.
+    fn count(&self, counts: Counts) {
+        let add = |cell: &Cell<u64>, n: u64| cell.set(cell.get() + n);
+        add(&self.submits, 1);
+        add(&self.dispatches, counts.dispatches);
+        add(&self.bytes_uploaded, counts.uploaded);
+        add(&self.bytes_downloaded, counts.downloaded);
+    }
+
+    /// Submits `command` to the device's one queue, signalling `fence` (null for none).
+    fn queue_submit(&self, command: vk::CommandBuffer, fence: vk::Fence) -> Result<(), ExecError> {
+        // SAFETY: the device was created with one queue of `queue_family`.
+        let queue = unsafe { self.device.get_device_queue(self.queue_family, 0) };
+        let command_buffers = [command];
+        let submits = [vk::SubmitInfo::default().command_buffers(&command_buffers)];
+        // SAFETY: the command buffer is ended and not pending; `submits` outlives the call.
+        unsafe { self.device.queue_submit(queue, &submits, fence) }
+            .map_err(ExecError::call("vkQueueSubmit"))
+    }
+
+    /// Starts a chain of submissions behind one fence.
+    pub fn chain<'r>(&'r self) -> Chain<'r> {
+        Chain {
+            device: self,
+            pending: Vec::new(),
+        }
+    }
+}
+
+impl<'r> Chain<'r> {
+    /// Submits `recorded` without a fence and keeps it until the chain's fence is waited on.
+    pub fn submit(&mut self, recorded: Recorded<'r>) -> Result<(), ExecError> {
+        self.device
+            .queue_submit(recorded.commands.command, vk::Fence::null())?;
+        self.device.count(recorded.commands.counts);
+        self.pending.push(recorded.commands);
+        Ok(())
+    }
+
+    /// Submits `recorded` with a new fence, which signals once it and every recording the chain
+    /// submitted before it have finished.
+    pub fn finish(mut self, recorded: Recorded<'r>) -> Result<Submitted<'r>, ExecError> {
+        let mut submitted = self.device.submit(recorded)?;
+        submitted.earlier = std::mem::take(&mut self.pending);
+        Ok(submitted)
+    }
+}
+
+impl Drop for Chain<'_> {
+    fn drop(&mut self) {
+        if self.pending.is_empty() {
+            return;
+        }
+        // The chain was not finished: nothing fences its submissions, and waiting for the
+        // device to go idle is the only way to free their command buffers safely.
+        // SAFETY: the device is alive for the call.
+        let _ = unsafe { self.device.device.device_wait_idle() };
+        self.device.host_waits.set(self.device.host_waits.get() + 1);
+    }
+}
+
+/// Descriptor sets made once and bound by many dispatches: one pool, destroyed with the arena.
+pub struct DescriptorArena<'d> {
+    device: &'d Device<'d>,
+    pool: vk::DescriptorPool,
+}
+
+impl Drop for DescriptorArena<'_> {
+    fn drop(&mut self) {
+        // SAFETY: every `Bound` borrows the arena and every recording that records one borrows
+        // the `Bound`, so no pending command buffer uses a set of the pool.
+        unsafe { self.device.device.destroy_descriptor_pool(self.pool, None) };
+    }
+}
+
+/// A dispatch whose buffers are bound in a descriptor set of a [`DescriptorArena`], checked as
+/// [`Recording::dispatch_kernel`] checks them, ready to record any number of times.
+pub struct Bound<'a> {
+    pipeline: &'a Pipeline<'a>,
+    set: vk::DescriptorSet,
+    count: u32,
+    workgroups: [u32; 3],
+    _buffers: PhantomData<(&'a DescriptorArena<'a>, &'a Buffer<'a>)>,
+}
+
+impl Device<'_> {
+    /// An arena with room for `sets` descriptor sets of `descriptors` storage buffers in all.
+    pub fn descriptor_arena<'d>(
+        &'d self,
+        sets: u32,
+        descriptors: u32,
+    ) -> Result<DescriptorArena<'d>, ExecError> {
+        let sizes = [vk::DescriptorPoolSize::default()
+            .ty(vk::DescriptorType::STORAGE_BUFFER)
+            .descriptor_count(descriptors.max(1))];
+        let info = vk::DescriptorPoolCreateInfo::default()
+            .max_sets(sets.max(1))
+            .pool_sizes(&sizes);
+        // SAFETY: `info` outlives the call; the pool is destroyed by the arena's drop.
+        let pool = unsafe { self.device.create_descriptor_pool(&info, None) }
+            .map_err(ExecError::call("vkCreateDescriptorPool"))?;
+        Ok(DescriptorArena { device: self, pool })
+    }
+}
+
+impl<'d> DescriptorArena<'d> {
+    /// Binds `buffers` to the module of `kernel`, operands then result, as
+    /// [`Recording::dispatch_kernel`] would, in a new descriptor set of the arena.
+    pub fn bind<'a>(
+        &'a self,
+        pipeline: &'a Pipeline<'_>,
+        kernel: &Kernel,
+        buffers: &[&'a Buffer<'_>],
+    ) -> Result<Bound<'a>, ExecError>
+    where
+        'd: 'a,
+    {
+        let bindings = kernel_bindings(kernel)?;
+        check_dispatch(
+            pipeline,
+            buffers,
+            &bindings.elements,
+            bindings.count,
+            bindings.invocations,
+            kernel.workgroups,
+        )?;
+        let set = allocate_set(&self.device.device, self.pool, pipeline, buffers)?;
+        Ok(Bound {
+            pipeline,
+            set,
+            count: bindings.count,
+            workgroups: kernel.workgroups,
+            _buffers: PhantomData,
+        })
+    }
+}
+
+/// Checks a dispatch of `pipeline` over `buffers` as [`Recording::dispatch`] documents.
+fn check_dispatch(
+    pipeline: &Pipeline<'_>,
+    buffers: &[&Buffer<'_>],
+    needed: &[u64],
+    count: u32,
+    invocations: u64,
+    workgroups: [u32; 3],
+) -> Result<(), ExecError> {
+    if buffers.len() != pipeline.bindings as usize || needed.len() != buffers.len() {
+        return Err(ExecError::Bindings {
+            expected: pipeline.bindings,
+            got: buffers.len(),
+        });
+    }
+    for (binding, (buffer, &needed)) in buffers.iter().zip(needed).enumerate() {
+        let elements = buffer.bytes() / 4;
+        if elements < needed {
+            return Err(ExecError::CountPastBuffer {
+                count,
+                binding,
+                needed,
+                elements,
+            });
+        }
+    }
+    let size = pipeline
+        .local_size
+        .iter()
+        .map(|&n| u64::from(n))
+        .product::<u64>();
+    let covered = workgroups.iter().map(|&n| u64::from(n)).product::<u64>() * size;
+    if covered < invocations {
+        return Err(ExecError::Workgroups {
+            workgroups,
+            size: size as u32,
+            covered,
+            count,
+        });
+    }
+    Ok(())
+}
+
+/// A descriptor set of `pipeline`'s layout from `pool` with `buffers`, whole, at bindings 0, 1, ….
+fn allocate_set(
+    device: &ash::Device,
+    pool: vk::DescriptorPool,
+    pipeline: &Pipeline<'_>,
+    buffers: &[&Buffer<'_>],
+) -> Result<vk::DescriptorSet, ExecError> {
+    let layouts = [pipeline.set_layout];
+    let info = vk::DescriptorSetAllocateInfo::default()
+        .descriptor_pool(pool)
+        .set_layouts(&layouts);
+    // SAFETY: `pool` belongs to this device; a pool without room fails the call.
+    let set = unsafe { device.allocate_descriptor_sets(&info) }
+        .map_err(ExecError::call("vkAllocateDescriptorSets"))?[0];
+    let infos: Vec<[vk::DescriptorBufferInfo; 1]> = buffers
+        .iter()
+        .map(|buffer| {
+            [vk::DescriptorBufferInfo::default()
+                .buffer(buffer.buffer)
+                .offset(0)
+                .range(vk::WHOLE_SIZE)]
+        })
+        .collect();
+    let writes: Vec<vk::WriteDescriptorSet<'_>> = infos
+        .iter()
+        .enumerate()
+        .map(|(binding, info)| {
+            vk::WriteDescriptorSet::default()
+                .dst_set(set)
+                .dst_binding(binding as u32)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .buffer_info(info)
+        })
+        .collect();
+    // SAFETY: the set is new and not in use by any command buffer.
+    unsafe { device.update_descriptor_sets(&writes, &[]) };
+    Ok(set)
 }
 
 impl<'d> Device<'d> {
@@ -71,6 +320,7 @@ impl<'d> Device<'d> {
             pool,
             command: vk::CommandBuffer::null(),
             descriptor_pools: Vec::new(),
+            counts: Counts::default(),
         };
         let info = vk::CommandBufferAllocateInfo::default()
             .command_pool(pool)
@@ -97,14 +347,10 @@ impl<'d> Device<'d> {
             commands: recorded.commands,
             fence,
             waited: true,
+            earlier: Vec::new(),
         };
-        // SAFETY: the device was created with one queue of `queue_family`.
-        let queue = unsafe { self.device.get_device_queue(self.queue_family, 0) };
-        let command_buffers = [submitted.commands.command];
-        let submits = [vk::SubmitInfo::default().command_buffers(&command_buffers)];
-        // SAFETY: the command buffer is ended and not pending; `submits` outlives the call.
-        unsafe { self.device.queue_submit(queue, &submits, fence) }
-            .map_err(ExecError::call("vkQueueSubmit"))?;
+        self.queue_submit(submitted.commands.command, fence)?;
+        self.count(submitted.commands.counts);
         submitted.waited = false;
         Ok(submitted)
     }
@@ -115,21 +361,90 @@ impl<'r> Recording<'r> {
         &self.commands.device.device
     }
 
+    /// The dispatches recorded so far.
+    pub fn dispatches(&self) -> u64 {
+        self.commands.counts.dispatches
+    }
+
     /// Copies all of `from` to the start of `to`.
     pub fn copy(&mut self, from: &'r Buffer<'_>, to: &'r Buffer<'_>) -> Result<(), ExecError> {
-        if from.bytes() > to.bytes() {
-            return Err(ExecError::TooShort {
-                needed: from.bytes(),
-                size: to.bytes(),
-            });
+        self.copy_region(from, 0, to, 0, from.bytes())
+    }
+
+    /// Copies `size` bytes of `from` at `from_offset` to `to` at `to_offset`. A copy from a
+    /// staging buffer to a device-local one counts as uploaded bytes, the reverse as downloaded.
+    pub fn copy_region(
+        &mut self,
+        from: &'r Buffer<'_>,
+        from_offset: u64,
+        to: &'r Buffer<'_>,
+        to_offset: u64,
+        size: u64,
+    ) -> Result<(), ExecError> {
+        for (offset, buffer) in [(from_offset, from), (to_offset, to)] {
+            if offset + size > buffer.bytes() {
+                return Err(ExecError::TooShort {
+                    needed: offset + size,
+                    size: buffer.bytes(),
+                });
+            }
         }
-        let regions = [vk::BufferCopy::default().size(from.bytes())];
-        // SAFETY: both buffers belong to this device and outlive the submission (`'r`).
+        let regions = [vk::BufferCopy::default()
+            .src_offset(from_offset)
+            .dst_offset(to_offset)
+            .size(size)];
+        // SAFETY: both buffers belong to this device, the region lies inside both, and they
+        // outlive the submission (`'r`).
         unsafe {
             self.device()
                 .cmd_copy_buffer(self.commands.command, from.buffer, to.buffer, &regions)
         };
+        match (from.is_staging(), to.is_staging()) {
+            (true, false) => self.commands.counts.uploaded += size,
+            (false, true) => self.commands.counts.downloaded += size,
+            _ => {}
+        }
         Ok(())
+    }
+
+    /// Records a dispatch bound once in a [`DescriptorArena`].
+    pub fn dispatch_bound(&mut self, bound: &'r Bound<'_>) {
+        self.record_dispatch(bound.pipeline, bound.set, bound.count, bound.workgroups);
+    }
+
+    fn record_dispatch(
+        &mut self,
+        pipeline: &Pipeline<'_>,
+        set: vk::DescriptorSet,
+        count: u32,
+        workgroups: [u32; 3],
+    ) {
+        let device = self.device();
+        let command = self.commands.command;
+        let push = count.to_ne_bytes();
+        debug_assert_eq!(push.len() as u32, PUSH_CONSTANT_BYTES);
+        // SAFETY: `command` is recording; the set is written and its pool, the pipeline, its
+        // layout and the buffers outlive the submission (`'r`).
+        unsafe {
+            device.cmd_bind_pipeline(command, vk::PipelineBindPoint::COMPUTE, pipeline.pipeline);
+            device.cmd_bind_descriptor_sets(
+                command,
+                vk::PipelineBindPoint::COMPUTE,
+                pipeline.layout,
+                0,
+                &[set],
+                &[],
+            );
+            device.cmd_push_constants(
+                command,
+                pipeline.layout,
+                vk::ShaderStageFlags::COMPUTE,
+                0,
+                &push,
+            );
+            device.cmd_dispatch(command, workgroups[0], workgroups[1], workgroups[2]);
+        }
+        self.commands.counts.dispatches += 1;
     }
 
     /// Records `barrier`.
@@ -219,37 +534,7 @@ impl<'r> Recording<'r> {
         invocations: u64,
         workgroups: [u32; 3],
     ) -> Result<(), ExecError> {
-        if buffers.len() != pipeline.bindings as usize || needed.len() != buffers.len() {
-            return Err(ExecError::Bindings {
-                expected: pipeline.bindings,
-                got: buffers.len(),
-            });
-        }
-        for (binding, (buffer, &needed)) in buffers.iter().zip(needed).enumerate() {
-            let elements = buffer.bytes() / 4;
-            if elements < needed {
-                return Err(ExecError::CountPastBuffer {
-                    count,
-                    binding,
-                    needed,
-                    elements,
-                });
-            }
-        }
-        let size = pipeline
-            .local_size
-            .iter()
-            .map(|&n| u64::from(n))
-            .product::<u64>();
-        let covered = workgroups.iter().map(|&n| u64::from(n)).product::<u64>() * size;
-        if covered < invocations {
-            return Err(ExecError::Workgroups {
-                workgroups,
-                size: size as u32,
-                covered,
-                count,
-            });
-        }
+        check_dispatch(pipeline, buffers, needed, count, invocations, workgroups)?;
         let device = self.device();
         let sizes = [vk::DescriptorPoolSize::default()
             .ty(vk::DescriptorType::STORAGE_BUFFER)
@@ -261,58 +546,8 @@ impl<'r> Recording<'r> {
         let pool = unsafe { device.create_descriptor_pool(&info, None) }
             .map_err(ExecError::call("vkCreateDescriptorPool"))?;
         self.commands.descriptor_pools.push(pool);
-        let layouts = [pipeline.set_layout];
-        let info = vk::DescriptorSetAllocateInfo::default()
-            .descriptor_pool(pool)
-            .set_layouts(&layouts);
-        // SAFETY: `pool` has room for one set of this layout.
-        let set = unsafe { device.allocate_descriptor_sets(&info) }
-            .map_err(ExecError::call("vkAllocateDescriptorSets"))?[0];
-        let infos: Vec<[vk::DescriptorBufferInfo; 1]> = buffers
-            .iter()
-            .map(|buffer| {
-                [vk::DescriptorBufferInfo::default()
-                    .buffer(buffer.buffer)
-                    .offset(0)
-                    .range(vk::WHOLE_SIZE)]
-            })
-            .collect();
-        let writes: Vec<vk::WriteDescriptorSet<'_>> = infos
-            .iter()
-            .enumerate()
-            .map(|(binding, info)| {
-                vk::WriteDescriptorSet::default()
-                    .dst_set(set)
-                    .dst_binding(binding as u32)
-                    .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                    .buffer_info(info)
-            })
-            .collect();
-        let command = self.commands.command;
-        let push = count.to_ne_bytes();
-        debug_assert_eq!(push.len() as u32, PUSH_CONSTANT_BYTES);
-        // SAFETY: the set is new and not in use; `command` is recording; the pipeline, its
-        // layout and the buffers outlive the submission (`'r`).
-        unsafe {
-            device.update_descriptor_sets(&writes, &[]);
-            device.cmd_bind_pipeline(command, vk::PipelineBindPoint::COMPUTE, pipeline.pipeline);
-            device.cmd_bind_descriptor_sets(
-                command,
-                vk::PipelineBindPoint::COMPUTE,
-                pipeline.layout,
-                0,
-                &[set],
-                &[],
-            );
-            device.cmd_push_constants(
-                command,
-                pipeline.layout,
-                vk::ShaderStageFlags::COMPUTE,
-                0,
-                &push,
-            );
-            device.cmd_dispatch(command, workgroups[0], workgroups[1], workgroups[2]);
-        }
+        let set = allocate_set(device, pool, pipeline, buffers)?;
+        self.record_dispatch(pipeline, set, count, workgroups);
         Ok(())
     }
 

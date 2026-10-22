@@ -109,15 +109,3 @@ step 450 loss 0.0000000003692282
 step 500 loss 0.0000000000561049
 param @LinearReg.w: Tensor<f32, [4, 1]> = [-0.9486646, -0.25639856, 0.4230444, 1.059935]
 ```
-
-### `modelspec train examples/linear_regression.mspec --backend vulkan`
-
-Exit status `1`.
-
-stderr:
-
-```text
-E-TARGET-001: the vulkan backend is not available in M0
-  backend: vulkan
-  available: cpu
-```

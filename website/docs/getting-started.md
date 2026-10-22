@@ -67,7 +67,8 @@ update. [The pipeline](./concepts/pipeline.md) reads both line by line.
 ## Build from source
 
 You need a Rust toolchain that supports edition 2024 (Rust 1.85 or later) and nothing else: no
-Vulkan SDK, no Python.
+Vulkan SDK, no Python. `modelspec train --backend vulkan` and `inspect-device` open the system
+Vulkan loader when they run; a machine without one gets `E-TARGET-002`.
 
 ```sh
 git clone https://github.com/beyond10x/modelspec

@@ -74,9 +74,8 @@ const EXAMPLES: &[Example] = &[
             &["ir", "{file}", "--stage", "tensor"],
             &["ir", "{file}", "--stage", "training"],
             &["train", "{file}", "--backend", "cpu"],
-            &["train", "{file}", "--backend", "vulkan"],
         ],
-        expected: &[0, 0, 0, 0, 1],
+        expected: &[0, 0, 0, 0],
     },
     Example {
         page: "two-layer-relu.md",
@@ -175,8 +174,8 @@ fn page(example: &Example, position: u32, source: &str, runs: &[Recorded]) -> St
     out
 }
 
-/// The terminal of the landing page: the linear-regression example checked, trained on the CPU
-/// and refused on Vulkan.
+/// The terminal of the landing page: the linear-regression example checked and trained on the
+/// CPU. No page records a Vulkan run, whose output depends on the machine that generates it.
 fn terminal(runs: &[Recorded]) -> Result<String> {
     let entries: Vec<serde_json::Value> = runs
         .iter()
@@ -192,7 +191,7 @@ fn terminal(runs: &[Recorded]) -> Result<String> {
         "format": "b10x-terminal/1",
         "title": "examples/linear_regression.mspec",
         "recordedWith": format!("modelspec {}, recorded by modelspec-docs", env!("CARGO_PKG_VERSION")),
-        "tones": {"E-TARGET-001:": "false"},
+        "tones": {},
         "entries": entries,
     });
     serde_json::to_string_pretty(&document)
@@ -269,10 +268,6 @@ mod tests {
     #[test]
     fn a_run_is_parsed_by_the_binary_s_own_definition() {
         assert!(record(&["train", "x.mspec", "--backend", "gpu"]).is_err());
-        let refused = record(&["train", "x.mspec", "--backend", "vulkan"]).unwrap();
-        assert_eq!(refused.exit, modelspec_cli::EXIT_FAILURE);
-        assert!(refused.stdout.is_empty());
-        assert!(refused.stderr.starts_with("E-TARGET-001: "));
         let missing = record(&["check", "no-such-file.mspec"]).unwrap();
         assert_eq!(missing.exit, modelspec_cli::EXIT_FAILURE);
         assert!(

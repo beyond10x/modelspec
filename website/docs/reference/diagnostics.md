@@ -104,11 +104,11 @@ The `.msckpt` reader of `modelspec train --resume` and `modelspec infer`, which 
 
 ## Target
 
-Backend selection of `modelspec train` and `modelspec infer`, before the file is read, Vulkan device discovery and negotiation of `modelspec inspect-device`, and the limits of the Vulkan target the schedule checks.
+Backend selection of `modelspec train` and `modelspec infer`, before the file is read, Vulkan device discovery and negotiation of `modelspec inspect-device` and `modelspec train --backend vulkan`, and the limits of the Vulkan target the schedule checks.
 
 | Code | Meaning | Declared in |
 |---|---|---|
-| <a id="e-target-001"></a>`E-TARGET-001` | The selected backend is not available in this build. | [`crates/modelspec-cli/src/train.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-cli/src/train.rs) |
+| <a id="e-target-001"></a>`E-TARGET-001` | The selected backend is not available: `train --backend vulkan` in a build without the `vulkan` feature, and `infer --backend vulkan` in every M1 build. | [`crates/modelspec-cli/src/train.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-cli/src/train.rs) |
 | <a id="e-target-002"></a>`E-TARGET-002` | No Vulkan loader could be opened: the library `MODELSPEC_VULKAN_LIBRARY` names, or the system's `libvulkan`, is missing or is not a Vulkan loader. | [`crates/modelspec-runtime/src/vulkan/mod.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-runtime/src/vulkan/mod.rs) |
 | <a id="e-target-003"></a>`E-TARGET-003` | No Vulkan physical device was found, the device index names none of them, or the chosen device has no compute queue family. | [`crates/modelspec-runtime/src/vulkan/select.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-runtime/src/vulkan/select.rs) |
 | <a id="e-target-004"></a>`E-TARGET-004` | The Vulkan device is below the Vulkan API version the runtime requires (1.2.0). | [`crates/modelspec-runtime/src/vulkan/negotiate.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-runtime/src/vulkan/negotiate.rs) |

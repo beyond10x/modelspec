@@ -21,11 +21,13 @@ reference interpreter, and `modelspec check`, `ir` and `train --backend cpu`.
 
 ## M1: native Vulkan execution
 
-:::planned[Not built]
+:::planned[In progress, not released]
 
-None of this exists yet. There is no GPU code in the repository: `modelspec train --backend vulkan`
-is refused with `E-TARGET-001`, and the `vulkan` feature of `modelspec-runtime` is empty. The work is
-planned as `epic:m1-vulkan-execution` in the repository's planning store.
+On `main`, not in a release yet: `modelspec train --backend vulkan` trains both examples on one
+Vulkan device with one host wait per run, within the GPU tolerance of the CPU reference, and
+`modelspec inspect-device --backend vulkan` reports each device. `modelspec compile` and Vulkan
+`infer` are not built. The work is planned as `epic:m1-vulkan-execution` in the repository's
+planning store.
 
 :::
 
