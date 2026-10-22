@@ -8,13 +8,14 @@ publish.workspace = true
 
 [features]
 default = []
-vulkan = ["dep:ash"]
+vulkan = ["dep:ash", "dep:rspirv"]
 
 [dependencies]
 modelspec-core.workspace = true
 thiserror.workspace = true
 blake3.workspace = true
 ash = { workspace = true, optional = true }
+rspirv = { workspace = true, optional = true }
 
 [[bench]]
 name = "mnist_shape"

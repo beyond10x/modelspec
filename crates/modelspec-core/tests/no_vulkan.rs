@@ -5,8 +5,16 @@
 
 use std::process::Command;
 
-/// Crates whose presence in the dependency graph means a Vulkan dependency.
-const VULKAN_CRATES: &[&str] = &["ash", "vulkano", "wgpu", "gpu-allocator", "vk-mem"];
+/// Crates whose presence in the dependency graph means a Vulkan or SPIR-V dependency.
+const VULKAN_CRATES: &[&str] = &[
+    "ash",
+    "vulkano",
+    "wgpu",
+    "gpu-allocator",
+    "vk-mem",
+    "rspirv",
+    "spirv",
+];
 
 /// Returns the Vulkan crates named in `cargo tree` output, in order of first appearance.
 fn vulkan_crates_in(tree: &str) -> Vec<String> {
