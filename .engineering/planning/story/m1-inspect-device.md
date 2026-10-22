@@ -2,7 +2,7 @@
 format: aep.planning-md/3
 id: story:m1-inspect-device
 kind: story
-status: draft
+status: active
 title: 'Vulkan device discovery and feature negotiation: modelspec inspect-device --backend vulkan'
 summary: A compute-only Vulkan 1.2 device through a run-time loader, DeviceProfile with the three float-control fields probed and printed as text or JSON, negotiation in one pure function, E-TARGET-002 to 004, and an RTX 3090 profile fixture
 relations:
@@ -58,7 +58,10 @@ scope:
   path: website/docs/reference/cli.md
 - confidence: cited
   path: website/docs/reference/diagnostics.md
-revision: 7
+revision: 9
+transitions:
+- {from: "draft", to: "proposed", at: "2026-10-22T03:18:54Z", actor: "human:timo", revision: 8, decided_on: {"recorded":{"review_outcome":6}}}
+- {from: "proposed", to: "active", at: "2026-10-22T03:18:54Z", actor: "human:timo", revision: 9, decided_on: {"recorded":{"review_outcome":6}}}
 ---
 # Vulkan device discovery and feature negotiation: `modelspec inspect-device --backend vulkan`
 
