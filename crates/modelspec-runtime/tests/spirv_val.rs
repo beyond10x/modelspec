@@ -471,16 +471,56 @@ fn local_size(module: &[u32]) -> Vec<u32> {
         .expect("the module declares LocalSize")
 }
 
-fn barriers(module: &[u32]) -> usize {
-    common::words::instructions(module)
+/// The `OpLoad`, `OpStore`, `OpAccessChain` and `OpInBoundsAccessChain` opcodes.
+const OP_LOAD: u32 = 61;
+const OP_STORE: u32 = 62;
+const OP_ACCESS_CHAIN: u32 = 65;
+const OP_IN_BOUNDS_ACCESS_CHAIN: u32 = 66;
+
+/// Walks the module in layout order, in which the emitter places each staging loop before the
+/// sum that reads it and each chunk after the one before, and returns the stores and loads of
+/// workgroup memory as `'S'` and `'L'`, with `'B'` for each `OpControlBarrier`, plus every
+/// switch between a store and a load, either way round, that has no barrier between them: a
+/// read of a term before every invocation has staged it, or a store over a term before
+/// invocation 0 has added it.
+fn workgroup_accesses(module: &[u32]) -> (String, Vec<usize>) {
+    let all = common::words::instructions(module);
+    let mut shared: Vec<u32> = all
         .iter()
-        .filter(|(op, _)| *op == OP_CONTROL_BARRIER)
-        .count()
+        .filter(|(op, w)| *op == OP_VARIABLE && w[3] == STORAGE_WORKGROUP)
+        .map(|(_, w)| w[2])
+        .collect();
+    let mut trace = String::new();
+    for (op, w) in &all {
+        match *op {
+            OP_ACCESS_CHAIN | OP_IN_BOUNDS_ACCESS_CHAIN if shared.contains(&w[3]) => {
+                shared.push(w[2]);
+            }
+            OP_STORE if shared.contains(&w[1]) => trace.push('S'),
+            OP_LOAD if shared.contains(&w[3]) => trace.push('L'),
+            OP_CONTROL_BARRIER => trace.push('B'),
+            _ => {}
+        }
+    }
+    let mut unguarded = Vec::new();
+    let mut last: Option<char> = None;
+    for (at, access) in trace.chars().enumerate() {
+        match (last, access) {
+            (_, 'B') => last = None,
+            (Some(before), now) if before != now => {
+                unguarded.push(at);
+                last = Some(now);
+            }
+            (_, now) => last = Some(now),
+        }
+    }
+    (trace, unguarded)
 }
 
 #[test]
 fn the_loss_sum_stages_its_terms_in_workgroup_memory_sized_by_the_shape_and_the_profile() {
     let mut total = 0;
+    let mut hazards = Vec::new();
     for bytes in [49_152u32, 260, 256] {
         let mut profile = fixture_with([true; 3]);
         profile.max_shared_memory_bytes = bytes;
@@ -500,13 +540,34 @@ fn the_loss_sum_stages_its_terms_in_workgroup_memory_sized_by_the_shape_and_the_
                     [chunk],
                     "{what}: one f32 array of min(count, bytes / 4)"
                 );
-                assert!(barriers(&module.spirv) >= 1, "{what}: a workgroup barrier");
+                let (trace, unguarded) = workgroup_accesses(&module.spirv);
+                let chunks = count.div_ceil(u64::from(chunk)) as usize;
+                assert!(
+                    trace.contains('S') && trace.contains('L'),
+                    "{what}: stores and loads of workgroup memory, got {trace}"
+                );
+                if !unguarded.is_empty() {
+                    hazards.push(format!(
+                        "{what} ({chunks} chunks): unguarded at {unguarded:?} of {trace}"
+                    ));
+                }
+                if (chunks > 1) != trace.contains("LBS") {
+                    hazards.push(format!(
+                        "{what} ({chunks} chunks): a later chunk stages after a barrier after a \
+                         sum exactly when there is more than one chunk, in {trace}"
+                    ));
+                }
                 let (missing, all) = common::words::uncontracted_arithmetic(&module.spirv);
                 assert!(all > 0 && missing.is_empty(), "{what}: {missing:?}");
                 total += 1;
             }
         }
     }
+    assert!(
+        hazards.is_empty(),
+        "a barrier between staging and summing, and between a chunk's sum and the next chunk's \
+         staging: {hazards:#?}"
+    );
     let kernel = common::loss_sum_kernel(1_000);
     let mut small = fixture();
     small.max_shared_memory_bytes = 256;
