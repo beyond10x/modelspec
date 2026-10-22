@@ -18,7 +18,7 @@ use std::cell::Cell;
 use std::marker::PhantomData;
 
 use ash::vk;
-use modelspec_core::ir::kernel::{Kernel, KernelKind, Operand};
+use modelspec_core::ir::kernel::{Kernel, KernelKind, MatMulTile, Operand};
 use modelspec_core::ir::tensor::{Dim, TensorType};
 
 use super::memory::Buffer;
@@ -686,6 +686,17 @@ fn elements_of(kernel: &Kernel, ty: &TensorType) -> Result<u64, ExecError> {
         .product()
 }
 
+/// The invocations of a matmul kernel's tile ([`MatMulTile`]): its workgroups times their size.
+fn matmul_invocations(kernel: &Kernel) -> Result<u64, ExecError> {
+    let (m, k, n) =
+        Kernel::matmul_shape(&kernel.operands).ok_or_else(|| ExecError::KernelShape {
+            kernel: kernel.signature(),
+            reason: "a matmul reads static [m, k] and [k, n]".to_owned(),
+        })?;
+    let tile = MatMulTile::of(m, k, n);
+    Ok(tile.workgroups(m, n) * u64::from(tile.workgroup_size))
+}
+
 /// The count, binding sizes and invocations of a dispatch of `kernel`'s module.
 pub fn kernel_bindings(kernel: &Kernel) -> Result<KernelBindings, ExecError> {
     let mut operands = Vec::new();
@@ -702,8 +713,8 @@ pub fn kernel_bindings(kernel: &Kernel) -> Result<KernelBindings, ExecError> {
         KernelKind::Elementwise
         | KernelKind::Broadcast
         | KernelKind::SgdUpdate
-        | KernelKind::Transpose
-        | KernelKind::MatMul => (result, result),
+        | KernelKind::Transpose => (result, result),
+        KernelKind::MatMul => (result, matmul_invocations(kernel)?),
     };
     let elements = match kernel.kind {
         KernelKind::Elementwise | KernelKind::Broadcast | KernelKind::SgdUpdate => operands

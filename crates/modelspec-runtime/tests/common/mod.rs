@@ -10,7 +10,9 @@
 //!
 //! Not every test binary that includes this module uses all of it.
 
-use modelspec_core::ir::kernel::{Kernel, KernelKind, KernelModuleId, Operand};
+use modelspec_core::ir::kernel::{
+    Epilogue, Kernel, KernelKind, KernelModuleId, MatMulTile, Operand,
+};
 use modelspec_core::ir::tensor::{DType, Dim, TensorType};
 
 /// The absolute part of the GPU tolerance.
@@ -491,8 +493,14 @@ pub fn transpose_kernel(rows: u64, cols: u64) -> Kernel {
     })
 }
 
-/// `matmul([m, k], [k, n]) -> [m, n]`, one invocation per output element.
+/// `matmul([m, k], [k, n]) -> [m, n]`, the workgroups of its [`MatMulTile`].
 pub fn matmul_kernel(m: u64, k: u64, n: u64) -> Kernel {
+    matmul_kernel_with(m, k, n, None)
+}
+
+/// [`matmul_kernel`] with `epilogue`.
+pub fn matmul_kernel_with(m: u64, k: u64, n: u64, epilogue: Option<Epilogue>) -> Kernel {
+    let tile = MatMulTile::of(m, k, n);
     finish(Kernel {
         id: KernelModuleId([0; 16]),
         kind: KernelKind::MatMul,
@@ -504,10 +512,38 @@ pub fn matmul_kernel(m: u64, k: u64, n: u64) -> Kernel {
         ],
         result: TensorType::f32(&[m, n]),
         reduces: None,
-        epilogue: None,
-        workgroup_size: KernelKind::MatMul.workgroup_size(),
-        workgroups: groups_of(m * n, KernelKind::MatMul),
+        epilogue,
+        workgroup_size: tile.workgroup_size,
+        workgroups: [
+            u32::try_from(tile.workgroups(m, n)).expect("a test matmul fits one dimension"),
+            1,
+            1,
+        ],
     })
+}
+
+/// The words of one `u32` `OpConstant`: opcode and count, type, result id, value.
+pub const CONSTANT_WORDS: usize = 4;
+
+/// The `u32` constants of a `k`-deep matmul module whose values depend on `k`, for a `k` whose
+/// tile loop runs at least one pass. The emitter (`emit.rs` `matmul`) keeps one constant per
+/// value, and every other constant it emits is a function of the tile, `m` and `n`, or is a
+/// tile length below `depth`. These are `k` itself (the row stride of `a`), the loop's trip
+/// count, and the `a` and `b` offsets of each tile read after the loop: tiles `resume..count`
+/// read tile `i + ahead` while it exists, at most `MATMUL_UNROLL` of them (the 0 to 3 full
+/// tiles the passes leave, and a partial last tile). A module at a `k` of 16 tiles or fewer
+/// with the same leftover tiles and last tile length has the same instructions, its
+/// `k`-dependent values possibly shared with other constants, so a large `k` adds at most
+/// these constants over it: 2 to 10, whatever `k`.
+pub fn matmul_k_constants(k: u64, tile: &MatMulTile) -> usize {
+    let depth = u64::from(tile.depth);
+    let ahead = u64::from(tile.ahead.max(1));
+    let passes = (k / depth).saturating_sub(ahead + 1) / 4;
+    assert!(passes > 0, "k = {k} runs no tile loop with {tile:?}");
+    let resume = 1 + 4 * passes;
+    let reads = k.div_ceil(depth).saturating_sub(resume + ahead);
+    assert!(reads <= 4, "k = {k}: {reads} reads after the loop");
+    2 + 2 * reads as usize
 }
 
 /// The element counts of the reduction and `mse` cases of `story:m1-vulkan-reduce-matmul`.
@@ -516,9 +552,14 @@ pub const REDUCE_COUNTS: [u64; 7] = [1, 63, 64, 65, 1_000, 4_097, 78_400];
 /// The `[rows, cols]` of its transpose cases.
 pub const TRANSPOSE_SHAPES: [(u64, u64); 4] = [(1, 1), (3, 5), (100, 784), (65, 129)];
 
-/// The `[m, k] x [k, n]` of its matmul cases: the MNIST step shapes, and shapes that fill no
-/// workgroup.
-pub const MATMUL_SHAPES: [(u64, u64, u64); 7] = [
+/// The `[m, k] x [k, n]` of its matmul cases: the MNIST step shapes, shapes that fill no
+/// workgroup, and, for the tile of `story:m1-f-forward-matmul-tiled` (8 rows by 16 columns,
+/// tiles of 64 of `k`): exactly one tile, one past a multiple of the tile in each of `m`, `k`
+/// and `n`, `k = 1`, and one column, whose tile has 128 rows and a smaller depth; and three
+/// shapes whose tile loop runs several passes (`emit.rs` `matmul_passes`): a partial last
+/// tile of 16, a `k` of whole tiles of 8, and a partial last tile of 3 of 32; and two shapes
+/// whose tile has two rows per invocation (`MatMulTile::of`), one with a tile loop.
+pub const MATMUL_SHAPES: [(u64, u64, u64); 18] = [
     (100, 784, 64),
     (784, 100, 64),
     (100, 64, 10),
@@ -526,6 +567,17 @@ pub const MATMUL_SHAPES: [(u64, u64, u64); 7] = [
     (100, 10, 64),
     (1, 1, 1),
     (17, 33, 65),
+    (8, 64, 16),
+    (9, 65, 17),
+    (130, 129, 33),
+    (5, 1, 7),
+    (129, 200, 1),
+    (3, 128, 3),
+    (33, 2000, 17),
+    (129, 1000, 1),
+    (5, 4099, 3),
+    (2049, 129, 17),
+    (1025, 1000, 33),
 ];
 
 /// The SPIR-V opcodes and enumerants the module checks read.

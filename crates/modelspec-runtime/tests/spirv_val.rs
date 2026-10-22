@@ -14,7 +14,9 @@ use std::path::PathBuf;
 use modelspec_core::artifact::{Backend, CompiledArtifact};
 use modelspec_core::compile::compile_artifact;
 use modelspec_core::device::DeviceProfile;
-use modelspec_core::ir::kernel::{Kernel, KernelKind, Operand};
+use modelspec_core::ir::kernel::{
+    Epilogue, Kernel, KernelKind, MIN_SHARED_MEMORY_BYTES, MatMulTile, Operand,
+};
 use modelspec_core::ir::tensor::{DType, TensorType};
 use modelspec_runtime::spirv::emit::{
     EmitError, FLOAT_CONTROL_CAPABILITIES, KernelCacheKey, emit, emit_kernels,
@@ -610,4 +612,200 @@ fn the_loss_sum_stages_its_terms_in_workgroup_memory_sized_by_the_shape_and_the_
     eprintln!(
         "spirv_val: {total} staged loss-sum modules pass spirv-val --target-env {TARGET_ENV}"
     );
+}
+
+// story:m1-f-forward-matmul-tiled: the matmul stages tiles of its operands in workgroup memory.
+
+/// `trace` with each run of one access collapsed to one letter.
+fn collapsed(trace: &str) -> String {
+    let mut out = String::new();
+    for c in trace.chars() {
+        if !out.ends_with(c) || c == 'B' {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// The three epilogues a matmul kernel has.
+const EPILOGUES: [Option<Epilogue>; 3] = [
+    None,
+    Some(Epilogue::Relu {
+        writes_pre_activation: false,
+    }),
+    Some(Epilogue::Relu {
+        writes_pre_activation: true,
+    }),
+];
+
+#[test]
+fn a_matmul_module_runs_its_tile_with_one_barrier_per_tile_of_k() {
+    let mut total = 0;
+    for (m, k, n) in common::MATMUL_SHAPES {
+        let tile = MatMulTile::of(m, k, n);
+        let what = format!("[{m}, {k}] x [{k}, {n}], {tile:?}");
+        assert!(tile.shared_bytes() <= MIN_SHARED_MEMORY_BYTES, "{what}");
+        assert!(tile.workgroup_size.is_multiple_of(tile.cols), "{what}");
+        assert!(tile.cols.is_power_of_two() && u64::from(tile.cols) <= n.next_power_of_two());
+        assert!(u64::from(tile.depth) <= k, "{what}");
+        let tiles = k.div_ceil(u64::from(tile.depth)) as usize;
+        assert_eq!(tile.buffers, if tiles > 1 { 2 } else { 1 }, "{what}");
+        assert!(
+            tile.workgroups(m, n) * u64::from(tile.rows_per_workgroup()) * u64::from(tile.cols)
+                >= m * n,
+            "{what}: the workgroups cover the output"
+        );
+        for epilogue in EPILOGUES {
+            let kernel = common::matmul_kernel_with(m, k, n, epilogue);
+            for profile in [fixture(), fixture_with([true; 3])] {
+                let module = emit_module(&kernel, &profile).expect("the matmul emits");
+                validate(&module.spirv).unwrap_or_else(|error| panic!("{what}: {error}"));
+                assert_eq!(
+                    local_size(&module.spirv),
+                    [tile.workgroup_size, 1, 1],
+                    "{what}"
+                );
+                assert_eq!(
+                    workgroup_array_lengths(&module.spirv),
+                    [tile.shared_values()],
+                    "{what}: one f32 array of every buffer"
+                );
+                let (looped, loops) = (tile_loop(k, &tile), loop_merges(&module.spirv));
+                assert_eq!(
+                    loops,
+                    usize::from(looped > 0),
+                    "{what}: one tile loop or none"
+                );
+                let emitted = tiles - looped.saturating_sub(TILE_LOOP_BODY);
+                let (trace, _) = workgroup_accesses(&module.spirv);
+                let wanted = format!("SB{}L", "LSB".repeat(emitted - 1));
+                assert_eq!(
+                    collapsed(&trace),
+                    wanted,
+                    "{what}: stage the first tile, a barrier, then per tile its products and \
+                     the next tile's staging into the other buffer, a barrier, with the \
+                     {looped} tiles of the loop emitted as one body of {TILE_LOOP_BODY}"
+                );
+                let emitted_k =
+                    k - (looped.saturating_sub(TILE_LOOP_BODY) as u64) * u64::from(tile.depth);
+                let (missing, all) = common::words::uncontracted_arithmetic(&module.spirv);
+                assert!(
+                    all as u64 == u64::from(tile.rows) * (2 * emitted_k - 1) && missing.is_empty(),
+                    "{what}: {all} arithmetic, one chain per row, no NoContraction on {missing:?}"
+                );
+                total += 1;
+            }
+        }
+    }
+    eprintln!("spirv_val: {total} tiled matmul modules pass spirv-val --target-env {TARGET_ENV}");
+}
+
+/// The tiles of the matmul's tile loop body.
+const TILE_LOOP_BODY: usize = 4;
+
+/// The tiles a `k`-deep matmul with `tile` runs in its loop: from tile 1 up, the tiles that
+/// are full and read a full tile `ahead` past them, rounded down to whole loop bodies.
+fn tile_loop(k: u64, tile: &MatMulTile) -> usize {
+    let full = (k / u64::from(tile.depth)) as usize;
+    let candidates = full.saturating_sub(tile.ahead as usize + 1);
+    candidates - candidates % TILE_LOOP_BODY
+}
+
+/// The `OpLoopMerge` instructions of `module`.
+fn loop_merges(module: &[u32]) -> usize {
+    common::words::instructions(module)
+        .iter()
+        .filter(|(op, _)| *op == OP_LOOP_MERGE)
+        .count()
+}
+
+const OP_LOOP_MERGE: u32 = 246;
+
+// review-result:m1-f-forward-adversary-1, blockers 1 and 2: the module of a matmul is bounded
+// whatever its `k`. review-result:m1-f-forward-adversary-2: the slack over the 16-tile bound is
+// the `k`-dependent constants of `common::matmul_k_constants`, not a fixed 4; `[208, k] x [k, 2]`
+// holds 5 of them apart.
+
+#[test]
+fn a_matmul_module_is_no_larger_at_any_k_than_at_a_k_of_sixteen_tiles() {
+    for (m, n) in [(100, 64), (4, 1), (9, 17), (784, 64), (5, 3), (208, 2)] {
+        let depth = u64::from(MatMulTile::of(m, 1 << 20, n).depth);
+        let words = |k: u64| -> (usize, u32) {
+            let module = emit(&common::matmul_kernel(m, k, n)).expect("the matmul emits");
+            (module.len(), module[3])
+        };
+        // Every k up to 16 tiles: its straight tiles after the loop and the length of its
+        // last tile take every value a larger k gives them.
+        let mut small = (0, 0);
+        for at in 1..=16 * depth {
+            let (len, bound) = words(at);
+            small = (small.0.max(len), small.1.max(bound));
+        }
+        let limit = u64::from(u32::MAX) / n.max(m);
+        for base in [10_000, 100_000, 600_000, 1_000_000, 4_000_000] {
+            for at in [base, base + 1, base + depth - 1, base + 3 * depth + 5] {
+                if at > limit {
+                    continue;
+                }
+                let (len, bound) = words(at);
+                let what = format!("[{m}, {at}] x [{at}, {n}]: {len} words, id bound {bound}");
+                let spare = common::matmul_k_constants(at, &MatMulTile::of(m, at, n));
+                assert!(
+                    len <= small.0 + common::CONSTANT_WORDS * spare
+                        && bound <= small.1 + spare as u32,
+                    "{what}, above {small:?}, the largest at k up to {}, by more than its {spare} \
+                     k-dependent constants",
+                    16 * depth
+                );
+                let module = emit(&common::matmul_kernel(m, at, n)).expect("emits");
+                validate(&module).unwrap_or_else(|error| panic!("{what}: {error}"));
+            }
+        }
+    }
+}
+
+#[test]
+fn a_matmul_tile_beyond_the_profiles_workgroup_memory_is_refused_before_any_pipeline() {
+    for (m, k, n) in common::MATMUL_SHAPES {
+        let tile = MatMulTile::of(m, k, n);
+        let kernel = common::matmul_kernel(m, k, n);
+        let mut profile = fixture();
+        profile.max_shared_memory_bytes = tile.shared_bytes();
+        emit_module(&kernel, &profile).expect("a tile that fits emits");
+        profile.max_shared_memory_bytes = tile.shared_bytes() - 4;
+        match emit_module(&kernel, &profile) {
+            Err(EmitError::SharedMemory {
+                needs, provides, ..
+            }) => {
+                assert_eq!(
+                    (needs, provides),
+                    (tile.shared_bytes(), tile.shared_bytes() - 4)
+                );
+            }
+            other => panic!("[{m}, {k}] x [{k}, {n}]: {:?}", other.map(|m| m.cache_key)),
+        }
+    }
+    let (name, artifact) = acceptance_artifacts()
+        .into_iter()
+        .find(|(name, _)| name.contains("mnist"))
+        .expect("the MNIST artifact");
+    let mut small = fixture();
+    small.max_shared_memory_bytes = 1_024;
+    assert!(
+        matches!(
+            emit_kernels(&artifact, &small),
+            Err(EmitError::SharedMemory { .. })
+        ),
+        "{name}: emit_kernels, which runs before any pipeline is created, refuses the artifact"
+    );
+}
+
+#[test]
+fn a_matmul_kernel_whose_workgroups_are_not_its_tiles_is_refused() {
+    let mut kernel = common::matmul_kernel(17, 33, 65);
+    kernel.workgroup_size = 64;
+    assert!(matches!(emit(&kernel), Err(EmitError::Operands { .. })));
+    let mut kernel = common::matmul_kernel(17, 33, 65);
+    kernel.workgroups[0] -= 1;
+    assert!(matches!(emit(&kernel), Err(EmitError::Operands { .. })));
 }

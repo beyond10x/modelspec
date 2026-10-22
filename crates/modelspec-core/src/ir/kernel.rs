@@ -13,7 +13,7 @@
 use std::fmt;
 
 use crate::artifact::{DataSpec, ParameterSpec};
-use crate::ir::tensor::{DType, TensorType, ValueId};
+use crate::ir::tensor::{DType, Dim, TensorType, ValueId};
 
 /// The identity of a kernel module, a UUID printed in its hyphenated form. It is derived from the
 /// content of the kernel ([`Kernel::module_id`]), so two compiles of one file give equal ids.
@@ -115,7 +115,7 @@ pub struct PlanStep {
 }
 
 /// What a kernel computes. Its workgroup size is a constant of the kind
-/// ([`KernelKind::workgroup_size`]).
+/// ([`KernelKind::workgroup_size`]), except a matmul's, which is its [`MatMulTile`]'s.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum KernelKind {
     /// `Add`, `Sub`, `Mul`, `Relu` or `ReluGrad`, one invocation per output element.
@@ -130,7 +130,8 @@ pub enum KernelKind {
     /// them in row-major order (DESIGN.md § 5.2, § 5.4).
     LossSum,
     Transpose,
-    /// One invocation per output element, with an optional [`Epilogue`] on its rounded sum.
+    /// One invocation per output element in the blocks of its [`MatMulTile`], with an optional
+    /// [`Epilogue`] on its rounded sum.
     MatMul,
     /// The SGD update, written in place into the parameter's view: with operands `(p, lr, g)`
     /// (or `(p, g, lr)`) it is `p - (lr * g)`, the product rounded before the subtraction and
@@ -139,9 +140,107 @@ pub enum KernelKind {
 }
 
 impl KernelKind {
-    /// The workgroup size of the kind in the fixed safe schedule: 64 invocations for every kind.
+    /// The workgroup size of the kind in the fixed safe schedule: 64 invocations for every kind
+    /// but a matmul, which runs [`MatMulTile::workgroup_size`].
     pub const fn workgroup_size(self) -> u32 {
         64
+    }
+}
+
+/// The workgroup memory every Vulkan device provides, the minimum of
+/// `maxComputeSharedMemorySize`: every [`MatMulTile`] stages at most this much.
+pub const MIN_SHARED_MEMORY_BYTES: u32 = 16_384;
+
+/// The workgroups a one-row [`MatMulTile`] needs from which its invocations compute two rows
+/// each instead: on the RTX 3090 two rows take the `[784, 100] x [100, 64]` matmul (392
+/// workgroups of one row) from 5.24 to 4.92 µs and are slower at every MNIST matmul of at most
+/// 52 workgroups (DESIGN.md § 5.2).
+pub const MATMUL_TWO_ROWS_FROM_WORKGROUPS: u64 = 256;
+
+/// How a matmul kernel `[m, k] x [k, n] -> [m, n]` covers its output (DESIGN.md § 5.2): each
+/// workgroup of `workgroup_size` invocations computes a block of
+/// [`MatMulTile::rows_per_workgroup`] rows by `cols` columns. Invocation `t` computes column
+/// `t % cols` of the rows `t / cols + q * (workgroup_size / cols)` for `q` in `0..rows`, one
+/// output element per row, each over ascending `k` from the `k = 0` product. The contracting
+/// index is walked in tiles of `depth` values: a tile is read into registers `ahead` tiles
+/// before its products, then staged in one of `buffers` workgroup memory buffers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct MatMulTile {
+    pub workgroup_size: u32,
+    /// Output columns per workgroup, a power of two that divides `workgroup_size`.
+    pub cols: u32,
+    /// Output rows per invocation, each with its own accumulator.
+    pub rows: u32,
+    /// Values of the contracting index per tile.
+    pub depth: u32,
+    /// Tiles read into registers before the products of the first one.
+    pub ahead: u32,
+    /// Workgroup memory buffers, 2 when there is more than one tile, else 1.
+    pub buffers: u32,
+}
+
+impl MatMulTile {
+    /// The tile of a `[m, k] x [k, n]` matmul, a function of its shape alone: 128
+    /// invocations, 16 columns (fewer, a power of two, when `n` is smaller), one row per
+    /// invocation, or two when one row needs at least [`MATMUL_TWO_ROWS_FROM_WORKGROUPS`]
+    /// workgroups, tiles of up to 64 values read 6 tiles ahead, and depth halved until the
+    /// staged values fit in [`MIN_SHARED_MEMORY_BYTES`].
+    pub fn of(m: u64, k: u64, n: u64) -> Self {
+        let workgroup_size = 128;
+        let cols = n.clamp(1, 16).next_power_of_two() as u32;
+        let one_row = m.div_ceil(u64::from(workgroup_size / cols)) * n.div_ceil(u64::from(cols));
+        let mut tile = Self {
+            workgroup_size,
+            cols,
+            rows: if one_row >= MATMUL_TWO_ROWS_FROM_WORKGROUPS {
+                2
+            } else {
+                1
+            },
+            depth: k.clamp(1, 64) as u32,
+            ahead: 6,
+            buffers: 1,
+        };
+        loop {
+            tile.buffers = if u64::from(tile.depth) < k { 2 } else { 1 };
+            if tile.depth == 1 || tile.shared_bytes() <= MIN_SHARED_MEMORY_BYTES {
+                return tile;
+            }
+            tile.depth /= 2;
+        }
+    }
+
+    /// Output rows per workgroup.
+    pub fn rows_per_workgroup(&self) -> u32 {
+        (self.workgroup_size / self.cols) * self.rows
+    }
+
+    /// The distance between two columns of the staged, transposed `b` block: `depth` rounded
+    /// up to a multiple of 4, plus 4, so the columns an access reads at once fall in distinct
+    /// memory banks.
+    pub fn b_stride(&self) -> u32 {
+        self.depth.next_multiple_of(4) + 4
+    }
+
+    /// The `f32` values of one buffer: the `a` block, one row of `depth` values per output
+    /// row, then the `b` block transposed, one column per [`MatMulTile::b_stride`].
+    pub fn buffer_values(&self) -> u32 {
+        self.rows_per_workgroup() * self.depth + self.cols * self.b_stride()
+    }
+
+    /// The `f32` values the tile stages, every buffer.
+    pub fn shared_values(&self) -> u32 {
+        self.buffers * self.buffer_values()
+    }
+
+    /// The workgroup memory the tile stages, in bytes.
+    pub fn shared_bytes(&self) -> u32 {
+        self.shared_values() * 4
+    }
+
+    /// The workgroups that cover `[m, n]`: row blocks times column blocks.
+    pub fn workgroups(&self, m: u64, n: u64) -> u64 {
+        m.div_ceil(u64::from(self.rows_per_workgroup())) * n.div_ceil(u64::from(self.cols))
     }
 }
 
@@ -230,6 +329,22 @@ impl Kernel {
             }) => 2,
             _ => 1,
         }
+    }
+
+    /// `(m, k, n)` of a kernel whose operands are two static buffers `[m, k]` and `[k, n]`.
+    pub fn matmul_shape(operands: &[Operand]) -> Option<(u64, u64, u64)> {
+        let dims = |operand: &Operand| match operand {
+            Operand::Buffer(ty) => match ty.shape[..] {
+                [Dim::Static(rows), Dim::Static(cols)] => Some((rows, cols)),
+                _ => None,
+            },
+            Operand::Immediate(_) => None,
+        };
+        let [a, b] = operands else {
+            return None;
+        };
+        let ((m, k), (k2, n)) = (dims(a)?, dims(b)?);
+        (k == k2).then_some((m, k, n))
     }
 
     /// The text the module id is derived from: every field but the id.
