@@ -104,8 +104,8 @@ entities:
         type: Integer
         summary: The step state at which the checkpoint was written (DESIGN.md § 6.2).
       - name: payload_hash
-        type: Optional<modelspec.artifact.ContentHash>
-        summary: Optional verification hash of the payload (DESIGN.md § 6.2).
+        type: modelspec.artifact.ContentHash
+        summary: Verification hash of the payload, blake3 over the bytes from the payload start to the end of the file; format version 1 always writes it and a reader refuses a manifest without it (DESIGN.md § 6.2).
       - name: optimizer
         type: modelspec.training.OptimizerConfig
         summary: Optimizer hyperparameters, kept so a resumed run continues with the same optimizer (DESIGN.md § 6.1, § 9 gate 7).
@@ -136,7 +136,7 @@ entities:
 
   - name: modelspec.checkpoint.ParameterRecord
     naming:
-      summary: One tensor in a checkpoint's payload, addressed by offset and length (DESIGN.md § 6.2). Its path is unique among the records of its checkpoint (DESIGN.md § 2.3), and offset + length <= the checkpoint's file_size with offset a multiple of its alignment (DESIGN.md § 6.2); ESS states neither here.
+      summary: One tensor in a checkpoint's payload, addressed by offset and length (DESIGN.md § 6.2). Its path is unique among the records of its checkpoint (DESIGN.md § 2.3), and offset + length <= the checkpoint's file_size with offset a multiple of its alignment (DESIGN.md § 6.2); ESS states neither here. On disk a record is identified by its path and belongs to the checkpoint whose manifest contains it, and parameter_record_id and checkpoint_id are derived from those and not written in the record (DESIGN.md § 6.2).
     identity:
       name: parameter_record_id
       type: modelspec.checkpoint.ParameterRecordId

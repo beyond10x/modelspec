@@ -22,6 +22,15 @@
 //! file is read before the first step; one that cannot be used is refused with `E-DATA-007`,
 //! `E-DATA-008` or `E-DATA-009` and no `step` line is printed.
 //!
+//! `--steps <n>` runs `n` steps instead of the block's. `--checkpoint <path>` writes the state
+//! after the last step as a `.msckpt` file ([`checkpoint`]; DESIGN.md § 6.2), and
+//! `--checkpoint-every <n>` also writes `<stem>-<k>.msckpt` beside it at every step `k` after the
+//! start that is a multiple of `n` and before the end. `--resume <path>` starts from a checkpoint's
+//! parameters and step `s`: the run ends at `s + steps`, its `init` lines are the values at `s`,
+//! and its `step` lines start at `s`. A checkpoint that cannot be read or does not match the file
+//! and its optimizer is refused with its `E-CKPT` code before anything is served or run; a
+//! checkpoint that cannot be written fails the run on one line.
+//!
 //! `--serve <addr>` also streams the run as `text/event-stream` at `http://<addr>/events`
 //! (`spec/domains/observatory.yaml`, `ServeAddress` and `StreamFrame`; [`modelspec_observatory`]).
 //! Once the file compiles the address is bound and `serving http://<bound address>/events` is
@@ -50,8 +59,10 @@ use modelspec_observatory::{
     EVENTS_PATH, RunEventBody, RunFailed, RunStarted, Server, StepCompleted, TrainingRunId,
 };
 use modelspec_runtime::cpu::HostTensor;
+use modelspec_runtime::train::checkpoint::{self, Checkpoint, CheckpointError};
 use modelspec_runtime::train::data::{self, DataError, DenseData};
 use modelspec_runtime::train::init;
+use modelspec_runtime::train::optimizer::ParamState;
 use modelspec_runtime::train::runner::{self, Eval, Run, RunError};
 
 /// The selected backend is not available in this build.
@@ -86,13 +97,33 @@ pub struct Args {
     /// --data, and print `eval loss=<mean loss> accuracy=<fraction>`.
     #[arg(long, value_name = "DIR")]
     pub eval: Option<PathBuf>,
+    /// Run N steps instead of the steps of the file's train block; a resumed run ends at its
+    /// checkpoint's step plus N.
+    #[arg(long, value_name = "N")]
+    pub steps: Option<u64>,
+    /// After the last step, write the parameters, step and optimizer to the .msckpt file PATH.
+    #[arg(long, value_name = "PATH")]
+    pub checkpoint: Option<PathBuf>,
+    /// Also write STEM-K.msckpt beside the --checkpoint file at every step K after the start that
+    /// is a multiple of N and before the end.
+    #[arg(long, value_name = "N", requires = "checkpoint", value_parser = clap::value_parser!(u64).range(1..))]
+    pub checkpoint_every: Option<u64>,
+    /// Continue from the .msckpt file PATH: its parameters and step instead of the initializers
+    /// and step 0, refused unless it matches the compiled file and its optimizer.
+    #[arg(long, value_name = "PATH", conflicts_with = "init")]
+    pub resume: Option<PathBuf>,
 }
 
-/// The directories of `--data`, `--init` and `--eval`.
+/// The directories of `--data`, `--init` and `--eval`, and the checkpoints of `--resume`,
+/// `--checkpoint` and `--checkpoint-every`.
 struct Files {
     data: Option<PathBuf>,
     init: Option<PathBuf>,
     eval: Option<PathBuf>,
+    checkpoint: Option<PathBuf>,
+    checkpoint_every: Option<u64>,
+    /// The step and parameters of `--resume`, read and matched before the server binds.
+    resume: Option<(u64, BTreeMap<ParamId, HostTensor<f32>>)>,
 }
 
 /// The files of a run, read before its first step.
@@ -103,15 +134,31 @@ struct Loaded {
 }
 
 impl Files {
+    /// The step a run starts at.
+    fn start(&self) -> u64 {
+        self.resume.as_ref().map_or(0, |(step, _)| *step)
+    }
+
+    /// The file `<stem>-<k>.msckpt` beside the `--checkpoint` file.
+    fn every_path(&self, k: u64) -> Option<PathBuf> {
+        let path = self.checkpoint.as_ref()?;
+        let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+        Some(path.with_file_name(format!("{stem}-{k}.msckpt")))
+    }
+
     fn load(&self, compiled: &CompiledTraining) -> Result<Loaded, DataError> {
-        let (config, forward) = (&compiled.config, &compiled.forward);
+        let forward = &compiled.forward;
+        let mut config = compiled.config.clone();
+        config.steps = config.steps.saturating_add(self.start());
+        let config = &config;
         let data = match &self.data {
             Some(dir) => Some(data::dense(dir, config, forward)?),
             None => None,
         };
-        let init = match &self.init {
-            Some(dir) => init::read_params(dir, &forward.program)?,
-            None => BTreeMap::new(),
+        let init = match (&self.init, &self.resume) {
+            (_, Some((_, values))) => values.clone(),
+            (Some(dir), None) => init::read_params(dir, &forward.program)?,
+            (None, None) => BTreeMap::new(),
         };
         let eval = match &self.eval {
             Some(dir) => Some(data::dense_eval(dir, config, forward)?),
@@ -150,13 +197,28 @@ pub fn run(args: Args, stdout: &mut dyn Write, stderr: &mut dyn Write) -> u8 {
             return crate::EXIT_FAILURE;
         }
     };
-    let compiled = match compile::compile_training(&file, &source) {
+    let mut compiled = match compile::compile_training(&file, &source) {
         Ok(compiled) => compiled,
         Err(diagnostics) => {
             for diagnostic in &diagnostics {
                 let _ = writeln!(stderr, "{diagnostic}");
             }
             return crate::EXIT_FAILURE;
+        }
+    };
+    if let Some(steps) = args.steps {
+        compiled.config.steps = steps;
+    }
+    let resume = match &args.resume {
+        None => None,
+        Some(path) => {
+            match checkpoint::read(path).and_then(|c| Ok((c.step, c.resume_into(&compiled)?))) {
+                Ok(resume) => Some(resume),
+                Err(error) => {
+                    let _ = writeln!(stderr, "{error}");
+                    return crate::EXIT_FAILURE;
+                }
+            }
         }
     };
     let server = match args.serve {
@@ -185,16 +247,19 @@ pub fn run(args: Args, stdout: &mut dyn Write, stderr: &mut dyn Write) -> u8 {
             server.emit(body);
         }
     };
-    emit(RunEventBody::RunStarted(RunStarted {
-        steps: compiled.config.steps,
-        start_step: 0,
-    }));
-    let mut handler = None;
     let files = Files {
         data: args.data,
         init: args.init,
         eval: args.eval,
+        checkpoint: args.checkpoint,
+        checkpoint_every: args.checkpoint_every,
+        resume,
     };
+    emit(RunEventBody::RunStarted(RunStarted {
+        steps: compiled.config.steps,
+        start_step: files.start(),
+    }));
+    let mut handler = None;
     let outcome = train(
         &file,
         &compiled,
@@ -266,21 +331,47 @@ fn train(
                 parameters: Vec::new(),
             }));
         };
-        let run = match runner::run_with(compiled, loaded.data.as_ref(), &loaded.init, observe) {
+        let start = files.start();
+        let end = start.saturating_add(compiled.config.steps);
+        let after = |k: u64, state: &ParamState| match (files.checkpoint_every, files.every_path(k))
+        {
+            (Some(n), Some(path)) if k.is_multiple_of(n) && k < end => {
+                checkpoint::write(&path, &Checkpoint::of_state(compiled, k, &state.values))
+            }
+            _ => Ok(()),
+        };
+        let run = match runner::run_from(
+            compiled,
+            loaded.data.as_ref(),
+            &loaded.init,
+            start,
+            observe,
+            after,
+        ) {
             Ok(run) => run,
             Err(error) => break 'run Err(error),
         };
-        match &loaded.eval {
-            None => Ok((run, None)),
+        let eval = match &loaded.eval {
+            None => None,
             Some(data) => match runner::evaluate_dense(compiled, data, &run.state.values) {
-                Ok(eval) => Ok((run, Some(eval))),
-                Err(error) => Err(error),
+                Ok(eval) => Some(eval),
+                Err(error) => break 'run Err(error),
             },
+        };
+        if let Some(path) = &files.checkpoint {
+            let last = Checkpoint::of_state(compiled, end, &run.state.values);
+            if let Err(error) = checkpoint::write(path, &last) {
+                break 'run Err(error.into());
+            }
         }
+        Ok((run, eval))
     };
     let (run, eval) = match observed {
         Ok(done) => done,
-        Err(RunError::Data(DataError::Refused(diagnostic))) => {
+        Err(
+            RunError::Data(DataError::Refused(diagnostic))
+            | RunError::Checkpoint(CheckpointError::Refused(diagnostic)),
+        ) => {
             end();
             let _ = writeln!(stderr, "{diagnostic}");
             return Err(RunFailed {
@@ -339,9 +430,9 @@ fn report(compiled: &CompiledTraining, run: &Run, eval: Option<Eval>) -> String 
         }
     };
     tensors(&mut out, "init", &run.initial);
-    let last = run.losses.len() - 1;
-    for (k, loss) in run.losses.iter().enumerate() {
-        if (k as u64).is_multiple_of(LOSS_EVERY) || k == last {
+    let last = run.start_step + (run.losses.len() as u64 - 1);
+    for (k, loss) in (run.start_step..).zip(&run.losses) {
+        if k == run.start_step || k.is_multiple_of(LOSS_EVERY) || k == last {
             let _ = writeln!(out, "step {k} loss {loss}");
         }
     }

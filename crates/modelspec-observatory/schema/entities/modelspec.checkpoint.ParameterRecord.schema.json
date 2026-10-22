@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "ParameterRecord",
-  "description": "One tensor in a checkpoint's payload, addressed by offset and length (DESIGN.md § 6.2). Its path is unique among the records of its checkpoint (DESIGN.md § 2.3), and offset + length <= the checkpoint's file_size with offset a multiple of its alignment (DESIGN.md § 6.2); ESS states neither here.",
+  "description": "One tensor in a checkpoint's payload, addressed by offset and length (DESIGN.md § 6.2). Its path is unique among the records of its checkpoint (DESIGN.md § 2.3), and offset + length <= the checkpoint's file_size with offset a multiple of its alignment (DESIGN.md § 6.2); ESS states neither here. On disk a record is identified by its path and belongs to the checkpoint whose manifest contains it, and parameter_record_id and checkpoint_id are derived from those and not written in the record (DESIGN.md § 6.2).",
   "x-ess-name": "modelspec.checkpoint.ParameterRecord",
   "x-ess-kind": "entity",
   "type": "object",
@@ -55,8 +55,8 @@
   "x-ess-provenance": {
     "system": "modelspec",
     "specification_version": "v1",
-    "source_digest": "c43cab517df385adc32e7509e295aa3b7a248a04bbe2f0e200fd9d7d8ad37efc",
-    "contract_digest": "slice-sha256/2:c68ad13ed61b9f5f58361fb4a41d65acd8a05c3b25feb10cf81592e8ae03fd02",
+    "source_digest": "597b7e1eb6f171b8168b33b983e0c5b21cfa9e4cc48c96ec5305deab1006d140",
+    "contract_digest": "slice-sha256/2:2815223e3b46802bf3974cfb39c02fb14e13e1fa026050a5a3800e98c324a692",
     "regenerate": "ess generate"
   },
   "$defs": {
