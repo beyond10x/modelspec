@@ -145,9 +145,10 @@ fn run<T: Element>(
     .unwrap()
 }
 
-/// The loss in `f64` with element `index` of `param` moved by `delta`.
+/// The loss in `f64`, the first output of `program`, with element `index` of `param` moved by
+/// `delta`.
 fn loss_at(
-    training: &TrainingProgram,
+    program: &TensorProgram,
     point: &Point,
     param: ParamId,
     index: usize,
@@ -159,7 +160,7 @@ fn loss_at(
     let mut moved: Vec<f64> = data.iter().map(|&v| f64::from(v)).collect();
     moved[index] += delta;
     params.insert(param, HostTensor::new(shape.clone(), moved).unwrap());
-    evaluate(&training.program, &inputs, &params).unwrap()[0].data()[0]
+    evaluate(program, &inputs, &params).unwrap()[0].data()[0]
 }
 
 /// The smallest distance from 0 of any relu operand of `forward` at `point`.
@@ -279,7 +280,8 @@ fn gradient_check(
         let n = point.params[&param].1.len();
         let differences: Vec<f64> = (0..n)
             .map(|i| {
-                (loss_at(&training, &point, param, i, H) - loss_at(&training, &point, param, i, -H))
+                (loss_at(&training.program, &point, param, i, H)
+                    - loss_at(&training.program, &point, param, i, -H))
                     / (2.0 * H)
             })
             .collect();
@@ -546,6 +548,128 @@ fn two_layer_relu() {
         let o = b.matmul(a, w2).unwrap();
         b.mse(o, y).unwrap()
     });
+}
+
+/// Coordinates of each parameter checked by [`mnist_mlp_sampled`].
+const SAMPLES: usize = 16;
+
+/// The complete graph of `examples/mnist_mlp.mspec`, compiled from the file, checked at
+/// [`SAMPLES`] coordinates of each parameter drawn from the case's seed. A full check would take
+/// 2 x 50,816 forward runs of the 784 -> 64 -> 10 model at batch 100.
+///
+/// The point is drawn as in every other case, then each row of `x` is redrawn until all 64 of its
+/// hidden pre-activations are [`KINK_MARGIN`] away from 0: a whole-point redraw would succeed
+/// about once in 135 tries (6,400 operands, each within the margin with probability about 8e-4).
+/// [`kink_distance`] then checks the result on the training program itself.
+#[test]
+fn mnist_mlp_sampled() {
+    let name = "mnist_mlp_sampled";
+    let path = "examples/mnist_mlp.mspec";
+    let source = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join(path),
+    )
+    .expect("the example exists");
+    let forward = modelspec_core::compile::compile_tensor(path, &source)
+        .expect("the example lowers")
+        .program;
+    let [loss] = forward.outputs[..] else {
+        panic!("the loss is the one output: {:?}", forward.outputs)
+    };
+    let training = differentiate(&forward, loss).unwrap();
+    assert_structure(&forward, loss, &training);
+    let id_of = |path: &str| {
+        forward
+            .params
+            .iter()
+            .find(|(_, decl)| decl.path == path)
+            .map(|(&id, _)| id)
+            .unwrap_or_else(|| panic!("no parameter {path}"))
+    };
+    let (w1, w2) = (id_of("MnistMlp.w1"), id_of("MnistMlp.w2"));
+    assert_eq!(
+        training.gradients.keys().copied().collect::<Vec<_>>(),
+        vec![w1, w2],
+        "a gradient per parameter"
+    );
+
+    let mut rng = Rng::new(seed_of(name));
+    let mut point = Point::draw(&forward, &mut rng);
+    let (inputs, hidden) = match &point.params[&w1].0[..] {
+        &[i, h] => (i as usize, h as usize),
+        shape => panic!("w1 shape {shape:?}"),
+    };
+    let w1_values: Vec<f64> = point.params[&w1].1.iter().map(|&v| v.into()).collect();
+    let x = &mut point.inputs.get_mut("x").expect("input x").1;
+    for row in x.chunks_mut(inputs) {
+        let clear = |row: &[f32]| {
+            (0..hidden).all(|j| {
+                let h: f64 = (0..inputs)
+                    .map(|i| f64::from(row[i]) * w1_values[i * hidden + j])
+                    .sum();
+                h.abs() >= KINK_MARGIN
+            })
+        };
+        let mut tries = 0;
+        while !clear(row) {
+            tries += 1;
+            assert!(
+                tries < 1000,
+                "{name}: no row of x away from every relu kink"
+            );
+            row.iter_mut().for_each(|v| *v = rng.value());
+        }
+    }
+    assert!(
+        kink_distance(&forward, &training, &point) >= KINK_MARGIN,
+        "{name}: a relu operand within {KINK_MARGIN} of the kink"
+    );
+
+    let in_f64 = run(&training, &point, f64::from);
+    let in_f32 = run(&training, &point, |v| v);
+    for (k, (&param, _)) in training.gradients.iter().enumerate() {
+        let path = &forward.params[&param].path;
+        let n = point.params[&param].1.len();
+        let mut coordinates = Vec::new();
+        while coordinates.len() < SAMPLES {
+            let i = (rng.next_u64() % n as u64) as usize;
+            if !coordinates.contains(&i) {
+                coordinates.push(i);
+            }
+        }
+        let differences: Vec<f64> = coordinates
+            .iter()
+            .map(|&i| {
+                (loss_at(&forward, &point, param, i, H) - loss_at(&forward, &point, param, i, -H))
+                    / (2.0 * H)
+            })
+            .collect();
+        let scale = differences.iter().fold(0.0f64, |m, v| m.max(v.abs()));
+        assert!(
+            scale >= MIN_SCALE,
+            "{name}: {path}: differences {differences:?} too small to compare"
+        );
+        let g64: Vec<f64> = coordinates
+            .iter()
+            .map(|&i| in_f64[1 + k].data()[i])
+            .collect();
+        let g32: Vec<f64> = coordinates
+            .iter()
+            .map(|&i| f64::from(in_f32[1 + k].data()[i]))
+            .collect();
+        let e64 = relative_error(&g64, &differences);
+        let e32 = relative_error(&g32, &differences);
+        println!("{name}: {path} at {coordinates:?}: f64 error {e64:e}, f32 error {e32:e}");
+        assert!(
+            e64 <= TOL_F64,
+            "{name}: {path}: f64 error {e64:e}; gradient {g64:?}, differences {differences:?}"
+        );
+        assert!(
+            e32 <= TOL_F32,
+            "{name}: {path}: f32 error {e32:e}; gradient {g32:?}, differences {differences:?}"
+        );
+    }
 }
 
 // Shared uses: every incoming adjoint accumulated exactly once.

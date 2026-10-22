@@ -33,8 +33,8 @@ Entry points are the `Taskfile.yml` tasks (go-task):
 - `task lint`: `cargo fmt --check` and `cargo clippy --workspace --all-targets -- -D warnings`.
 - `task core-no-vulkan`: `cargo test -p modelspec-core --test no_vulkan`, which fails when the
   dependency graph of `modelspec-core` names a Vulkan crate on any target with all features on.
-- `task check-examples`: `modelspec check examples/linear_regression.mspec`;
-  `examples/tiny_mlp.mspec` joins it when modules and generics land (DESIGN.md § 11 iteration 3).
+- `task check-examples`: `modelspec check` on `examples/linear_regression.mspec` and
+  `examples/mnist_mlp.mspec`; `examples/tiny_mlp.mspec` joins it when modules and generics land (DESIGN.md § 11 iteration 3).
 - `task docs-check`: `modelspec-docs generate --check`, which fails when a generated page of the
   documentation site differs from what the code produces now; `task docs-generate` rewrites them.
 - `task spec-validate`: `ess specify validate --path .` from inside `spec/`.

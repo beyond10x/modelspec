@@ -21,6 +21,7 @@ tasks:
   check-examples:
     cmds:
       - cargo run -q -p modelspec-cli -- check examples/linear_regression.mspec
+      - cargo run -q -p modelspec-cli -- check examples/mnist_mlp.mspec
 
   docs-generate:
     cmds:
