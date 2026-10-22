@@ -61,8 +61,15 @@ fn stages() -> Vec<Stage> {
         Stage {
             title: "Target",
             file: "crates/modelspec-cli/src/train.rs",
-            about: "Backend selection of `modelspec train`, before the file is read.",
+            about: "Backend selection of `modelspec train`, before the file is read, and the \
+                    limits of the Vulkan target the schedule checks.",
             codes: vec![modelspec_cli::train::E_TARGET_001],
+        },
+        Stage {
+            title: "Target",
+            file: "crates/modelspec-core/src/compile.rs",
+            about: "",
+            codes: vec![compile::codes::TOO_LARGE_FOR_TARGET],
         },
         Stage {
             title: "Compiler bugs",
@@ -277,6 +284,7 @@ mod tests {
             "E-TYPE-017",
             "E-DATA-003",
             "E-TARGET-001",
+            "E-TARGET-010",
         ] {
             let anchor = code.to_lowercase();
             assert!(

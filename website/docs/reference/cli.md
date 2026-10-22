@@ -56,7 +56,7 @@ Every argument is required and has no default.
 | Argument | Meaning |
 |---|---|
 | `<PATH>` | The .mspec file to lower. |
-| `--stage <STAGE>` | The IR level to print. One of:<br/>`tensor`: Tensor IR after lowering and dead-code elimination<br/>`training`: Training IR: the Tensor IR with its reverse pass and SGD step attached |
+| `--stage <STAGE>` | The IR level to print. One of:<br/>`tensor`: Tensor IR after lowering and dead-code elimination<br/>`training`: Training IR: the Tensor IR with its reverse pass and SGD step attached<br/>`kernel`: Kernel IR: the kernels of the training step, its step plan and its forward plan |
 
 ## `modelspec train`
 

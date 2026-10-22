@@ -90,11 +90,12 @@ The synthetic data loader of `modelspec train`, which runs after a file checks.
 
 ## Target
 
-Backend selection of `modelspec train`, before the file is read.
+Backend selection of `modelspec train`, before the file is read, and the limits of the Vulkan target the schedule checks.
 
 | Code | Meaning | Declared in |
 |---|---|---|
 | <a id="e-target-001"></a>`E-TARGET-001` | The selected backend is not available in this build. | [`crates/modelspec-cli/src/train.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-cli/src/train.rs) |
+| <a id="e-target-010"></a>`E-TARGET-010` | A tensor of the training step is too large for the Vulkan target of M1: one dispatch over it needs more than 65,535 workgroups in each of three dimensions or more than 2^32 invocations, its buffer holds more than 4,294,967,295 bytes (the `u32` range of a storage buffer binding), or its byte count does not fit in 64 bits (DESIGN.md § 8.1). The file checks; reduce the shape. | [`crates/modelspec-core/src/compile.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/compile.rs) |
 
 ## Compiler bugs
 

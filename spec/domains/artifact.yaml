@@ -26,6 +26,9 @@ types:
     naming:
       summary: One parameter the artifact reads and updates, by its stable path (DESIGN.md § 2.3, § 6.2).
     fields:
+      - name: param
+        type: Integer
+        summary: The parameter's number in the Tensor IR of the compiled step (DESIGN.md § 3.1); the stable identity is the path.
       - name: path
         type: modelspec.checkpoint.ParameterPath
       - name: canonical_parameter_id
@@ -35,9 +38,15 @@ types:
         type: modelspec.checkpoint.DType
       - name: shape
         type: modelspec.checkpoint.Shape
+      - name: views
+        type: List<modelspec.artifact.BufferView>
+        summary: The plan buffer views that hold the parameter across steps. One view is the in-place case, the step reading version n and the update writing n + 1 into it; two are ping-pong, step s reading view s mod 2 and writing view (s + 1) mod 2 (DESIGN.md § 6.3 item 3). M1 emits one.
     invariants:
+      - param >= 0
       - canonical_parameter_id >= 0
       - canonical_parameter_id <= 18446744073709551615
+      - views.count >= 1
+      - views.count <= 2
 
   - name: modelspec.artifact.DataRole
     kind: enum
@@ -58,6 +67,9 @@ types:
         type: modelspec.checkpoint.DType
       - name: shape
         type: modelspec.checkpoint.Shape
+      - name: view
+        type: modelspec.artifact.BufferView
+        summary: The plan buffer view a runner writes each batch of this tensor into before a step (DESIGN.md § 7.1). No plan step loads a batch; the runner uploads it between recordings, outside the recorded plan, ordered after the fence of the recording before and before the first step of the next.
 
   - name: modelspec.artifact.BufferView
     kind: struct
@@ -116,9 +128,15 @@ types:
         summary: The resources the step writes; for an Allocate step the scratch allocation it makes (DESIGN.md § 3.1 scratch allocations).
       - name: depends_on
         type: List<Integer>
-        summary: Positions in the plan of earlier steps this one waits on, the DAG's dependencies and barriers (DESIGN.md § 3.1). That each lies before this step is not stated in ESS.
+        summary: Positions in the plan of earlier steps this one waits on, the DAG's dependencies and barriers (DESIGN.md § 3.1). That each lies before this step is not stated in ESS. A Barrier with no dependencies is a fence, ordered after every earlier step; a step with no dependencies after a fence is ordered after that fence.
+      - name: value
+        type: Optional<Integer>
+        summary: The Tensor IR value a Dispatch, Copy or Allocate step computes or holds (DESIGN.md § 3.1); absent on a Barrier.
     invariants:
       - forall: {in: depends_on, as: position, that: position >= 0}
+      - any:
+          - not defined(value)
+          - value >= 0
       - distinct: {in: depends_on, as: position}
       - any:
           - all: [op == Dispatch, defined(kernel_module_id), defined(workgroups)]
@@ -200,15 +218,39 @@ entities:
         summary: Manifest; the input and target tensors and their shapes (DESIGN.md § 2, § 6.1).
       - name: plan
         type: List<modelspec.artifact.PlanStep>
-        summary: The execution DAG in a valid execution order (DESIGN.md § 3.1, § 7.1).
+        summary: The execution DAG of one training step in a valid execution order (DESIGN.md § 3.1, § 7.1). It has no Complete step and exactly one fence, a Barrier with no dependencies, which is its last step. A runner may record it many times back to back into one command buffer, the recordings concatenated and each ordered after the fence of the one before, and the concatenation verifies as one plan in which each fence closes a recording. The runner places a CPU-visible completion point at the end of a run and at each requested checkpoint. Within one recording no step reads a parameter after its update. Its Allocate steps are run setup, executed once before the first recording.
+      - name: forward_plan
+        type: List<modelspec.artifact.PlanStep>
+        summary: The inference plan, the forward pass without loss, gradients or update, what the data loader runs (DESIGN.md § 7.1). It writes no parameter view, has no Complete step and has exactly one fence, its last step, as the step plan does.
+      - name: buffers
+        type: List<Integer>
+        summary: The size in bytes of each plan buffer, indexed by BufferView.buffer; both plans and every bound view share them (DESIGN.md § 3.1 resources, § 7.1). In M1 each value has its own buffer, except an SGD update, which writes its parameter's buffer in place; no data, loss or prediction view lies in a parameter buffer. No buffer exceeds 4294967295 bytes, the u32 range of a storage buffer binding.
+      - name: loss_view
+        type: modelspec.artifact.BufferView
+        summary: The plan buffer view the step plan writes the rank-0 loss into, one element (DESIGN.md § 7.1). Buffer numbers are shared by both plans and laid out for every backend; a Cpu artifact has the views and empty plans.
+      - name: prediction_view
+        type: modelspec.artifact.BufferView
+        summary: The plan buffer view the forward plan and the step plan write the model's prediction into (DESIGN.md § 7.1). A forward that returns an input or a parameter copies it into this view, and one that returns a literal fills it.
     invariants:
+      - forall: {in: buffers, as: size, that: size > 0}
+      - loss_view.buffer < buffers.count
+      - loss_view.element_count == 1
+      - prediction_view.buffer < buffers.count
+      - forall: {in: data, as: binding, that: binding.view.buffer < buffers.count}
+      - forall: {in: parameters, as: parameter, that: {forall: {in: parameter.views, as: view, that: view.buffer < buffers.count}}}
       - distinct: {in: parameters, as: parameter, by: parameter.path}
       - distinct: {in: parameters, as: parameter, by: parameter.canonical_parameter_id}
       - distinct: {in: data, as: binding, by: binding.name}
       - forall: {in: plan, as: step, that: {forall: {in: step.depends_on, as: position, that: position < plan.count}}}
+      - forall: {in: forward_plan, as: step, that: {forall: {in: step.depends_on, as: position, that: position < forward_plan.count}}}
+      - forall: {in: plan, as: step, that: step.op != Complete}
+      - forall: {in: forward_plan, as: step, that: step.op != Complete}
       - any:
           - backend == Vulkan
           - forall: {in: plan, as: step, that: step.op != Dispatch}
+      - any:
+          - backend == Vulkan
+          - forall: {in: forward_plan, as: step, that: step.op != Dispatch}
     relations:
       - name: kernels
         kind: owns

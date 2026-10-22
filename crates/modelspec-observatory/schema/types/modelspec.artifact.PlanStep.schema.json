@@ -4,8 +4,8 @@
   "x-ess-provenance": {
     "system": "modelspec",
     "specification_version": "v1",
-    "source_digest": "234f6a472e3807a40047accc727c1a09300421617ec3572a2b88aa81c79c672e",
-    "contract_digest": "slice-sha256/2:e5981ed9d506b7d67d27df0e9bedcde19b0241f4f8a5ac57b5049920066fee87",
+    "source_digest": "21b566c47dee52d92e551ba2f5a6facb5edf791554755f61f3d4d6c76714e7af",
+    "contract_digest": "slice-sha256/2:1032cdfa0b67a707bda95040ab64ec9b2c380fc5a076857cb8b1de9b49eb6e22",
     "regenerate": "ess generate"
   },
   "$defs": {
@@ -118,11 +118,15 @@
           }
         },
         "depends_on": {
-          "description": "Positions in the plan of earlier steps this one waits on, the DAG's dependencies and barriers (DESIGN.md § 3.1). That each lies before this step is not stated in ESS.",
+          "description": "Positions in the plan of earlier steps this one waits on, the DAG's dependencies and barriers (DESIGN.md § 3.1). That each lies before this step is not stated in ESS. A Barrier with no dependencies is a fence, ordered after every earlier step; a step with no dependencies after a fence is ordered after that fence.",
           "type": "array",
           "items": {
             "type": "integer"
           }
+        },
+        "value": {
+          "description": "The Tensor IR value a Dispatch, Copy or Allocate step computes or holds (DESIGN.md § 3.1); absent on a Barrier.",
+          "type": "integer"
         }
       },
       "required": [
@@ -134,6 +138,7 @@
       "additionalProperties": false,
       "x-ess-invariants": [
         "forall position in depends_on: (position >= 0)",
+        "(not (defined(value)) or value >= 0)",
         "distinct position in depends_on",
         "((op == Dispatch and defined(kernel_module_id) and defined(workgroups)) or (op != Dispatch and not (defined(kernel_module_id)) and not (defined(workgroups))))"
       ]

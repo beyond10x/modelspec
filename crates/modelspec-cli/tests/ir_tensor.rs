@@ -382,13 +382,13 @@ fn a_loss_with_a_nested_forward_call_is_refused_by_check_and_ir() {
 
 #[test]
 fn a_stage_this_build_does_not_have_is_refused_as_a_usage_error() {
-    let output = modelspec(&["ir", EXAMPLE, "--stage", "kernel"]);
+    let output = modelspec(&["ir", EXAMPLE, "--stage", "spirv"]);
     assert_eq!(output.status.code(), Some(2));
     assert_eq!(text(&output.stdout), "");
     let stderr = text(&output.stderr);
-    assert!(stderr.contains("'kernel'"), "{stderr}");
+    assert!(stderr.contains("'spirv'"), "{stderr}");
     assert!(
-        stderr.contains("[possible values: tensor, training]"),
+        stderr.contains("[possible values: tensor, training, kernel]"),
         "{stderr}"
     );
 }

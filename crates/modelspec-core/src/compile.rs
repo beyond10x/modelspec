@@ -8,14 +8,16 @@
 //! an autodiff or SGD failure on verified Tensor IR is a compiler bug and is reported under
 //! [`codes::COMPILER_BUG`], never as a user code (DESIGN.md § 8.1).
 
+use crate::artifact::{Backend, CompiledArtifact};
 use crate::autodiff::differentiate;
 use crate::diag::Diagnostic;
 use crate::hir::Hir;
 use crate::ir::tensor::TensorProgram;
 use crate::ir::training::{TrainConfig, TrainingStep, attach_sgd};
-use crate::ir::verify::{verify, verify_step};
+use crate::ir::verify::{verify, verify_plan, verify_step};
 use crate::lower::{self, LoweredProgram};
 use crate::passes::dce;
+use crate::schedule;
 
 /// Compiler-bug diagnostic codes.
 pub mod codes {
@@ -26,6 +28,13 @@ pub mod codes {
     /// verify, or autodiff, SGD attachment or the step's verification refused verified Tensor IR.
     /// No source file is meant to reach it.
     pub const COMPILER_BUG: Code = Code::new("E-INTERNAL-002");
+
+    /// A tensor of the training step is too large for the Vulkan target of M1: one dispatch over
+    /// it needs more than 65,535 workgroups in each of three dimensions or more than 2^32
+    /// invocations, its buffer holds more than 4,294,967,295 bytes (the `u32` range of a storage
+    /// buffer binding), or its byte count does not fit in 64 bits (DESIGN.md § 8.1). The file
+    /// checks; reduce the shape.
+    pub const TOO_LARGE_FOR_TARGET: Code = Code::new("E-TARGET-010");
 }
 
 /// A `.mspec` file compiled for training.
@@ -52,6 +61,46 @@ pub fn compile_training(path: &str, source: &str) -> Result<CompiledTraining, Ve
         forward,
         config,
     })
+}
+
+/// [`compile_training`], then the fixed safe schedule ([`schedule::schedule`]) and
+/// [`verify_plan`]: Kernel IR, the step plan and the forward plan, in an artifact for `backend`.
+/// A Cpu artifact keeps the views and has no kernels and empty plans.
+pub fn compile_artifact(
+    path: &str,
+    source: &str,
+    backend: Backend,
+) -> Result<CompiledArtifact, Vec<Diagnostic>> {
+    let compiled = compile_training(path, source)?;
+    let plan = schedule::schedule(
+        &compiled.training,
+        compiled.forward.prediction,
+        &compiled.config,
+    )
+    .map_err(|error| {
+        if error.is_target_limit() {
+            vec![
+                Diagnostic::new(
+                    codes::TOO_LARGE_FOR_TARGET,
+                    "a tensor is too large for the vulkan target",
+                )
+                .with("error", error.to_string()),
+            ]
+        } else {
+            vec![compiler_bug(
+                "the schedule refused the training step",
+                &error,
+            )]
+        }
+    })?;
+    verify_plan(&plan)
+        .map_err(|error| vec![compiler_bug("the execution plan does not verify", &error)])?;
+    Ok(CompiledArtifact::new(
+        backend,
+        source,
+        &compiled.training,
+        plan,
+    ))
 }
 
 /// Differentiates the single output of `forward`, its loss, attaches SGD at `lr` and verifies

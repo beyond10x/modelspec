@@ -59,11 +59,33 @@
       }
     },
     "plan": {
-      "description": "The execution DAG in a valid execution order (DESIGN.md § 3.1, § 7.1).",
+      "description": "The execution DAG of one training step in a valid execution order (DESIGN.md § 3.1, § 7.1). It has no Complete step and exactly one fence, a Barrier with no dependencies, which is its last step. A runner may record it many times back to back into one command buffer, the recordings concatenated and each ordered after the fence of the one before, and the concatenation verifies as one plan in which each fence closes a recording. The runner places a CPU-visible completion point at the end of a run and at each requested checkpoint. Within one recording no step reads a parameter after its update. Its Allocate steps are run setup, executed once before the first recording.",
       "type": "array",
       "items": {
         "$ref": "#/$defs/modelspec.artifact.PlanStep"
       }
+    },
+    "forward_plan": {
+      "description": "The inference plan, the forward pass without loss, gradients or update, what the data loader runs (DESIGN.md § 7.1). It writes no parameter view, has no Complete step and has exactly one fence, its last step, as the step plan does.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/modelspec.artifact.PlanStep"
+      }
+    },
+    "buffers": {
+      "description": "The size in bytes of each plan buffer, indexed by BufferView.buffer; both plans and every bound view share them (DESIGN.md § 3.1 resources, § 7.1). In M1 each value has its own buffer, except an SGD update, which writes its parameter's buffer in place; no data, loss or prediction view lies in a parameter buffer. No buffer exceeds 4294967295 bytes, the u32 range of a storage buffer binding.",
+      "type": "array",
+      "items": {
+        "type": "integer"
+      }
+    },
+    "loss_view": {
+      "$ref": "#/$defs/modelspec.artifact.BufferView",
+      "description": "The plan buffer view the step plan writes the rank-0 loss into, one element (DESIGN.md § 7.1). Buffer numbers are shared by both plans and laid out for every backend; a Cpu artifact has the views and empty plans."
+    },
+    "prediction_view": {
+      "$ref": "#/$defs/modelspec.artifact.BufferView",
+      "description": "The plan buffer view the forward plan and the step plan write the model's prediction into (DESIGN.md § 7.1). A forward that returns an input or a parameter copies it into this view, and one that returns a literal fills it."
     },
     "state": {
       "$ref": "#/$defs/modelspec.artifact.CompiledArtifact.State"
@@ -83,14 +105,18 @@
     "parameters",
     "data",
     "plan",
+    "forward_plan",
+    "buffers",
+    "loss_view",
+    "prediction_view",
     "state"
   ],
   "additionalProperties": false,
   "x-ess-provenance": {
     "system": "modelspec",
     "specification_version": "v1",
-    "source_digest": "234f6a472e3807a40047accc727c1a09300421617ec3572a2b88aa81c79c672e",
-    "contract_digest": "slice-sha256/2:ee6c111f9fcbd56345f194fb4843a4cf787cfce92fe02df197e02e857959c3b6",
+    "source_digest": "21b566c47dee52d92e551ba2f5a6facb5edf791554755f61f3d4d6c76714e7af",
+    "contract_digest": "slice-sha256/2:4769a1e671ee6c8e01544d84ac8f8e68ed37046001a3fa6668eedba4b6fe5e9c",
     "regenerate": "ess generate"
   },
   "$defs": {
@@ -211,13 +237,18 @@
         },
         "shape": {
           "$ref": "#/$defs/modelspec.checkpoint.Shape"
+        },
+        "view": {
+          "$ref": "#/$defs/modelspec.artifact.BufferView",
+          "description": "The plan buffer view a runner writes each batch of this tensor into before a step (DESIGN.md § 7.1). No plan step loads a batch; the runner uploads it between recordings, outside the recorded plan, ordered after the fence of the recording before and before the first step of the next."
         }
       },
       "required": [
         "name",
         "role",
         "dtype",
-        "shape"
+        "shape",
+        "view"
       ],
       "additionalProperties": false
     },
@@ -236,6 +267,11 @@
       "x-ess-kind": "struct",
       "type": "object",
       "properties": {
+        "param": {
+          "description": "The parameter's number in the Tensor IR of the compiled step (DESIGN.md § 3.1); the stable identity is the path.",
+          "type": "integer",
+          "minimum": 0
+        },
         "path": {
           "$ref": "#/$defs/modelspec.checkpoint.ParameterPath"
         },
@@ -249,18 +285,30 @@
         },
         "shape": {
           "$ref": "#/$defs/modelspec.checkpoint.Shape"
+        },
+        "views": {
+          "description": "The plan buffer views that hold the parameter across steps. One view is the in-place case, the step reading version n and the update writing n + 1 into it; two are ping-pong, step s reading view s mod 2 and writing view (s + 1) mod 2 (DESIGN.md § 6.3 item 3). M1 emits one.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/modelspec.artifact.BufferView"
+          }
         }
       },
       "required": [
+        "param",
         "path",
         "canonical_parameter_id",
         "dtype",
-        "shape"
+        "shape",
+        "views"
       ],
       "additionalProperties": false,
       "x-ess-invariants": [
+        "param >= 0",
         "canonical_parameter_id >= 0",
-        "canonical_parameter_id <= 18446744073709551615"
+        "canonical_parameter_id <= 18446744073709551615",
+        "views.count >= 1",
+        "views.count <= 2"
       ]
     },
     "modelspec.artifact.PlanOp": {
@@ -310,11 +358,15 @@
           }
         },
         "depends_on": {
-          "description": "Positions in the plan of earlier steps this one waits on, the DAG's dependencies and barriers (DESIGN.md § 3.1). That each lies before this step is not stated in ESS.",
+          "description": "Positions in the plan of earlier steps this one waits on, the DAG's dependencies and barriers (DESIGN.md § 3.1). That each lies before this step is not stated in ESS. A Barrier with no dependencies is a fence, ordered after every earlier step; a step with no dependencies after a fence is ordered after that fence.",
           "type": "array",
           "items": {
             "type": "integer"
           }
+        },
+        "value": {
+          "description": "The Tensor IR value a Dispatch, Copy or Allocate step computes or holds (DESIGN.md § 3.1); absent on a Barrier.",
+          "type": "integer"
         }
       },
       "required": [
@@ -326,6 +378,7 @@
       "additionalProperties": false,
       "x-ess-invariants": [
         "forall position in depends_on: (position >= 0)",
+        "(not (defined(value)) or value >= 0)",
         "distinct position in depends_on",
         "((op == Dispatch and defined(kernel_module_id) and defined(workgroups)) or (op != Dispatch and not (defined(kernel_module_id)) and not (defined(workgroups))))"
       ]
