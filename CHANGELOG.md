@@ -9,6 +9,10 @@ history.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-22
+
+Training on a Vulkan GPU: `train --backend vulkan` runs a whole training run on one device with one host wait. The MNIST benchmark example measured 40.225 µs per step on an RTX 3090 (median of 5 runs of 144,000 steps, mean P0 clock 1935 to 1951 MHz). ADR-007's accuracy and final-weight conditions were not measured for this release.
+
 ### Added
 
 - `examples/mnist_mlp.mspec`: the MNIST benchmark shapes (784 → 64 ReLU → 10, no bias, SGD lr 0.1, batch 100, 1,800 steps) on M0 synthetic data, checked by `task check-examples`, gradient-checked at sampled coordinates and with a training-IR golden file (story:m1-mlp-example)
@@ -102,7 +106,8 @@ with `E-TARGET-001`.
 - `examples/linear_regression.mspec` checks and trains; `task check-examples` runs `modelspec check` on it
 - ESS contracts for the compiled artifact, checkpoint, device profile and training run in `spec/`
 
-[Unreleased]: https://github.com/beyond10x/modelspec/compare/0.3.0...HEAD
+[Unreleased]: https://github.com/beyond10x/modelspec/compare/0.4.0...HEAD
+[0.4.0]: https://github.com/beyond10x/modelspec/compare/0.3.0...0.4.0
 [0.3.0]: https://github.com/beyond10x/modelspec/compare/0.2.0...0.3.0
 [0.2.0]: https://github.com/beyond10x/modelspec/compare/0.1.1...0.2.0
 [0.1.1]: https://github.com/beyond10x/modelspec/compare/0.1.0...0.1.1

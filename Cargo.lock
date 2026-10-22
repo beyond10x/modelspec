@@ -553,7 +553,7 @@ checksum = "c2a86d3146ed3995b5913c414f6664344b9617457320782e64f0bb44afd49d74"
 
 [[package]]
 name = "modelspec-cli"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "clap",
  "ctrlc",
@@ -567,7 +567,7 @@ dependencies = [
 
 [[package]]
 name = "modelspec-core"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "blake3",
  "logos",
@@ -579,7 +579,7 @@ dependencies = [
 
 [[package]]
 name = "modelspec-docs"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "clap",
  "modelspec-cli",
@@ -590,7 +590,7 @@ dependencies = [
 
 [[package]]
 name = "modelspec-observatory"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "jsonschema",
  "serde",
@@ -600,7 +600,7 @@ dependencies = [
 
 [[package]]
 name = "modelspec-runtime"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "ash",
  "blake3",

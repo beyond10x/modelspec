@@ -1,19 +1,19 @@
 ---
 title: Getting started
-description: Download the modelspec 0.3.0 binary, verify it, and check and train the example model on the CPU reference.
+description: Download the modelspec 0.4.0 binary, verify it, and check and train the example model on the CPU reference or a Vulkan GPU.
 ---
 
 # Getting started
 
-## Install the 0.3.0 binary
+## Install the 0.4.0 binary
 
-The [0.3.0 release](https://github.com/beyond10x/modelspec/releases/tag/0.3.0) carries one
+The [0.4.0 release](https://github.com/beyond10x/modelspec/releases/tag/0.4.0) carries one
 prebuilt binary, for Linux on x86_64, and its SHA-256 checksum. There is no macOS, Windows or
 aarch64 binary; on those, [build from source](#build-from-source).
 
 ```sh
-base=https://github.com/beyond10x/modelspec/releases/download/0.3.0
-bin=modelspec-0.3.0-x86_64-unknown-linux-gnu
+base=https://github.com/beyond10x/modelspec/releases/download/0.4.0
+bin=modelspec-0.4.0-x86_64-unknown-linux-gnu
 curl -fsSLO "$base/$bin"
 curl -fsSLO "$base/$bin.sha256"
 sha256sum -c "$bin.sha256"
@@ -21,11 +21,12 @@ install -D -m 755 "$bin" ~/.local/bin/modelspec
 modelspec --version
 ```
 
-`sha256sum -c` prints `modelspec-0.3.0-x86_64-unknown-linux-gnu: OK`, and `modelspec --version`
-prints `modelspec 0.3.0`. `install -D` creates `~/.local/bin` if it is missing; that directory
+`sha256sum -c` prints `modelspec-0.4.0-x86_64-unknown-linux-gnu: OK`, and `modelspec --version`
+prints `modelspec 0.4.0`. `install -D` creates `~/.local/bin` if it is missing; that directory
 must be on your `PATH` for the last line to find the binary. The binary links only the C runtime
-(`libc`, `libm` and `libgcc_s`), which every glibc Linux system has; no GPU driver is needed for
-anything 0.3.0 does.
+(`libc`, `libm` and `libgcc_s`), which every glibc Linux system has. `train --backend vulkan` and
+`inspect-device` open the system Vulkan loader when they run; a machine without one gets
+`E-TARGET-002`, and everything else works without a GPU driver.
 
 ## Check and train the example
 
@@ -53,6 +54,21 @@ param @LinearReg.w: Tensor<f32, [4, 1]> = [-0.9486646, -0.25639856, 0.4230444, 1
 
 The same seed prints the same bytes on every run. [Linear regression](./examples/linear-regression.md)
 shows the full output, and the IR between the two commands.
+
+## Train on a GPU
+
+With a Vulkan 1.2 driver installed, save
+[`examples/mnist_mlp.mspec`](https://github.com/beyond10x/modelspec/blob/main/examples/mnist_mlp.mspec)
+and train it on the first Vulkan device:
+
+```sh
+modelspec inspect-device --backend vulkan
+modelspec train mnist_mlp.mspec --backend vulkan --stats
+```
+
+`train` prints the same lines as `--backend cpu`, within the GPU tolerance of the CPU reference,
+and `--stats` adds the run counters on stderr. [Inspect a run](./guides/inspect-a-run.md) shows
+the kernel plan and the per-dispatch timing of `--profile`.
 
 ## Look at the IR
 

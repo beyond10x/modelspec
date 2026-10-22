@@ -41,20 +41,22 @@ train Fit {
 
 ## What works today
 
-ModelSpec is at milestone M0; the latest release is [0.3.0](https://github.com/beyond10x/modelspec/releases/tag/0.3.0).
+ModelSpec is in milestone M1 (GPU execution); the latest release is [0.4.0](https://github.com/beyond10x/modelspec/releases/tag/0.4.0).
 
-| Works in 0.3.0 | Not built yet |
+| Works in 0.4.0 | Not built yet |
 |---|---|
-| `modelspec check`: parse and check names, types and shapes | any GPU execution: there is no Vulkan backend |
-| `modelspec ir --stage tensor` and `--stage training`: print the verified IR | `compile`, `infer`, `inspect-device`, `bench` |
-| `modelspec train --backend cpu`: train on the CPU reference with seeded synthetic data | checkpoints, real datasets |
-| `modelspec train --serve <addr>`: stream the run as typed events over Server-Sent Events | the observatory UI, run recording and replay |
-| one `model` and one `train` block per file, static `f32` shapes, nine operators, SGD | modules, layers, generics, other dtypes and optimizers |
+| `modelspec check`: parse and check names, types and shapes | `compile`, `bench` |
+| `modelspec ir --stage tensor`, `--stage training` and `--stage kernel`: print the verified IR and the kernel plan | GPU inference, more than one device |
+| `modelspec train --backend cpu`: train on the CPU reference with seeded synthetic data or dense `f32` tensor files (`--data`) | the observatory UI, run recording and replay |
+| `modelspec train --backend vulkan [--stats] [--profile]`: train on one Vulkan device with one host wait per run | modules, layers, generics, other dtypes and optimizers |
+| `modelspec train --checkpoint`, `--resume` and `modelspec infer --backend cpu`: checkpoints and CPU inference | |
+| `modelspec inspect-device --backend vulkan`: each device's profile and negotiation verdict | |
+| `modelspec train --serve <addr>`: stream the run as typed events over Server-Sent Events | |
 
-`modelspec train --backend vulkan` is refused with `E-TARGET-001` in 0.3.0; on `main`, built from
-source, it trains on one Vulkan device (M1, not released yet). [Status](./status.mdx)
-lists every shipped capability with the test that holds it, and [Roadmap](./roadmap.md) says what
-M1 to M4 add.
+On the MNIST benchmark example, `train --backend vulkan` measured 40.225 µs per step on an RTX
+3090 (median of 5 runs of 144,000 steps, mean P0 clock 1935 to 1951 MHz); ADR-007's accuracy and
+final-weight conditions were not measured for 0.4.0. [Status](./status.mdx) lists every shipped
+capability with the test that holds it, and [Roadmap](./roadmap.md) says what M1 to M4 add.
 
 ## What it is for
 
@@ -65,12 +67,12 @@ M1 to M4 add.
   one program the compiler can see whole, so later milestones can fuse and schedule across all of
   it ([the pipeline](./concepts/pipeline.md)).
 - **Correctness before speed.** The CPU interpreter is the oracle. Every gradient rule is checked
-  against finite differences, and a GPU backend will be held to the CPU reference within stated
+  against finite differences, and the GPU backend is held to the CPU reference within stated
   tolerances.
 
 ## Where to go next
 
-- [Getting started](./getting-started.md): download the 0.3.0 binary and train the example.
+- [Getting started](./getting-started.md): download the 0.4.0 binary and train the examples on the CPU or a GPU.
 - [The language](./concepts/language.md): what an M0 file may contain.
 - [Write a model](./guides/write-a-model.md): build a two-layer model step by step.
 - [Pitch deck](pathname:///modelspec/pitch/): the case for ModelSpec in slides.
