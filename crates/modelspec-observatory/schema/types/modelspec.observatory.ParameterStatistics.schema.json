@@ -4,8 +4,8 @@
   "x-ess-provenance": {
     "system": "modelspec",
     "specification_version": "v1",
-    "source_digest": "8ee8183aac8b4c05dcb6ef664d0301c99254ddd158f28d8c457a1c2979f56ae6",
-    "contract_digest": "slice-sha256/2:01e05615c632e5fad4b3367493cb37089b7d71322344191c6ebbb8f753254d2e",
+    "source_digest": "00add9cd58d9b97d0e7a95bc2d05ba3c0bbf81e8d4e1062b70c073dfc153fd3a",
+    "contract_digest": "slice-sha256/2:f71e88d5ca824dd7394f265698a32efe251db061d022615a1ed38d83ff0b8631",
     "regenerate": "ess generate"
   },
   "$defs": {
@@ -24,9 +24,17 @@
       "type": "object",
       "properties": {
         "bin_edges": {
+          "description": "The bin edges in ascending order; an edge is null when it is NaN or ±inf, which Binary64 does not hold (wave observatory-1 coordinator, 2026-10-21).",
           "type": "array",
           "items": {
-            "type": "number"
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "counts": {
@@ -59,7 +67,15 @@
           "$ref": "#/$defs/modelspec.observatory.StatisticsSubject"
         },
         "norm": {
-          "type": "number"
+          "description": "The norm; null when it is NaN or ±inf, which Binary64 does not hold (wave observatory-1 coordinator, 2026-10-21).",
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "histogram": {
           "$ref": "#/$defs/modelspec.observatory.Histogram"
@@ -73,7 +89,7 @@
       ],
       "additionalProperties": false,
       "x-ess-invariants": [
-        "norm >= 0"
+        "(not (defined(norm)) or norm >= 0)"
       ]
     },
     "modelspec.observatory.StatisticsSubject": {

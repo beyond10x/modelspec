@@ -42,8 +42,8 @@
   "x-ess-provenance": {
     "system": "modelspec",
     "specification_version": "v1",
-    "source_digest": "8ee8183aac8b4c05dcb6ef664d0301c99254ddd158f28d8c457a1c2979f56ae6",
-    "contract_digest": "slice-sha256/2:fa8795c3d69173e5fd2f092e80980303aaae6f8ac2706bbdcd338720cbd26db6",
+    "source_digest": "00add9cd58d9b97d0e7a95bc2d05ba3c0bbf81e8d4e1062b70c073dfc153fd3a",
+    "contract_digest": "slice-sha256/2:6ebbac19311294e3209cfe6452b3a716b0659271772cb01d62d72ce1ef9d9b38",
     "regenerate": "ess generate"
   },
   "$defs": {
@@ -62,9 +62,17 @@
       "type": "object",
       "properties": {
         "bin_edges": {
+          "description": "The bin edges in ascending order; an edge is null when it is NaN or ±inf, which Binary64 does not hold (wave observatory-1 coordinator, 2026-10-21).",
           "type": "array",
           "items": {
-            "type": "number"
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "counts": {
@@ -94,7 +102,15 @@
           "type": "string"
         },
         "value": {
-          "type": "number"
+          "description": "The metric's value; null when it is NaN or ±inf, which Binary64 does not hold (wave observatory-1 coordinator, 2026-10-21).",
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [
@@ -117,7 +133,15 @@
           "$ref": "#/$defs/modelspec.observatory.StatisticsSubject"
         },
         "norm": {
-          "type": "number"
+          "description": "The norm; null when it is NaN or ±inf, which Binary64 does not hold (wave observatory-1 coordinator, 2026-10-21).",
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "histogram": {
           "$ref": "#/$defs/modelspec.observatory.Histogram"
@@ -131,7 +155,7 @@
       ],
       "additionalProperties": false,
       "x-ess-invariants": [
-        "norm >= 0"
+        "(not (defined(norm)) or norm >= 0)"
       ]
     },
     "modelspec.observatory.RunEvent.State": {
@@ -301,8 +325,15 @@
           "minimum": 0
         },
         "loss": {
-          "description": "The rank-0 loss value of the step (DESIGN.md § 2.2, § 8).",
-          "type": "number"
+          "description": "The rank-0 loss value of the step (DESIGN.md § 2.2, § 8); null when the loss is NaN or ±inf, which Binary64 does not hold, as a diverging run records (wave observatory-1 coordinator, 2026-10-21). The CLI's `step <k> loss <v>` line on stdout for that step names which, `NaN`, `inf` or `-inf`.",
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "metrics": {
           "description": "Metric samples of the step besides the loss; names are unique.",

@@ -32,11 +32,13 @@ type Mutation = Box<dyn Fn(&mut Value)>;
 fn the_schema_refuses_what_the_spec_forbids() {
     let v = validator();
     assert!(v.is_valid(&valid_step()));
+    let mut loss_null = valid_step();
+    loss_null["body"]["value"]["loss"] = Value::Null;
+    assert!(
+        v.is_valid(&loss_null),
+        "the schema refuses loss null, which StepCompleted.loss admits: {loss_null}"
+    );
     let mutations: Vec<(&str, Mutation)> = vec![
-        (
-            "loss null",
-            Box::new(|e| e["body"]["value"]["loss"] = Value::Null),
-        ),
         (
             "loss text",
             Box::new(|e| e["body"]["value"]["loss"] = json!("0.5")),

@@ -4,8 +4,8 @@
   "x-ess-provenance": {
     "system": "modelspec",
     "specification_version": "v1",
-    "source_digest": "8ee8183aac8b4c05dcb6ef664d0301c99254ddd158f28d8c457a1c2979f56ae6",
-    "contract_digest": "slice-sha256/2:5ff1e1bda88cc691506345143d77973cab408480af66b946e770df946f30a253",
+    "source_digest": "00add9cd58d9b97d0e7a95bc2d05ba3c0bbf81e8d4e1062b70c073dfc153fd3a",
+    "contract_digest": "slice-sha256/2:8ec82589df517d2bfee194f95af6bb33495106f2e1c4112c416f235e9fa502f6",
     "regenerate": "ess generate"
   },
   "$defs": {
@@ -24,7 +24,7 @@
     },
     "modelspec.observatory.StreamFrame": {
       "title": "StreamFrame",
-      "description": "One Server-Sent Events frame of the live stream (epic:training-observatory, In scope, first bullet; story:observatory-live-event-stream, open question 1), the lines `event:`, `id:` and `data:` and a blank line. `GET /events` at the ServeAddress answers 200 with `Content-Type text/event-stream` and sends the run's events in sequence order from sequence 0, or from the one after a `Last-Event-ID` request header, then each new event as the run emits it, and closes the response after RunFinished or RunFailed; any other path answers 404. The process keeps serving after the run ends, so a client that connects late reads the whole stream, until the process is interrupted.",
+      "description": "One Server-Sent Events frame of the live stream (epic:training-observatory, In scope, first bullet; wave observatory-1 coordinator, 2026-10-21), the lines `event:`, `id:` and `data:` and a blank line. `GET /events` at the ServeAddress answers 200 with `Content-Type text/event-stream` and sends the run's events in sequence order from sequence 0, or from the one after a `Last-Event-ID` request header, then each new event as the run emits it, and closes the response after RunFinished or RunFailed; any other path answers 404. The process keeps serving after the run ends, so a client that connects late reads the whole stream; on SIGINT or SIGTERM after the run ends it stops serving and exits with the run's own status, 0 for a run that finished and 1 for a run that failed, the code `modelspec train` gives without the flag (wave observatory-1 coordinator, 2026-10-21); a signal before the run ends stops the process as it stops a run without the flag.",
       "x-ess-name": "modelspec.observatory.StreamFrame",
       "x-ess-kind": "struct",
       "type": "object",

@@ -397,11 +397,7 @@ fn an_interrupted_server_exits_with_the_runs_status() {
             assert_eq!(kinds(&frames).last(), Some(&last), "{path}");
             let status = interrupt(&mut served, signal);
             let (stdout, _) = served.stop();
-            assert_eq!(
-                status.code(),
-                Some(code),
-                "{path} on SIG{signal}: {status}"
-            );
+            assert_eq!(status.code(), Some(code), "{path} on SIG{signal}: {status}");
             if code == 0 {
                 let plain = modelspec(&["train", EXAMPLE, "--backend", "cpu"]);
                 assert_eq!(text(&stdout), text(&plain.stdout), "SIG{signal}");

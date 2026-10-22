@@ -70,4 +70,4 @@ Usage: modelspec train [OPTIONS] --backend <BACKEND> <PATH>
 |---|---|---|---|
 | `<PATH>` | yes | none | The .mspec file to train. |
 | `--backend <BACKEND>` | yes | none | The backend that runs the training step. One of:<br/>`cpu`: The CPU interpreter<br/>`vulkan`: Vulkan compute: not available in M0 |
-| `--serve <ADDR>` | no | none | Stream the run's events as text/event-stream at path /events of ADDR, a loopback address such as 127.0.0.1:8080 or localhost:8080 (port 0 picks a free one); the process keeps serving after the run until it is interrupted. |
+| `--serve <ADDR>` | no | none | Stream the run's events as text/event-stream at path /events of ADDR, a loopback address such as 127.0.0.1:8080 or localhost:8080 (port 0 picks a free one); the process keeps serving after the run until SIGINT or SIGTERM, then exits with the run's status. |

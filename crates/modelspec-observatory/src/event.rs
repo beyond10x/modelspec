@@ -1,9 +1,50 @@
 //! `modelspec.observatory.RunEvent` and what it contains, as serde types whose JSON is the
 //! ESS-generated schema's: a union is `{"kind": <variant>, "value": <payload>}`, `value` left out
 //! for a variant without one; an `Optional` field that is absent is left out.
+//!
+//! Every float an event carries is an `Optional<Binary64>` with presence `null_when_absent` in
+//! the specification, because JSON has no NaN or ±inf: an `f64` field here is written as a number
+//! when it is finite and as `null` when it is not (`non_finite_null`), and `null` reads back as
+//! NaN.
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+
+/// The JSON of an `Optional<Binary64>` field held as `f64`: a finite value is a number, NaN and
+/// ±inf are `null`, and `null` reads as NaN.
+mod non_finite_null {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    fn present(value: f64) -> Option<f64> {
+        value.is_finite().then_some(value)
+    }
+
+    pub fn serialize<S: Serializer>(value: &f64, serializer: S) -> Result<S::Ok, S::Error> {
+        present(*value).serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<f64, D::Error> {
+        Ok(Option::<f64>::deserialize(deserializer)?.unwrap_or(f64::NAN))
+    }
+
+    /// The same for a `List<Optional<Binary64>>` held as `Vec<f64>`, element by element.
+    pub mod list {
+        use super::*;
+
+        pub fn serialize<S: Serializer>(values: &[f64], serializer: S) -> Result<S::Ok, S::Error> {
+            serializer.collect_seq(values.iter().map(|&value| present(value)))
+        }
+
+        pub fn deserialize<'de, D: Deserializer<'de>>(
+            deserializer: D,
+        ) -> Result<Vec<f64>, D::Error> {
+            Ok(Vec::<Option<f64>>::deserialize(deserializer)?
+                .into_iter()
+                .map(|value| value.unwrap_or(f64::NAN))
+                .collect())
+        }
+    }
+}
 
 /// `modelspec.training.TrainingRunId`: minted per `modelspec train` invocation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -92,6 +133,8 @@ pub struct RunStarted {
 pub struct StepCompleted {
     pub step: u64,
     /// The `f32` loss of the step, widened exactly; `loss as f32` is the value the CLI prints.
+    /// `null` in JSON when it is NaN or ±inf.
+    #[serde(with = "non_finite_null")]
     pub loss: f64,
     pub metrics: Vec<MetricSample>,
     pub parameters: Vec<ParameterStatistics>,
@@ -102,6 +145,8 @@ pub struct StepCompleted {
 #[serde(deny_unknown_fields)]
 pub struct MetricSample {
     pub name: String,
+    /// `null` in JSON when it is NaN or ±inf.
+    #[serde(with = "non_finite_null")]
     pub value: f64,
 }
 
@@ -112,6 +157,8 @@ pub struct ParameterStatistics {
     /// A `modelspec.checkpoint.ParameterPath`.
     pub path: String,
     pub subject: StatisticsSubject,
+    /// `null` in JSON when it is NaN or ±inf.
+    #[serde(with = "non_finite_null")]
     pub norm: f64,
     pub histogram: Histogram,
 }
@@ -127,6 +174,8 @@ pub enum StatisticsSubject {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Histogram {
+    /// An edge is `null` in JSON when it is NaN or ±inf.
+    #[serde(with = "non_finite_null::list")]
     pub bin_edges: Vec<f64>,
     pub counts: Vec<u64>,
 }

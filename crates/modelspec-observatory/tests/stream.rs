@@ -380,7 +380,8 @@ fn every_float_of_an_event_is_null_when_not_finite_and_validates() {
 /// `null` reads back as NaN, so the types read every event they write.
 #[test]
 fn a_null_float_reads_back_as_nan() {
-    let event = EventSequence::new(TrainingRunId::new()).event(step_with_every_float(f64::INFINITY));
+    let event =
+        EventSequence::new(TrainingRunId::new()).event(step_with_every_float(f64::INFINITY));
     let text = serde_json::to_string(&event).unwrap();
     let read: modelspec_observatory::RunEvent = serde_json::from_str(&text).unwrap();
     let RunEventBody::StepCompleted(step) = read.body else {

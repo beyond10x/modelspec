@@ -4,8 +4,8 @@
   "x-ess-provenance": {
     "system": "modelspec",
     "specification_version": "v1",
-    "source_digest": "8ee8183aac8b4c05dcb6ef664d0301c99254ddd158f28d8c457a1c2979f56ae6",
-    "contract_digest": "slice-sha256/2:5d20e9da1a90ee272af3fe030e95d223772bbb36f308e39c6dd28b8b2b555f86",
+    "source_digest": "00add9cd58d9b97d0e7a95bc2d05ba3c0bbf81e8d4e1062b70c073dfc153fd3a",
+    "contract_digest": "slice-sha256/2:70d126f57867a5529ca4d37081834d393ffeabf7030d3ea79ae7fbecb906d67b",
     "regenerate": "ess generate"
   },
   "$defs": {
@@ -20,7 +20,15 @@
           "type": "string"
         },
         "value": {
-          "type": "number"
+          "description": "The metric's value; null when it is NaN or ±inf, which Binary64 does not hold (wave observatory-1 coordinator, 2026-10-21).",
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [

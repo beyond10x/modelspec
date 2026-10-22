@@ -15,6 +15,7 @@ modelspec-core.workspace = true
 modelspec-runtime.workspace = true
 clap.workspace = true
 modelspec-observatory.workspace = true
+ctrlc.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true

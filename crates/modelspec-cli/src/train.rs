@@ -22,14 +22,18 @@
 //! printed on stderr; then the stream is `RunStarted`, one `StepCompleted` per loss, for each of the
 //! `steps + 1` the run records, and `RunFinished` once stdout is written, or `RunFailed` with the
 //! failure stderr reports. Stdout is byte for byte what the run prints without the flag. The
-//! process then keeps serving until it is interrupted, so a client that connects late reads the
-//! whole stream; a file that does not compile is reported and exits 1 without serving.
+//! process then keeps serving, so a client that connects late reads the whole stream, until
+//! SIGINT or SIGTERM, on which it exits with the run's own status: 0 for a run that finished, 1
+//! for one that failed (wave observatory-1 coordinator, 2026-10-21). A signal before the run ends
+//! stops the process as it stops a run without the flag; a file that does not compile is reported
+//! and exits 1 without serving.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::io::Write;
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::mpsc;
 
 use modelspec_core::compile::{self, CompiledTraining};
 use modelspec_core::diag::{Code, Diagnostic};
@@ -57,7 +61,7 @@ pub struct Args {
     pub backend: Backend,
     /// Stream the run's events as text/event-stream at path /events of ADDR, a loopback address
     /// such as 127.0.0.1:8080 or localhost:8080 (port 0 picks a free one); the process keeps
-    /// serving after the run until it is interrupted.
+    /// serving after the run until SIGINT or SIGTERM, then exits with the run's status.
     #[arg(long, value_name = "ADDR", value_parser = modelspec_observatory::parse_serve_address)]
     pub serve: Option<SocketAddr>,
 }
@@ -132,23 +136,36 @@ pub fn run(args: Args, stdout: &mut dyn Write, stderr: &mut dyn Write) -> u8 {
     }));
     let outcome = train(&file, &compiled, &emit, stdout, stderr);
     let _ = stderr.flush();
-    let code = match outcome {
-        Ok(()) => {
-            emit(RunEventBody::RunFinished);
-            crate::EXIT_SUCCESS
-        }
-        Err(failed) => {
-            emit(RunEventBody::RunFailed(failed));
-            crate::EXIT_FAILURE
-        }
+    let (code, last) = match outcome {
+        Ok(()) => (crate::EXIT_SUCCESS, RunEventBody::RunFinished),
+        Err(failed) => (crate::EXIT_FAILURE, RunEventBody::RunFailed(failed)),
     };
-    match server {
-        Some(server) => {
+    let interrupted = server.as_ref().and_then(|_| interrupted());
+    emit(last);
+    match (server, interrupted) {
+        (Some(_server), Some(interrupted)) => {
+            let _ = interrupted.recv();
+            code
+        }
+        (Some(server), None) => {
             server.wait();
             code
         }
-        None => code,
+        (None, _) => code,
     }
+}
+
+/// A receiver that gets a message on SIGINT or SIGTERM from now on (and on SIGHUP, which `ctrlc`'s
+/// `termination` feature catches with them), or `None` when the handler cannot be installed (one
+/// is installed already). Installed only once the run has ended, so a signal during the run stops
+/// the process as it stops a run without `--serve`.
+fn interrupted() -> Option<mpsc::Receiver<()>> {
+    let (send, receive) = mpsc::channel();
+    ctrlc::set_handler(move || {
+        let _ = send.send(());
+    })
+    .ok()?;
+    Some(receive)
 }
 
 /// Trains `compiled`, emits a `StepCompleted` for each loss as it is recorded and writes the run
