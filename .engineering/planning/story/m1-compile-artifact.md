@@ -13,6 +13,7 @@ relations:
 - depends_on: story:m1-mlp-example
 - depends_on: story:m1-checkpoint-cpu
 - depends_on: story:m1-vulkan-train
+- depends_on: story:m1-vulkan-profile
 scope:
 - confidence: cited
   path: CHANGELOG.md
@@ -36,7 +37,7 @@ scope:
   path: website/docs/reference/cli.md
 - confidence: cited
   path: website/docs/reference/diagnostics.md
-revision: 6
+revision: 7
 ---
 # `modelspec compile`: the CompiledArtifact on disk, with its SPIR-V modules, and a validating reader
 
@@ -104,6 +105,7 @@ one file set instead of compiling again.
   revision line, the § 8 verb table and `CHANGELOG.md` are append-only surfaces: this story adds its
   entry, and the wave coordinator assigns the revision number at merge.
 - `CHANGELOG.md`.
+- `website/docs/guides/inspect-a-run.md`, after `story:m1-vulkan-profile` (acceptance 7).
 - Not `crates/modelspec-runtime/src/spirv/emit.rs`: `emit_kernels` is
   `story:m1-vulkan-reduce-matmul`, and this story calls it.
 - Ordering in this set: this story depends on `story:m1-vulkan-train`; both edit
@@ -142,6 +144,11 @@ gives, and `task ci` never creates a Vulkan instance.
    page and `compile` on the CLI page. Every `compile --backend vulkan` in `task ci` runs with
    `--device-profile` or with the variable of item 5, so no test in `task ci` creates a Vulkan
    instance.
+7. `website/docs/guides/inspect-a-run.md`, which `story:m1-vulkan-profile` creates (wave m1-e,
+   2026-10-22, took that story first), gains two fenced shell blocks with the command lines
+   `modelspec compile examples/mnist_mlp.mspec --backend vulkan --output` and `spirv-dis` on one
+   kernel, so the page shows all four inspection paths of DESIGN.md § 9 checkbox 9; `task website`
+   exits 0 and `grep -c` of each command line on the page is at least 1.
 
 ## Out of scope
 

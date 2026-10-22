@@ -2,14 +2,13 @@
 format: aep.planning-md/3
 id: story:m1-vulkan-profile
 kind: story
-status: draft
+status: active
 title: 'Inspectable GPU runs: per-dispatch timestamps and run counters with train --profile'
 summary: Timestamp queries per dispatch read back at run end with no extra host wait, run counters on stderr, and a guide covering IR, kernels, plan and timings
 relations:
 - serves: vision:modelspec
 - depends_on: epic:m1-vulkan-execution
 - depends_on: story:m1-vulkan-train
-- depends_on: story:m1-compile-artifact
 scope:
 - confidence: cited
   path: CHANGELOG.md
@@ -29,7 +28,10 @@ scope:
   path: website/docs/reference/cli.md
 - confidence: cited
   path: website/sidebars.ts
-revision: 7
+revision: 10
+transitions:
+- {from: "draft", to: "proposed", at: "2026-10-22T10:29:20Z", actor: "human:timo", revision: 9, decided_on: {"recorded":{"review_outcome":3}}}
+- {from: "proposed", to: "active", at: "2026-10-22T10:29:20Z", actor: "human:timo", revision: 10, decided_on: {"recorded":{"review_outcome":3}}}
 ---
 # Inspectable GPU runs: per-dispatch timestamps and run counters with `train --profile`
 
@@ -62,8 +64,12 @@ below assume.
   time and steady-state time per step after a 20-step warm-up. Stdout is unchanged. On a device
   without timestamp queries the dispatch lines are replaced by `profile kernel timings unavailable:
   no timestamp queries` and the counters are still printed.
-- `website/docs/guides/inspect-a-run.md`: the four inspection paths of checkbox 9 on
-  `examples/mnist_mlp.mspec`, with the commands, written by hand.
+- `website/docs/guides/inspect-a-run.md`: the IR, plan and timing paths of checkbox 9 on
+  `examples/mnist_mlp.mspec`, with the commands, written by hand. The built-kernel path
+  (`modelspec compile ... --output` and `spirv-dis` on one kernel) is added to the page by
+  `story:m1-compile-artifact`, which no longer lands first: wave m1-e (2026-10-22) takes this story
+  ahead of it, because `epic:pytorch-10x-mnist` needs the per-dispatch times to rank its fusion
+  stories.
 
 ## Domain relations
 
@@ -87,7 +93,7 @@ None: the profile is printed, not stored; a typed run report is later work of
 ## Acceptance
 
 A profiled GPU run prints a time for every dispatch site and the run counters, with the same host
-waits and the same stdout as an unprofiled run, and the guide shows all four inspection paths.
+waits and the same stdout as an unprofiled run, and the guide shows the IR, plan and timing paths.
 
 1. Operator run on the RTX 3090 (the operator starts it): `cargo test --release -p
    modelspec-runtime --features vulkan --test vulkan_profile -- --ignored` passes. For
@@ -104,11 +110,10 @@ waits and the same stdout as an unprofiled run, and the guide shows all four ins
 4. `cargo test -p modelspec-cli --test train_vulkan`, in `task ci`: `train --backend cpu --profile`
    exits 2 with a usage error naming `--profile` as Vulkan only.
 5. `task website` exits 0 with `website/docs/guides/inspect-a-run.md`, and that page holds four
-   fenced shell blocks with the command lines `modelspec ir --stage kernel`,
-   `modelspec compile ... --output`, `spirv-dis` on one kernel and
-   `modelspec train examples/mnist_mlp.mspec --backend vulkan --profile`, the last followed by the
-   output of the operator run of item 1; `grep -c` of each of the four command lines on the page
-   is at least 1.
+   fenced shell blocks with the command lines `modelspec ir --stage kernel` and
+   `modelspec train examples/mnist_mlp.mspec --backend vulkan --profile`, the second followed by
+   the output of the operator run of item 1; `grep -c` of each of the two command lines on the
+   page is at least 1.
 6. `task ci` exits 0, `task docs-check` included, with `--profile` on the CLI page.
 
 ## Out of scope
