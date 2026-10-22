@@ -29,7 +29,7 @@ scope:
   path: website/docs/reference/cli.md
 - confidence: cited
   path: website/sidebars.ts
-revision: 6
+revision: 7
 ---
 # Inspectable GPU runs: per-dispatch timestamps and run counters with `train --profile`
 
@@ -103,9 +103,12 @@ waits and the same stdout as an unprofiled run, and the guide shows all four ins
    `story:m1-vulkan-train` acceptance 2. The output is attached to the verification evidence.
 4. `cargo test -p modelspec-cli --test train_vulkan`, in `task ci`: `train --backend cpu --profile`
    exits 2 with a usage error naming `--profile` as Vulkan only.
-5. `task website` exits 0 with `website/docs/guides/inspect-a-run.md`, which runs `modelspec ir
-   --stage kernel`, `modelspec compile ... --output`, `spirv-dis` on one kernel and `train
-   --backend vulkan --profile` on `examples/mnist_mlp.mspec`.
+5. `task website` exits 0 with `website/docs/guides/inspect-a-run.md`, and that page holds four
+   fenced shell blocks with the command lines `modelspec ir --stage kernel`,
+   `modelspec compile ... --output`, `spirv-dis` on one kernel and
+   `modelspec train examples/mnist_mlp.mspec --backend vulkan --profile`, the last followed by the
+   output of the operator run of item 1; `grep -c` of each of the four command lines on the page
+   is at least 1.
 6. `task ci` exits 0, `task docs-check` included, with `--profile` on the CLI page.
 
 ## Out of scope

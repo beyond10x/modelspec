@@ -57,7 +57,7 @@ scope:
   path: website/docs/reference/diagnostics.md
 - confidence: cited
   path: website/docs/roadmap.md
-revision: 7
+revision: 8
 ---
 # `modelspec train --backend vulkan`: a whole training run on the GPU with one host wait
 
@@ -86,7 +86,8 @@ items into M1 and leaves § 6.3 with the M2 increments only.
   copy of the loss into slot `k` of a device loss buffer, then the forward plan for the final loss.
   It submits command buffers of up to 256 steps each without waiting between them, waits once on a
   fence, and reads back the loss buffer and the parameters. Stdout has the same lines as the CPU
-  run.
+  run. The `Allocate` steps of the step plan run once, at run setup, before the first recording
+  (`story:m1-kernel-plan`); each step records only the other steps.
 - `RunStats` from the runtime: host waits, submits, dispatches, bytes uploaded and downloaded, the
   numerics class of DESIGN.md § 5.4 and steady-state time per step; a test reads them, and stderr
   prints them with `--stats`. In M1 a Vulkan run is in the tolerance class: only the loss-sum and
@@ -141,6 +142,8 @@ items into M1 and leaves § 6.3 with the M2 increments only.
   assigns the revision number at merge.
 - `AGENTS.md` (State, Commands), `README.md` (Status line), `CHANGELOG.md`.
 - No crate dependency is added: `no_cuda.rs` runs `cargo tree` and `readelf -d` as processes.
+- `story:m1-compile-artifact` also edits `crates/modelspec-docs/src/diagnostics.rs` and regenerates
+  `diagnostics.md` and `cli.md`; it depends on this story and lands after it.
 
 ## Acceptance
 
@@ -167,8 +170,10 @@ the gate-5 tolerance of the CPU run.
    tree of `modelspec-runtime` and `modelspec-cli` with all features names no crate whose name
    contains `cuda`, `cudarc`, `cust` or `nvrtc`, and the dynamic section of the built `modelspec`
    binary names no `libcuda`, `libcudart` or `libnvrtc`.
-6. `cargo test -p modelspec-cli --test train_linear`, in `task ci`: built without the `vulkan`
-   feature, `train --backend vulkan` exits 1 with E-TARGET-001; built with it and with
+6. `cargo test -p modelspec-cli --no-default-features --test train_linear` and
+   `cargo test -p modelspec-cli --test train_linear`, both in `task ci`: built without the `vulkan`
+   feature (the first command), `train --backend vulkan` exits 1 with E-TARGET-001; built with it
+   (the second) and with
    `MODELSPEC_VULKAN_LIBRARY` set to a path that does not exist, it exits 1 and its stderr starts
    with `E-TARGET-002: `. No test in `task ci` creates a Vulkan instance.
 7. `task ci` exits 0, `task docs-check` included, with the three status entries shipped and no

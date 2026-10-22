@@ -10,6 +10,7 @@ relations:
 - depends_on: epic:m1-vulkan-execution
 - depends_on: story:m1-kernel-plan
 - depends_on: story:observatory-live-event-stream
+- depends_on: story:m1-vulkan-elementwise
 scope:
 - confidence: cited
   path: CHANGELOG.md
@@ -47,7 +48,7 @@ scope:
   path: website/docs/reference/cli.md
 - confidence: cited
   path: website/docs/reference/diagnostics.md
-revision: 5
+revision: 6
 ---
 # Checkpoints on the CPU: `.msckpt` save and resume, and `modelspec infer --backend cpu`
 
@@ -122,6 +123,11 @@ read-back.
   append-only surfaces: this story adds its entry, and the wave coordinator assigns the revision
   number at merge.
 - `CHANGELOG.md`.
+- Ordering in this set: this story depends on `story:m1-vulkan-elementwise`, which depends on
+  `story:m1-inspect-device`. Both edit root `Cargo.toml`, `Cargo.lock` and
+  `crates/modelspec-runtime/Cargo.toml`; inspect-device also edits `crates/modelspec-cli/src/lib.rs`
+  and `crates/modelspec-docs/src/diagnostics.rs` and adds `serde` and `serde_json` to
+  `[workspace.dependencies]`, so this story adds them only to the crates that still lack them.
 
 ## Acceptance
 

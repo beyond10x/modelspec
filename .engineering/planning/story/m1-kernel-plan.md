@@ -50,7 +50,7 @@ scope:
   path: spec/domains/artifact.yaml
 - confidence: cited
   path: website/docs/reference/cli.md
-revision: 7
+revision: 8
 ---
 # Kernel IR, a fixed safe schedule and the execution plan of a training step, in modelspec-core
 
@@ -93,7 +93,11 @@ has M2 keep two versions of each parameter, step s reading version s mod 2 and w
   class of § 5.4); every other reduce (`ReduceSum`, `ReduceMean`) as four plan steps in this
   order: an `Allocate` of its partials scratch buffer, a stage-1 Dispatch that writes one partial
   per workgroup into it, a `Barrier`, and a stage-2 Dispatch of one workgroup that reads the
-  partials (the stage-1 Dispatch writes the partials, so the `Allocate` comes first). A barrier wherever a
+  partials (the stage-1 Dispatch writes the partials, so the `Allocate` comes first). An
+  `Allocate` is a run-setup step: a runner executes every `Allocate` of a plan once, before its
+  first recording, and records only the other steps per training step. The verifier refuses an
+  `Allocate` whose buffer an earlier step uses, so moving it to run setup changes no result.
+  DESIGN.md § 7.1 states this rule in the same change. A barrier wherever a
   dispatch reads what an earlier one wrote, one buffer per value (no reuse), and each SGD update in
   place, placed after every read of the version it replaces.
 - `crates/modelspec-core/src/artifact.rs`: `CompiledArtifact` for `Backend::Cpu` and

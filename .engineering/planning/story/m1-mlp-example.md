@@ -25,7 +25,7 @@ scope:
   path: crates/modelspec-runtime/tests/gradients.rs
 - confidence: inferred
   path: examples/mnist_mlp.mspec
-revision: 6
+revision: 7
 ---
 # The MNIST-shaped MLP as an example, gradient-checked and trained on the CPU reference
 
@@ -81,6 +81,8 @@ and no type in `spec/`.
   so a new example gets no page unless it is added there, and this story adds none.
 - `CHANGELOG.md`, one line. It is an append-only surface: this story adds its line under
   `## [Unreleased]` and orders against no other story for it.
+- `story:m1-inspect-device` edits the State section of `AGENTS.md`; it depends on this story and
+  lands after it.
 
 ## Acceptance
 

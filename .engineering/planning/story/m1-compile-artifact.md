@@ -12,6 +12,7 @@ relations:
 - depends_on: story:m1-kernel-plan
 - depends_on: story:m1-mlp-example
 - depends_on: story:m1-checkpoint-cpu
+- depends_on: story:m1-vulkan-train
 scope:
 - confidence: cited
   path: CHANGELOG.md
@@ -35,7 +36,7 @@ scope:
   path: website/docs/reference/cli.md
 - confidence: cited
   path: website/docs/reference/diagnostics.md
-revision: 5
+revision: 6
 ---
 # `modelspec compile`: the CompiledArtifact on disk, with its SPIR-V modules, and a validating reader
 
@@ -59,7 +60,9 @@ one file set instead of compiling again.
 
 - `modelspec compile <file> --backend vulkan|cpu --output <dir> [--device-profile <json>]`.
   `--device-profile` takes a DeviceProfile JSON as `inspect-device --format json` prints it; without
-  it a Vulkan compile probes device 0. A Cpu compile needs no device. Before it exits 0, `compile`
+  it a Vulkan compile probes device 0. A Vulkan compile runs `negotiate` (`story:m1-inspect-device`)
+  on that profile before it writes anything and exits 1 with E-TARGET-004 for a profile below the
+  required Vulkan version. A Cpu compile needs no device. Before it exits 0, `compile`
   reads its own output back through the reader below.
 - The layout `<dir>/artifact.json` (format version 1: manifest, plan, forward plan, and one entry
   per kernel with its id, entry point, cache key, byte length and the blake3 of its bytes) and
@@ -103,6 +106,9 @@ one file set instead of compiling again.
 - `CHANGELOG.md`.
 - Not `crates/modelspec-runtime/src/spirv/emit.rs`: `emit_kernels` is
   `story:m1-vulkan-reduce-matmul`, and this story calls it.
+- Ordering in this set: this story depends on `story:m1-vulkan-train`; both edit
+  `crates/modelspec-docs/src/diagnostics.rs` and regenerate `diagnostics.md` and `cli.md`, and
+  vulkan-train lands first.
 
 ## Acceptance
 
@@ -130,7 +136,8 @@ gives, and `task ci` never creates a Vulkan instance.
    exits 0; `compile --backend vulkan` without `--device-profile` exits 1 and its stderr starts with
    `E-TARGET-002: `; with `--device-profile` and the fixture it exits 0; with a copy of the fixture
    whose `subgroup_size` is 0 it exits 1 and stderr names the file and the invariant
-   `subgroup_size > 0`.
+   `subgroup_size > 0`; with a copy whose `vulkan_api_version` is 1.1.0 it exits 1, its stderr
+   starts with `E-TARGET-004: `, and the output directory is not created.
 6. `task ci` exits 0, `task docs-check` included, with E-ARTIFACT-001 to 004 on the diagnostics
    page and `compile` on the CLI page. Every `compile --backend vulkan` in `task ci` runs with
    `--device-profile` or with the variable of item 5, so no test in `task ci` creates a Vulkan

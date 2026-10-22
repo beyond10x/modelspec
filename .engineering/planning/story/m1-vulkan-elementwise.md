@@ -40,7 +40,7 @@ scope:
   path: crates/modelspec-runtime/tests/spirv_val.rs
 - confidence: inferred
   path: crates/modelspec-runtime/tests/vulkan_elementwise.rs
-revision: 6
+revision: 7
 ---
 # Vulkan memory, pipelines and dispatch, with SPIR-V elementwise, broadcast and SGD kernels
 
@@ -114,6 +114,8 @@ matmul and a whole run.
 - `DESIGN.md` § 9 gate 5 (the elementwise tolerance). The revision line and `CHANGELOG.md` are
   append-only surfaces: this story adds its entry, and the wave coordinator assigns the revision
   number at merge.
+- `story:m1-checkpoint-cpu` also edits root `Cargo.toml`, `Cargo.lock` and
+  `crates/modelspec-runtime/Cargo.toml`; it depends on this story and lands after it.
 
 ## Acceptance
 

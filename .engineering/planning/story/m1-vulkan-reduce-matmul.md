@@ -28,7 +28,7 @@ scope:
   path: crates/modelspec-runtime/tests/vulkan_reduce_matmul.rs
 - confidence: cited
   path: spec/domains/artifact.yaml
-revision: 6
+revision: 7
 ---
 # SPIR-V reduction, transpose and naive matmul kernels, deterministic and checked against the CPU
 
@@ -160,10 +160,12 @@ reports the three float-control features.
    with the `r` of acceptance 1, guard words stay unchanged, and the validation layer reports 0
    messages.
 5. The same run executes every case twice and both outputs are equal bit for bit.
-6. The same run reads the three float-control values from the probed profile. When all three are
-   true, every matmul output element at every shape of acceptance 4 and the loss sum of every `mse`
+6. The same run takes the numerics class from `negotiate` (`story:m1-inspect-device`) on the
+   probed profile; the emitter declares the RTE, denorm-preserve and signed-zero-preserve modes
+   exactly when that class is `bit-for-bit`, and the printed class is that same value. When it is
+   `bit-for-bit`, every matmul output element at every shape of acceptance 4 and the loss sum of every `mse`
    case (the module built without its division) equal the CPU interpreter bit for bit, and the test
-   prints `class: bit-for-bit`; when one is false it prints `class: tolerance` and asserts
+   prints `class: bit-for-bit`; when it is `tolerance` it prints `class: tolerance` and asserts
    acceptance 4 only. The printed class goes into the verification evidence.
 7. `task ci` exits 0.
 

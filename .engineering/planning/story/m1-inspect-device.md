@@ -9,6 +9,8 @@ relations:
 - serves: vision:modelspec
 - depends_on: epic:m1-vulkan-execution
 - depends_on: story:observatory-live-event-stream
+- depends_on: story:m1-kernel-plan
+- depends_on: story:m1-mlp-example
 scope:
 - confidence: cited
   path: AGENTS.md
@@ -56,7 +58,7 @@ scope:
   path: website/docs/reference/cli.md
 - confidence: cited
   path: website/docs/reference/diagnostics.md
-revision: 6
+revision: 7
 ---
 # Vulkan device discovery and feature negotiation: `modelspec inspect-device --backend vulkan`
 
@@ -109,7 +111,11 @@ story is the first Vulkan code and the device layer every later M1 story uses.
   chosen device has no compute queue) and E-TARGET-004 (the device is below the required Vulkan
   version), declared next to the code that emits them and listed on the diagnostics page.
   `MODELSPEC_VULKAN_LIBRARY` names the loader to open, so a test can point it at a path that does
-  not exist.
+  not exist. Device selection is a pure function `select_device` over the probed list (each entry
+  a DeviceProfile and whether its device has a compute queue family), so E-TARGET-003 is tested
+  without an instance. `negotiate` returns the numerics class of § 5.4 (`bit-for-bit` when all
+  three float-control values are true, otherwise `tolerance`); every other story that needs the
+  class reads it from that result.
 - `crates/modelspec-runtime/tests/fixtures/rtx3090.device.json`, the profile from the operator run
   of acceptance item 4, which later stories compile against without a GPU.
 - DESIGN.md § 6 "Device": the required version and the enabled set. § 8: the verb, its flags and
@@ -146,6 +152,13 @@ story is the first Vulkan code and the device layer every later M1 story uses.
   append-only surfaces: this story adds its entry, and the wave coordinator assigns the revision
   number at merge.
 - `AGENTS.md` (State), `CHANGELOG.md`.
+- Ordering in this set: this story depends on `story:m1-kernel-plan` (both edit
+  `crates/modelspec-core/Cargo.toml`, `crates/modelspec-core/src/lib.rs` and `Cargo.lock`, and both
+  regenerate `cli.md`) and on `story:m1-mlp-example` (both edit `AGENTS.md`: this story the State
+  section, mlp-example the `task check-examples` line). `story:m1-checkpoint-cpu`, which also edits
+  root `Cargo.toml`, `Cargo.lock`, `crates/modelspec-runtime/Cargo.toml`, `crates/modelspec-cli/src/lib.rs`
+  and `crates/modelspec-docs/src/diagnostics.rs`, lands after this story; `serde` and `serde_json`
+  enter `[workspace.dependencies]` here.
 
 ## Acceptance
 
@@ -167,6 +180,11 @@ done only after the operator run.
    with `MODELSPEC_VULKAN_LIBRARY` set to a path that does not exist, `modelspec inspect-device
    --backend vulkan` exits 1 and its stderr starts with `E-TARGET-002: `; `--backend cpu` exits 2;
    `--format yaml` exits 2. No test in `task ci` creates a Vulkan instance.
+   `cargo test -p modelspec-cli --no-default-features --test inspect_device`, in `task ci`:
+   `modelspec inspect-device --backend vulkan` exits 1 and its stderr starts with `E-TARGET-001: `.
+   `cargo test -p modelspec-runtime --features vulkan select_device`, in `task ci` (no instance):
+   an empty list, `--device 1` over a one-entry list, and an entry with no compute queue family
+   each return E-TARGET-003.
 3. `cargo test -p modelspec-runtime --features vulkan negotiate`, in `task ci` (no instance): on
    the fixture `negotiate` returns the required set (API 1.2, no optional feature, no extension);
    on a copy with `vulkan_api_version` 1.1.0 it returns E-TARGET-004 and the message names 1.2.0
@@ -181,6 +199,8 @@ done only after the operator run.
    true, and `cooperative_matrix` and the three float-control fields as the driver reports them
    (recorded, not asserted). The device test asserts that the logical device was created with the
    set `negotiate` returned. Its JSON output is the fixture the coordinator commits.
+   `modelspec inspect-device --backend vulkan --device 99` exits 1 and its stderr starts with
+   `E-TARGET-003: `.
 5. The same run with `--format text` prints one line per DeviceProfile field of
    `spec/domains/device.yaml`, the 24 fields besides the identity `device_profile_id`, each as
    `<field>: <value>`, then `negotiation: ok`.
