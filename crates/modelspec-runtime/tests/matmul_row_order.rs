@@ -227,8 +227,14 @@ fn interpreter<T: Element>(a: &[T], b: &[T], m: usize, k: usize, n: usize) -> Ve
     bld.output(z).unwrap();
     let program = bld.finish();
     let inputs = BTreeMap::from([
-        ("a".to_string(), HostTensor::new(vec![m, k], a.to_vec()).unwrap()),
-        ("b".to_string(), HostTensor::new(vec![k, n], b.to_vec()).unwrap()),
+        (
+            "a".to_string(),
+            HostTensor::new(vec![m, k], a.to_vec()).unwrap(),
+        ),
+        (
+            "b".to_string(),
+            HostTensor::new(vec![k, n], b.to_vec()).unwrap(),
+        ),
     ]);
     let out = evaluate(&program, &inputs, &BTreeMap::new()).unwrap();
     assert_eq!(out[0].shape(), &[m, n]);
@@ -326,9 +332,9 @@ fn matmul_equals_the_0_1_1_loop_bit_for_bit_in_f64() {
 #[test]
 fn a_row_accumulator_started_from_zero_is_caught_on_a_negative_zero() {
     fn caught_on_negative_zero<T: Real>() -> bool {
-        mismatches::<T>(matmul_row_from_zero).iter().any(|m| {
-            m.expected == T::of(-0.0).bits() && m.got == T::of(0.0).bits()
-        })
+        mismatches::<T>(matmul_row_from_zero)
+            .iter()
+            .any(|m| m.expected == T::of(-0.0).bits() && m.got == T::of(0.0).bits())
     }
     assert!(caught_on_negative_zero::<f32>(), "f32");
     assert!(caught_on_negative_zero::<f64>(), "f64");
