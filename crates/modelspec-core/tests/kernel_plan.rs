@@ -14,8 +14,8 @@ use std::path::{Path, PathBuf};
 use modelspec_core::artifact::{Backend, CompiledArtifact};
 use modelspec_core::compile::{self, CompiledTraining};
 use modelspec_core::ir::kernel::{
-    Epilogue, ExecutionPlan, Kernel, KernelKind, MIN_SHARED_MEMORY_BYTES, MatMulTile, Operand,
-    PlanOp, PlanStep,
+    Epilogue, ExecutionPlan, Kernel, KernelKind, MATMUL_TWO_ROWS_FROM_WORKGROUPS,
+    MIN_SHARED_MEMORY_BYTES, MatMulTile, Operand, PlanOp, PlanStep,
 };
 use modelspec_core::ir::print::print_kernel;
 use modelspec_core::ir::tensor::{TensorNode, TensorOp, ValueId};
@@ -903,6 +903,8 @@ fn a_matmul_tile_fits_the_minimum_workgroup_memory_and_covers_its_output() {
         (129, 200, 1),
         (3, 128, 3),
         (1, 100_000, 1),
+        (2049, 129, 17),
+        (1025, 1000, 33),
     ];
     for (m, k, n) in shapes {
         let tile = MatMulTile::of(m, k, n);
@@ -915,7 +917,14 @@ fn a_matmul_tile_fits_the_minimum_workgroup_memory_and_covers_its_output() {
             n.min(16).next_power_of_two(),
             "{what}"
         );
-        assert_eq!(tile.rows, 1, "{what}");
+        let one_row = m.div_ceil(u64::from(tile.workgroup_size / tile.cols))
+            * n.div_ceil(u64::from(tile.cols));
+        let rows = if one_row >= MATMUL_TWO_ROWS_FROM_WORKGROUPS {
+            2
+        } else {
+            1
+        };
+        assert_eq!(tile.rows, rows, "{what}: {one_row} workgroups of one row");
         assert!(
             tile.depth >= 1 && u64::from(tile.depth) <= k.min(64),
             "{what}"

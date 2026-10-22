@@ -34,7 +34,7 @@
 //! them in ascending element order from the first term, chunk after chunk, as the CPU
 //! interpreter does.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 
 use modelspec_core::artifact::{CompiledArtifact, ContentHash};
 use modelspec_core::device::DeviceProfile;
@@ -590,8 +590,8 @@ fn build(
         Body::MatMul { tile, .. } => Some(tile.shared_values()),
         _ => None,
     };
-    let accumulators = match body {
-        Body::MatMul { tile, .. } => tile.rows as usize,
+    let matmul_vars = match body {
+        Body::MatMul { k, tile, .. } => tile.rows as usize + matmul_carried(k, &tile),
         _ => 0,
     };
     if kernel.epilogue.is_some() && !matches!(body, Body::MatMul { .. }) {
@@ -606,7 +606,7 @@ fn build(
         kernel.written(),
         kernel.workgroup_size,
         shared,
-        accumulators,
+        matmul_vars,
         float_controls,
         exact,
     )?;
@@ -631,6 +631,36 @@ fn build(
     m.finish()
 }
 
+/// The tiles of a matmul's contracting index each pass of its tile loop computes. Even, so the
+/// workgroup memory buffer of a tile in the loop is a constant of its place in the pass.
+const MATMUL_UNROLL: u32 = 4;
+
+/// The passes of the tile loop of a `k`-deep matmul with `tile`. Tile `i` is in the loop when
+/// it is not the first, and it and tile `i + ahead`, the one it reads ahead, are full; the
+/// loop covers the first [`MATMUL_UNROLL`] times as many of them, from tile 1 up, and the rest
+/// are emitted straight. So a module holds at most `MATMUL_UNROLL + ahead + 1` tile bodies
+/// besides the first, whatever `k` is.
+fn matmul_passes(k: u32, tile: &MatMulTile) -> u32 {
+    let full = k / tile.depth;
+    full.saturating_sub(tile.ahead.max(1) + 1) / MATMUL_UNROLL
+}
+
+/// The values one invocation reads per tile: its `a` slots, then its `b` slots.
+fn matmul_slots(tile: &MatMulTile) -> usize {
+    let size = tile.workgroup_size;
+    ((tile.rows_per_workgroup() * tile.depth).div_ceil(size)
+        + (tile.depth * tile.cols).div_ceil(size)) as usize
+}
+
+/// The `f32` function variables that carry the tiles read ahead from one pass of the tile loop
+/// to the next: `ahead - 1` tiles of [`matmul_slots`] values, none without a loop.
+fn matmul_carried(k: u32, tile: &MatMulTile) -> usize {
+    if matmul_passes(k, tile) == 0 {
+        return 0;
+    }
+    (tile.ahead.max(1) as usize - 1) * matmul_slots(tile)
+}
+
 /// A module under construction, inside the entry block of `main` once [`Shell::new`] returns.
 struct Shell {
     b: Builder,
@@ -652,8 +682,9 @@ struct Shell {
     /// Two `u32` and one `f32` function variables, declared first in the entry block.
     u32_vars: [Word; 2],
     f32_var: Word,
-    /// The per-row accumulators of a matmul invocation, `f32` function variables.
-    accumulators: Vec<Word>,
+    /// The `f32` function variables of a matmul invocation: its per-row accumulators, then the
+    /// tiles its tile loop carries from one pass to the next ([`matmul_carried`]).
+    matmul_vars: Vec<Word>,
     /// The workgroup size, the `LocalSize` x of the entry point.
     group: Word,
     exact: bool,
@@ -667,7 +698,7 @@ impl Shell {
         writes: usize,
         workgroup_size: u32,
         shared: Option<u32>,
-        accumulators: usize,
+        matmul_vars: usize,
         float_controls: bool,
         exact: bool,
     ) -> Result<Self, EmitError> {
@@ -794,7 +825,7 @@ impl Shell {
             b.variable(u32_fn_ptr, None, StorageClass::Function, None),
         ];
         let f32_var = b.variable(f32_fn_ptr, None, StorageClass::Function, None);
-        let accumulators = (0..accumulators)
+        let matmul_vars = (0..matmul_vars)
             .map(|_| b.variable(f32_fn_ptr, None, StorageClass::Function, None))
             .collect();
         let ids = b.load(v3u32, None, gid, None, [])?;
@@ -834,7 +865,7 @@ impl Shell {
             count,
             u32_vars,
             f32_var,
-            accumulators,
+            matmul_vars,
             group,
             exact,
             u32_constants,
@@ -1457,12 +1488,29 @@ impl Shell {
             }
         }
 
+        // Where a tile read starts along the contracting index: a constant `k`, or, in the tile
+        // loop, its element offsets into `a` and `b`.
+        #[derive(Clone, Copy)]
+        enum Start {
+            At(u32),
+            Looped { a: Word, b: Word },
+        }
+
         // Reads this invocation's share of the tile of `len` values of the contracting index
-        // from `base` into registers: each value with its slot.
-        let fetch = |s: &mut Self, base: u32, len: u32| -> Result<Vec<(Word, &Slot)>, EmitError> {
+        // from `start` into registers, one value per slot.
+        let fetch = |s: &mut Self, start: Start, len: u32| -> Result<Vec<Word>, EmitError> {
             let mut fetched = Vec::new();
             for slot in &slots {
-                let offset = s.uint(if slot.is_a { base } else { base * n });
+                let offset = match start {
+                    Start::At(base) => s.uint(if slot.is_a { base } else { base * n }),
+                    Start::Looped { a, b } => {
+                        if slot.is_a {
+                            a
+                        } else {
+                            b
+                        }
+                    }
+                };
                 let mut at = s.add(slot.at, offset)?;
                 if len < depth {
                     let len_c = s.uint(len);
@@ -1472,30 +1520,30 @@ impl Shell {
                     at = s.pick(u32_ty, inside, at, zero)?;
                 }
                 let value = s.read(if slot.is_a { 0 } else { 1 }, at)?;
-                fetched.push((value, slot));
+                fetched.push(value);
             }
             Ok(fetched)
         };
 
         // Writes fetched values to the workgroup memory buffer at `buffer`.
-        let store =
-            |s: &mut Self, staged: Vec<(Word, &Slot)>, buffer: Word| -> Result<(), EmitError> {
-                for (value, slot) in staged {
-                    let (to, taken) = (slot.to, slot.taken);
-                    let to = s.add(buffer, to)?;
-                    match taken {
-                        Some(taken) => s.when(taken, |s| s.store_shared(to, value))?,
-                        None => s.store_shared(to, value)?,
-                    }
+        let store = |s: &mut Self, staged: Vec<Word>, buffer: Word| -> Result<(), EmitError> {
+            for (value, slot) in staged.into_iter().zip(&slots) {
+                let (to, taken) = (slot.to, slot.taken);
+                let to = s.add(buffer, to)?;
+                match taken {
+                    Some(taken) => s.when(taken, |s| s.store_shared(to, value))?,
+                    None => s.store_shared(to, value)?,
                 }
-                Ok(())
-            };
+            }
+            Ok(())
+        };
 
+        let rows = tile.rows as usize;
         // Adds the products of the first `len` values of the tile staged in the buffer at
         // `buffer` to the accumulators, the first product starting the sum when `opening`.
         let compute =
             |s: &mut Self, buffer: Word, len: u32, opening: bool| -> Result<(), EmitError> {
-                let vars = s.accumulators.clone();
+                let vars = s.matmul_vars[..rows].to_vec();
                 let mut sums: Vec<Option<Word>> = Vec::new();
                 for &var in &vars {
                     sums.push(if opening {
@@ -1540,29 +1588,98 @@ impl Shell {
         // products of the tiles before it, and staged in buffer `i % 2`: one barrier per tile
         // both publishes it and frees the buffer of tile `i - 1` for tile `i + 1`.
         let ahead = tile.ahead.max(1) as usize;
-        let tiles: Vec<(u32, u32)> = (0..k.div_ceil(depth))
-            .map(|i| (i * depth, (k - i * depth).min(depth)))
-            .collect();
-        let mut fetched = std::collections::VecDeque::new();
-        for &(base, len) in tiles.iter().take(ahead) {
-            fetched.push_back(fetch(self, base, len)?);
+        let count = k.div_ceil(depth) as usize;
+        let len_of = |i: usize| (k - i as u32 * depth).min(depth);
+        // The read of tile `i + ahead`, when there is one, for tile `i` emitted straight.
+        let ahead_of = |i: usize| {
+            (i + ahead < count).then(|| (Start::At((i + ahead) as u32 * depth), len_of(i + ahead)))
+        };
+        // Tile `i`: the read of `read`, the products of tile `i`, the staging of tile `i + 1`.
+        // `queue` holds the tiles read and not yet staged, the next one first.
+        let step = |s: &mut Self,
+                    queue: &mut VecDeque<Vec<Word>>,
+                    i: usize,
+                    read: Option<(Start, u32)>|
+         -> Result<(), EmitError> {
+            if let Some((start, len)) = read {
+                queue.push_back(fetch(s, start, len)?);
+            }
+            let buffer = buffer_of(s, i as u32);
+            compute(s, buffer, len_of(i), i == 0)?;
+            if i + 1 < count {
+                let next = queue.pop_front().expect("fetched ahead");
+                let buffer = buffer_of(s, i as u32 + 1);
+                store(s, next, buffer)?;
+                s.barrier()?;
+            }
+            Ok(())
+        };
+
+        let mut fetched = VecDeque::new();
+        for i in 0..count.min(ahead) {
+            fetched.push_back(fetch(self, Start::At(i as u32 * depth), len_of(i))?);
         }
         let buffer = buffer_of(self, 0);
         let first = fetched.pop_front().expect("k is at least 1");
         store(self, first, buffer)?;
         self.barrier()?;
-        for (i, &(_, len)) in tiles.iter().enumerate() {
-            if let Some(&(base, next_len)) = tiles.get(i + ahead) {
-                fetched.push_back(fetch(self, base, next_len)?);
-            }
-            let buffer = buffer_of(self, i as u32);
-            compute(self, buffer, len, i == 0)?;
-            if i + 1 < tiles.len() {
-                let next = fetched.pop_front().expect("fetched ahead");
-                let buffer = buffer_of(self, i as u32 + 1);
-                store(self, next, buffer)?;
-                self.barrier()?;
-            }
+        step(self, &mut fetched, 0, ahead_of(0))?;
+
+        // The tile loop (`matmul_passes`): each pass computes `MATMUL_UNROLL` full tiles and
+        // reads the full tiles `ahead` past them. The tiles read and not yet staged cross from
+        // one pass to the next in function variables.
+        let passes = matmul_passes(k, &tile);
+        let mut resume = 1;
+        if passes > 0 {
+            let carried = self.matmul_vars[rows..].to_vec();
+            let per = slots.len();
+            assert_eq!(carried.len(), (ahead - 1) * per, "matmul_carried");
+            let spill = |s: &mut Self, queue: &mut VecDeque<Vec<Word>>| -> Result<(), EmitError> {
+                for (q, values) in queue.drain(..).enumerate() {
+                    for (at, value) in values.into_iter().enumerate() {
+                        s.b.store(carried[q * per + at], value, None, [])?;
+                    }
+                }
+                Ok(())
+            };
+            let fill = |s: &mut Self, queue: &mut VecDeque<Vec<Word>>| -> Result<(), EmitError> {
+                for q in 0..ahead - 1 {
+                    let mut values = Vec::new();
+                    for at in 0..per {
+                        values.push(s.b.load(s.f32_ty, None, carried[q * per + at], None, [])?);
+                    }
+                    queue.push_back(values);
+                }
+                Ok(())
+            };
+            spill(self, &mut fetched)?;
+            let (zero, one, end) = (self.uint(0), self.uint(1), self.uint(passes));
+            let pass_a = self.uint(MATMUL_UNROLL * depth);
+            let pass_b = self.uint(MATMUL_UNROLL * depth * n);
+            let var = self.u32_vars[0];
+            self.counted(var, zero, end, one, |s, pass| {
+                let mut queue = VecDeque::new();
+                fill(s, &mut queue)?;
+                let a0 = s.mul(pass, pass_a)?;
+                let b0 = s.mul(pass, pass_b)?;
+                // Tile `1 + pass * MATMUL_UNROLL + p` is full, not the first, has the parity of
+                // `1 + p` and reads the full tile `ahead` past it.
+                for p in 0..MATMUL_UNROLL as usize {
+                    let i = 1 + p;
+                    let base = (i + ahead) as u32 * depth;
+                    let a_c = s.uint(base);
+                    let a = s.add(a0, a_c)?;
+                    let b_c = s.uint(base * n);
+                    let b = s.add(b0, b_c)?;
+                    step(s, &mut queue, i, Some((Start::Looped { a, b }, depth)))?;
+                }
+                spill(s, &mut queue)
+            })?;
+            fill(self, &mut fetched)?;
+            resume += passes as usize * MATMUL_UNROLL as usize;
+        }
+        for i in resume..count {
+            step(self, &mut fetched, i, ahead_of(i))?;
         }
 
         for (q, &row) in local_rows.iter().enumerate() {
@@ -1570,7 +1687,7 @@ impl Shell {
             let row_inside = self.less(row, m_c)?;
             let col_inside = self.less(j, n_c)?;
             let inside = self.and(row_inside, col_inside)?;
-            let var = self.accumulators[q];
+            let var = self.matmul_vars[q];
             self.when(inside, |s| {
                 let row_at = s.mul(row, n_c)?;
                 let at = s.add(row_at, j)?;

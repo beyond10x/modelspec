@@ -22,7 +22,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Instant;
 
-use modelspec_core::ir::kernel::{Epilogue, Kernel};
+use modelspec_core::ir::kernel::{Epilogue, Kernel, MatMulTile};
 use modelspec_core::ir::tensor::{Dim, TensorProgramBuilder, TensorType};
 use modelspec_runtime::cpu::interpreter::evaluate;
 use modelspec_runtime::cpu::tensor::HostTensor;
@@ -109,7 +109,11 @@ fn run(device: &Device<'_>, kernel: &Kernel, spirv: &[u32], a: &[f32], b: &[f32]
         .collect();
     let buffers: Vec<Buffer<'_>> = uploads
         .iter()
-        .map(|v| device.device_local_buffer(bytes_of(v.len())).expect("buffer"))
+        .map(|v| {
+            device
+                .device_local_buffer(bytes_of(v.len()))
+                .expect("buffer")
+        })
         .collect();
     let mut staging: Vec<Buffer<'_>> = uploads
         .iter()
@@ -131,7 +135,9 @@ fn run(device: &Device<'_>, kernel: &Kernel, spirv: &[u32], a: &[f32], b: &[f32]
         .expect("dispatch");
     recording.barrier(Barrier::ComputeToTransfer);
     for at in 2..buffers.len() {
-        recording.copy(&buffers[at], &staging[at]).expect("download");
+        recording
+            .copy(&buffers[at], &staging[at])
+            .expect("download");
     }
     recording.barrier(Barrier::TransferToHost);
     device
@@ -233,7 +239,9 @@ fn a_matmul_over_more_than_65535_workgroups_on_a_two_dimensional_grid_gives_the_
     let (vulkan, profile) = open();
     let negotiated = negotiate(&profile).expect("negotiates");
     let device = vulkan.create_device(0, &negotiated).expect("opens");
-    let (m, k, n) = (8 * 65_536 + 9, 3, 16);
+    // One row block past 65,536 of the tile this shape gets, whatever its rows per workgroup.
+    let block = u64::from(MatMulTile::of(16 * 65_536, 3, 16).rows_per_workgroup());
+    let (m, k, n) = (block * 65_536 + 9, 3, 16);
     let mut draw = Normal(0x7370_7265_6164_3264);
     let a = draw.values(m * k, true);
     let b = draw.values(k * n, true);
@@ -242,7 +250,10 @@ fn a_matmul_over_more_than_65535_workgroups_on_a_two_dimensional_grid_gives_the_
     for epilogue in EPILOGUES {
         let mut kernel = common::matmul_kernel_with(m, k, n, epilogue);
         let groups = kernel.workgroups[0];
-        assert!(groups > 65_535, "{groups} workgroups need a second dimension");
+        assert!(
+            groups > 65_535,
+            "{groups} workgroups need a second dimension"
+        );
         kernel.workgroups = [65_535, groups.div_ceil(65_535), 1];
         kernel.id = Kernel::module_id(&kernel.signature());
         let module = emit_module(&kernel, &profile).expect("emits");
@@ -283,7 +294,11 @@ fn a_large_k_matmul_module_is_emitted_and_its_pipeline_created_within_a_second()
             module.spirv[3],
             emitted.as_secs_f64(),
             created.as_secs_f64(),
-            if pipeline.is_ok() { "created" } else { "refused" },
+            if pipeline.is_ok() {
+                "created"
+            } else {
+                "refused"
+            },
         );
         eprintln!("{line}");
         std::io::stderr().flush().ok();

@@ -1,11 +1,15 @@
 //! `story:m1-f-forward-matmul-tiled` on a Vulkan device: the tiled matmul module, with no
 //! epilogue, with the `relu` epilogue, and with the `relu` epilogue that keeps its
 //! pre-activation, at every shape of `common::MATMUL_SHAPES` (the MNIST shapes, shapes that do
-//! not fill a tile, and shapes one past a tile in each of `m`, `k` and `n`, and `k = 1`). Each
-//! written view matches the CPU interpreter: bit for bit when `negotiate` puts the device in
-//! the bit-for-bit class, otherwise within the matmul tolerance of `tests/common/mod.rs` (the
-//! `relu` moves no value further from the CPU's than its operand is). The guard words after each
-//! view stay unchanged and a second run gives the same bits.
+//! not fill a tile, shapes one past a tile in each of `m`, `k` and `n`, `k = 1`, and shapes
+//! whose tile loop runs several passes or whose tile has two rows per invocation), each over
+//! two inputs. On inputs of normal magnitude
+//! (no subnormal operand, product or partial sum) each written view is bit for bit the CPU
+//! interpreter's in any numerics class, since the module keeps the CPU's order of operations
+//! (DESIGN.md § 2.2). On inputs with subnormal operands it is bit for bit when `negotiate` puts
+//! the device in the bit-for-bit class, otherwise within the matmul tolerance of
+//! `tests/common/mod.rs` (the `relu` moves no value further from the CPU's than its operand is).
+//! The guard words after each view stay unchanged and a second run gives the same bits.
 //!
 //! Ignored by default: it creates a Vulkan instance, which `task ci` never does. Run it with
 //! `MODELSPEC_VK_VALIDATION=1 cargo test -p modelspec-runtime --features vulkan --test vulkan_matmul_tiled -- --ignored`.
@@ -64,6 +68,15 @@ fn terms(m: usize, k: usize, n: usize, a: &[f32], b: &[f32]) -> Vec<f64> {
         }
     }
     out
+}
+
+/// Makes every seventh value of `values` a subnormal of its sign, varied in magnitude.
+fn with_subnormals(values: &mut [f32]) {
+    for (i, value) in values.iter_mut().enumerate().filter(|(i, _)| i % 7 == 3) {
+        let magnitude = f32::from_bits(1 + (i as u32).wrapping_mul(0x9e37) % 0x007f_ffff);
+        assert!(magnitude.is_subnormal());
+        *value = magnitude.copysign(*value);
+    }
 }
 
 fn bytes_of(words: usize) -> u64 {
@@ -136,6 +149,31 @@ fn run(device: &Device<'_>, kernel: &Kernel, spirv: &[u32], a: &[f32], b: &[f32]
 #[test]
 #[ignore = "needs a Vulkan device"]
 fn the_tiled_matmul_with_and_without_its_relu_epilogue_matches_the_cpu() {
+    let cases = common::MATMUL_SHAPES
+        .into_iter()
+        .flat_map(|shape| [(shape, false), (shape, true)]);
+    compare("vulkan_matmul_tiled", cases.collect());
+}
+
+/// Shapes whose tile computes two rows per invocation: the MNIST weight gradient, one with a
+/// partial row block, column block and last tile, and one whose tile loop runs 6 passes.
+const TWO_ROW_SHAPES: [(u64, u64, u64); 3] = [(784, 100, 64), (2049, 129, 17), (1025, 1000, 33)];
+
+#[test]
+#[ignore = "needs a Vulkan device"]
+fn a_tile_of_two_rows_per_invocation_gives_the_cpu_bits_on_normal_inputs() {
+    for (m, k, n) in TWO_ROW_SHAPES {
+        let tile = modelspec_core::ir::kernel::MatMulTile::of(m, k, n);
+        assert_eq!(tile.rows, 2, "[{m}, {k}] x [{k}, {n}]: {tile:?}");
+    }
+    let cases = TWO_ROW_SHAPES.into_iter().map(|shape| (shape, false));
+    compare("vulkan_matmul_tiled two rows", cases.collect());
+}
+
+/// Runs each `(shape, subnormal)` case with every epilogue against the CPU interpreter: bit for
+/// bit on normal inputs, and on inputs with subnormals bit for bit in the bit-for-bit class,
+/// else within the matmul tolerance.
+fn compare(label: &str, shapes: Vec<((u64, u64, u64), bool)>) {
     let vulkan = Vulkan::load().expect("the Vulkan loader opens");
     assert_eq!(
         vulkan.validation_enabled(),
@@ -157,9 +195,13 @@ fn the_tiled_matmul_with_and_without_its_relu_epilogue_matches_the_cpu() {
     let mut elements = 0u64;
     let mut bit_checked = 0u64;
     let mut bit_equal = 0u64;
-    for (m, k, n) in common::MATMUL_SHAPES {
-        let a: Vec<f32> = (0..m).flat_map(|_| draw.values(k)).collect();
-        let b = draw.values(k * n);
+    for ((m, k, n), subnormal) in shapes {
+        let mut a: Vec<f32> = (0..m).flat_map(|_| draw.values(k)).collect();
+        let mut b = draw.values(k * n);
+        if subnormal {
+            with_subnormals(&mut a);
+            with_subnormals(&mut b);
+        }
         let (ra, rb) = if flushes {
             (common::flush_subnormals(&a), common::flush_subnormals(&b))
         } else {
@@ -177,7 +219,8 @@ fn the_tiled_matmul_with_and_without_its_relu_epilogue_matches_the_cpu() {
             }),
         ] {
             let kernel = common::matmul_kernel_with(m, k, n, epilogue);
-            let name = format!("[{m}, {k}] x [{k}, {n}] {epilogue:?}");
+            let family = if subnormal { "subnormal" } else { "normal" };
+            let name = format!("[{m}, {k}] x [{k}, {n}] {epilogue:?}, {family} inputs");
             let module = emit_module(&kernel, &profile).expect("the kernel emits");
             let first = run(&device, &kernel, &module.spirv, &a, &b);
             let second = run(&device, &kernel, &module.spirv, &a, &b);
@@ -200,7 +243,7 @@ fn the_tiled_matmul_with_and_without_its_relu_epilogue_matches_the_cpu() {
                     if got[i].to_bits() == want[i].to_bits() {
                         bit_equal += 1;
                     }
-                    let ok = if class == NumericsClass::BitForBit {
+                    let ok = if !subnormal || class == NumericsClass::BitForBit {
                         bit_checked += 1;
                         got[i].to_bits() == want[i].to_bits()
                     } else {
@@ -235,7 +278,7 @@ fn the_tiled_matmul_with_and_without_its_relu_epilogue_matches_the_cpu() {
         }
     }
     eprintln!(
-        "vulkan_matmul_tiled: class {class}, {cases} cases run twice, {elements} elements, \
+        "{label}: class {class}, {cases} cases run twice, {elements} elements, \
          {bit_checked} checked bit for bit, {bit_equal} bit-equal to the CPU, {} failures",
         wrong.len()
     );

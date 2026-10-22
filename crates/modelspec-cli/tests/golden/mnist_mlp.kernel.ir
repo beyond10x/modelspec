@@ -32,7 +32,7 @@ kernel k7 4ab19294-379e-8a14-b7ee-a9d23e2520e2 transpose Transpose f32 (Tensor<f
 kernel k8 f3113772-7e08-8d28-87c3-ca25c60a15d4 matmul MatMul f32 (Tensor<f32, [64, 100]>, Tensor<f32, [100, 10]>) -> Tensor<f32, [64, 10]> workgroup_size 128 workgroups [8, 1, 1]
 kernel k9 ae896a79-8d47-8bca-807a-453bc394ae43 elementwise ReluGrad f32 (Tensor<f32, [100, 64]>, Tensor<f32, [100, 64]>) -> Tensor<f32, [100, 64]> workgroup_size 64 workgroups [100, 1, 1]
 kernel k10 cbd56b2b-4530-8c59-8969-a9eed9bc2f0c transpose Transpose f32 (Tensor<f32, [100, 784]>) -> Tensor<f32, [784, 100]> workgroup_size 64 workgroups [1225, 1, 1]
-kernel k11 ad335601-8cf5-830f-9c80-b4e15e1a283a matmul MatMul f32 (Tensor<f32, [784, 100]>, Tensor<f32, [100, 64]>) -> Tensor<f32, [784, 64]> workgroup_size 128 workgroups [392, 1, 1]
+kernel k11 d7d3124e-f2f6-83d4-a63c-166b318a5713 matmul MatMul f32 (Tensor<f32, [784, 100]>, Tensor<f32, [100, 64]>) -> Tensor<f32, [784, 64]> workgroup_size 128 workgroups [196, 1, 1]
 kernel k12 88daaa23-8dc9-8bc4-ab05-dc5ecc946d99 sgd_update Sub f32 (Tensor<f32, [784, 64]>, 0.1, Tensor<f32, [784, 64]>) -> Tensor<f32, [784, 64]> workgroup_size 64 workgroups [784, 1, 1]
 kernel k13 f509ed52-1817-8bb7-91f5-a998f93b9005 sgd_update Sub f32 (Tensor<f32, [64, 10]>, 0.1, Tensor<f32, [64, 10]>) -> Tensor<f32, [64, 10]> workgroup_size 64 workgroups [10, 1, 1]
 plan step
@@ -53,7 +53,7 @@ plan step
   14: dispatch k9 %17 reads b4[f32 x 6400, bytes 0..25600, align 4], b11[f32 x 6400, bytes 0..25600, align 4] writes b14[f32 x 6400, bytes 0..25600, align 4] workgroups [100, 1, 1] after [12]
   15: dispatch k10 %18 reads b0[f32 x 78400, bytes 0..313600, align 4] writes b15[f32 x 78400, bytes 0..313600, align 4] workgroups [1225, 1, 1] after [12]
   16: barrier after [12, 13, 14, 15]
-  17: dispatch k11 %19 reads b15[f32 x 78400, bytes 0..313600, align 4], b14[f32 x 6400, bytes 0..25600, align 4] writes b16[f32 x 50176, bytes 0..200704, align 4] workgroups [392, 1, 1] after [16]
+  17: dispatch k11 %19 reads b15[f32 x 78400, bytes 0..313600, align 4], b14[f32 x 6400, bytes 0..25600, align 4] writes b16[f32 x 50176, bytes 0..200704, align 4] workgroups [196, 1, 1] after [16]
   18: barrier after [16, 17]
   19: dispatch k12 %22 reads b2[f32 x 50176, bytes 0..200704, align 4], b16[f32 x 50176, bytes 0..200704, align 4] writes b2[f32 x 50176, bytes 0..200704, align 4] workgroups [784, 1, 1] after [18]
   20: dispatch k13 %24 reads b3[f32 x 640, bytes 0..2560, align 4], b13[f32 x 640, bytes 0..2560, align 4] writes b3[f32 x 640, bytes 0..2560, align 4] workgroups [10, 1, 1] after [18]

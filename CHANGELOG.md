@@ -11,7 +11,7 @@ history.
 
 ### Changed
 
-- The Vulkan `MatMul` kernel stages tiles of its operands in workgroup memory (`modelspec_core::ir::kernel::MatMulTile`, 128 invocations per block of 8 rows by 16 columns) with the same bits as before; the forward matmul of the MNIST example falls from 18.5 to 8.7 µs per step and the MNIST step from 40.2 to 28.7 µs on an RTX 3090 (medians of 3 profiled and 5 timed runs of 144,000 steps), and a tile larger than the device's workgroup memory is refused with `EmitError::SharedMemory` (DESIGN.md § 5.2) (story:m1-f-forward-matmul-tiled)
+- The Vulkan `MatMul` kernel stages tiles of its operands in workgroup memory (`modelspec_core::ir::kernel::MatMulTile`, 128 invocations per block of 8 rows by 16 columns, or 16 rows at two per invocation when 8 need at least 256 workgroups) with the same bits as before, its tiles of `k` in a loop of 4-tile passes so a module's size does not grow with `k`; the forward matmul of the MNIST example falls from 18.5 to 8.3 µs per step and the MNIST step from 40.2 to 27.3 µs on an RTX 3090 (medians of 3 profiled and 5 timed runs of 144,000 steps), and a tile larger than the device's workgroup memory is refused with `EmitError::SharedMemory` (DESIGN.md § 5.2) (story:m1-f-forward-matmul-tiled)
 
 ## [0.4.0] - 2026-10-22
 

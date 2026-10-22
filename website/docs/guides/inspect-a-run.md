@@ -69,34 +69,34 @@ trains as without `--profile`, with the same lines on stdout and the same single
 stderr it adds one line per dispatch site and then the counters. `--steps 72000` makes the run
 long enough to time a warm GPU: the file's 1,800 steps finish in about 0.3 s, too short a run
 to time a GPU whose clocks are not locked. This is one run on an RTX 3090 after a warm-up run
-of 72,000 steps, its SM clock at 1,965 MHz in every 100 ms sample:
+of 72,000 steps, its SM clock between 1,965 and 1,980 MHz in its 100 ms samples:
 
 ```text
-profile dispatch step 0 5666286c-c7a4-86c5-ba60-e9812c8b6812 main calls 72000 total_us 603305.504 mean_us 8.379
-profile dispatch step 2 4695d3c9-f7bc-8553-ad4b-8bda5f9af8bf main calls 72000 total_us 166689.888 mean_us 2.315
-profile dispatch step 4 d588cbc2-b3eb-8bf1-93a1-29d8680aba58 main calls 72000 total_us 284711.712 mean_us 3.954
-profile dispatch step 5 2e1ec459-43bd-81d2-b9db-fa0f7fe3ae74 main calls 72000 total_us 135945.792 mean_us 1.888
-profile dispatch step 7 3e9bd9e4-7689-8b30-9582-05282d19167c main calls 72000 total_us 129757.632 mean_us 1.802
-profile dispatch step 8 00cb6768-fb04-8fde-a136-7b324efe8fbc main calls 72000 total_us 136305.280 mean_us 1.893
-profile dispatch step 10 b9c2711f-8443-864a-86ef-f7493dde3311 main calls 72000 total_us 155772.512 mean_us 2.164
-profile dispatch step 11 4ab19294-379e-8a14-b7ee-a9d23e2520e2 main calls 72000 total_us 144601.600 mean_us 2.008
-profile dispatch step 13 f3113772-7e08-8d28-87c3-ca25c60a15d4 main calls 72000 total_us 180462.976 mean_us 2.506
-profile dispatch step 14 ae896a79-8d47-8bca-807a-453bc394ae43 main calls 72000 total_us 136207.488 mean_us 1.892
-profile dispatch step 15 cbd56b2b-4530-8c59-8969-a9eed9bc2f0c main calls 72000 total_us 220711.616 mean_us 3.065
-profile dispatch step 17 ad335601-8cf5-830f-9c80-b4e15e1a283a main calls 72000 total_us 365705.184 mean_us 5.079
-profile dispatch step 19 88daaa23-8dc9-8bc4-ab05-dc5ecc946d99 main calls 72000 total_us 170196.384 mean_us 2.364
-profile dispatch step 20 f509ed52-1817-8bb7-91f5-a998f93b9005 main calls 72000 total_us 133842.752 mean_us 1.859
-profile dispatch final 0 5666286c-c7a4-86c5-ba60-e9812c8b6812 main calls 1 total_us 7.456 mean_us 7.456
+profile dispatch step 0 5666286c-c7a4-86c5-ba60-e9812c8b6812 main calls 72000 total_us 602482.656 mean_us 8.368
+profile dispatch step 2 4695d3c9-f7bc-8553-ad4b-8bda5f9af8bf main calls 72000 total_us 165234.080 mean_us 2.295
+profile dispatch step 4 d588cbc2-b3eb-8bf1-93a1-29d8680aba58 main calls 72000 total_us 283784.256 mean_us 3.941
+profile dispatch step 5 2e1ec459-43bd-81d2-b9db-fa0f7fe3ae74 main calls 72000 total_us 134887.072 mean_us 1.873
+profile dispatch step 7 3e9bd9e4-7689-8b30-9582-05282d19167c main calls 72000 total_us 129581.024 mean_us 1.800
+profile dispatch step 8 00cb6768-fb04-8fde-a136-7b324efe8fbc main calls 72000 total_us 134726.656 mean_us 1.871
+profile dispatch step 10 b9c2711f-8443-864a-86ef-f7493dde3311 main calls 72000 total_us 154567.232 mean_us 2.147
+profile dispatch step 11 4ab19294-379e-8a14-b7ee-a9d23e2520e2 main calls 72000 total_us 144804.640 mean_us 2.011
+profile dispatch step 13 f3113772-7e08-8d28-87c3-ca25c60a15d4 main calls 72000 total_us 179402.368 mean_us 2.492
+profile dispatch step 14 ae896a79-8d47-8bca-807a-453bc394ae43 main calls 72000 total_us 135719.456 mean_us 1.885
+profile dispatch step 15 cbd56b2b-4530-8c59-8969-a9eed9bc2f0c main calls 72000 total_us 220593.280 mean_us 3.064
+profile dispatch step 17 d7d3124e-f2f6-83d4-a63c-166b318a5713 main calls 72000 total_us 347826.976 mean_us 4.831
+profile dispatch step 19 88daaa23-8dc9-8bc4-ab05-dc5ecc946d99 main calls 72000 total_us 168548.448 mean_us 2.341
+profile dispatch step 20 f509ed52-1817-8bb7-91f5-a998f93b9005 main calls 72000 total_us 133047.744 mean_us 1.848
+profile dispatch final 0 5666286c-c7a4-86c5-ba60-e9812c8b6812 main calls 1 total_us 7.360 mean_us 7.360
 profile dispatch final 2 4695d3c9-f7bc-8553-ad4b-8bda5f9af8bf main calls 1 total_us 2.048 mean_us 2.048
-profile dispatch final 4 d588cbc2-b3eb-8bf1-93a1-29d8680aba58 main calls 1 total_us 3.072 mean_us 3.072
+profile dispatch final 4 d588cbc2-b3eb-8bf1-93a1-29d8680aba58 main calls 1 total_us 4.096 mean_us 4.096
 profile dispatches 1008003
 profile submits 282
 profile host_waits 1
 profile bytes_uploaded 520864
 profile bytes_downloaded 491268
-profile pipeline_creation_us 1674.486
-profile compile_us 1796.685
-profile steady_us_per_step 44.495
+profile pipeline_creation_us 1573.877
+profile compile_us 1876.371
+profile steady_us_per_step 44.087
 ```
 
 | Field | What it says |
@@ -109,11 +109,11 @@ profile steady_us_per_step 44.495
 | `pipeline_creation_us`, `compile_us` | host time to build the pipelines and to compile the file and emit its kernels, outside the steady state |
 
 Here step position 4, module `d588cbc2…`, is `k2`, the `mse` loss sum on one workgroup of 64
-invocations: 4.0 µs of the 44.5 µs step. A device without timestamp queries prints
+invocations: 3.9 µs of the 44.1 µs step. A device without timestamp queries prints
 `profile kernel timings unavailable: no timestamp queries` in place of the dispatch lines and
 still prints the counters.
 
-The timestamps cost time themselves. On the same warm RTX 3090, 72,000 steps take 27.5 to
-27.8 µs per step with `--stats` alone and 44.8 to 53.0 µs with `--profile` (three runs each,
-SM clock between 1,950 and 1,965 MHz in 100 ms samples), so compare profiled runs with profiled runs, and use
+The timestamps cost time themselves. On the same warm RTX 3090, 72,000 steps take 27.1 to
+27.3 µs per step with `--stats` alone and 44.0 to 44.2 µs with `--profile` (three runs each,
+SM clock between 1,860 and 1,980 MHz in 100 ms samples, 1,965 MHz in 182 of 192), so compare profiled runs with profiled runs, and use
 `--stats` alone for the time per step.

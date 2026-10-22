@@ -151,6 +151,12 @@ impl KernelKind {
 /// `maxComputeSharedMemorySize`: every [`MatMulTile`] stages at most this much.
 pub const MIN_SHARED_MEMORY_BYTES: u32 = 16_384;
 
+/// The workgroups a one-row [`MatMulTile`] needs from which its invocations compute two rows
+/// each instead: on the RTX 3090 two rows take the `[784, 100] x [100, 64]` matmul (392
+/// workgroups of one row) from 5.24 to 4.92 µs and are slower at every MNIST matmul of at most
+/// 52 workgroups (DESIGN.md § 5.2).
+pub const MATMUL_TWO_ROWS_FROM_WORKGROUPS: u64 = 256;
+
 /// How a matmul kernel `[m, k] x [k, n] -> [m, n]` covers its output (DESIGN.md § 5.2): each
 /// workgroup of `workgroup_size` invocations computes a block of
 /// [`MatMulTile::rows_per_workgroup`] rows by `cols` columns. Invocation `t` computes column
@@ -174,15 +180,23 @@ pub struct MatMulTile {
 }
 
 impl MatMulTile {
-    /// The tile of a `[m, k] x [k, n]` matmul, a function of `k` and `n` alone: 128
+    /// The tile of a `[m, k] x [k, n]` matmul, a function of its shape alone: 128
     /// invocations, 16 columns (fewer, a power of two, when `n` is smaller), one row per
-    /// invocation, tiles of up to 64 values read 6 tiles ahead, and depth halved until the
+    /// invocation, or two when one row needs at least [`MATMUL_TWO_ROWS_FROM_WORKGROUPS`]
+    /// workgroups, tiles of up to 64 values read 6 tiles ahead, and depth halved until the
     /// staged values fit in [`MIN_SHARED_MEMORY_BYTES`].
-    pub fn of(_m: u64, k: u64, n: u64) -> Self {
+    pub fn of(m: u64, k: u64, n: u64) -> Self {
+        let workgroup_size = 128;
+        let cols = n.clamp(1, 16).next_power_of_two() as u32;
+        let one_row = m.div_ceil(u64::from(workgroup_size / cols)) * n.div_ceil(u64::from(cols));
         let mut tile = Self {
-            workgroup_size: 128,
-            cols: n.clamp(1, 16).next_power_of_two() as u32,
-            rows: 1,
+            workgroup_size,
+            cols,
+            rows: if one_row >= MATMUL_TWO_ROWS_FROM_WORKGROUPS {
+                2
+            } else {
+                1
+            },
             depth: k.clamp(1, 64) as u32,
             ahead: 6,
             buffers: 1,

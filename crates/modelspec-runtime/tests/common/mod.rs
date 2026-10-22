@@ -531,8 +531,11 @@ pub const TRANSPOSE_SHAPES: [(u64, u64); 4] = [(1, 1), (3, 5), (100, 784), (65, 
 /// The `[m, k] x [k, n]` of its matmul cases: the MNIST step shapes, shapes that fill no
 /// workgroup, and, for the tile of `story:m1-f-forward-matmul-tiled` (8 rows by 16 columns,
 /// tiles of 64 of `k`): exactly one tile, one past a multiple of the tile in each of `m`, `k`
-/// and `n`, `k = 1`, and one column, whose tile has 128 rows and a smaller depth.
-pub const MATMUL_SHAPES: [(u64, u64, u64); 13] = [
+/// and `n`, `k = 1`, and one column, whose tile has 128 rows and a smaller depth; and three
+/// shapes whose tile loop runs several passes (`emit.rs` `matmul_passes`): a partial last
+/// tile of 16, a `k` of whole tiles of 8, and a partial last tile of 3 of 32; and two shapes
+/// whose tile has two rows per invocation (`MatMulTile::of`), one with a tile loop.
+pub const MATMUL_SHAPES: [(u64, u64, u64); 18] = [
     (100, 784, 64),
     (784, 100, 64),
     (100, 64, 10),
@@ -546,6 +549,11 @@ pub const MATMUL_SHAPES: [(u64, u64, u64); 13] = [
     (5, 1, 7),
     (129, 200, 1),
     (3, 128, 3),
+    (33, 2000, 17),
+    (129, 1000, 1),
+    (5, 4099, 3),
+    (2049, 129, 17),
+    (1025, 1000, 33),
 ];
 
 /// The SPIR-V opcodes and enumerants the module checks read.

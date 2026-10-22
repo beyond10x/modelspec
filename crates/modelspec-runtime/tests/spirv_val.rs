@@ -670,24 +670,98 @@ fn a_matmul_module_runs_its_tile_with_one_barrier_per_tile_of_k() {
                     [tile.shared_values()],
                     "{what}: one f32 array of every buffer"
                 );
+                let (looped, loops) = (tile_loop(k, &tile), loop_merges(&module.spirv));
+                assert_eq!(
+                    loops,
+                    usize::from(looped > 0),
+                    "{what}: one tile loop or none"
+                );
+                let emitted = tiles - looped.saturating_sub(TILE_LOOP_BODY);
                 let (trace, _) = workgroup_accesses(&module.spirv);
-                let wanted = format!("SB{}L", "LSB".repeat(tiles - 1));
+                let wanted = format!("SB{}L", "LSB".repeat(emitted - 1));
                 assert_eq!(
                     collapsed(&trace),
                     wanted,
                     "{what}: stage the first tile, a barrier, then per tile its products and \
-                     the next tile's staging into the other buffer, a barrier"
+                     the next tile's staging into the other buffer, a barrier, with the \
+                     {looped} tiles of the loop emitted as one body of {TILE_LOOP_BODY}"
                 );
+                let emitted_k =
+                    k - (looped.saturating_sub(TILE_LOOP_BODY) as u64) * u64::from(tile.depth);
                 let (missing, all) = common::words::uncontracted_arithmetic(&module.spirv);
                 assert!(
-                    all as u64 == 2 * k - 1 && missing.is_empty(),
-                    "{what}: {all} arithmetic, no NoContraction on {missing:?}"
+                    all as u64 == u64::from(tile.rows) * (2 * emitted_k - 1) && missing.is_empty(),
+                    "{what}: {all} arithmetic, one chain per row, no NoContraction on {missing:?}"
                 );
                 total += 1;
             }
         }
     }
     eprintln!("spirv_val: {total} tiled matmul modules pass spirv-val --target-env {TARGET_ENV}");
+}
+
+/// The tiles of the matmul's tile loop body.
+const TILE_LOOP_BODY: usize = 4;
+
+/// The tiles a `k`-deep matmul with `tile` runs in its loop: from tile 1 up, the tiles that
+/// are full and read a full tile `ahead` past them, rounded down to whole loop bodies.
+fn tile_loop(k: u64, tile: &MatMulTile) -> usize {
+    let full = (k / u64::from(tile.depth)) as usize;
+    let candidates = full.saturating_sub(tile.ahead as usize + 1);
+    candidates - candidates % TILE_LOOP_BODY
+}
+
+/// The `OpLoopMerge` instructions of `module`.
+fn loop_merges(module: &[u32]) -> usize {
+    common::words::instructions(module)
+        .iter()
+        .filter(|(op, _)| *op == OP_LOOP_MERGE)
+        .count()
+}
+
+const OP_LOOP_MERGE: u32 = 246;
+
+// review-result:m1-f-forward-adversary-1, blockers 1 and 2: the module of a matmul is bounded
+// whatever its `k`.
+
+/// Constants a large `k` may hold apart where a small one shares them with others: its own
+/// value, the loop's trip count and the offsets of its passes, each 4 words and 1 id.
+const SPARE_CONSTANTS: usize = 4;
+
+#[test]
+fn a_matmul_module_is_no_larger_at_any_k_than_at_a_k_of_sixteen_tiles() {
+    for (m, n) in [(100, 64), (4, 1), (9, 17), (784, 64), (5, 3)] {
+        let depth = u64::from(MatMulTile::of(m, 1 << 20, n).depth);
+        let words = |k: u64| -> (usize, u32) {
+            let module = emit(&common::matmul_kernel(m, k, n)).expect("the matmul emits");
+            (module.len(), module[3])
+        };
+        // Every k up to 16 tiles: its straight tiles after the loop and the length of its
+        // last tile take every value a larger k gives them.
+        let mut small = (0, 0);
+        for at in 1..=16 * depth {
+            let (len, bound) = words(at);
+            small = (small.0.max(len), small.1.max(bound));
+        }
+        let limit = u64::from(u32::MAX) / n.max(m);
+        for base in [10_000, 100_000, 600_000, 1_000_000, 4_000_000] {
+            for at in [base, base + 1, base + depth - 1, base + 3 * depth + 5] {
+                if at > limit {
+                    continue;
+                }
+                let (len, bound) = words(at);
+                let what = format!("[{m}, {at}] x [{at}, {n}]: {len} words, id bound {bound}");
+                assert!(
+                    len <= small.0 + 4 * SPARE_CONSTANTS
+                        && bound <= small.1 + SPARE_CONSTANTS as u32,
+                    "{what}, above {small:?}, the largest at k up to {}, by more than {SPARE_CONSTANTS} constants",
+                    16 * depth
+                );
+                let module = emit(&common::matmul_kernel(m, at, n)).expect("emits");
+                validate(&module).unwrap_or_else(|error| panic!("{what}: {error}"));
+            }
+        }
+    }
 }
 
 #[test]
