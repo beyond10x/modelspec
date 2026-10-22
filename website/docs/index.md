@@ -41,13 +41,14 @@ train Fit {
 
 ## What works today
 
-ModelSpec is at milestone M0; the latest release is [0.1.1](https://github.com/beyond10x/modelspec/releases/tag/0.1.1).
+ModelSpec is at milestone M0; the latest release is [0.2.0](https://github.com/beyond10x/modelspec/releases/tag/0.2.0).
 
-| Works in 0.1.1 | Not built yet |
+| Works in 0.2.0 | Not built yet |
 |---|---|
 | `modelspec check`: parse and check names, types and shapes | any GPU execution: there is no Vulkan backend |
 | `modelspec ir --stage tensor` and `--stage training`: print the verified IR | `compile`, `infer`, `inspect-device`, `bench` |
 | `modelspec train --backend cpu`: train on the CPU reference with seeded synthetic data | checkpoints, real datasets |
+| `modelspec train --serve <addr>`: stream the run as typed events over Server-Sent Events | the observatory UI, run recording and replay |
 | one `model` and one `train` block per file, static `f32` shapes, nine operators, SGD | modules, layers, generics, other dtypes and optimizers |
 
 `modelspec train --backend vulkan` is refused with `E-TARGET-001` until M1. [Status](./status.mdx)
@@ -68,7 +69,7 @@ M1 to M4 add.
 
 ## Where to go next
 
-- [Getting started](./getting-started.md): download the 0.1.1 binary and train the example.
+- [Getting started](./getting-started.md): download the 0.2.0 binary and train the example.
 - [The language](./concepts/language.md): what an M0 file may contain.
 - [Write a model](./guides/write-a-model.md): build a two-layer model step by step.
 - [Pitch deck](pathname:///modelspec/pitch/): the case for ModelSpec in slides.

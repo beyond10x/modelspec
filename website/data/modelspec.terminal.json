@@ -17,7 +17,7 @@
     }
   ],
   "format": "b10x-terminal/1",
-  "recordedWith": "modelspec 0.1.1, recorded by modelspec-docs",
+  "recordedWith": "modelspec 0.2.0, recorded by modelspec-docs",
   "title": "examples/linear_regression.mspec",
   "tones": {
     "E-TARGET-001:": "false"

@@ -9,6 +9,10 @@ history.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-22
+
+Live training events, input adjoints and a 15× faster CPU `matmul` with the same bits.
+
 ### Added
 
 - `modelspec train --serve <addr>` streams the run as typed `RunEvent`s over Server-Sent Events at `http://<addr>/events` on a loopback address, in the new crate `modelspec-observatory` (story:observatory-live-event-stream)
@@ -73,6 +77,7 @@ with `E-TARGET-001`.
 - `examples/linear_regression.mspec` checks and trains; `task check-examples` runs `modelspec check` on it
 - ESS contracts for the compiled artifact, checkpoint, device profile and training run in `spec/`
 
-[Unreleased]: https://github.com/beyond10x/modelspec/compare/0.1.1...HEAD
+[Unreleased]: https://github.com/beyond10x/modelspec/compare/0.2.0...HEAD
+[0.2.0]: https://github.com/beyond10x/modelspec/compare/0.1.1...0.2.0
 [0.1.1]: https://github.com/beyond10x/modelspec/compare/0.1.0...0.1.1
 [0.1.0]: https://github.com/beyond10x/modelspec/releases/tag/0.1.0
