@@ -31,8 +31,15 @@ common source gates; `pages.yml` and `b10x-docs-site.yml` build and publish the 
 Entry points are the `Taskfile.yml` tasks (go-task):
 
 - `task build`: `cargo build --workspace`.
-- `task test`: `cargo test --workspace`.
-- `task lint`: `cargo fmt --check` and `cargo clippy --workspace --all-targets -- -D warnings`.
+- `task test`: `cargo test --workspace`, then `cargo test -p modelspec-runtime --features vulkan`,
+  whose `spirv_val` test runs `spirv-val --target-env vulkan1.2` (SPIRV-Tools) on every emitted
+  elementwise, broadcast and SGD module and fails, not skips, without it.
+- `task lint`: `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings` and
+  the same clippy run of `modelspec-runtime` with `--features vulkan`.
+- The device tests need a Vulkan device and are ignored by default:
+  `MODELSPEC_VK_VALIDATION=1 cargo test -p modelspec-runtime --features vulkan --test vulkan_elementwise -- --ignored`.
+  `MODELSPEC_VK_VALIDATION=1` creates the instance with the Khronos validation layer; each
+  message it reports fails the test.
 - `task core-no-vulkan`: `cargo test -p modelspec-core --test no_vulkan`, which fails when the
   dependency graph of `modelspec-core` names a Vulkan crate on any target with all features on.
 - `task cli-without-vulkan`: the `inspect-device` tests of a CLI built without the `vulkan` feature.

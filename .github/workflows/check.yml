@@ -56,11 +56,11 @@ jobs:
           tar -xzf "$RUNNER_TEMP/$ESS_DIR.tar.gz" -C "$RUNNER_TEMP" "$ESS_DIR/ess"
           echo "$RUNNER_TEMP/$ESS_DIR" >> "$GITHUB_PATH"
 
-      - name: Install Vulkan headers
+      - name: Install Vulkan headers and spirv-val
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends libvulkan-dev
+          sudo apt-get install --yes --no-install-recommends libvulkan-dev spirv-tools
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec

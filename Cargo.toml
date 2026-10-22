@@ -24,3 +24,4 @@ jsonschema = { version = "0.58", default-features = false }
 ctrlc = { version = "3.5", features = ["termination"] }
 nix = { version = "0.31", default-features = false, features = ["signal"] }
 ash = { version = "0.38", default-features = false, features = ["loaded"] }
+rspirv = "0.13"

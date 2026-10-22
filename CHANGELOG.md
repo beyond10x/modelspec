@@ -15,6 +15,7 @@ history.
 - `modelspec inspect-device --backend vulkan [--device N] [--format text|json]`: the `modelspec_core::device::DeviceProfile` of each Vulkan device as the driver reports it and its negotiation verdict (Vulkan 1.2, numerics class), with codes E-TARGET-002 to E-TARGET-004 (story:m1-inspect-device)
 - `modelspec ir --stage kernel` prints the Kernel IR of a training step: its buffer views, kernels with module ids, step plan and forward plan, built by `modelspec_core::schedule::schedule`, checked by `modelspec_core::ir::verify::verify_plan` (and `verify_recorded_back_to_back` for back-to-back recording) and wrapped by `compile::compile_artifact`; a tensor too large to dispatch or bind is refused with `E-TARGET-010` (story:m1-kernel-plan)
 - `modelspec train --data <dir>`, `--init <dir>` and `--eval <dir>` train on dense `f32` tensor files with an optional `order.u32`, start parameters from files, and print `eval loss=… accuracy=…`; codes `E-DATA-007`, `E-DATA-008`, `E-DATA-009` (story:train-data-dense-tensors)
+- `modelspec_runtime::spirv::emit` builds the SPIR-V module of each elementwise, broadcast and SGD kernel, checked by `spirv-val --target-env vulkan1.2` in `task ci`, and `modelspec_runtime::vulkan` gains device buffers, compute pipelines, one-command-buffer dispatch with a counted host wait, and `MODELSPEC_VK_VALIDATION=1` for the validation layer; GPU results must lie within `GPU_ATOL = 1e-5` plus `GPU_RTOL = 1e-4` times `|c|` (DESIGN.md § 9 gate 5) (story:m1-vulkan-elementwise)
 
 ## [0.3.0] - 2026-10-22
 
