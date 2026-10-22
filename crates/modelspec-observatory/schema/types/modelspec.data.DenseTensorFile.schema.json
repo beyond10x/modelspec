@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/modelspec.data.DenseTensorFile",
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "9268c986df2b4edf55bf150959b3c93828a353a46a430bb7831fc38d574de04f",
+    "contract_digest": "slice-sha256/2:4a7cea1293414d849ea976869a4746783e0ac23035f2d2827d07d51d99279dff",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.data.DenseTensorFile": {
+      "title": "DenseTensorFile",
+      "description": "One file `<name>.f32` of a dense data directory, read by `modelspec train --data` and `--eval` (DESIGN.md § 8). name is the name of an `input` or `target` declaration `name Tensor<f32, [B, d1, ...]>` of the train block; the file is row-major little-endian f32 with no header, one sample per sample_elements = d1 × ... values, so samples is the file length in bytes divided by 4 × sample_elements. A length that is not a whole number of samples, no sample at all, or a value that is NaN or infinite is refused with E-DATA-007 before the first step.",
+      "x-ess-name": "modelspec.data.DenseTensorFile",
+      "x-ess-kind": "struct",
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "sample_elements": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "samples": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "name",
+        "sample_elements",
+        "samples"
+      ],
+      "additionalProperties": false,
+      "x-ess-invariants": [
+        "sample_elements > 0",
+        "samples > 0"
+      ]
+    }
+  }
+}

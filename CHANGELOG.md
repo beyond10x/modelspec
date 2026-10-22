@@ -9,6 +9,10 @@ history.
 
 ## [Unreleased]
 
+### Added
+
+- `modelspec train --data <dir>`, `--init <dir>` and `--eval <dir>` train on dense `f32` tensor files with an optional `order.u32`, start parameters from files, and print `eval loss=… accuracy=…`; codes `E-DATA-007`, `E-DATA-008`, `E-DATA-009` (`train-data-dense-tensors`)
+
 ## [0.3.0] - 2026-10-22
 
 An AVX2 CPU `matmul`, 2.98× faster on the MNIST shape with the same bits.

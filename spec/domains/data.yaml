@@ -1,6 +1,6 @@
 domain: modelspec.data
 
-summary: The training data of a masked-language-model run, its tokenizer, vocabulary, corpus and masking policy (epic:bert-from-scratch). The tokenizer and data pipeline are Rust in the runtime or training host; a model specification does no I/O (DESIGN.md § 2.3).
+summary: The training data of a run. Dense f32 tensor files for `modelspec train --data`, `--eval` and `--init` (story:train-data-dense-tensors); for a masked-language-model run, its tokenizer, vocabulary, corpus and masking policy (epic:bert-from-scratch). The tokenizer and data pipeline are Rust in the runtime or training host; a model specification does no I/O (DESIGN.md § 2.3).
 
 # UNMAPPED: where a run records the corpus, tokenizer and masking policy it trained with (fields of
 # TrainingRun, data bindings of the artifact, or a new record) is not settled, and neither is
@@ -9,6 +9,66 @@ summary: The training data of a masked-language-model run, its tokenizer, vocabu
 # as an open design question. Open question for the owner.
 
 types:
+  - name: modelspec.data.DenseTensorFile
+    kind: struct
+    naming:
+      summary: One file `<name>.f32` of a dense data directory, read by `modelspec train --data` and `--eval` (DESIGN.md § 8). name is the name of an `input` or `target` declaration `name Tensor<f32, [B, d1, ...]>` of the train block; the file is row-major little-endian f32 with no header, one sample per sample_elements = d1 × ... values, so samples is the file length in bytes divided by 4 × sample_elements. A length that is not a whole number of samples, no sample at all, or a value that is NaN or infinite is refused with E-DATA-007 before the first step.
+    fields:
+      - name: name
+        type: String
+      - name: sample_elements
+        type: Integer
+      - name: samples
+        type: Integer
+    invariants:
+      - sample_elements > 0
+      - samples > 0
+
+  - name: modelspec.data.SampleOrder
+    kind: struct
+    naming:
+      summary: The optional file `order.u32` of a dense data directory, little-endian u32 sample indices with no header. Training step k feeds the samples indices[k·B .. (k+1)·B]; without the file it feeds the samples (k·B + i) mod N. The loss after the last update reads the batch of step `steps`, its positions taken modulo the count of indices. Fewer than steps · B indices, or an index not below the directory's sample count N, is refused with E-DATA-008 before the first step.
+    fields:
+      - name: indices
+        type: List<Integer>
+    invariants:
+      - indices.count > 0
+
+  - name: modelspec.data.DenseDataDirectory
+    kind: struct
+    naming:
+      summary: The directory `modelspec train --data <dir>` or `--eval <dir>` names (DESIGN.md § 8). It holds one DenseTensorFile per `input` and `target` declaration of the train block, all with the same samples count N, and for `--data` an optional SampleOrder. Under `--eval` the order is not read and N must be a multiple of B, else E-DATA-009 before the first step.
+    fields:
+      - name: tensors
+        type: List<modelspec.data.DenseTensorFile>
+      - name: order
+        type: Optional<modelspec.data.SampleOrder>
+    invariants:
+      - tensors.count > 0
+      - distinct: {in: tensors, as: tensor, by: tensor.name}
+
+  - name: modelspec.data.ParamInitFile
+    kind: struct
+    naming:
+      summary: One file `<p>.f32` of the directory `modelspec train --init <dir>` names (DESIGN.md § 8), where p is a parameter's canonical path without its leading model name (`w1` for `Mnist.w1`). Row-major little-endian f32 with no header, exactly elements values, the parameter's element count; the parameter starts from these values instead of its initializer. Another length, or a value that is NaN or infinite, is refused with E-DATA-007 before the first step. A parameter with no file keeps its initializer.
+    fields:
+      - name: path
+        type: String
+      - name: elements
+        type: Integer
+    invariants:
+      - elements > 0
+
+  - name: modelspec.data.ParamInitDirectory
+    kind: struct
+    naming:
+      summary: The directory `modelspec train --init <dir>` names; one ParamInitFile per parameter it overrides. A partial match is allowed, a parameter with no file keeping its initializer, and a file that names no parameter is ignored. A directory that cannot be read, or that holds no ParamInitFile of any parameter, is refused with E-DATA-007 before the first step.
+    fields:
+      - name: files
+        type: List<modelspec.data.ParamInitFile>
+    invariants:
+      - distinct: {in: files, as: file, by: file.path}
+
   - name: modelspec.data.TokenizerId
     kind: newtype
     of: Uuid

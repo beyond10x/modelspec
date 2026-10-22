@@ -71,3 +71,6 @@ Usage: modelspec train [OPTIONS] --backend <BACKEND> <PATH>
 | `<PATH>` | yes | none | The .mspec file to train. |
 | `--backend <BACKEND>` | yes | none | The backend that runs the training step. One of:<br/>`cpu`: The CPU interpreter<br/>`vulkan`: Vulkan compute: not available in M0 |
 | `--serve <ADDR>` | no | none | Stream the run's events as text/event-stream at path /events of ADDR, a loopback address such as 127.0.0.1:8080 or localhost:8080 (port 0 picks a free one); the process keeps serving after the run until SIGINT, SIGTERM or SIGHUP, then exits with the run's status. |
+| `--data <DIR>` | no | none | Train on the dense f32 files of DIR instead of synthetic data: NAME.f32 for the input and the target declaration NAME, row-major little-endian, and an optional order.u32 of sample indices. |
+| `--init <DIR>` | no | none | Start each parameter that has a file DIR/P.f32, P its path without the model name, from that file instead of its initializer. |
+| `--eval <DIR>` | no | none | After the last step, run the forward program over every sample of DIR, laid out as for --data, and print `eval loss=<mean loss> accuracy=<fraction>`. |

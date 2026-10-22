@@ -5,19 +5,23 @@
 //! [`super::data`], then runs `config.steps` SGD steps of the compiled training step. The loss of
 //! step `k` is the loss of the parameters after `k` updates: step `k < steps` reports the loss its
 //! own evaluation computes before its update, and step `steps` is the forward program evaluated on
-//! the final parameters. A run therefore records `steps + 1` losses. Nothing in a run depends on
-//! anything but the compiled program and its seed.
+//! the final parameters. A run therefore records `steps + 1` losses.
+//!
+//! [`run_with`] trains on dense data read from files instead, optionally from parameter values read
+//! from files, and [`evaluate_dense`] measures the trained parameters on an eval directory. A run
+//! depends on nothing but the compiled program, its seed, and the files of `--data` and `--init`.
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 use modelspec_core::compile::CompiledTraining;
 use modelspec_core::ir::tensor::ParamId;
 use thiserror::Error;
 
-use super::data::{DataError, synthetic};
+use super::data::{DataError, DenseData, SyntheticData, synthetic};
 use super::init::{InitError, Stream, initialize};
 use super::optimizer::{ParamState, StepError, sgd_step};
-use crate::cpu::{HostTensor, RuntimeError, evaluate};
+use crate::cpu::{HostTensor, RuntimeError, evaluate, evaluate_all};
 
 /// A finished run.
 #[derive(Clone, Debug, PartialEq)]
@@ -60,29 +64,111 @@ pub fn run(compiled: &CompiledTraining) -> Result<Run, RunError> {
 /// first step observes none.
 pub fn run_observed(
     compiled: &CompiledTraining,
+    observe: impl FnMut(u64, f32),
+) -> Result<Run, RunError> {
+    run_with(compiled, None, &BTreeMap::new(), observe)
+}
+
+/// Runs as [`run_observed`] does, on `data` when it is given instead of synthetic data, and with
+/// each parameter in `init` starting from that value instead of its draw. Step `k` feeds
+/// [`DenseData::step`]`(k)`; the loss after the last update is the forward program on
+/// `step(steps)`. A dense run has no teacher: [`Run::teacher`] is empty.
+pub fn run_with(
+    compiled: &CompiledTraining,
+    data: Option<&DenseData>,
+    init: &BTreeMap<ParamId, HostTensor<f32>>,
     mut observe: impl FnMut(u64, f32),
 ) -> Result<Run, RunError> {
     let config = &compiled.config;
     let forward = &compiled.forward.program;
-    let initial = initialize(forward, config.seed, Stream::Init)?;
-    let data = synthetic(config, &compiled.forward)?;
+    let mut initial = initialize(forward, config.seed, Stream::Init)?;
+    initial.extend(init.iter().map(|(&p, v)| (p, v.clone())));
+    let feed = match data {
+        Some(dense) => Feed::Dense(dense),
+        None => Feed::Synthetic(synthetic(config, &compiled.forward)?),
+    };
+    let inputs = |step: u64| match &feed {
+        Feed::Synthetic(s) => Cow::Borrowed(&s.inputs),
+        Feed::Dense(d) => Cow::Owned(d.step(step)),
+    };
     let mut state = ParamState::new(&compiled.training, initial.clone());
     let mut losses = Vec::new();
     for step in 0..config.steps {
-        let loss = sgd_step(&compiled.training, &data.inputs, &mut state)
+        let loss = sgd_step(&compiled.training, &inputs(step), &mut state)
             .map_err(|source| RunError::Step { step, source })?;
         observe(step, loss);
         losses.push(loss);
     }
-    let last = evaluate(forward, &data.inputs, &state.values)?[0].data()[0];
+    let last = evaluate(forward, &inputs(config.steps), &state.values)?[0].data()[0];
     observe(config.steps, last);
     losses.push(last);
     Ok(Run {
         initial,
         losses,
         state,
-        teacher: data.teacher,
+        teacher: match feed {
+            Feed::Synthetic(s) => s.teacher,
+            Feed::Dense(_) => BTreeMap::new(),
+        },
     })
+}
+
+/// Where the inputs of a step come from.
+enum Feed<'a> {
+    Synthetic(SyntheticData),
+    Dense(&'a DenseData),
+}
+
+/// The loss and accuracy of the forward program over every sample of an eval directory.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Eval {
+    /// The mean of the per-batch losses, summed in `f64`.
+    pub loss: f64,
+    /// The fraction of samples whose prediction row has its first maximum at the index of the
+    /// first maximum of the target row; a prediction row holding a NaN is never correct.
+    pub accuracy: f64,
+}
+
+/// Runs the forward program of `compiled` with `params` over `data` in batches of `B`
+/// ([`DenseData::eval_batch`]); `data` holds a whole number of batches ([`super::data::dense_eval`]).
+pub fn evaluate_dense(
+    compiled: &CompiledTraining,
+    data: &DenseData,
+    params: &BTreeMap<ParamId, HostTensor<f32>>,
+) -> Result<Eval, RunError> {
+    let prediction = compiled.forward.prediction;
+    let batches = data.samples() / data.batch();
+    let mut loss = 0.0f64;
+    let mut correct = 0usize;
+    for b in 0..batches {
+        let inputs = data.eval_batch(b);
+        let mut values = evaluate_all(&compiled.forward.program, &inputs, params)?;
+        loss += f64::from(values.outputs[0].data()[0]);
+        let predicted = values
+            .values
+            .remove(&prediction)
+            .ok_or(DataError::UndefinedPrediction(prediction))?;
+        let target = inputs[data.target()].data();
+        let width = target.len() / data.batch();
+        correct += predicted
+            .data()
+            .chunks_exact(width)
+            .zip(target.chunks_exact(width))
+            .filter(|(p, t)| argmax(p).is_some_and(|i| Some(i) == argmax(t)))
+            .count();
+    }
+    Ok(Eval {
+        loss: loss / batches as f64,
+        accuracy: correct as f64 / data.samples() as f64,
+    })
+}
+
+/// The index of the first maximum of `row`, or `None` when `row` holds a NaN.
+fn argmax(row: &[f32]) -> Option<usize> {
+    if row.iter().any(|v| v.is_nan()) {
+        return None;
+    }
+    Some((1..row.len()).fold(0, |best, i| if row[i] > row[best] { i } else { best }))
 }
 
 #[cfg(test)]

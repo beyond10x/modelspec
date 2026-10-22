@@ -16,6 +16,12 @@
 //! that fails, or a run that cannot be written to stdout (a closed pipe, a full device) is
 //! reported on one line and exits 1.
 //!
+//! `--data <dir>` trains on dense `f32` files instead of synthetic data, `--init <dir>` starts
+//! the parameters that have a file from it, and `--eval <dir>` adds a last line
+//! `eval loss=<mean loss> accuracy=<fraction>` (DESIGN.md § 8; `spec/domains/data.yaml`). Every
+//! file is read before the first step; one that cannot be used is refused with `E-DATA-007`,
+//! `E-DATA-008` or `E-DATA-009` and no `step` line is printed.
+//!
 //! `--serve <addr>` also streams the run as `text/event-stream` at `http://<addr>/events`
 //! (`spec/domains/observatory.yaml`, `ServeAddress` and `StreamFrame`; [`modelspec_observatory`]).
 //! Once the file compiles the address is bound and `serving http://<bound address>/events` is
@@ -44,8 +50,9 @@ use modelspec_observatory::{
     EVENTS_PATH, RunEventBody, RunFailed, RunStarted, Server, StepCompleted, TrainingRunId,
 };
 use modelspec_runtime::cpu::HostTensor;
-use modelspec_runtime::train::data::DataError;
-use modelspec_runtime::train::runner::{self, Run, RunError};
+use modelspec_runtime::train::data::{self, DataError, DenseData};
+use modelspec_runtime::train::init;
+use modelspec_runtime::train::runner::{self, Eval, Run, RunError};
 
 /// The selected backend is not available in this build.
 pub const E_TARGET_001: Code = Code::new("E-TARGET-001");
@@ -66,6 +73,52 @@ pub struct Args {
     /// serving after the run until SIGINT, SIGTERM or SIGHUP, then exits with the run's status.
     #[arg(long, value_name = "ADDR", value_parser = modelspec_observatory::parse_serve_address)]
     pub serve: Option<SocketAddr>,
+    /// Train on the dense f32 files of DIR instead of synthetic data: NAME.f32 for the input and
+    /// the target declaration NAME, row-major little-endian, and an optional order.u32 of sample
+    /// indices.
+    #[arg(long, value_name = "DIR")]
+    pub data: Option<PathBuf>,
+    /// Start each parameter that has a file DIR/P.f32, P its path without the model name, from
+    /// that file instead of its initializer.
+    #[arg(long, value_name = "DIR")]
+    pub init: Option<PathBuf>,
+    /// After the last step, run the forward program over every sample of DIR, laid out as for
+    /// --data, and print `eval loss=<mean loss> accuracy=<fraction>`.
+    #[arg(long, value_name = "DIR")]
+    pub eval: Option<PathBuf>,
+}
+
+/// The directories of `--data`, `--init` and `--eval`.
+struct Files {
+    data: Option<PathBuf>,
+    init: Option<PathBuf>,
+    eval: Option<PathBuf>,
+}
+
+/// The files of a run, read before its first step.
+struct Loaded {
+    data: Option<DenseData>,
+    init: BTreeMap<ParamId, HostTensor<f32>>,
+    eval: Option<DenseData>,
+}
+
+impl Files {
+    fn load(&self, compiled: &CompiledTraining) -> Result<Loaded, DataError> {
+        let (config, forward) = (&compiled.config, &compiled.forward);
+        let data = match &self.data {
+            Some(dir) => Some(data::dense(dir, config, forward)?),
+            None => None,
+        };
+        let init = match &self.init {
+            Some(dir) => init::read_params(dir, &forward.program)?,
+            None => BTreeMap::new(),
+        };
+        let eval = match &self.eval {
+            Some(dir) => Some(data::dense_eval(dir, config, forward)?),
+            None => None,
+        };
+        Ok(Loaded { data, init, eval })
+    }
 }
 
 /// A backend `modelspec train` can name.
@@ -137,9 +190,15 @@ pub fn run(args: Args, stdout: &mut dyn Write, stderr: &mut dyn Write) -> u8 {
         start_step: 0,
     }));
     let mut handler = None;
+    let files = Files {
+        data: args.data,
+        init: args.init,
+        eval: args.eval,
+    };
     let outcome = train(
         &file,
         &compiled,
+        &files,
         &emit,
         &mut || {
             if server.is_some() && handler.is_none() {
@@ -188,21 +247,39 @@ fn interrupted() -> Option<mpsc::Receiver<()>> {
 fn train(
     file: &str,
     compiled: &CompiledTraining,
+    files: &Files,
     emit: &dyn Fn(RunEventBody),
     end: &mut dyn FnMut(),
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
 ) -> Result<(), RunFailed> {
-    let observed = runner::run_observed(compiled, |step, loss| {
-        emit(RunEventBody::StepCompleted(StepCompleted {
-            step,
-            loss: f64::from(loss),
-            metrics: Vec::new(),
-            parameters: Vec::new(),
-        }));
-    });
-    let run = match observed {
-        Ok(run) => run,
+    let observed: Result<(Run, Option<Eval>), RunError> = 'run: {
+        let loaded = match files.load(compiled) {
+            Ok(loaded) => loaded,
+            Err(error) => break 'run Err(error.into()),
+        };
+        let observe = |step, loss| {
+            emit(RunEventBody::StepCompleted(StepCompleted {
+                step,
+                loss: f64::from(loss),
+                metrics: Vec::new(),
+                parameters: Vec::new(),
+            }));
+        };
+        let run = match runner::run_with(compiled, loaded.data.as_ref(), &loaded.init, observe) {
+            Ok(run) => run,
+            Err(error) => break 'run Err(error),
+        };
+        match &loaded.eval {
+            None => Ok((run, None)),
+            Some(data) => match runner::evaluate_dense(compiled, data, &run.state.values) {
+                Ok(eval) => Ok((run, Some(eval))),
+                Err(error) => Err(error),
+            },
+        }
+    };
+    let (run, eval) = match observed {
+        Ok(done) => done,
         Err(RunError::Data(DataError::Refused(diagnostic))) => {
             end();
             let _ = writeln!(stderr, "{diagnostic}");
@@ -220,7 +297,7 @@ fn train(
             });
         }
     };
-    let printed = report(compiled, &run);
+    let printed = report(compiled, &run, eval);
     let body = printed.trim_end_matches('\n');
     let (head, last) = printed.split_at(body.rfind('\n').map_or(0, |i| i + 1));
     let written = stdout
@@ -246,7 +323,7 @@ fn train(
 }
 
 /// The stdout of a finished run.
-fn report(compiled: &CompiledTraining, run: &Run) -> String {
+fn report(compiled: &CompiledTraining, run: &Run, eval: Option<Eval>) -> String {
     let params: BTreeMap<&str, ParamId> = compiled
         .forward
         .program
@@ -269,6 +346,9 @@ fn report(compiled: &CompiledTraining, run: &Run) -> String {
         }
     }
     tensors(&mut out, "param", &run.state.values);
+    if let Some(Eval { loss, accuracy }) = eval {
+        let _ = writeln!(out, "eval loss={loss} accuracy={accuracy}");
+    }
     out
 }
 
