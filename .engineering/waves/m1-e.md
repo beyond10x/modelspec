@@ -52,7 +52,7 @@ over 5 runs of 72,000 steps after a 6.5 s warm-up; P0 in 102 of 162 clock sample
 |---|---|---|---|---|
 | 1 | m1-vulkan-profile | impl/m1-vulkan-profile | modelspec-impl-profile | merged 1ac97bf |
 | 2 | m1-loss-sum-staged | impl/m1-loss-sum-staged | modelspec-impl-losssum | merged 6056e81 |
-| 3 | m1-fuse-elementwise | impl/m1-fuse-elementwise | modelspec-impl-fuse | implementor |
+| 3 | m1-fuse-elementwise | impl/m1-fuse-elementwise | modelspec-impl-fuse | merged 170c027 |
 
 Integration: `wave/m1-e`, tree `modelspec-wave-m1e`, from `main` `ec431b1`.
 Scratch: `~/.cache/modelspec-wave-m1-e/<story>/scratch/`.

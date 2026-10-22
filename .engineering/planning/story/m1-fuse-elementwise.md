@@ -2,7 +2,7 @@
 format: aep.planning-md/3
 id: story:m1-fuse-elementwise
 kind: story
-status: active
+status: implemented
 title: 'Fewer dispatch groups per step: ReLU into its matmul, scale into the SGD update, constants folded'
 relations:
 - decomposes: epic:pytorch-10x-mnist
@@ -30,10 +30,11 @@ scope:
   path: crates/modelspec-runtime/tests/vulkan_elementwise.rs
 - confidence: inferred
   path: crates/modelspec-runtime/tests/vulkan_train.rs
-revision: 5
+revision: 6
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-22T11:18:05Z", actor: "human:timo", revision: 4}
 - {from: "proposed", to: "active", at: "2026-10-22T11:18:05Z", actor: "human:timo", revision: 5}
+- {from: "active", to: "implemented", at: "2026-10-22T14:46:57Z", actor: "human:timo", revision: 6, decided_on: {"recorded":{"test_result":1,"review_outcome":1}}}
 ---
 # Fewer dispatch groups per step: ReLU into its matmul, scale into the SGD update, constants folded
 

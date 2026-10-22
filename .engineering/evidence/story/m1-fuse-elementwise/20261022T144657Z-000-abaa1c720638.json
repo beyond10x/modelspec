@@ -1,0 +1,15 @@
+{
+  "at": "2026-10-22T14:46:57Z",
+  "actor": "human:timo",
+  "artifact": "story:m1-fuse-elementwise",
+  "kind": "story",
+  "revision": 5,
+  "change": {
+    "change": "evidence",
+    "kind": "review_outcome",
+    "source": "adversary at bdd039d; 6 documentation and test findings fixed in 3064f65, float-control residual recorded in DESIGN.md section 5.4",
+    "reference": "https://github.com/beyond10x/modelspec/commit/3064f65616499adbcef4a0d7dc088b58541a453c",
+    "review": "review-result:m1-fuse-elementwise-adversary-1",
+    "outcome": "fixed"
+  }
+}

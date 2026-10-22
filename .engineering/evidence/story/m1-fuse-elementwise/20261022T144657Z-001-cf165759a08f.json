@@ -1,0 +1,13 @@
+{
+  "at": "2026-10-22T14:46:57Z",
+  "actor": "human:timo",
+  "artifact": "story:m1-fuse-elementwise",
+  "kind": "story",
+  "revision": 5,
+  "change": {
+    "change": "evidence",
+    "kind": "test_result",
+    "source": "task ci exit 0, 121 test-result lines; RTX 3090 vulkan_elementwise 6 passed with validation on; 18 to 14 dispatches per step; 1,800-step stdout sha256 equal to base; ADR-007 at 1950 MHz both sides 72k steps 52.215 to 47.746 us",
+    "reference": "https://github.com/beyond10x/modelspec/commit/3064f65616499adbcef4a0d7dc088b58541a453c"
+  }
+}
