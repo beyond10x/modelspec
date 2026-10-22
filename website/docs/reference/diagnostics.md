@@ -90,7 +90,7 @@ The synthetic data loader of `modelspec train`, which runs after a file checks.
 
 ## Target
 
-Backend selection of `modelspec train`, before the file is read, and Vulkan device discovery and negotiation of `modelspec inspect-device`.
+Backend selection of `modelspec train`, before the file is read, Vulkan device discovery and negotiation of `modelspec inspect-device`, and the limits of the Vulkan target the schedule checks.
 
 | Code | Meaning | Declared in |
 |---|---|---|
@@ -98,6 +98,7 @@ Backend selection of `modelspec train`, before the file is read, and Vulkan devi
 | <a id="e-target-002"></a>`E-TARGET-002` | No Vulkan loader could be opened: the library `MODELSPEC_VULKAN_LIBRARY` names, or the system's `libvulkan`, is missing or is not a Vulkan loader. | [`crates/modelspec-runtime/src/vulkan/mod.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-runtime/src/vulkan/mod.rs) |
 | <a id="e-target-003"></a>`E-TARGET-003` | No Vulkan physical device was found, the device index names none of them, or the chosen device has no compute queue family. | [`crates/modelspec-runtime/src/vulkan/select.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-runtime/src/vulkan/select.rs) |
 | <a id="e-target-004"></a>`E-TARGET-004` | The Vulkan device is below the Vulkan API version the runtime requires (1.2.0). | [`crates/modelspec-runtime/src/vulkan/negotiate.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-runtime/src/vulkan/negotiate.rs) |
+| <a id="e-target-010"></a>`E-TARGET-010` | A tensor of the training step is too large for the Vulkan target of M1: one dispatch over it needs more than 65,535 workgroups in each of three dimensions or more than 2^32 invocations, its buffer holds more than 4,294,967,295 bytes (the `u32` range of a storage buffer binding), or its byte count does not fit in 64 bits (DESIGN.md § 8.1). The file checks; reduce the shape. | [`crates/modelspec-core/src/compile.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/compile.rs) |
 
 ## Compiler bugs
 

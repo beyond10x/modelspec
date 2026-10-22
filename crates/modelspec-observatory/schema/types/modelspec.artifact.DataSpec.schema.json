@@ -4,11 +4,65 @@
   "x-ess-provenance": {
     "system": "modelspec",
     "specification_version": "v1",
-    "source_digest": "5c9fb6600ad276af97d4257524b5473e0dacbed7ec52b740981bf822062d28b6",
-    "contract_digest": "slice-sha256/2:75a39ddf9169b526623e4d9c3c9deae89cc82d86992f272ab078891f2d16c9ca",
+    "source_digest": "6985fc7ba922e2c852faa4712e64d75ddfe2f51424fc6add5dcb6e315c5ad397",
+    "contract_digest": "slice-sha256/2:e8e1f0006f8a0acd074aa926b2756211cf915d6c044f43f2c60ab023aa05c48e",
     "regenerate": "ess generate"
   },
   "$defs": {
+    "modelspec.artifact.BufferView": {
+      "title": "BufferView",
+      "description": "A typed view of a plan buffer (DESIGN.md § 7.1). size_bytes equals element_count times dtype.size_bytes and offset is a multiple of alignment; ESS states neither here. Device ownership (§ 7.1) is not yet typed.",
+      "x-ess-name": "modelspec.artifact.BufferView",
+      "x-ess-kind": "struct",
+      "type": "object",
+      "properties": {
+        "buffer": {
+          "description": "The plan-local number of the allocation the view lies in (DESIGN.md § 3.1 resources).",
+          "type": "integer",
+          "minimum": 0
+        },
+        "dtype": {
+          "$ref": "#/$defs/modelspec.checkpoint.DType"
+        },
+        "element_count": {
+          "description": "Logical element count (DESIGN.md § 7.1).",
+          "type": "integer",
+          "minimum": 1
+        },
+        "offset": {
+          "description": "Start of the allocation range, in bytes (DESIGN.md § 7.1).",
+          "type": "integer",
+          "minimum": 0
+        },
+        "size_bytes": {
+          "description": "Length of the allocation range, in bytes (DESIGN.md § 7.1).",
+          "type": "integer",
+          "minimum": 1
+        },
+        "alignment": {
+          "description": "Alignment of the view, in bytes (DESIGN.md § 7.1).",
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "buffer",
+        "dtype",
+        "element_count",
+        "offset",
+        "size_bytes",
+        "alignment"
+      ],
+      "additionalProperties": false,
+      "x-ess-invariants": [
+        "buffer >= 0",
+        "element_count > 0",
+        "offset >= 0",
+        "size_bytes > 0",
+        "size_bytes >= dtype.size_bytes",
+        "alignment > 0"
+      ]
+    },
     "modelspec.artifact.DataRole": {
       "title": "DataRole",
       "description": "Whether a bound tensor is a training input or a target (DESIGN.md § 2 `input`, `target`).",
@@ -38,13 +92,18 @@
         },
         "shape": {
           "$ref": "#/$defs/modelspec.checkpoint.Shape"
+        },
+        "view": {
+          "$ref": "#/$defs/modelspec.artifact.BufferView",
+          "description": "The plan buffer view a runner writes each batch of this tensor into before a step (DESIGN.md § 7.1). No plan step loads a batch; the runner uploads it between recordings, outside the recorded plan, ordered after the fence of the recording before and before the first step of the next."
         }
       },
       "required": [
         "name",
         "role",
         "dtype",
-        "shape"
+        "shape",
+        "view"
       ],
       "additionalProperties": false
     },

@@ -2,6 +2,7 @@
 //!
 //! This crate builds and tests without Vulkan (DESIGN.md § 7).
 
+pub mod artifact;
 pub mod autodiff;
 pub mod compile;
 pub mod device;
@@ -12,5 +13,6 @@ pub mod lower;
 pub mod ops;
 pub mod passes;
 pub mod resolve;
+pub mod schedule;
 pub mod syntax;
 pub mod types;

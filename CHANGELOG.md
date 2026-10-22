@@ -13,6 +13,7 @@ history.
 
 - `examples/mnist_mlp.mspec`: the MNIST benchmark shapes (784 → 64 ReLU → 10, no bias, SGD lr 0.1, batch 100, 1,800 steps) on M0 synthetic data, checked by `task check-examples`, gradient-checked at sampled coordinates and with a training-IR golden file (story:m1-mlp-example)
 - `modelspec inspect-device --backend vulkan [--device N] [--format text|json]`: the `modelspec_core::device::DeviceProfile` of each Vulkan device as the driver reports it and its negotiation verdict (Vulkan 1.2, numerics class), with codes E-TARGET-002 to E-TARGET-004 (story:m1-inspect-device)
+- `modelspec ir --stage kernel` prints the Kernel IR of a training step: its buffer views, kernels with module ids, step plan and forward plan, built by `modelspec_core::schedule::schedule`, checked by `modelspec_core::ir::verify::verify_plan` (and `verify_recorded_back_to_back` for back-to-back recording) and wrapped by `compile::compile_artifact`; a tensor too large to dispatch or bind is refused with `E-TARGET-010` (story:m1-kernel-plan)
 
 ## [0.3.0] - 2026-10-22
 

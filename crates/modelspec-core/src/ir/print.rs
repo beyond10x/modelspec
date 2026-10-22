@@ -8,6 +8,7 @@
 
 use std::fmt::{self, Write};
 
+use crate::ir::kernel::{ExecutionPlan, PlanStep};
 use crate::ir::tensor::{ParamId, TensorNode, TensorOp, TensorProgram};
 use crate::ir::training::{Optimizer, TrainingProgram, TrainingStep};
 
@@ -111,6 +112,95 @@ impl fmt::Display for TensorProgram {
         }
         Ok(())
     }
+}
+
+/// The text form of Kernel IR and its execution plans, one line each, newline-terminated.
+///
+/// One line per buffer, `buffer b0: 128 bytes`; per `input` and `target`
+/// (`input x: Tensor<f32, [8, 4]> view b0[f32 x 32, bytes 0..128, align 4]`); per parameter, with
+/// its views; `loss <view>` and `prediction <view>`. Then one line per kernel, numbered `k0`, `k1`
+/// in the order the step plan first dispatches them: `kernel k0 <module id> <kind> <op> <dtype>
+/// (<operands>) -> <result> [over <reduced>] workgroup_size <n> workgroups [x, y, z]`, the
+/// workgroup size being the constant of the kind. Then `plan step` and `plan forward`, each
+/// followed by one indented line per step: its position, op, kernel, value, views, workgroups and
+/// dependencies.
+pub fn print_kernel(plan: &ExecutionPlan) -> String {
+    let mut out = String::new();
+    write_kernel(&mut out, plan).expect("writing to a String does not fail");
+    out
+}
+
+fn write_kernel(out: &mut String, plan: &ExecutionPlan) -> fmt::Result {
+    for (i, size) in plan.buffers.iter().enumerate() {
+        writeln!(out, "buffer b{i}: {size} bytes")?;
+    }
+    for data in &plan.data {
+        writeln!(
+            out,
+            "{} {}: {} view {}",
+            data.role, data.name, data.ty, data.view
+        )?;
+    }
+    for parameter in &plan.parameters {
+        write!(out, "param @{}: {} views", parameter.path, parameter.ty)?;
+        for view in &parameter.views {
+            write!(out, " {view}")?;
+        }
+        out.write_char('\n')?;
+    }
+    writeln!(out, "loss {}", plan.loss_view)?;
+    writeln!(out, "prediction {}", plan.prediction_view)?;
+    for (i, kernel) in plan.kernels.iter().enumerate() {
+        writeln!(out, "kernel k{i} {} {}", kernel.id, kernel.signature())?;
+    }
+    for (name, steps) in [("step", &plan.step), ("forward", &plan.forward)] {
+        writeln!(out, "plan {name}")?;
+        for (i, step) in steps.iter().enumerate() {
+            write_plan_step(out, plan, i, step)?;
+        }
+    }
+    Ok(())
+}
+
+fn write_plan_step(
+    out: &mut String,
+    plan: &ExecutionPlan,
+    at: usize,
+    step: &PlanStep,
+) -> fmt::Result {
+    write!(out, "  {at}: {}", step.op)?;
+    if let Some(id) = step.kernel_module_id {
+        match plan.kernels.iter().position(|k| k.id == id) {
+            Some(k) => write!(out, " k{k}")?,
+            None => write!(out, " {id}")?,
+        }
+    }
+    if let Some(value) = step.value {
+        write!(out, " {value}")?;
+    }
+    for (label, views) in [("reads", &step.reads), ("writes", &step.writes)] {
+        if !views.is_empty() {
+            write!(out, " {label}")?;
+            for (i, view) in views.iter().enumerate() {
+                out.write_str(if i == 0 { " " } else { ", " })?;
+                write!(out, "{view}")?;
+            }
+        }
+    }
+    if let Some([x, y, z]) = step.workgroups {
+        write!(out, " workgroups [{x}, {y}, {z}]")?;
+    }
+    if !step.depends_on.is_empty() {
+        out.write_str(" after [")?;
+        for (i, on) in step.depends_on.iter().enumerate() {
+            if i > 0 {
+                out.write_str(", ")?;
+            }
+            write!(out, "{on}")?;
+        }
+        out.write_char(']')?;
+    }
+    out.write_char('\n')
 }
 
 /// Writes one node without a trailing newline.

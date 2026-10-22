@@ -190,6 +190,7 @@ mod tests {
         assert!(train.contains("| `--serve <ADDR>` | no | none |"));
         assert!(page.contains("One of:<br/>`cpu`: The CPU interpreter"));
         assert!(page.contains("<br/>`training`: Training IR"));
+        assert!(page.contains("<br/>`kernel`: Kernel IR"));
         assert!(page.contains("| `2` | a usage error |"));
         assert!(!page.contains("modelspec help"));
     }

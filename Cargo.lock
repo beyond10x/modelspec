@@ -569,6 +569,7 @@ dependencies = [
 name = "modelspec-core"
 version = "0.3.0"
 dependencies = [
+ "blake3",
  "logos",
  "serde",
  "serde_json",

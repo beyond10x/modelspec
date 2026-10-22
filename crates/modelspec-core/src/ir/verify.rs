@@ -8,11 +8,13 @@ use std::fmt;
 
 use thiserror::Error;
 
+use crate::ir::kernel::{BufferView, ExecutionPlan, KernelKind, KernelModuleId, PlanOp, PlanStep};
 use crate::ir::tensor::{Dim, ParamId, TensorOp, TensorProgram, TensorType, ValueId};
 use crate::ir::training::{
     Access, Effect, EffectToken, StateVersion, Subgraph, TrainingProgram, TrainingStep,
 };
 use crate::ops::{self, OpError};
+use crate::schedule::MAX_WORKGROUPS_PER_DIMENSION;
 
 /// Where a type invariant failed: a value's type or a parameter table entry's.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -757,4 +759,595 @@ fn params_read_by(program: &TensorProgram, value: ValueId) -> BTreeSet<ParamId> 
         }
     }
     params
+}
+
+/// The most invocations of one workgroup that every Vulkan device supports.
+pub const MAX_WORKGROUP_INVOCATIONS: u32 = 128;
+
+/// Which plan of an [`ExecutionPlan`] a step belongs to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlanName {
+    Step,
+    Forward,
+}
+
+impl fmt::Display for PlanName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            PlanName::Step => "step plan",
+            PlanName::Forward => "forward plan",
+        })
+    }
+}
+
+/// An execution-plan invariant that does not hold (DESIGN.md § 3.1, § 7.1). Like
+/// [`VerifyError`], a compiler bug.
+#[derive(Clone, Debug, PartialEq, Eq, Error)]
+pub enum PlanVerifyError {
+    #[error("parameter `{path}` has no view")]
+    ParameterWithoutView { path: String },
+    #[error("parameter `{path}` has {count} views; one or two are allowed")]
+    TooManyParameterViews { path: String, count: usize },
+    #[error("a view names buffer b{buffer}, which the plan does not have")]
+    UnknownBuffer { buffer: u32 },
+    #[error("a view of buffer b{buffer} ends at byte {end:?}, past its {size} bytes")]
+    ViewOutsideBuffer {
+        buffer: u32,
+        end: Option<u64>,
+        size: u64,
+    },
+    #[error("a view of buffer b{buffer} is empty, misaligned or not its element count's size")]
+    MalformedView { buffer: u32 },
+    #[error("kernel {kernel} has {size} invocations per workgroup, outside 1..=128")]
+    WorkgroupTooLarge { kernel: KernelModuleId, size: u32 },
+    #[error("{plan} step {step} depends on step {on}, which is not before it")]
+    DependencyNotEarlier {
+        plan: PlanName,
+        step: usize,
+        on: usize,
+    },
+    #[error("{plan} step {step} is a Dispatch without a kernel module of the plan")]
+    MissingKernelModule { plan: PlanName, step: usize },
+    #[error("{plan} step {step} is not a Dispatch but names a kernel module or workgroups")]
+    StrayKernel { plan: PlanName, step: usize },
+    #[error("{plan} step {step} dispatches {count} workgroups in dimension {dimension}")]
+    TooManyWorkgroups {
+        plan: PlanName,
+        step: usize,
+        dimension: usize,
+        count: u32,
+    },
+    #[error("{plan} step {step} dispatches no workgroups")]
+    EmptyDispatch { plan: PlanName, step: usize },
+    #[error("{plan} step {step} allocates buffer b{buffer}, which an earlier step uses")]
+    AllocateAfterUse {
+        plan: PlanName,
+        step: usize,
+        buffer: u32,
+    },
+    #[error("{plan} step {step} is a CPU-visible completion point")]
+    CompletionPoint { plan: PlanName, step: usize },
+    #[error(
+        "{plan} step {step} is a stage 2 whose partials buffer {buffer:?} no earlier Allocate made"
+    )]
+    PartialsNotAllocated {
+        plan: PlanName,
+        step: usize,
+        buffer: Option<u32>,
+    },
+    #[error("{plan} step {step} is a stage 2 with no stage 1 before it")]
+    Stage2WithoutStage1 { plan: PlanName, step: usize },
+    #[error("{plan} step {step} is a stage 2 that depends on no Barrier after its stage 1")]
+    Stage2WithoutBarrier { plan: PlanName, step: usize },
+    #[error(
+        "{plan} update step {update} does not depend on step {reader}, which reads its parameter"
+    )]
+    UpdateMissesReader {
+        plan: PlanName,
+        update: usize,
+        reader: usize,
+    },
+    #[error(
+        "{plan} step {step} accesses buffer b{buffer} after step {earlier} with no Barrier between"
+    )]
+    UnsyncedAccess {
+        plan: PlanName,
+        step: usize,
+        earlier: usize,
+        buffer: u32,
+    },
+    #[error("forward plan step {step} writes parameter buffer b{buffer}")]
+    ForwardWritesParameter { step: usize, buffer: u32 },
+    #[error("the {name} view lies in parameter buffer b{buffer}")]
+    BoundViewAliasesParameter { name: String, buffer: u32 },
+    #[error("a view of `{name}` holds {count} {dtype} elements, not its type {ty}")]
+    ViewDisagreesWithType {
+        name: String,
+        count: u64,
+        dtype: crate::ir::tensor::DType,
+        ty: crate::ir::tensor::TensorType,
+    },
+    #[error("{plan} step {step} dispatches {step_workgroups:?} workgroups, its kernel {kernel:?}")]
+    WorkgroupsDisagree {
+        plan: PlanName,
+        step: usize,
+        step_workgroups: [u32; 3],
+        kernel: [u32; 3],
+    },
+    #[error(
+        "{plan} step {step} reads parameter buffer b{buffer} after update step {update} wrote it \
+         in the same recording"
+    )]
+    ReadAfterUpdate {
+        plan: PlanName,
+        step: usize,
+        update: usize,
+        buffer: u32,
+    },
+    #[error("the {plan} does not end with a fence, a Barrier with no dependencies")]
+    PlanNotFenced { plan: PlanName },
+    #[error("{plan} step {step} is a fence before the last step; a plan has one fence, its last")]
+    FenceNotLast { plan: PlanName, step: usize },
+    #[error("the loss view holds {count} elements, not the one of the rank-0 loss")]
+    LossViewNotScalar { count: u64 },
+    #[error("the {plan} never writes the {name} view")]
+    BoundViewNotWritten { name: String, plan: PlanName },
+}
+
+/// Checks every execution-plan invariant of `plan`, reporting the first failure.
+///
+/// Order: each parameter has one or two views; every view (parameter, data, loss, prediction
+/// and each step's) is well formed and lies inside its buffer; each parameter and data view holds
+/// its declared type's element count and dtype; no data, loss or prediction view lies in a
+/// parameter buffer; every kernel has 1 to 128 invocations per workgroup. Then for the step plan
+/// and the forward plan, each a pass over every step: no completion point, dependencies on earlier
+/// steps only, a Dispatch names a kernel of the plan and 1 to 65,535 workgroups per dimension,
+/// equal to its kernel's, and no other step names either, an `Allocate` makes a buffer no earlier
+/// step of its recording used; then each stage-2 Dispatch reads a partials buffer an `Allocate` of
+/// its recording made and depends on a `Barrier` after its stage 1; then each SGD update is
+/// ordered after every earlier reader of its parameter; no step reads a parameter after its
+/// update in the same recording; every Dispatch or Copy that reads what an earlier one wrote, or
+/// writes what it read or wrote, is ordered after a `Barrier` that is ordered after that step;
+/// and the plan's one fence is its last step. Then the forward plan writes no parameter view, the
+/// loss view holds one element and the step plan writes it, and both plans write the prediction
+/// view; an empty plan (a `Cpu` artifact's) writes nothing and is exempt.
+///
+/// A fence is a `Barrier` with no dependencies: it is ordered after every earlier step. A plan is
+/// one recording, so it has exactly one fence, its last step; [`verify_recorded_back_to_back`]
+/// checks the same plan recorded several times in a row.
+pub fn verify_plan(plan: &ExecutionPlan) -> Result<(), PlanVerifyError> {
+    verify_execution(plan, false)
+}
+
+/// Checks that `plan` verifies and stays race-free when each of its plans is recorded `n` times
+/// back to back, as a runner does for `n` training steps in one command buffer.
+///
+/// The `n` recordings are checked as one plan in which each fence closes a recording: a step with
+/// no dependencies after a fence is ordered after it, and the `Allocate`, partials and
+/// read-after-update checks look only inside a step's own recording.
+pub fn verify_recorded_back_to_back(plan: &ExecutionPlan, n: usize) -> Result<(), PlanVerifyError> {
+    verify_plan(plan)?;
+    if n < 2 {
+        return Ok(());
+    }
+    let repeat = |steps: &[PlanStep]| -> Vec<PlanStep> {
+        (0..n)
+            .flat_map(|k| {
+                steps.iter().map(move |step| {
+                    let mut again = step.clone();
+                    for on in &mut again.depends_on {
+                        *on += k * steps.len();
+                    }
+                    again
+                })
+            })
+            .collect()
+    };
+    let mut joined = plan.clone();
+    joined.step = repeat(&plan.step);
+    joined.forward = repeat(&plan.forward);
+    verify_execution(&joined, true)
+}
+
+/// [`verify_plan`], or with `back_to_back` the check of [`verify_recorded_back_to_back`] on the
+/// joined plan.
+fn verify_execution(plan: &ExecutionPlan, back_to_back: bool) -> Result<(), PlanVerifyError> {
+    for parameter in &plan.parameters {
+        match parameter.views.len() {
+            0 => {
+                return Err(PlanVerifyError::ParameterWithoutView {
+                    path: parameter.path.clone(),
+                });
+            }
+            1 | 2 => {}
+            count => {
+                return Err(PlanVerifyError::TooManyParameterViews {
+                    path: parameter.path.clone(),
+                    count,
+                });
+            }
+        }
+    }
+
+    let step_views = plan
+        .step
+        .iter()
+        .chain(&plan.forward)
+        .flat_map(|s| s.reads.iter().chain(&s.writes));
+    let views = plan
+        .parameters
+        .iter()
+        .flat_map(|p| &p.views)
+        .chain(plan.data.iter().map(|d| &d.view))
+        .chain([&plan.loss_view, &plan.prediction_view])
+        .chain(step_views);
+    for view in views {
+        check_view(&plan.buffers, view)?;
+    }
+
+    let typed = plan
+        .parameters
+        .iter()
+        .flat_map(|p| p.views.iter().map(move |v| (&p.path, &p.ty, v)))
+        .chain(plan.data.iter().map(|d| (&d.name, &d.ty, &d.view)));
+    for (name, ty, view) in typed {
+        let count = ty.shape.iter().try_fold(1u64, |acc, dim| match dim {
+            Dim::Static(n) => acc.checked_mul(*n),
+            Dim::Symbol(_) => None,
+        });
+        if count != Some(view.element_count) || ty.dtype != view.dtype {
+            return Err(PlanVerifyError::ViewDisagreesWithType {
+                name: name.clone(),
+                count: view.element_count,
+                dtype: view.dtype,
+                ty: ty.clone(),
+            });
+        }
+    }
+
+    let parameter_buffers: BTreeSet<u32> = plan
+        .parameters
+        .iter()
+        .flat_map(|p| p.views.iter().map(|v| v.buffer))
+        .collect();
+    let bound = plan.data.iter().map(|d| (d.name.clone(), &d.view)).chain([
+        ("loss".to_owned(), &plan.loss_view),
+        ("prediction".to_owned(), &plan.prediction_view),
+    ]);
+    for (name, view) in bound {
+        if parameter_buffers.contains(&view.buffer) {
+            return Err(PlanVerifyError::BoundViewAliasesParameter {
+                name,
+                buffer: view.buffer,
+            });
+        }
+    }
+
+    for kernel in &plan.kernels {
+        if !(1..=MAX_WORKGROUP_INVOCATIONS).contains(&kernel.workgroup_size) {
+            return Err(PlanVerifyError::WorkgroupTooLarge {
+                kernel: kernel.id,
+                size: kernel.workgroup_size,
+            });
+        }
+    }
+
+    for (name, steps) in [
+        (PlanName::Step, &plan.step),
+        (PlanName::Forward, &plan.forward),
+    ] {
+        verify_steps(plan, name, steps, &parameter_buffers, back_to_back)?;
+    }
+    for (step, s) in plan.forward.iter().enumerate() {
+        if let Some(view) = s
+            .writes
+            .iter()
+            .find(|v| parameter_buffers.contains(&v.buffer))
+        {
+            return Err(PlanVerifyError::ForwardWritesParameter {
+                step,
+                buffer: view.buffer,
+            });
+        }
+    }
+
+    if plan.loss_view.element_count != 1 {
+        return Err(PlanVerifyError::LossViewNotScalar {
+            count: plan.loss_view.element_count,
+        });
+    }
+    let writes =
+        |steps: &[PlanStep], view: &BufferView| steps.iter().any(|s| s.writes.contains(view));
+    let bound = [
+        ("loss", &plan.loss_view, PlanName::Step, &plan.step),
+        (
+            "prediction",
+            &plan.prediction_view,
+            PlanName::Step,
+            &plan.step,
+        ),
+        (
+            "prediction",
+            &plan.prediction_view,
+            PlanName::Forward,
+            &plan.forward,
+        ),
+    ];
+    for (name, view, plan_name, steps) in bound {
+        if !steps.is_empty() && !writes(steps, view) {
+            return Err(PlanVerifyError::BoundViewNotWritten {
+                name: name.to_owned(),
+                plan: plan_name,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn check_view(buffers: &[u64], view: &BufferView) -> Result<(), PlanVerifyError> {
+    let buffer = view.buffer;
+    let size = *buffers
+        .get(buffer as usize)
+        .ok_or(PlanVerifyError::UnknownBuffer { buffer })?;
+    let end = view.end();
+    if end.is_none_or(|end| end > size) {
+        return Err(PlanVerifyError::ViewOutsideBuffer { buffer, end, size });
+    }
+    let well_formed = view.element_count > 0
+        && view.alignment > 0
+        && view.offset.is_multiple_of(view.alignment)
+        && view.element_count.checked_mul(view.dtype.size_bytes()) == Some(view.size_bytes);
+    if !well_formed {
+        return Err(PlanVerifyError::MalformedView { buffer });
+    }
+    Ok(())
+}
+
+fn verify_steps(
+    plan: &ExecutionPlan,
+    name: PlanName,
+    steps: &[PlanStep],
+    parameter_buffers: &BTreeSet<u32>,
+    back_to_back: bool,
+) -> Result<(), PlanVerifyError> {
+    let kind_of = |step: &PlanStep| {
+        step.kernel_module_id
+            .and_then(|id| plan.kernel(id))
+            .map(|k| k.kind)
+    };
+    let is_fence = |step: &PlanStep| step.op == PlanOp::Barrier && step.depends_on.is_empty();
+    // The first step of the recording each step belongs to: the step after the last fence before
+    // it, or 0. Only a back-to-back check has more than one recording; one plan has its one fence
+    // last.
+    let mut recording_start = Vec::with_capacity(steps.len());
+    let mut start = 0;
+    for (i, step) in steps.iter().enumerate() {
+        recording_start.push(start);
+        if is_fence(step) {
+            if !back_to_back && i + 1 != steps.len() {
+                return Err(PlanVerifyError::FenceNotLast {
+                    plan: name,
+                    step: i,
+                });
+            }
+            start = i + 1;
+        }
+    }
+    for (i, step) in steps.iter().enumerate() {
+        if step.op == PlanOp::Complete {
+            return Err(PlanVerifyError::CompletionPoint {
+                plan: name,
+                step: i,
+            });
+        }
+        if let Some(&on) = step.depends_on.iter().find(|&&on| on >= i) {
+            return Err(PlanVerifyError::DependencyNotEarlier {
+                plan: name,
+                step: i,
+                on,
+            });
+        }
+        if step.op == PlanOp::Dispatch {
+            let Some(kernel) = step.kernel_module_id.and_then(|id| plan.kernel(id)) else {
+                return Err(PlanVerifyError::MissingKernelModule {
+                    plan: name,
+                    step: i,
+                });
+            };
+            let Some(workgroups) = step.workgroups else {
+                return Err(PlanVerifyError::EmptyDispatch {
+                    plan: name,
+                    step: i,
+                });
+            };
+            for (dimension, &count) in workgroups.iter().enumerate() {
+                if count > MAX_WORKGROUPS_PER_DIMENSION {
+                    return Err(PlanVerifyError::TooManyWorkgroups {
+                        plan: name,
+                        step: i,
+                        dimension,
+                        count,
+                    });
+                }
+                if count == 0 {
+                    return Err(PlanVerifyError::EmptyDispatch {
+                        plan: name,
+                        step: i,
+                    });
+                }
+            }
+            if workgroups != kernel.workgroups {
+                return Err(PlanVerifyError::WorkgroupsDisagree {
+                    plan: name,
+                    step: i,
+                    step_workgroups: workgroups,
+                    kernel: kernel.workgroups,
+                });
+            }
+        } else if step.kernel_module_id.is_some() || step.workgroups.is_some() {
+            return Err(PlanVerifyError::StrayKernel {
+                plan: name,
+                step: i,
+            });
+        }
+        if step.op == PlanOp::Allocate {
+            for view in &step.writes {
+                let used = steps[recording_start[i]..i].iter().any(|s| {
+                    s.reads
+                        .iter()
+                        .chain(&s.writes)
+                        .any(|v| v.buffer == view.buffer)
+                });
+                if used {
+                    return Err(PlanVerifyError::AllocateAfterUse {
+                        plan: name,
+                        step: i,
+                        buffer: view.buffer,
+                    });
+                }
+            }
+        }
+    }
+
+    // What each step is ordered after: its dependencies and theirs. A fence is ordered after every
+    // earlier step, and a step with no dependencies after the fence that opens its recording.
+    let mut closure: Vec<BTreeSet<usize>> = Vec::with_capacity(steps.len());
+    for (i, step) in steps.iter().enumerate() {
+        let mut reached = BTreeSet::new();
+        if is_fence(step) {
+            reached.extend(0..i);
+        } else if step.depends_on.is_empty() && recording_start[i] > 0 {
+            let fence = recording_start[i] - 1;
+            reached.insert(fence);
+            reached.extend(closure[fence].iter().copied());
+        }
+        for &on in &step.depends_on {
+            reached.insert(on);
+            reached.extend(closure[on].iter().copied());
+        }
+        closure.push(reached);
+    }
+
+    for (i, step) in steps.iter().enumerate() {
+        if kind_of(step) != Some(KernelKind::ReduceStage2) {
+            continue;
+        }
+        let partials = step.reads.first().map(|v| v.buffer);
+        let allocated = partials.is_some_and(|buffer| {
+            steps[recording_start[i]..i]
+                .iter()
+                .any(|s| s.op == PlanOp::Allocate && s.writes.iter().any(|v| v.buffer == buffer))
+        });
+        let Some(buffer) = partials.filter(|_| allocated) else {
+            return Err(PlanVerifyError::PartialsNotAllocated {
+                plan: name,
+                step: i,
+                buffer: partials,
+            });
+        };
+        let Some(stage1) = (0..i).rev().find(|&j| {
+            kind_of(&steps[j]) == Some(KernelKind::ReduceStage1)
+                && steps[j].writes.iter().any(|v| v.buffer == buffer)
+        }) else {
+            return Err(PlanVerifyError::Stage2WithoutStage1 {
+                plan: name,
+                step: i,
+            });
+        };
+        let synced = step
+            .depends_on
+            .iter()
+            .any(|&b| b > stage1 && steps[b].op == PlanOp::Barrier && closure[b].contains(&stage1));
+        if !synced {
+            return Err(PlanVerifyError::Stage2WithoutBarrier {
+                plan: name,
+                step: i,
+            });
+        }
+    }
+
+    for (i, step) in steps.iter().enumerate() {
+        if kind_of(step) != Some(KernelKind::SgdUpdate) {
+            continue;
+        }
+        for view in step
+            .writes
+            .iter()
+            .filter(|v| parameter_buffers.contains(&v.buffer))
+        {
+            let reader = (0..i).find(|&j| {
+                steps[j].reads.iter().any(|v| v.buffer == view.buffer) && !closure[i].contains(&j)
+            });
+            if let Some(reader) = reader {
+                return Err(PlanVerifyError::UpdateMissesReader {
+                    plan: name,
+                    update: i,
+                    reader,
+                });
+            }
+        }
+    }
+
+    for (i, step) in steps.iter().enumerate() {
+        let reads = step
+            .reads
+            .iter()
+            .filter(|v| parameter_buffers.contains(&v.buffer));
+        for view in reads {
+            let update = (recording_start[i]..i).find(|&j| {
+                kind_of(&steps[j]) == Some(KernelKind::SgdUpdate)
+                    && steps[j].writes.iter().any(|w| w.buffer == view.buffer)
+            });
+            if let Some(update) = update {
+                return Err(PlanVerifyError::ReadAfterUpdate {
+                    plan: name,
+                    step: i,
+                    update,
+                    buffer: view.buffer,
+                });
+            }
+        }
+    }
+
+    let accesses = |step: &PlanStep| matches!(step.op, PlanOp::Dispatch | PlanOp::Copy);
+    for (i, step) in steps.iter().enumerate() {
+        if !accesses(step) {
+            continue;
+        }
+        for (j, earlier) in steps[..i].iter().enumerate() {
+            if !accesses(earlier) {
+                continue;
+            }
+            let conflict = step
+                .reads
+                .iter()
+                .find(|r| earlier.writes.iter().any(|w| w.buffer == r.buffer))
+                .or_else(|| {
+                    step.writes.iter().find(|w| {
+                        earlier
+                            .reads
+                            .iter()
+                            .chain(&earlier.writes)
+                            .any(|v| v.buffer == w.buffer)
+                    })
+                });
+            let Some(view) = conflict else { continue };
+            let synced = closure[i]
+                .iter()
+                .any(|&b| b > j && steps[b].op == PlanOp::Barrier && closure[b].contains(&j));
+            if !synced {
+                return Err(PlanVerifyError::UnsyncedAccess {
+                    plan: name,
+                    step: i,
+                    earlier: j,
+                    buffer: view.buffer,
+                });
+            }
+        }
+    }
+
+    if steps.last().is_some_and(|last| !is_fence(last)) {
+        return Err(PlanVerifyError::PlanNotFenced { plan: name });
+    }
+    Ok(())
 }
