@@ -33,7 +33,7 @@
       "type": "boolean"
     },
     "deterministic": {
-      "description": "A compile setting; no floating-point reduction is reassociated, so it is recorded in the artifact hash (DESIGN.md § 3.3, § 6.1).",
+      "description": "A compile setting; every floating-point reduction runs in an order fixed by the shape alone, workgroup sizes are compile-time constants never read from a DeviceProfile, and the CPU order is one admissible order, so it is recorded in the artifact hash (DESIGN.md § 3.3, § 5.2, § 6.1).",
       "type": "boolean"
     },
     "compiler_version": {
@@ -115,8 +115,8 @@
   "x-ess-provenance": {
     "system": "modelspec",
     "specification_version": "v1",
-    "source_digest": "c43cab517df385adc32e7509e295aa3b7a248a04bbe2f0e200fd9d7d8ad37efc",
-    "contract_digest": "slice-sha256/2:4769a1e671ee6c8e01544d84ac8f8e68ed37046001a3fa6668eedba4b6fe5e9c",
+    "source_digest": "f47dc3a22c6da571dea6fc59a2f9ee411e4e813d75ec76a136e55fb4c8d1f0eb",
+    "contract_digest": "slice-sha256/2:5877d60a9430b63274939fae8bc1839ff41577557efe2e145f54f7ad5918051f",
     "regenerate": "ess generate"
   },
   "$defs": {

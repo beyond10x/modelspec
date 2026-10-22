@@ -7,6 +7,8 @@
 //! Every buffer and pipeline a recording uses stays borrowed until its submission is waited on.
 
 use ash::vk;
+use modelspec_core::ir::kernel::{Kernel, KernelKind, Operand};
+use modelspec_core::ir::tensor::{Dim, TensorType};
 
 use super::memory::Buffer;
 use super::pipeline::{PUSH_CONSTANT_BYTES, Pipeline};
@@ -145,16 +147,85 @@ impl<'r> Recording<'r> {
         count: u32,
         workgroups: [u32; 3],
     ) -> Result<(), ExecError> {
-        if buffers.len() != pipeline.bindings as usize {
+        // A rank-0 broadcast binding is read at index 0 by every invocation; every other binding
+        // is indexed by invocation up to `count`.
+        let needed: Vec<u64> = pipeline
+            .broadcast
+            .iter()
+            .map(|&broadcast| if broadcast { 1 } else { u64::from(count) })
+            .collect();
+        self.checked_dispatch(
+            pipeline,
+            buffers,
+            &needed,
+            count,
+            u64::from(count),
+            workgroups,
+        )
+    }
+
+    /// Dispatches the module of `kernel`, built by the emitter, with `buffers` bound to its
+    /// operands then its result: the count, the elements each binding must hold and the
+    /// invocations its workgroups must cover come from the kernel ([`kernel_bindings`]).
+    pub fn dispatch_kernel(
+        &mut self,
+        pipeline: &'r Pipeline<'_>,
+        kernel: &Kernel,
+        buffers: &[&'r Buffer<'_>],
+    ) -> Result<(), ExecError> {
+        let bindings = kernel_bindings(kernel)?;
+        self.checked_dispatch(
+            pipeline,
+            buffers,
+            &bindings.elements,
+            bindings.count,
+            bindings.invocations,
+            kernel.workgroups,
+        )
+    }
+
+    /// Records a two-stage reduction: stage 1 from `input` into `partials`, a compute-to-compute
+    /// barrier, then stage 2 from `partials` into `output`.
+    pub fn reduce(
+        &mut self,
+        stage1: (&'r Pipeline<'_>, &Kernel),
+        stage2: (&'r Pipeline<'_>, &Kernel),
+        input: &'r Buffer<'_>,
+        partials: &'r Buffer<'_>,
+        output: &'r Buffer<'_>,
+    ) -> Result<(), ExecError> {
+        for (kernel, kind) in [
+            (stage1.1, KernelKind::ReduceStage1),
+            (stage2.1, KernelKind::ReduceStage2),
+        ] {
+            if kernel.kind != kind {
+                return Err(ExecError::KernelShape {
+                    kernel: kernel.signature(),
+                    reason: format!("the reduction stage is not a {kind} kernel"),
+                });
+            }
+        }
+        self.dispatch_kernel(stage1.0, stage1.1, &[input, partials])?;
+        self.barrier(Barrier::ComputeToCompute);
+        self.dispatch_kernel(stage2.0, stage2.1, &[partials, output])
+    }
+
+    fn checked_dispatch(
+        &mut self,
+        pipeline: &'r Pipeline<'_>,
+        buffers: &[&'r Buffer<'_>],
+        needed: &[u64],
+        count: u32,
+        invocations: u64,
+        workgroups: [u32; 3],
+    ) -> Result<(), ExecError> {
+        if buffers.len() != pipeline.bindings as usize || needed.len() != buffers.len() {
             return Err(ExecError::Bindings {
                 expected: pipeline.bindings,
                 got: buffers.len(),
             });
         }
-        // A rank-0 broadcast binding is read at index 0 by every invocation; every other binding
-        // is indexed by invocation up to `count`.
-        for (binding, (buffer, &broadcast)) in buffers.iter().zip(&pipeline.broadcast).enumerate() {
-            let needed = if broadcast { 1 } else { u64::from(count) };
+        for (binding, (buffer, &needed)) in buffers.iter().zip(needed).enumerate() {
             let elements = buffer.bytes() / 4;
             if elements < needed {
                 return Err(ExecError::CountPastBuffer {
@@ -171,7 +242,7 @@ impl<'r> Recording<'r> {
             .map(|&n| u64::from(n))
             .product::<u64>();
         let covered = workgroups.iter().map(|&n| u64::from(n)).product::<u64>() * size;
-        if covered < u64::from(count) {
+        if covered < invocations {
             return Err(ExecError::Workgroups {
                 workgroups,
                 size: size as u32,
@@ -254,6 +325,69 @@ impl<'r> Recording<'r> {
             commands: self.commands,
         })
     }
+}
+
+/// What a dispatch of one kernel's module binds and covers.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KernelBindings {
+    /// The push constant: the output elements of an elementwise, broadcast, SGD, transpose or
+    /// matmul kernel; the elements a reduction stage or a loss sum reads.
+    pub count: u32,
+    /// The elements each binding must hold, operands then result.
+    pub elements: Vec<u64>,
+    /// The invocations the workgroups must cover.
+    pub invocations: u64,
+}
+
+fn elements_of(kernel: &Kernel, ty: &TensorType) -> Result<u64, ExecError> {
+    ty.shape
+        .iter()
+        .map(|dim| match dim {
+            Dim::Static(n) => Ok(*n),
+            Dim::Symbol(_) => Err(ExecError::KernelShape {
+                kernel: kernel.signature(),
+                reason: format!("{ty} is not static"),
+            }),
+        })
+        .product()
+}
+
+/// The count, binding sizes and invocations of a dispatch of `kernel`'s module.
+pub fn kernel_bindings(kernel: &Kernel) -> Result<KernelBindings, ExecError> {
+    let mut operands = Vec::new();
+    for operand in &kernel.operands {
+        if let Operand::Buffer(ty) = operand {
+            operands.push((ty.rank() == 0, elements_of(kernel, ty)?));
+        }
+    }
+    let result = elements_of(kernel, &kernel.result)?;
+    let first = operands.first().map_or(0, |&(_, n)| n);
+    let (count, invocations) = match kernel.kind {
+        KernelKind::ReduceStage1 => (first, first),
+        KernelKind::ReduceStage2 | KernelKind::LossSum => (first, 1),
+        KernelKind::Elementwise
+        | KernelKind::Broadcast
+        | KernelKind::SgdUpdate
+        | KernelKind::Transpose
+        | KernelKind::MatMul => (result, result),
+    };
+    let elements = match kernel.kind {
+        KernelKind::Elementwise | KernelKind::Broadcast | KernelKind::SgdUpdate => operands
+            .iter()
+            .map(|&(scalar, _)| if scalar { 1 } else { count })
+            .chain([count])
+            .collect(),
+        _ => operands.iter().map(|&(_, n)| n).chain([result]).collect(),
+    };
+    let count = u32::try_from(count).map_err(|_| ExecError::KernelShape {
+        kernel: kernel.signature(),
+        reason: format!("a count of {count} does not fit u32"),
+    })?;
+    Ok(KernelBindings {
+        count,
+        elements,
+        invocations,
+    })
 }
 
 impl Submitted<'_> {
