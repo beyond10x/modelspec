@@ -1,0 +1,13 @@
+{
+  "at": "2026-10-22T10:21:52Z",
+  "actor": "human:timo",
+  "artifact": "story:m1-vulkan-train",
+  "kind": "story",
+  "revision": 10,
+  "change": {
+    "change": "evidence",
+    "kind": "test_result",
+    "source": "RTX 3090, release modelspec train examples/mnist_mlp.mspec --backend vulkan --stats on 2c34824, validation off, no other compute process: host waits 1, submits 8, dispatches 32404 (18 per step), bytes uploaded 520864, downloaded 210468; 15 back-to-back runs 139.2-158.2 us per step, median 145.3, GPU at P3 780 MHz of 2130 MHz; init/step/param line counts equal to --backend cpu (2/37/2)",
+    "reference": "https://github.com/beyond10x/modelspec/commit/2c34824"
+  }
+}

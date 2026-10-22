@@ -1,0 +1,13 @@
+{
+  "at": "2026-10-22T10:21:52Z",
+  "actor": "human:timo",
+  "artifact": "story:m1-vulkan-train",
+  "kind": "story",
+  "revision": 10,
+  "change": {
+    "change": "evidence",
+    "kind": "test_result",
+    "source": "RTX 3090, MODELSPEC_VK_VALIDATION=1 cargo test --release -p modelspec-runtime --features vulkan --test vulkan_train --test adversary_vulkan_train_chunks --test vulkan_reduce_matmul --test vulkan_elementwise -- --ignored on wave/m1-d 2c34824: exit 0; numerics class: tolerance; host waits 1 per run",
+    "reference": "https://github.com/beyond10x/modelspec/commit/2c34824"
+  }
+}
