@@ -9,6 +9,10 @@ history.
 
 ## [Unreleased]
 
+### Added
+
+- `modelspec inspect-device --backend vulkan [--device N] [--format text|json]`: the `modelspec_core::device::DeviceProfile` of each Vulkan device as the driver reports it and its negotiation verdict (Vulkan 1.2, numerics class), with codes E-TARGET-002 to E-TARGET-004 (`m1-inspect-device`)
+
 ## [0.3.0] - 2026-10-22
 
 An AVX2 CPU `matmul`, 2.98× faster on the MNIST shape with the same bits.

@@ -1,7 +1,7 @@
 # ModelSpec — Design Specification
 
 **Status:** M0 implemented (iteration 1); M1 onwards proposed  
-**Revision:** 0.9 (2026-10-22): ADR-007 (proposed) gates 10× PyTorch eager throughput on the MNIST benchmark example on the RTX 3090, with the whole-run schedule that reaches it and the GPU results compared bit for bit (§ 1, § 4, § 5.2, § 5.4, § 6, § 6.1, § 6.3, § 9, § 12); 0.8: the input adjoint, the gradient of a rank-0 target with respect to named inputs in its own program (§ 3.3 pass 4, § 4); 0.7: M3 adds a small BERT-like masked-language-model proof model beside the GPT-like one (§ 1, § 11 iteration 4); 0.6: derivation of parameter, teacher and synthetic-data draws defined (§ 2.3), M0 `train` output and codes (§ 8, § 8.1); 0.5: a train loss calls `model.forward` exactly once (§ 2.1)  
+**Revision:** 0.10 (2026-10-22): `inspect-device`, the required Vulkan version 1.2 and the enabled set of the device, and codes E-TARGET-002 to E-TARGET-004 (§ 6, § 8, § 8.1); 0.9: ADR-007 (proposed) gates 10× PyTorch eager throughput on the MNIST benchmark example on the RTX 3090, with the whole-run schedule that reaches it and the GPU results compared bit for bit (§ 1, § 4, § 5.2, § 5.4, § 6, § 6.1, § 6.3, § 9, § 12); 0.8: the input adjoint, the gradient of a rank-0 target with respect to named inputs in its own program (§ 3.3 pass 4, § 4); 0.7: M3 adds a small BERT-like masked-language-model proof model beside the GPT-like one (§ 1, § 11 iteration 4); 0.6: derivation of parameter, teacher and synthetic-data draws defined (§ 2.3), M0 `train` output and codes (§ 8, § 8.1); 0.5: a train loss calls `model.forward` exactly once (§ 2.1)  
 **Implementation language:** Rust  
 **Initial execution target:** NVIDIA RTX 3090 via Vulkan compute / SPIR-V  
 **Principle:** Specify *what* to compute; the compiler determines *how* to execute it.
@@ -305,7 +305,7 @@ The CPU oracle is the reference for every GPU result (§ 9 gate 5). Which compar
 
 The runtime has four owned responsibilities:
 
-**Device:** Vulkan instance/device/compute queue selection, feature negotiation, shader modules, pipeline cache, command pools, and error reporting. Prefer a compute-only headless configuration; no graphics swapchain.
+**Device:** Vulkan instance/device/compute queue selection, feature negotiation, shader modules, pipeline cache, command pools, and error reporting. Prefer a compute-only headless configuration; no graphics swapchain. The runtime requires Vulkan API version 1.2.0 and refuses a device below it (E-TARGET-004). The enabled set is the required version, no optional device feature, no device extension and one queue from the first compute queue family; a later capability that needs a feature or extension adds it to the set with the story that uses it. Negotiation also fixes the numerics class of § 5.4: `bit-for-bit` when the device reports all three float-control values, `tolerance` otherwise.
 
 **Memory:** device-local tensor arena, staging buffers for host upload/download, allocations obeying Vulkan heap/buffer-range/alignment restrictions, liveness-based scratch-buffer reuse, bounds/overflow checks, and out-of-memory diagnostics. Keep checkpoint and optimizer state in separate logical arenas even if physically suballocated.
 
@@ -467,6 +467,8 @@ modelspec bench examples/linear_regression.mspec --backend vulkan --warmup 100 -
 
 M0 CLI implements `check`, `ir`, and `train --backend cpu`. M0 `train` takes `steps`, `seed` and the optimizer from the `train` block, trains on synthetic data (§ 2.3) and prints an `init @<path>: <type> = [...]` line per parameter, a `step <k> loss <v>` line at step 0, every 50 steps and at the last step, and a `param @<path>: <type> = [...]` line per parameter. M1 adds device discovery, Vulkan compilation, GPU training, inference, and checkpoint compatibility. `inspect-device` must report each relevant capability (including whether cooperative matrices are actually supported), not infer it from `RTX 3090` as a product name.
 
+`inspect-device --backend vulkan [--device <index>] [--format text|json]` prints the device profile (`spec/domains/device.yaml`) of every Vulkan physical device, or of the one `--device` names, as the driver reports it; a value the device's API version has no query for (below Vulkan 1.2: the float controls and f16 arithmetic, below 1.1 also the UUID, subgroup size and 16-bit storage) is `null`, never a default. Text prints one `<field>: <value>` line per field and a `negotiation: ok` or `negotiation: refused (<code>)` line; json prints the profile alone. `MODELSPEC_VULKAN_LIBRARY` names the Vulkan loader to open instead of the system's `libvulkan`. A build without the `vulkan` feature refuses with E-TARGET-001.
+
 `--emit-spv` (or manifest output from `compile`) allows inspecting generated SPIR-V. Print readable tensor/training/kernel IR with stable IDs to make optimization decisions debuggable.
 
 ### 8.1 Errors are part of the language
@@ -489,6 +491,8 @@ E-TARGET-034: no supported f16 storage/compute path on selected Vulkan device
 ```
 
 M0 codes for `train`: E-TARGET-001, the selected backend is not available in this build (refused before the file is read); E-DATA-001, the `train` block does not declare exactly one `input` and one `target`; E-DATA-002, the `target` is not of the model output type; E-DATA-003, a declared `input` or `target` is not read by the loss.
+
+M1 codes for `inspect-device`: E-TARGET-002, no Vulkan loader could be opened; E-TARGET-003, no Vulkan instance or physical device was found, `--device` names none of them, or the device has no compute queue family; E-TARGET-004, the device is below the required Vulkan API version 1.2.0 (§ 6).
 
 Diagnostics distinguish user specification errors, compiler verification failures, missing GPU capabilities, unsupported features, runtime allocation failure, and device loss.
 

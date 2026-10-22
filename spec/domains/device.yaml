@@ -79,13 +79,14 @@ entities:
       - name: driver_version
         type: Integer
       - name: subgroup_size
-        type: Integer
+        type: Optional<Integer>
+        summary: VkPhysicalDeviceSubgroupProperties.subgroupSize; absent where the driver does not state it (a device below Vulkan 1.1) (DESIGN.md § 5.1 subgroup properties).
       - name: subgroup_stages
         type: List<String>
-        summary: VkPhysicalDeviceSubgroupProperties.supportedStages, by VkShaderStageFlagBits name (DESIGN.md § 5.1 subgroup properties).
+        summary: VkPhysicalDeviceSubgroupProperties.supportedStages, by VkShaderStageFlagBits name; empty where `subgroup_size` is absent (DESIGN.md § 5.1 subgroup properties).
       - name: subgroup_operations
         type: List<String>
-        summary: VkPhysicalDeviceSubgroupProperties.supportedOperations, by VkSubgroupFeatureFlagBits name (DESIGN.md § 5.1 subgroup properties).
+        summary: VkPhysicalDeviceSubgroupProperties.supportedOperations, by VkSubgroupFeatureFlagBits name; empty where `subgroup_size` is absent (DESIGN.md § 5.1 subgroup properties).
       - name: max_workgroup_invocations
         type: Integer
       - name: max_workgroup_size
@@ -98,10 +99,11 @@ entities:
         type: Integer
         summary: VkPhysicalDeviceLimits.maxComputeSharedMemorySize; tile sizes must fit it (DESIGN.md § 5.1, § 5.2).
       - name: f16_storage
-        type: Boolean
+        type: Optional<Boolean>
+        summary: VkPhysicalDevice16BitStorageFeatures.storageBuffer16BitAccess; absent where the driver does not state it (a device below Vulkan 1.1) (DESIGN.md § 5.1).
       - name: f16_compute
-        type: Boolean
-        summary: Whether shaders may do f16 arithmetic (VkPhysicalDeviceShaderFloat16Int8Features.shaderFloat16); without it there is no f16 compute path (DESIGN.md § 5.1, § 8.1 E-TARGET-034).
+        type: Optional<Boolean>
+        summary: Whether shaders may do f16 arithmetic (VkPhysicalDeviceShaderFloat16Int8Features.shaderFloat16); absent where the driver does not state it (a device below Vulkan 1.2); without it there is no f16 compute path (DESIGN.md § 5.1, § 8.1 E-TARGET-034).
       - name: cooperative_matrix
         type: Boolean
         summary: Whether the driver exposes a cooperative-matrix extension (DESIGN.md § 5.2, M4).
@@ -124,8 +126,19 @@ entities:
       - name: cooperative_matrix_shapes
         type: List<modelspec.device.CooperativeMatrixShape>
         summary: The actual supported matrix types and M/N/K shapes; empty when `cooperative_matrix` is false (DESIGN.md § 5.2).
+      - name: shader_rounding_mode_rte_f32
+        type: Optional<Boolean>
+        summary: The driver value of VkPhysicalDeviceFloatControlsProperties.shaderRoundingModeRTEFloat32; absent where the driver does not state it (a device below Vulkan 1.2) (DESIGN.md § 5.4).
+      - name: shader_denorm_preserve_f32
+        type: Optional<Boolean>
+        summary: The driver value of VkPhysicalDeviceFloatControlsProperties.shaderDenormPreserveFloat32; absent where the driver does not state it (a device below Vulkan 1.2) (DESIGN.md § 5.4).
+      - name: shader_signed_zero_inf_nan_preserve_f32
+        type: Optional<Boolean>
+        summary: The driver value of VkPhysicalDeviceFloatControlsProperties.shaderSignedZeroInfNanPreserveFloat32; absent where the driver does not state it (a device below Vulkan 1.2) (DESIGN.md § 5.4).
     invariants:
-      - subgroup_size > 0
+      - any:
+          - not defined(subgroup_size)
+          - subgroup_size > 0
       - max_workgroup_invocations > 0
       - max_shared_memory_bytes > 0
       - distinct: {in: subgroup_stages, as: stage}

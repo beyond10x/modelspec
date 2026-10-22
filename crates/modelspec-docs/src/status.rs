@@ -16,7 +16,7 @@ use serde_json::{Value, json};
 pub const FILE: &str = "status.json";
 
 /// The date [`CAPABILITIES`] was last checked against `main` and the planning store.
-pub const AS_OF: &str = "2026-10-21";
+pub const AS_OF: &str = "2026-10-22";
 
 /// What holds a shipped capability.
 #[derive(Clone, Copy)]
@@ -183,10 +183,19 @@ pub const CAPABILITIES: &[Capability] = &[
         Evidence::Test("crates/modelspec-cli/tests/exit_codes.rs::no_arguments_exits_2"),
         "/docs/reference/cli",
     ),
+    shipped(
+        "GPU",
+        "Vulkan device discovery and feature negotiation",
+        "modelspec inspect-device --backend vulkan prints each device's profile as the driver reports it and the negotiation verdict: Vulkan 1.2, no optional feature, no extension.",
+        Evidence::Test(
+            "crates/modelspec-runtime/src/vulkan/negotiate.rs::negotiate_on_the_fixture_returns_the_required_set",
+        ),
+        "/docs/reference/cli",
+    ),
     planned(
         "GPU",
         "Headless Vulkan runtime",
-        "Device discovery, allocation, dispatch and synchronization through ash. Not built.",
+        "Allocation, dispatch and synchronization through ash. Not built.",
         M1,
         "/docs/roadmap",
     ),
@@ -206,7 +215,7 @@ pub const CAPABILITIES: &[Capability] = &[
     ),
     planned(
         "Command line",
-        "Checkpoints and the compile, infer and inspect-device commands",
+        "Checkpoints and the compile and infer commands",
         ".msckpt save and load. Not built.",
         M1,
         "/docs/roadmap",

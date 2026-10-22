@@ -5,6 +5,7 @@
 //! generate the CLI reference from it.
 
 pub mod check;
+pub mod inspect_device;
 pub mod ir;
 pub mod train;
 
@@ -37,6 +38,8 @@ pub struct Cli {
 pub enum Command {
     /// Parse and type-check a `.mspec` file.
     Check(check::Args),
+    /// Print the profile and negotiation verdict of each Vulkan physical device.
+    InspectDevice(inspect_device::Args),
     /// Print the IR of a `.mspec` file at a stage.
     Ir(ir::Args),
     /// Train a `.mspec` model.
@@ -68,6 +71,7 @@ pub fn main() -> ExitCode {
 pub fn dispatch(command: Command, stdout: &mut dyn Write, stderr: &mut dyn Write) -> u8 {
     match command {
         Command::Check(args) => check::run(args, stderr),
+        Command::InspectDevice(args) => inspect_device::run(args, stdout, stderr),
         Command::Ir(args) => ir::run(args, stdout, stderr),
         Command::Train(args) => train::run(args, stdout, stderr),
     }
