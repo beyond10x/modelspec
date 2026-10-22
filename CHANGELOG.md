@@ -9,6 +9,10 @@ history.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-22
+
+An AVX2 CPU `matmul`, 2.98× faster on the MNIST shape with the same bits.
+
 ### Changed
 
 - CPU reference: `matmul` runs an AVX2 kernel with register blocks where the CPU has AVX2 (`modelspec_runtime::cpu::matmul::Kernel`), and `evaluate` reads inputs, parameters and a transposed left `matmul` operand in place, with the same bits as 0.1.1 (`cpu-matmul-avx2-blocking`)
@@ -81,7 +85,8 @@ with `E-TARGET-001`.
 - `examples/linear_regression.mspec` checks and trains; `task check-examples` runs `modelspec check` on it
 - ESS contracts for the compiled artifact, checkpoint, device profile and training run in `spec/`
 
-[Unreleased]: https://github.com/beyond10x/modelspec/compare/0.2.0...HEAD
+[Unreleased]: https://github.com/beyond10x/modelspec/compare/0.3.0...HEAD
+[0.3.0]: https://github.com/beyond10x/modelspec/compare/0.2.0...0.3.0
 [0.2.0]: https://github.com/beyond10x/modelspec/compare/0.1.1...0.2.0
 [0.1.1]: https://github.com/beyond10x/modelspec/compare/0.1.0...0.1.1
 [0.1.0]: https://github.com/beyond10x/modelspec/releases/tag/0.1.0

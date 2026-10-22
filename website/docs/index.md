@@ -41,9 +41,9 @@ train Fit {
 
 ## What works today
 
-ModelSpec is at milestone M0; the latest release is [0.2.0](https://github.com/beyond10x/modelspec/releases/tag/0.2.0).
+ModelSpec is at milestone M0; the latest release is [0.3.0](https://github.com/beyond10x/modelspec/releases/tag/0.3.0).
 
-| Works in 0.2.0 | Not built yet |
+| Works in 0.3.0 | Not built yet |
 |---|---|
 | `modelspec check`: parse and check names, types and shapes | any GPU execution: there is no Vulkan backend |
 | `modelspec ir --stage tensor` and `--stage training`: print the verified IR | `compile`, `infer`, `inspect-device`, `bench` |
@@ -69,7 +69,7 @@ M1 to M4 add.
 
 ## Where to go next
 
-- [Getting started](./getting-started.md): download the 0.2.0 binary and train the example.
+- [Getting started](./getting-started.md): download the 0.3.0 binary and train the example.
 - [The language](./concepts/language.md): what an M0 file may contain.
 - [Write a model](./guides/write-a-model.md): build a two-layer model step by step.
 - [Pitch deck](pathname:///modelspec/pitch/): the case for ModelSpec in slides.
