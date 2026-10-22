@@ -427,3 +427,107 @@ fn emit_declares_the_workgroup_size_of_the_kind_and_no_float_control_mode() {
         "SPIR-V 1.5, the version of Vulkan 1.2"
     );
 }
+
+// story:m1-loss-sum-staged acceptance 2: the loss sum runs one workgroup of 64 that stages its
+// terms in workgroup memory, sized by the shape and the device's `max_shared_memory_bytes`.
+
+/// The `OpVariable`, `OpTypePointer`, `OpTypeArray`, `OpConstant` and `OpControlBarrier` opcodes,
+/// and the `Workgroup` storage class.
+const OP_VARIABLE: u32 = 59;
+const OP_TYPE_POINTER: u32 = 32;
+const OP_TYPE_ARRAY: u32 = 28;
+const OP_CONSTANT: u32 = 43;
+const OP_CONTROL_BARRIER: u32 = 224;
+const STORAGE_WORKGROUP: u32 = 4;
+
+/// The length of every `Workgroup` array variable of `module`, in declaration order.
+fn workgroup_array_lengths(module: &[u32]) -> Vec<u32> {
+    let all = common::words::instructions(module);
+    let find = |op: u32, id: u32| {
+        all.iter()
+            .find(|(o, w)| *o == op && w[1] == id)
+            .map(|(_, w)| *w)
+            .unwrap_or_else(|| panic!("opcode {op} defines %{id}"))
+    };
+    all.iter()
+        .filter(|(op, w)| *op == OP_VARIABLE && w[3] == STORAGE_WORKGROUP)
+        .map(|(_, w)| {
+            let pointer = find(OP_TYPE_POINTER, w[1]);
+            assert_eq!(pointer[2], STORAGE_WORKGROUP);
+            let array = find(OP_TYPE_ARRAY, pointer[3]);
+            all.iter()
+                .find(|(o, c)| *o == OP_CONSTANT && c[2] == array[3])
+                .map(|(_, c)| c[3])
+                .expect("the array length is a constant")
+        })
+        .collect()
+}
+
+fn local_size(module: &[u32]) -> Vec<u32> {
+    common::words::execution_modes(module)
+        .into_iter()
+        .find(|(mode, _)| *mode == 17)
+        .map(|(_, size)| size)
+        .expect("the module declares LocalSize")
+}
+
+fn barriers(module: &[u32]) -> usize {
+    common::words::instructions(module)
+        .iter()
+        .filter(|(op, _)| *op == OP_CONTROL_BARRIER)
+        .count()
+}
+
+#[test]
+fn the_loss_sum_stages_its_terms_in_workgroup_memory_sized_by_the_shape_and_the_profile() {
+    let mut total = 0;
+    for bytes in [49_152u32, 260, 256] {
+        let mut profile = fixture_with([true; 3]);
+        profile.max_shared_memory_bytes = bytes;
+        for count in [1u64, 63, 64, 65, 1_000, 100_000] {
+            let kernel = common::loss_sum_kernel(count);
+            assert_eq!(kernel.workgroup_size, 64);
+            let chunk = count.min(u64::from(bytes / 4)) as u32;
+            for module in [
+                emit_module(&kernel, &profile).expect("the loss sum emits"),
+                emit_loss_sum_undivided(&kernel, &profile).expect("the undivided sum emits"),
+            ] {
+                let what = format!("{count} terms, {bytes} bytes");
+                validate(&module.spirv).unwrap_or_else(|error| panic!("{what}: {error}"));
+                assert_eq!(local_size(&module.spirv), [64, 1, 1], "{what}");
+                assert_eq!(
+                    workgroup_array_lengths(&module.spirv),
+                    [chunk],
+                    "{what}: one f32 array of min(count, bytes / 4)"
+                );
+                assert!(barriers(&module.spirv) >= 1, "{what}: a workgroup barrier");
+                let (missing, all) = common::words::uncontracted_arithmetic(&module.spirv);
+                assert!(all > 0 && missing.is_empty(), "{what}: {missing:?}");
+                total += 1;
+            }
+        }
+    }
+    let kernel = common::loss_sum_kernel(1_000);
+    let mut small = fixture();
+    small.max_shared_memory_bytes = 256;
+    assert_ne!(
+        emit_module(&kernel, &fixture()).unwrap().cache_key.ir_hash,
+        emit_module(&kernel, &small).unwrap().cache_key.ir_hash,
+        "the chunk is in the key"
+    );
+    let words = emit(&common::loss_sum_kernel(100_000)).expect("emits without a profile");
+    validate(&words).expect("valid");
+    assert_eq!(
+        workgroup_array_lengths(&words),
+        [4_096],
+        "without a profile, the 16384 bytes every Vulkan device has"
+    );
+    small.max_shared_memory_bytes = 3;
+    assert!(matches!(
+        emit_module(&kernel, &small),
+        Err(EmitError::Operands { .. })
+    ));
+    eprintln!(
+        "spirv_val: {total} staged loss-sum modules pass spirv-val --target-env {TARGET_ENV}"
+    );
+}

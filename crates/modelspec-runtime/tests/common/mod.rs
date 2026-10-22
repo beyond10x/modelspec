@@ -453,7 +453,7 @@ pub fn reduce_kernels(mean: bool, count: u64) -> (Kernel, Kernel) {
     (stage1, stage2)
 }
 
-/// The `mse` loss over two tensors of `count` elements: one invocation.
+/// The `mse` loss over two tensors of `count` elements: one workgroup of 64 invocations.
 pub fn loss_sum_kernel(count: u64) -> Kernel {
     finish(Kernel {
         id: KernelModuleId([0; 16]),

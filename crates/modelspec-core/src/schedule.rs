@@ -2,7 +2,7 @@
 //! and its execution plans.
 //!
 //! Ops run in Training IR order. Each elementwise, broadcast, transpose, matmul and SGD op is one
-//! Dispatch, one invocation per output element; the `mse` loss is one Dispatch of one invocation
+//! Dispatch, one invocation per output element; the `mse` loss is one Dispatch of one workgroup
 //! (DESIGN.md § 5.4); every other reduce is four consecutive steps: an `Allocate` of its partials
 //! buffer, a stage-1 Dispatch that writes one partial per workgroup into it, a `Barrier`, and a
 //! stage-2 Dispatch of one workgroup that reads the partials. `Input`, `ParamRead` and `Scalar`

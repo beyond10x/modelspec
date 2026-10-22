@@ -52,7 +52,7 @@ The kernel lines name what each module computes:
 
 ```text
 kernel k0 d68423b2-42d6-8f30-bd4a-492a35a66f06 matmul MatMul f32 (Tensor<f32, [100, 784]>, Tensor<f32, [784, 64]>) -> Tensor<f32, [100, 64]> workgroup_size 64 workgroups [100, 1, 1]
-kernel k3 74ad23b6-fbc9-8e86-838a-df791b52e3e4 loss_sum Mse f32 (Tensor<f32, [100, 10]>, Tensor<f32, [100, 10]>) -> Tensor<f32, []> workgroup_size 1 workgroups [1, 1, 1]
+kernel k3 d588cbc2-b3eb-8bf1-93a1-29d8680aba58 loss_sum Mse f32 (Tensor<f32, [100, 10]>, Tensor<f32, [100, 10]>) -> Tensor<f32, []> workgroup_size 64 workgroups [1, 1, 1]
 ```
 
 `plan step` is the training step, numbered: `dispatch` steps run a kernel, `barrier` steps order
@@ -69,36 +69,36 @@ trains as without `--profile`, with the same lines on stdout and the same single
 stderr it adds one line per dispatch site and then the counters. This is one run on an RTX 3090:
 
 ```text
-profile dispatch step 0 d68423b2-42d6-8f30-bd4a-492a35a66f06 main calls 1800 total_us 32017.568 mean_us 17.788
-profile dispatch step 2 b2485573-41c1-86a6-89c9-3ee7b0b0159b main calls 1800 total_us 3465.760 mean_us 1.925
-profile dispatch step 4 cba0fd87-5af6-8f98-bc8b-1d9d5aee7e7f main calls 1800 total_us 5148.384 mean_us 2.860
-profile dispatch step 6 74ad23b6-fbc9-8e86-838a-df791b52e3e4 main calls 1800 total_us 53531.648 mean_us 29.740
-profile dispatch step 7 2e1ec459-43bd-81d2-b9db-fa0f7fe3ae74 main calls 1800 total_us 3508.224 mean_us 1.949
-profile dispatch step 8 5bb7932a-569c-85fe-8946-5a688a1299e5 main calls 1800 total_us 3106.816 mean_us 1.726
-profile dispatch step 10 e3ec6208-08d5-8b4c-a7a7-28be8470fecd main calls 1800 total_us 3512.320 mean_us 1.951
-profile dispatch step 11 00cb6768-fb04-8fde-a136-7b324efe8fbc main calls 1800 total_us 3530.752 mean_us 1.962
-profile dispatch step 13 1902a24e-aa7a-820c-b181-380008b822bd main calls 1800 total_us 4850.688 mean_us 2.695
-profile dispatch step 14 4ab19294-379e-8a14-b7ee-a9d23e2520e2 main calls 1800 total_us 3799.360 mean_us 2.111
-profile dispatch step 16 a94b7d6e-3815-8276-b1ca-b988735d6299 main calls 1800 total_us 6197.952 mean_us 3.443
-profile dispatch step 17 ae896a79-8d47-8bca-807a-453bc394ae43 main calls 1800 total_us 4343.552 mean_us 2.413
-profile dispatch step 18 cbd56b2b-4530-8c59-8969-a9eed9bc2f0c main calls 1800 total_us 5873.248 mean_us 3.263
-profile dispatch step 20 433c82fb-dc3b-87cc-9f54-aaa99e09d5f7 main calls 1800 total_us 12147.360 mean_us 6.749
-profile dispatch step 22 439f693b-8fb5-8576-af67-d32fa5e4ffd9 main calls 1800 total_us 4288.512 mean_us 2.383
-profile dispatch step 24 3bc9dcb8-58e7-83b0-8cb6-bf00889c72a6 main calls 1800 total_us 4438.016 mean_us 2.466
-profile dispatch step 25 2c3a7723-5b74-8340-98fa-af1482f88b90 main calls 1800 total_us 3427.328 mean_us 1.904
-profile dispatch step 27 542d4968-c52b-82e3-b383-b5d27b90cf46 main calls 1800 total_us 3495.936 mean_us 1.942
-profile dispatch final 0 d68423b2-42d6-8f30-bd4a-492a35a66f06 main calls 1 total_us 17.088 mean_us 17.088
-profile dispatch final 2 b2485573-41c1-86a6-89c9-3ee7b0b0159b main calls 1 total_us 2.048 mean_us 2.048
-profile dispatch final 4 cba0fd87-5af6-8f98-bc8b-1d9d5aee7e7f main calls 1 total_us 3.072 mean_us 3.072
-profile dispatch final 6 74ad23b6-fbc9-8e86-838a-df791b52e3e4 main calls 1 total_us 29.696 mean_us 29.696
+profile dispatch step 0 d68423b2-42d6-8f30-bd4a-492a35a66f06 main calls 1800 total_us 59180.320 mean_us 32.878
+profile dispatch step 2 b2485573-41c1-86a6-89c9-3ee7b0b0159b main calls 1800 total_us 5870.592 mean_us 3.261
+profile dispatch step 4 cba0fd87-5af6-8f98-bc8b-1d9d5aee7e7f main calls 1800 total_us 9458.688 mean_us 5.255
+profile dispatch step 6 d588cbc2-b3eb-8bf1-93a1-29d8680aba58 main calls 1800 total_us 15709.184 mean_us 8.727
+profile dispatch step 7 2e1ec459-43bd-81d2-b9db-fa0f7fe3ae74 main calls 1800 total_us 5951.488 mean_us 3.306
+profile dispatch step 8 5bb7932a-569c-85fe-8946-5a688a1299e5 main calls 1800 total_us 6504.448 mean_us 3.614
+profile dispatch step 10 e3ec6208-08d5-8b4c-a7a7-28be8470fecd main calls 1800 total_us 5875.712 mean_us 3.264
+profile dispatch step 11 00cb6768-fb04-8fde-a136-7b324efe8fbc main calls 1800 total_us 5863.424 mean_us 3.257
+profile dispatch step 13 1902a24e-aa7a-820c-b181-380008b822bd main calls 1800 total_us 7774.720 mean_us 4.319
+profile dispatch step 14 4ab19294-379e-8a14-b7ee-a9d23e2520e2 main calls 1800 total_us 6295.232 mean_us 3.497
+profile dispatch step 16 a94b7d6e-3815-8276-b1ca-b988735d6299 main calls 1800 total_us 11926.336 mean_us 6.626
+profile dispatch step 17 ae896a79-8d47-8bca-807a-453bc394ae43 main calls 1800 total_us 5932.032 mean_us 3.296
+profile dispatch step 18 cbd56b2b-4530-8c59-8969-a9eed9bc2f0c main calls 1800 total_us 10635.264 mean_us 5.908
+profile dispatch step 20 433c82fb-dc3b-87cc-9f54-aaa99e09d5f7 main calls 1800 total_us 25694.208 mean_us 14.275
+profile dispatch step 22 439f693b-8fb5-8576-af67-d32fa5e4ffd9 main calls 1800 total_us 6986.048 mean_us 3.881
+profile dispatch step 24 3bc9dcb8-58e7-83b0-8cb6-bf00889c72a6 main calls 1800 total_us 7260.864 mean_us 4.034
+profile dispatch step 25 2c3a7723-5b74-8340-98fa-af1482f88b90 main calls 1800 total_us 5666.816 mean_us 3.148
+profile dispatch step 27 542d4968-c52b-82e3-b383-b5d27b90cf46 main calls 1800 total_us 5825.536 mean_us 3.236
+profile dispatch final 0 d68423b2-42d6-8f30-bd4a-492a35a66f06 main calls 1 total_us 30.368 mean_us 30.368
+profile dispatch final 2 b2485573-41c1-86a6-89c9-3ee7b0b0159b main calls 1 total_us 3.072 mean_us 3.072
+profile dispatch final 4 cba0fd87-5af6-8f98-bc8b-1d9d5aee7e7f main calls 1 total_us 5.120 mean_us 5.120
+profile dispatch final 6 d588cbc2-b3eb-8bf1-93a1-29d8680aba58 main calls 1 total_us 8.192 mean_us 8.192
 profile dispatches 32404
 profile submits 8
 profile host_waits 1
 profile bytes_uploaded 520864
 profile bytes_downloaded 210468
-profile pipeline_creation_us 1292.826
-profile compile_us 659.111
-profile steady_us_per_step 93.205
+profile pipeline_creation_us 1523.308
+profile compile_us 607.667
+profile steady_us_per_step 120.349
 ```
 
 | Field | What it says |
@@ -110,8 +110,8 @@ profile steady_us_per_step 93.205
 | `steady_us_per_step` | GPU time per step from step 20 to the final loss, so the first 20 steps are left out as warm-up |
 | `pipeline_creation_us`, `compile_us` | host time to build the pipelines and to compile the file and emit its kernels, outside the steady state |
 
-Here step position 6, module `74ad23b6…`, is `k3`, the `mse` loss sum on one workgroup of one
-invocation: 29.7 µs of the 93.2 µs step. A device without timestamp queries prints
+Here step position 6, module `d588cbc2…`, is `k3`, the `mse` loss sum on one workgroup of 64
+invocations: 8.7 µs of the 120.3 µs step. A device without timestamp queries prints
 `profile kernel timings unavailable: no timestamp queries` in place of the dispatch lines and
 still prints the counters.
 
