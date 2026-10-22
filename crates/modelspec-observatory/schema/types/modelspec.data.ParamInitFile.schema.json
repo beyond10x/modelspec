@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/modelspec.data.ParamInitFile",
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "c43cab517df385adc32e7509e295aa3b7a248a04bbe2f0e200fd9d7d8ad37efc",
+    "contract_digest": "slice-sha256/2:1809b51d7f40b37e49eee0e7399ce81e78ed121bcc1d1ce5aab9828fbf1a92fb",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.data.ParamInitFile": {
+      "title": "ParamInitFile",
+      "description": "One file `<p>.f32` of the directory `modelspec train --init <dir>` names (DESIGN.md § 8), where p is a parameter's canonical path without its leading model name (`w1` for `Mnist.w1`). Row-major little-endian f32 with no header, exactly elements values, the parameter's element count; the parameter starts from these values instead of its initializer. Another length, or a value that is NaN or infinite, is refused with E-DATA-007 before the first step. A parameter with no file keeps its initializer.",
+      "x-ess-name": "modelspec.data.ParamInitFile",
+      "x-ess-kind": "struct",
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "elements": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "path",
+        "elements"
+      ],
+      "additionalProperties": false,
+      "x-ess-invariants": [
+        "elements > 0"
+      ]
+    }
+  }
+}

@@ -51,11 +51,16 @@ fn stages() -> Vec<Stage> {
         Stage {
             title: "Training data",
             file: "crates/modelspec-runtime/src/train/data.rs",
-            about: "The synthetic data loader of `modelspec train`, which runs after a file checks.",
+            about: "The data loaders of `modelspec train`, synthetic data and the dense files of \
+                    `--data`, `--init` and `--eval`, which run after a file checks and before \
+                    the first step.",
             codes: vec![
                 modelspec_runtime::train::data::E_DATA_001,
                 modelspec_runtime::train::data::E_DATA_002,
                 modelspec_runtime::train::data::E_DATA_003,
+                modelspec_runtime::train::data::E_DATA_007,
+                modelspec_runtime::train::data::E_DATA_008,
+                modelspec_runtime::train::data::E_DATA_009,
             ],
         },
         Stage {

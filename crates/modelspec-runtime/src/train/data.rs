@@ -1,22 +1,33 @@
-//! M0 synthetic teacher data (DESIGN.md § 9 gate 4).
+//! Training data: M0 synthetic teacher data (DESIGN.md § 9 gate 4) and dense `f32` tensors read
+//! from a directory (DESIGN.md § 8; `spec/domains/data.yaml`, `DenseDataDirectory`).
 //!
-//! M0 has no data file format (DESIGN.md § 12 "Data interface" is open). The one `input` is a
-//! standard normal tensor on [`Stream::Data`], drawn by Box-Muller and named by the input's name;
-//! the one `target` is the model's prediction for it under teacher parameters drawn by each
-//! parameter's initializer on [`Stream::Teacher`]. The teacher parameters are the known solution
-//! training should approach. The prediction is read as the intermediate value `prediction` of
-//! the forward program, run on the CPU interpreter with a zero target.
+//! Synthetic data ([`synthetic`]): the one `input` is a standard normal tensor on
+//! [`Stream::Data`], drawn by Box-Muller and named by the input's name; the one `target` is the
+//! model's prediction for it under teacher parameters drawn by each parameter's initializer on
+//! [`Stream::Teacher`]. The teacher parameters are the known solution training should approach.
+//! The prediction is read as the intermediate value `prediction` of the forward program, run on
+//! the CPU interpreter with a zero target.
+//!
+//! Dense data ([`dense`], [`dense_eval`]): the declaration `name: Tensor<f32, [B, d1, …]>` reads
+//! `<dir>/<name>.f32`, row-major little-endian `f32` with no header, one sample per `d1 × …`
+//! values. Training step `k` feeds the samples `order[k·B + i]` of `<dir>/order.u32` when the
+//! file exists, else `(k·B + i) mod N`, for `i` in `0..B`; positions past the end of the order
+//! wrap, which only the loss after the last update reads. A file that cannot be read as samples,
+//! or holds a NaN or an infinity, is [`E_DATA_007`], an order that does not cover the run is [`E_DATA_008`], and an eval
+//! directory that is not a whole number of batches is [`E_DATA_009`].
 //!
 //! A declaration the loss does not read has no `Input` node after dead-code elimination, so the
 //! program could not take a value for it; it is refused at its declaration ([`E_DATA_003`])
 //! before anything runs.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::ErrorKind;
+use std::path::Path;
 
 use modelspec_core::diag::{Code, Diagnostic};
 use modelspec_core::hir::DataRole;
 use modelspec_core::ir::tensor::{Dim, ParamId, TensorOp, TensorType, ValueId};
-use modelspec_core::ir::training::TrainConfig;
+use modelspec_core::ir::training::{DataDecl, TrainConfig};
 use modelspec_core::lower::LoweredProgram;
 use thiserror::Error;
 
@@ -29,6 +40,15 @@ pub const E_DATA_001: Code = Code::new("E-DATA-001");
 pub const E_DATA_002: Code = Code::new("E-DATA-002");
 /// A declared `input` or `target` is not read by the loss.
 pub const E_DATA_003: Code = Code::new("E-DATA-003");
+/// A data, order or `--init` file is missing, unreadable, or not a whole number of samples (for
+/// `--init`, not the parameter's size), or a data or `--init` file holds a NaN or an infinity, or
+/// the data files differ in sample count, or the `input` and `target` do not share a leading
+/// batch dimension `B`, or the `--init` directory cannot be read or holds no parameter's file.
+pub const E_DATA_007: Code = Code::new("E-DATA-007");
+/// `order.u32` holds fewer than `steps · B` indices, or an index not below the sample count.
+pub const E_DATA_008: Code = Code::new("E-DATA-008");
+/// The `--eval` sample count is not a multiple of the batch dimension `B`.
+pub const E_DATA_009: Code = Code::new("E-DATA-009");
 
 /// The data of a synthetic run.
 #[derive(Clone, Debug, PartialEq)]
@@ -65,13 +85,35 @@ pub fn synthetic(
     config: &TrainConfig,
     lowered: &LoweredProgram,
 ) -> Result<SyntheticData, DataError> {
+    let (input, target) = declarations(config, lowered, "M0 synthetic data")?;
+    let prediction = lowered.prediction;
+    let forward = &lowered.program;
+    let teacher = initialize(forward, config.seed, Stream::Teacher)?;
+    let x = standard_normal(config.seed, Stream::Data, &input.name, &input.ty)?;
+    let zero = zeros(&target.name, &target.ty)?;
+    let mut inputs = BTreeMap::from([(input.name.clone(), x), (target.name.clone(), zero)]);
+    let mut values = evaluate_all(forward, &inputs, &teacher)?.values;
+    let y = values
+        .remove(&prediction)
+        .ok_or(DataError::UndefinedPrediction(prediction))?;
+    inputs.insert(target.name.clone(), y);
+    Ok(SyntheticData { inputs, teacher })
+}
+
+/// The one `input` and one `target` of `config`, refused as [`synthetic`] documents; `what`
+/// names the data in the [`E_DATA_001`] message.
+fn declarations<'c>(
+    config: &'c TrainConfig,
+    lowered: &LoweredProgram,
+    what: &str,
+) -> Result<(&'c DataDecl, &'c DataDecl), DataError> {
     let prediction = lowered.prediction;
     let forward = &lowered.program;
     let ([input], [target]) = (&config.inputs[..], &config.targets[..]) else {
         return Err(DataError::Refused(
             Diagnostic::new(
                 E_DATA_001,
-                "M0 synthetic data needs exactly one input and one target",
+                format!("{what} needs exactly one input and one target"),
             )
             .at(config.span.clone())
             .with("inputs", config.inputs.len().to_string())
@@ -116,17 +158,294 @@ pub fn synthetic(
             .with(role, unread.name.clone()),
         ));
     }
+    Ok((input, target))
+}
 
-    let teacher = initialize(forward, config.seed, Stream::Teacher)?;
-    let x = standard_normal(config.seed, Stream::Data, &input.name, &input.ty)?;
-    let zero = zeros(&target.name, &target.ty)?;
-    let mut inputs = BTreeMap::from([(input.name.clone(), x), (target.name.clone(), zero)]);
-    let mut values = evaluate_all(forward, &inputs, &teacher)?.values;
-    let y = values
-        .remove(&prediction)
-        .ok_or(DataError::UndefinedPrediction(prediction))?;
-    inputs.insert(target.name.clone(), y);
-    Ok(SyntheticData { inputs, teacher })
+/// Dense data read from a directory: a value of every sample of the `input` and the `target`,
+/// and for training the optional sample order.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DenseData {
+    /// The batch dimension `B`: the leading dimension of both declarations.
+    batch: usize,
+    /// The sample count `N` of every file.
+    samples: usize,
+    /// The input, then the target.
+    tensors: [DenseTensor; 2],
+    /// The indices of `order.u32`, when the directory has one.
+    order: Option<Vec<u32>>,
+}
+
+/// The samples of one declaration.
+#[derive(Clone, Debug, PartialEq)]
+struct DenseTensor {
+    name: String,
+    /// The declared shape `[B, d1, …]`.
+    shape: Vec<u64>,
+    /// `d1 × …`.
+    sample: usize,
+    values: Vec<f32>,
+}
+
+impl DenseData {
+    /// The batch dimension `B`.
+    pub fn batch(&self) -> usize {
+        self.batch
+    }
+
+    /// The sample count `N`.
+    pub fn samples(&self) -> usize {
+        self.samples
+    }
+
+    /// The name of the target declaration.
+    pub fn target(&self) -> &str {
+        &self.tensors[1].name
+    }
+
+    /// The inputs of training step `k`: the samples `order[(k·B + i) mod len]` with an order,
+    /// `(k·B + i) mod N` without one, for `i` in `0..B`.
+    pub fn step(&self, k: u64) -> BTreeMap<String, HostTensor<f32>> {
+        let first = k as u128 * self.batch as u128;
+        let position = |i: usize| first + i as u128;
+        let samples: Vec<usize> = (0..self.batch)
+            .map(|i| match &self.order {
+                Some(order) => order[(position(i) % order.len() as u128) as usize] as usize,
+                None => (position(i) % self.samples as u128) as usize,
+            })
+            .collect();
+        self.gather(&samples)
+    }
+
+    /// The inputs of eval batch `b`: the samples `b·B .. (b+1)·B`.
+    pub fn eval_batch(&self, b: usize) -> BTreeMap<String, HostTensor<f32>> {
+        let samples: Vec<usize> = (b * self.batch..(b + 1) * self.batch).collect();
+        self.gather(&samples)
+    }
+
+    fn gather(&self, samples: &[usize]) -> BTreeMap<String, HostTensor<f32>> {
+        self.tensors
+            .iter()
+            .map(|t| {
+                let mut data = Vec::with_capacity(samples.len() * t.sample);
+                for &s in samples {
+                    data.extend_from_slice(&t.values[s * t.sample..(s + 1) * t.sample]);
+                }
+                (
+                    t.name.clone(),
+                    HostTensor::from_parts(t.shape.clone(), data),
+                )
+            })
+            .collect()
+    }
+}
+
+/// The training data of `--data <dir>`: the `input` and `target` files of `config` and the
+/// optional `order.u32`, which must hold at least `config.steps · B` indices, each below `N`
+/// ([`E_DATA_008`]). Refused first as [`synthetic`] refuses the declarations.
+pub fn dense(
+    dir: &Path,
+    config: &TrainConfig,
+    lowered: &LoweredProgram,
+) -> Result<DenseData, DataError> {
+    let mut data = read_dense(dir, config, lowered)?;
+    let path = dir.join("order.u32");
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(data),
+        Err(error) => return Err(unreadable("the order file", &path, &error)),
+    };
+    if bytes.len() % 4 != 0 {
+        return Err(DataError::Refused(
+            Diagnostic::new(
+                E_DATA_007,
+                "the order file is not a whole number of u32 indices",
+            )
+            .with("file", path.display().to_string())
+            .with("bytes", bytes.len().to_string()),
+        ));
+    }
+    let order: Vec<u32> = bytes
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|b| u32::from_le_bytes(*b))
+        .collect();
+    let needed = u128::from(config.steps) * data.batch as u128;
+    if (order.len() as u128) < needed || order.is_empty() {
+        return Err(DataError::Refused(
+            Diagnostic::new(
+                E_DATA_008,
+                "the order file holds fewer than steps · B indices",
+            )
+            .with("file", path.display().to_string())
+            .with("indices", order.len().to_string())
+            .with("needed", needed.max(1).to_string()),
+        ));
+    }
+    if let Some((position, &index)) = order
+        .iter()
+        .enumerate()
+        .find(|&(_, &index)| index as usize >= data.samples)
+    {
+        return Err(DataError::Refused(
+            Diagnostic::new(
+                E_DATA_008,
+                "the order file names a sample past the end of the data",
+            )
+            .with("file", path.display().to_string())
+            .with("position", position.to_string())
+            .with("index", index.to_string())
+            .with("samples", data.samples.to_string()),
+        ));
+    }
+    data.order = Some(order);
+    Ok(data)
+}
+
+/// The eval data of `--eval <dir>`: the `input` and `target` files of `config`, whose sample
+/// count must be a multiple of `B` ([`E_DATA_009`]); `order.u32` is not read.
+pub fn dense_eval(
+    dir: &Path,
+    config: &TrainConfig,
+    lowered: &LoweredProgram,
+) -> Result<DenseData, DataError> {
+    let data = read_dense(dir, config, lowered)?;
+    if !data.samples.is_multiple_of(data.batch) {
+        return Err(DataError::Refused(
+            Diagnostic::new(E_DATA_009, "the eval data is not a whole number of batches")
+                .with("directory", dir.display().to_string())
+                .with("samples", data.samples.to_string())
+                .with("batch", data.batch.to_string()),
+        ));
+    }
+    Ok(data)
+}
+
+/// The `input` and `target` files of `dir`, without an order.
+fn read_dense(
+    dir: &Path,
+    config: &TrainConfig,
+    lowered: &LoweredProgram,
+) -> Result<DenseData, DataError> {
+    let (input, target) = declarations(config, lowered, "dense data")?;
+    let batch = match (input.ty.shape.first(), target.ty.shape.first()) {
+        (Some(&Dim::Static(a)), Some(&Dim::Static(b))) if a == b && a > 0 => a,
+        _ => {
+            return Err(DataError::Refused(
+                Diagnostic::new(
+                    E_DATA_007,
+                    "the input and the target do not share a leading batch dimension",
+                )
+                .at(target.span.clone())
+                .with("input", input.ty.to_string())
+                .with("target", target.ty.to_string()),
+            ));
+        }
+    };
+    let input = read_tensor(dir, "input", input)?;
+    let target = read_tensor(dir, "target", target)?;
+    let samples = input.values.len() / input.sample;
+    let target_samples = target.values.len() / target.sample;
+    if samples != target_samples {
+        return Err(DataError::Refused(
+            Diagnostic::new(
+                E_DATA_007,
+                "the data files do not hold the same number of samples",
+            )
+            .with("directory", dir.display().to_string())
+            .with(input.name.clone(), samples.to_string())
+            .with(target.name.clone(), target_samples.to_string()),
+        ));
+    }
+    let batch = usize::try_from(batch).map_err(|_| InitError::Shape {
+        path: input.name.clone(),
+    })?;
+    Ok(DenseData {
+        batch,
+        samples,
+        tensors: [input, target],
+        order: None,
+    })
+}
+
+/// The samples of `decl` in `<dir>/<name>.f32`.
+fn read_tensor(dir: &Path, role: &str, decl: &DataDecl) -> Result<DenseTensor, DataError> {
+    let shape = zeros(&decl.name, &decl.ty)?.shape().to_vec();
+    let sample: usize = shape[1..].iter().map(|&n| n as usize).product();
+    let path = dir.join(format!("{}.f32", decl.name));
+    let values = read_f32(&path).map_err(|error| {
+        unreadable(
+            &format!("the data file of the {role} `{}`", decl.name),
+            &path,
+            &error,
+        )
+    })?;
+    if values.is_empty() || !values.len().is_multiple_of(sample) {
+        return Err(DataError::Refused(
+            Diagnostic::new(
+                E_DATA_007,
+                format!(
+                    "the data file of the {role} `{}` is not a whole number of samples",
+                    decl.name
+                ),
+            )
+            .at(decl.span.clone())
+            .with("file", path.display().to_string())
+            .with("values", values.len().to_string())
+            .with("sample", format!("{sample} values")),
+        ));
+    }
+    let what = format!("the data file of the {role} `{}`", decl.name);
+    if let Some(refused) = non_finite(&what, &path, &values) {
+        return Err(refused);
+    }
+    Ok(DenseTensor {
+        name: decl.name.clone(),
+        shape,
+        sample,
+        values,
+    })
+}
+
+/// The little-endian `f32` values of the file `path`; a length that is not a whole number of
+/// values is [`ErrorKind::InvalidData`].
+pub(crate) fn read_f32(path: &Path) -> std::io::Result<Vec<f32>> {
+    let bytes = std::fs::read(path)?;
+    if bytes.len() % 4 != 0 {
+        return Err(std::io::Error::new(
+            ErrorKind::InvalidData,
+            format!("{} bytes is not a whole number of f32 values", bytes.len()),
+        ));
+    }
+    Ok(bytes
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|b| f32::from_le_bytes(*b))
+        .collect())
+}
+
+/// [`E_DATA_007`] when `values`, read as `what` from `path`, hold a NaN or an infinity.
+pub(crate) fn non_finite(what: &str, path: &Path, values: &[f32]) -> Option<DataError> {
+    let (index, value) = values.iter().enumerate().find(|(_, v)| !v.is_finite())?;
+    Some(DataError::Refused(
+        Diagnostic::new(
+            E_DATA_007,
+            format!("{what} holds a value that is not finite"),
+        )
+        .with("file", path.display().to_string())
+        .with("index", index.to_string())
+        .with("value", value.to_string()),
+    ))
+}
+
+/// [`E_DATA_007`]: `what` at `path` cannot be read.
+pub(crate) fn unreadable(what: &str, path: &Path, error: &std::io::Error) -> DataError {
+    DataError::Refused(
+        Diagnostic::new(E_DATA_007, format!("cannot read {what}"))
+            .with("file", path.display().to_string())
+            .with("error", error.to_string()),
+    )
 }
 
 /// A zero tensor of type `ty`.

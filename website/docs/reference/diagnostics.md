@@ -80,13 +80,16 @@ The type and shape checker. Operator rules come from the operator registry ([Ope
 
 ## Training data
 
-The synthetic data loader of `modelspec train`, which runs after a file checks.
+The data loaders of `modelspec train`, synthetic data and the dense files of `--data`, `--init` and `--eval`, which run after a file checks and before the first step.
 
 | Code | Meaning | Declared in |
 |---|---|---|
 | <a id="e-data-001"></a>`E-DATA-001` | The `train` block does not declare exactly one `input` and one `target`. | [`crates/modelspec-runtime/src/train/data.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-runtime/src/train/data.rs) |
 | <a id="e-data-002"></a>`E-DATA-002` | The `target` is not of the model output type. | [`crates/modelspec-runtime/src/train/data.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-runtime/src/train/data.rs) |
 | <a id="e-data-003"></a>`E-DATA-003` | A declared `input` or `target` is not read by the loss. | [`crates/modelspec-runtime/src/train/data.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-runtime/src/train/data.rs) |
+| <a id="e-data-007"></a>`E-DATA-007` | A data, order or `--init` file is missing, unreadable, or not a whole number of samples (for `--init`, not the parameter's size), or a data or `--init` file holds a NaN or an infinity, or the data files differ in sample count, or the `input` and `target` do not share a leading batch dimension `B`, or the `--init` directory cannot be read or holds no parameter's file. | [`crates/modelspec-runtime/src/train/data.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-runtime/src/train/data.rs) |
+| <a id="e-data-008"></a>`E-DATA-008` | `order.u32` holds fewer than `steps · B` indices, or an index not below the sample count. | [`crates/modelspec-runtime/src/train/data.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-runtime/src/train/data.rs) |
+| <a id="e-data-009"></a>`E-DATA-009` | The `--eval` sample count is not a multiple of the batch dimension `B`. | [`crates/modelspec-runtime/src/train/data.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-runtime/src/train/data.rs) |
 
 ## Target
 

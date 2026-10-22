@@ -14,12 +14,19 @@
 //! `u = (w + 0.5) / 2^32`, in `(0, 1)`; a standard normal draw is Box-Muller over words 0 and 1,
 //! `sqrt(-2 ln u0) * cos(2 pi u1)`. Both are computed in `f64` and rounded to `f32`. A tensor
 //! with more than `2^32` elements has no counter for its last ones and is refused.
+//!
+//! `modelspec train --init <dir>` replaces the draw of a parameter by the values of its file in
+//! `<dir>` ([`read_params`]).
 
 use std::collections::BTreeMap;
+use std::io::ErrorKind;
+use std::path::Path;
 
+use modelspec_core::diag::Diagnostic;
 use modelspec_core::ir::tensor::{Dim, Initializer, ParamId, TensorProgram, TensorType};
 use thiserror::Error;
 
+use super::data::{DataError, E_DATA_007, non_finite, read_f32, unreadable};
 use crate::cpu::HostTensor;
 
 /// What a draw is for: the stream tag of the counter.
@@ -188,6 +195,68 @@ pub fn initialize(
             Ok((param, value))
         })
         .collect()
+}
+
+/// The file name stem of the parameter at canonical path `path` under `--init`: the path without
+/// its leading model name (`w1` for `Mnist.w1`).
+pub fn init_file_stem(path: &str) -> &str {
+    path.split_once('.').map_or(path, |(_, rest)| rest)
+}
+
+/// The values of every parameter of `program` that has a file `<dir>/<stem>.f32`
+/// ([`init_file_stem`]), row-major little-endian `f32` (`spec/domains/data.yaml`,
+/// `ParamInitDirectory`). A parameter with no file is absent from the map and keeps its
+/// initializer, and a file that names no parameter is ignored. Refused with [`E_DATA_007`]: a
+/// directory that cannot be read, a directory with no file of any parameter, and a file that
+/// cannot be read, is not exactly the parameter's size, or holds a NaN or an infinity.
+pub fn read_params(
+    dir: &Path,
+    program: &TensorProgram,
+) -> Result<BTreeMap<ParamId, HostTensor<f32>>, DataError> {
+    if let Err(error) = std::fs::read_dir(dir) {
+        return Err(unreadable("the init directory", dir, &error));
+    }
+    let mut values = BTreeMap::new();
+    for (&param, decl) in &program.params {
+        let path = dir.join(format!("{}.f32", init_file_stem(&decl.path)));
+        let what = format!("the init file of the parameter `{}`", decl.path);
+        let data = match read_f32(&path) {
+            Ok(data) => data,
+            Err(error) if error.kind() == ErrorKind::NotFound => continue,
+            Err(error) => return Err(unreadable(&what, &path, &error)),
+        };
+        let (shape, last) = dims(&decl.path, &decl.ty)?;
+        let count = u64::from(last) + 1;
+        if data.len() as u64 != count {
+            return Err(DataError::Refused(
+                Diagnostic::new(E_DATA_007, format!("{what} is not the parameter's size"))
+                    .with("file", path.display().to_string())
+                    .with("values", data.len().to_string())
+                    .with(decl.path.clone(), format!("{} = {count} values", decl.ty)),
+            ));
+        }
+        if let Some(refused) = non_finite(&what, &path, &data) {
+            return Err(refused);
+        }
+        values.insert(param, HostTensor::from_parts(shape, data));
+    }
+    if values.is_empty() {
+        let expected = program
+            .params
+            .values()
+            .map(|decl| format!("{}.f32", init_file_stem(&decl.path)))
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(DataError::Refused(
+            Diagnostic::new(
+                E_DATA_007,
+                "the init directory holds no file of any parameter",
+            )
+            .with("directory", dir.display().to_string())
+            .with("expected", expected),
+        ));
+    }
+    Ok(values)
 }
 
 #[cfg(test)]
