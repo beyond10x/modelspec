@@ -9,6 +9,7 @@
 //! that caused it.
 #![cfg(feature = "vulkan")]
 
+#[allow(dead_code)]
 mod common;
 
 use std::collections::BTreeMap;

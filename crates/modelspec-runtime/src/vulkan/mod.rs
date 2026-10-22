@@ -109,6 +109,10 @@ pub enum ExecError {
     /// A SPIR-V module declares no `LocalSize`.
     #[error("the SPIR-V module declares no LocalSize execution mode")]
     NoLocalSize,
+    /// A kernel has a shape or a count no dispatch can bind: a symbolic dimension, a count past
+    /// `u32`, or a reduction stage without the tensor it reduces.
+    #[error("kernel {kernel} cannot be dispatched: {reason}")]
+    KernelShape { kernel: String, reason: String },
     /// A Vulkan call failed.
     #[error("{call} failed: {result}")]
     Vulkan {

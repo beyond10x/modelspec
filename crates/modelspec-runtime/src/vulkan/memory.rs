@@ -5,6 +5,7 @@
 //! writes inputs to and reads results from.
 
 use ash::vk;
+use modelspec_core::ir::kernel::BufferView;
 
 use super::{Device, ExecError};
 
@@ -124,6 +125,12 @@ impl Device<'_> {
                 | vk::BufferUsageFlags::TRANSFER_DST,
             vk::MemoryPropertyFlags::DEVICE_LOCAL,
         )
+    }
+
+    /// The device-local buffer an `Allocate` step of the plan makes for `view`, such as the
+    /// partials of a reduction's stage 1: `view.size_bytes` bytes, never mapped.
+    pub fn scratch_buffer(&self, view: &BufferView) -> Result<Buffer<'_>, ExecError> {
+        self.device_local_buffer(view.size_bytes)
     }
 
     /// A host-visible, host-coherent buffer of `bytes` bytes, mapped, for copies to and from

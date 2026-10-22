@@ -1,11 +1,14 @@
-//! What the GPU tests share: the elementwise tolerance of DESIGN.md § 9 gate 5, named per
-//! operator, and the Kernel IR kernels the emitter is tested on.
+//! What the GPU tests share: the tolerances of DESIGN.md § 9 gate 5, named per operator, the
+//! whole-run L2 bound, and the Kernel IR kernels the emitter is tested on.
 //!
 //! An element `g` from the device passes against the CPU interpreter's `c` when
 //! `|g - c| <= GPU_ATOL + GPU_RTOL * r`. The reference `r` is an argument of [`within`], beside
-//! the pair each [`Tolerance`] carries: an elementwise, broadcast or SGD kernel uses `r = |c|`
-//! ([`Reference::AbsCpu`]); the reduction and matmul rule of `story:m1-vulkan-reduce-matmul` adds
-//! its own `r` beside it, with these two constants. No other test file repeats their values.
+//! the pair each [`Tolerance`] or [`TermTolerance`] carries: an elementwise, broadcast or SGD
+//! kernel uses `r = |c|` ([`Reference::AbsCpu`]); a reduction or a matmul element uses the sum of
+//! the absolute values of its terms ([`TermReference`]), with these two constants. After a run,
+//! every parameter passes [`run_within`]. No other test file repeats their values.
+//!
+//! Not every test binary that includes this module uses all of it.
 
 use modelspec_core::ir::kernel::{Kernel, KernelKind, KernelModuleId, Operand};
 use modelspec_core::ir::tensor::{DType, Dim, TensorType};
@@ -303,4 +306,293 @@ pub fn kernel(case: &Case, count: u64) -> Kernel {
     };
     kernel.id = Kernel::module_id(&kernel.signature());
     kernel
+}
+
+/// The operators of the M1 reduction, loss-sum, transpose and matmul kernels. [`KernelOp::LossSum`]
+/// is the `mse` loss sum before its division, the module the bit-equality check runs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KernelOp {
+    ReduceSum,
+    ReduceMean,
+    Mse,
+    LossSum,
+    Transpose,
+    MatMul,
+}
+
+/// How the reference `r` of a reduction, loss-sum, transpose or matmul element is taken.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TermReference {
+    /// `r = |c|`: `transpose`, a copy.
+    Cpu,
+    /// `r` is the sum of the absolute values of the element's terms: the elements of a `sum`,
+    /// the squared differences of a loss sum, the `K` products of a matmul element.
+    Terms,
+    /// That sum divided by the element count: `mean`, and `mse` over its squared differences.
+    TermsOverCount,
+}
+
+/// The tolerance of one reduction, loss-sum, transpose or matmul operator.
+#[derive(Clone, Copy, Debug)]
+pub struct TermTolerance {
+    pub op: KernelOp,
+    pub atol: f32,
+    pub rtol: f32,
+    pub reference: TermReference,
+}
+
+impl TermTolerance {
+    /// The reference `r` of an element with CPU value `c`, whose terms have the absolute sum
+    /// `abs_terms` and number `count`.
+    pub fn r(&self, c: f32, abs_terms: f64, count: u64) -> f32 {
+        match self.reference {
+            TermReference::Cpu => c.abs(),
+            TermReference::Terms => abs_terms as f32,
+            TermReference::TermsOverCount => (abs_terms / count as f64) as f32,
+        }
+    }
+
+    /// Whether the device value `g` passes against the CPU value `c` with reference `r`.
+    pub fn accepts(&self, g: f32, c: f32, r: f32) -> bool {
+        within(g, c, r, self.atol, self.rtol)
+    }
+}
+
+impl std::fmt::Display for TermTolerance {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let r = match self.reference {
+            TermReference::Cpu => "|c|",
+            TermReference::Terms => "sum |term|",
+            TermReference::TermsOverCount => "sum |term| / count",
+        };
+        write!(
+            f,
+            "{:?}: |g - c| <= {:e} + {:e} * {r}",
+            self.op, self.atol, self.rtol
+        )
+    }
+}
+
+/// The tolerance of `op` (DESIGN.md § 9 gate 5): the elementwise pair, with the `r` of its terms.
+pub fn term_tolerance(op: KernelOp) -> TermTolerance {
+    let reference = match op {
+        KernelOp::Transpose => TermReference::Cpu,
+        KernelOp::ReduceSum | KernelOp::LossSum | KernelOp::MatMul => TermReference::Terms,
+        KernelOp::ReduceMean | KernelOp::Mse => TermReference::TermsOverCount,
+    };
+    TermTolerance {
+        op,
+        atol: GPU_ATOL,
+        rtol: GPU_RTOL,
+        reference,
+    }
+}
+
+/// The relative bound of the whole-run check: after a run, every parameter passes
+/// `||g - c||_2 <= RUN_L2_RTOL * ||c||_2` (DESIGN.md § 9 gate 5).
+pub const RUN_L2_RTOL: f32 = 1e-4;
+
+/// Whether the device parameter `g` passes the whole-run check against the CPU parameter `c`,
+/// computed in `f64`; a length mismatch fails.
+pub fn run_within(g: &[f32], c: &[f32]) -> bool {
+    if g.len() != c.len() {
+        return false;
+    }
+    let difference: f64 = g
+        .iter()
+        .zip(c)
+        .map(|(&g, &c)| (f64::from(g) - f64::from(c)).powi(2))
+        .sum();
+    let norm: f64 = c.iter().map(|&c| f64::from(c).powi(2)).sum();
+    difference.sqrt() <= f64::from(RUN_L2_RTOL) * norm.sqrt()
+}
+
+fn finish(mut kernel: Kernel) -> Kernel {
+    kernel.id = Kernel::module_id(&kernel.signature());
+    kernel
+}
+
+fn groups_of(count: u64, kind: KernelKind) -> [u32; 3] {
+    let groups = count.div_ceil(u64::from(kind.workgroup_size())).max(1);
+    [
+        u32::try_from(groups).expect("a test count fits one dimension"),
+        1,
+        1,
+    ]
+}
+
+/// Stage 1 and stage 2 of `ReduceSum` (`mean` false) or `ReduceMean` over `count` elements, as
+/// `modelspec_core::schedule` builds them: one partial per workgroup of 64, then one workgroup.
+pub fn reduce_kernels(mean: bool, count: u64) -> (Kernel, Kernel) {
+    let op = if mean { "ReduceMean" } else { "ReduceSum" };
+    let reduced = TensorType::f32(&[count]);
+    let groups = count.div_ceil(u64::from(KernelKind::ReduceStage1.workgroup_size()));
+    let partials = TensorType::f32(&[groups]);
+    let stage1 = finish(Kernel {
+        id: KernelModuleId([0; 16]),
+        kind: KernelKind::ReduceStage1,
+        op,
+        dtype: DType::F32,
+        operands: vec![Operand::Buffer(reduced.clone())],
+        result: partials.clone(),
+        reduces: Some(reduced.clone()),
+        workgroup_size: KernelKind::ReduceStage1.workgroup_size(),
+        workgroups: groups_of(count, KernelKind::ReduceStage1),
+    });
+    let stage2 = finish(Kernel {
+        id: KernelModuleId([0; 16]),
+        kind: KernelKind::ReduceStage2,
+        op,
+        dtype: DType::F32,
+        operands: vec![Operand::Buffer(partials)],
+        result: TensorType::f32_scalar(),
+        reduces: Some(reduced),
+        workgroup_size: KernelKind::ReduceStage2.workgroup_size(),
+        workgroups: [1, 1, 1],
+    });
+    (stage1, stage2)
+}
+
+/// The `mse` loss over two tensors of `count` elements: one invocation.
+pub fn loss_sum_kernel(count: u64) -> Kernel {
+    finish(Kernel {
+        id: KernelModuleId([0; 16]),
+        kind: KernelKind::LossSum,
+        op: "Mse",
+        dtype: DType::F32,
+        operands: vec![
+            Operand::Buffer(TensorType::f32(&[count])),
+            Operand::Buffer(TensorType::f32(&[count])),
+        ],
+        result: TensorType::f32_scalar(),
+        reduces: None,
+        workgroup_size: KernelKind::LossSum.workgroup_size(),
+        workgroups: [1, 1, 1],
+    })
+}
+
+/// `transpose([rows, cols]) -> [cols, rows]`, one invocation per output element.
+pub fn transpose_kernel(rows: u64, cols: u64) -> Kernel {
+    finish(Kernel {
+        id: KernelModuleId([0; 16]),
+        kind: KernelKind::Transpose,
+        op: "Transpose",
+        dtype: DType::F32,
+        operands: vec![Operand::Buffer(TensorType::f32(&[rows, cols]))],
+        result: TensorType::f32(&[cols, rows]),
+        reduces: None,
+        workgroup_size: KernelKind::Transpose.workgroup_size(),
+        workgroups: groups_of(rows * cols, KernelKind::Transpose),
+    })
+}
+
+/// `matmul([m, k], [k, n]) -> [m, n]`, one invocation per output element.
+pub fn matmul_kernel(m: u64, k: u64, n: u64) -> Kernel {
+    finish(Kernel {
+        id: KernelModuleId([0; 16]),
+        kind: KernelKind::MatMul,
+        op: "MatMul",
+        dtype: DType::F32,
+        operands: vec![
+            Operand::Buffer(TensorType::f32(&[m, k])),
+            Operand::Buffer(TensorType::f32(&[k, n])),
+        ],
+        result: TensorType::f32(&[m, n]),
+        reduces: None,
+        workgroup_size: KernelKind::MatMul.workgroup_size(),
+        workgroups: groups_of(m * n, KernelKind::MatMul),
+    })
+}
+
+/// The element counts of the reduction and `mse` cases of `story:m1-vulkan-reduce-matmul`.
+pub const REDUCE_COUNTS: [u64; 7] = [1, 63, 64, 65, 1_000, 4_097, 78_400];
+
+/// The `[rows, cols]` of its transpose cases.
+pub const TRANSPOSE_SHAPES: [(u64, u64); 4] = [(1, 1), (3, 5), (100, 784), (65, 129)];
+
+/// The `[m, k] x [k, n]` of its matmul cases: the MNIST step shapes, and shapes that fill no
+/// workgroup.
+pub const MATMUL_SHAPES: [(u64, u64, u64); 7] = [
+    (100, 784, 64),
+    (784, 100, 64),
+    (100, 64, 10),
+    (64, 100, 10),
+    (100, 10, 64),
+    (1, 1, 1),
+    (17, 33, 65),
+];
+
+/// The SPIR-V opcodes and enumerants the module checks read.
+pub mod words {
+    pub const OP_EXECUTION_MODE: u32 = 16;
+    pub const OP_CAPABILITY: u32 = 17;
+    pub const OP_DECORATE: u32 = 71;
+    pub const OP_F_ADD: u32 = 129;
+    pub const OP_F_SUB: u32 = 131;
+    pub const OP_F_MUL: u32 = 133;
+    pub const DECORATION_NO_CONTRACTION: u32 = 42;
+    pub const MODE_DENORM_PRESERVE: u32 = 4459;
+    pub const MODE_SIGNED_ZERO_INF_NAN_PRESERVE: u32 = 4461;
+    pub const MODE_ROUNDING_MODE_RTE: u32 = 4462;
+    /// The three float-control execution modes of DESIGN.md § 5.4.
+    pub const FLOAT_CONTROL_MODES: [u32; 3] = [
+        MODE_ROUNDING_MODE_RTE,
+        MODE_DENORM_PRESERVE,
+        MODE_SIGNED_ZERO_INF_NAN_PRESERVE,
+    ];
+
+    /// Every instruction of `module` after the header: its opcode and its words.
+    pub fn instructions(module: &[u32]) -> Vec<(u32, &[u32])> {
+        let mut out = Vec::new();
+        let mut at = 5;
+        while at < module.len() {
+            let length = (module[at] >> 16) as usize;
+            assert!(
+                length > 0 && at + length <= module.len(),
+                "a whole instruction"
+            );
+            out.push((module[at] & 0xffff, &module[at..at + length]));
+            at += length;
+        }
+        out
+    }
+
+    /// Each `OpExecutionMode` of `module`: its mode and its literal operands.
+    pub fn execution_modes(module: &[u32]) -> Vec<(u32, Vec<u32>)> {
+        instructions(module)
+            .into_iter()
+            .filter(|(op, _)| *op == OP_EXECUTION_MODE)
+            .map(|(_, w)| (w[2], w[3..].to_vec()))
+            .collect()
+    }
+
+    /// The float-control modes `module` declares, each with its width operand.
+    pub fn float_control_modes(module: &[u32]) -> Vec<(u32, Vec<u32>)> {
+        execution_modes(module)
+            .into_iter()
+            .filter(|(mode, _)| FLOAT_CONTROL_MODES.contains(mode))
+            .collect()
+    }
+
+    /// The `OpFAdd`, `OpFSub` and `OpFMul` of `module` without a `NoContraction` decoration, by
+    /// result id, and how many there are in all.
+    pub fn uncontracted_arithmetic(module: &[u32]) -> (Vec<u32>, usize) {
+        let all = instructions(module);
+        let decorated: Vec<u32> = all
+            .iter()
+            .filter(|(op, w)| *op == OP_DECORATE && w[2] == DECORATION_NO_CONTRACTION)
+            .map(|(_, w)| w[1])
+            .collect();
+        let arithmetic: Vec<u32> = all
+            .iter()
+            .filter(|(op, _)| [OP_F_ADD, OP_F_SUB, OP_F_MUL].contains(op))
+            .map(|(_, w)| w[2])
+            .collect();
+        let missing = arithmetic
+            .iter()
+            .copied()
+            .filter(|id| !decorated.contains(id))
+            .collect();
+        (missing, arithmetic.len())
+    }
 }
