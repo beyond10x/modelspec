@@ -25,17 +25,22 @@
 //! sums 64 consecutive elements per workgroup with a pairwise tree in workgroup memory and writes
 //! one partial per workgroup; stage 2 runs one workgroup whose invocation `i` sums partials `i`,
 //! `i + 64`, … in ascending order and folds those 64 sums with the same tree. Neither stage adds a
-//! padding term. Each matmul output runs in one invocation, in ascending `k` order from the first
-//! term, as the CPU interpreter does. The loss sum runs one workgroup of 64: its invocations stage
-//! the terms `(a - b) * (a - b)` in workgroup memory, as many at a time as the device profile's
-//! `max_shared_memory_bytes` holds, and invocation 0 adds them in ascending element order from the
-//! first term, chunk after chunk, as the CPU interpreter does.
+//! padding term. A matmul stages tiles of its operands in workgroup memory ([`MatMulTile`]), and
+//! each output still runs in one invocation, in ascending `k` order from the first term, as the
+//! CPU interpreter does; a tile that needs more workgroup memory than the device profile's
+//! `max_shared_memory_bytes` is refused with [`EmitError::SharedMemory`]. The loss sum runs one
+//! workgroup of 64: its invocations stage the terms `(a - b) * (a - b)` in workgroup memory, as
+//! many at a time as the device profile's `max_shared_memory_bytes` holds, and invocation 0 adds
+//! them in ascending element order from the first term, chunk after chunk, as the CPU
+//! interpreter does.
 
 use std::collections::BTreeMap;
 
 use modelspec_core::artifact::{CompiledArtifact, ContentHash};
 use modelspec_core::device::DeviceProfile;
-use modelspec_core::ir::kernel::{Epilogue, Kernel, KernelKind, KernelModuleId, Operand};
+use modelspec_core::ir::kernel::{
+    Epilogue, Kernel, KernelKind, KernelModuleId, MatMulTile, Operand,
+};
 use modelspec_core::ir::tensor::{DType, Dim, TensorType};
 use rspirv::binary::Assemble;
 use rspirv::dr::{self, Builder};
@@ -53,6 +58,13 @@ pub enum EmitError {
     /// The kernel's operands do not fit its op.
     #[error("{op} kernel has operands the emitter cannot bind: {reason}")]
     Operands { op: &'static str, reason: String },
+    /// The kernel stages more workgroup memory than the device provides.
+    #[error("{op} kernel stages {needs} bytes of workgroup memory, the device provides {provides}")]
+    SharedMemory {
+        op: &'static str,
+        needs: u32,
+        provides: u32,
+    },
     /// `rspirv` refused an instruction.
     #[error("the SPIR-V builder refused the module: {0}")]
     Build(String),
@@ -119,7 +131,7 @@ enum Variant {
 
 /// The workgroup memory every Vulkan device provides, the minimum of
 /// `maxComputeSharedMemorySize`: what a module built without a device profile stages into.
-pub const MIN_SHARED_MEMORY_BYTES: u32 = 16_384;
+pub use modelspec_core::ir::kernel::MIN_SHARED_MEMORY_BYTES;
 
 /// The SPIR-V words of `kernel`'s compute module, with no float-control mode, for a device with
 /// [`MIN_SHARED_MEMORY_BYTES`] of workgroup memory.
@@ -298,9 +310,11 @@ enum Body {
         cols: u32,
     },
     MatMul {
+        m: u32,
         k: u32,
         n: u32,
         epilogue: Option<Epilogue>,
+        tile: MatMulTile,
     },
 }
 
@@ -408,10 +422,38 @@ fn body_of(kernel: &Kernel, variant: Variant, shared_bytes: u32) -> Result<Body,
                 result.as_slice(),
             ) {
                 ([m, k], [k2, n], [rm, rn]) if k == k2 && m == rm && n == rn && *k > 0 => {
+                    let tile = MatMulTile::of(*m, *k, *n);
+                    let covered = kernel
+                        .workgroups
+                        .iter()
+                        .map(|&w| u64::from(w))
+                        .product::<u64>();
+                    if kernel.workgroup_size != tile.workgroup_size
+                        || covered < tile.workgroups(*m, *n)
+                    {
+                        return Err(operands_error(
+                            kernel,
+                            format!(
+                                "a [{m}, {k}] x [{k}, {n}] matmul runs {} workgroups of {}",
+                                tile.workgroups(*m, *n),
+                                tile.workgroup_size
+                            ),
+                        ));
+                    }
+                    if tile.shared_bytes() > shared_bytes {
+                        return Err(EmitError::SharedMemory {
+                            op: kernel.op,
+                            needs: tile.shared_bytes(),
+                            provides: shared_bytes,
+                        });
+                    }
+                    u32_of(kernel, m.saturating_mul(*k).max(k.saturating_mul(*n)))?;
                     Body::MatMul {
+                        m: u32_of(kernel, *m)?,
                         k: u32_of(kernel, *k)?,
                         n: u32_of(kernel, *n)?,
                         epilogue: kernel.epilogue,
+                        tile,
                     }
                 }
                 _ => {
@@ -545,7 +587,12 @@ fn build(
     let shared = match body {
         Body::Stage1 | Body::Stage2 { .. } => Some(TREE),
         Body::LossSum { chunk, .. } => Some(chunk),
+        Body::MatMul { tile, .. } => Some(tile.shared_values()),
         _ => None,
+    };
+    let accumulators = match body {
+        Body::MatMul { tile, .. } => tile.rows as usize,
+        _ => 0,
     };
     if kernel.epilogue.is_some() && !matches!(body, Body::MatMul { .. }) {
         return Err(operands_error(
@@ -559,6 +606,7 @@ fn build(
         kernel.written(),
         kernel.workgroup_size,
         shared,
+        accumulators,
         float_controls,
         exact,
     )?;
@@ -572,7 +620,13 @@ fn build(
             chunk,
         } => m.loss_sum(divide_by, terms, chunk)?,
         Body::Transpose { rows, cols } => m.transpose(rows, cols)?,
-        Body::MatMul { k, n, epilogue } => m.matmul(k, n, epilogue)?,
+        Body::MatMul {
+            m: rows,
+            k,
+            n,
+            epilogue,
+            tile,
+        } => m.matmul(rows, k, n, epilogue, tile)?,
     }
     m.finish()
 }
@@ -598,6 +652,8 @@ struct Shell {
     /// Two `u32` and one `f32` function variables, declared first in the entry block.
     u32_vars: [Word; 2],
     f32_var: Word,
+    /// The per-row accumulators of a matmul invocation, `f32` function variables.
+    accumulators: Vec<Word>,
     /// The workgroup size, the `LocalSize` x of the entry point.
     group: Word,
     exact: bool,
@@ -611,6 +667,7 @@ impl Shell {
         writes: usize,
         workgroup_size: u32,
         shared: Option<u32>,
+        accumulators: usize,
         float_controls: bool,
         exact: bool,
     ) -> Result<Self, EmitError> {
@@ -737,6 +794,9 @@ impl Shell {
             b.variable(u32_fn_ptr, None, StorageClass::Function, None),
         ];
         let f32_var = b.variable(f32_fn_ptr, None, StorageClass::Function, None);
+        let accumulators = (0..accumulators)
+            .map(|_| b.variable(f32_fn_ptr, None, StorageClass::Function, None))
+            .collect();
         let ids = b.load(v3u32, None, gid, None, [])?;
         let groups = b.load(v3u32, None, nwg, None, [])?;
         let x = b.composite_extract(u32_ty, None, ids, [0])?;
@@ -774,6 +834,7 @@ impl Shell {
             count,
             u32_vars,
             f32_var,
+            accumulators,
             group,
             exact,
             u32_constants,
@@ -1261,46 +1322,273 @@ impl Shell {
         })
     }
 
-    /// Output element `o = i n + j` of `[m, n]`: `a[i, 0] * b[0, j]`, then each next product
-    /// added in ascending `k`; no split-K. With an [`Epilogue`] the rounded sum is written to
-    /// the pre-activation binding when the kernel keeps it, and its `relu` to the result.
-    fn matmul(&mut self, k: u32, n: u32, epilogue: Option<Epilogue>) -> Result<(), EmitError> {
-        let (index, count) = (self.index, self.count);
-        let inside = self.less(index, count)?;
-        let var = self.u32_vars[0];
-        self.when(inside, |m| {
-            let k = m.uint(k);
-            let n = m.uint(n);
-            let i = m.b.u_div(m.u32_ty, None, index, n)?;
-            let j = m.b.u_mod(m.u32_ty, None, index, n)?;
-            let row = m.mul(i, k)?;
-            let a = m.read(0, row)?;
-            let b = m.read(1, j)?;
-            let first = m.f_mul(a, b)?;
-            m.b.store(m.f32_var, first, None, [])?;
-            let one = m.uint(1);
-            m.counted(var, one, k, one, |m, p| {
-                let at_a = m.add(row, p)?;
-                let p_row = m.mul(p, n)?;
-                let at_b = m.add(p_row, j)?;
-                let a = m.read(0, at_a)?;
-                let b = m.read(1, at_b)?;
-                let product = m.f_mul(a, b)?;
-                m.accumulate(product)
-            })?;
-            let sum = m.b.load(m.f32_ty, None, m.f32_var, None, [])?;
-            match epilogue {
-                None => m.write(index, sum),
-                Some(Epilogue::Relu {
-                    writes_pre_activation,
-                }) => {
-                    if writes_pre_activation {
-                        m.write_to(0, index, sum)?;
-                    }
-                    let activation = m.relu(sum)?;
-                    m.write(index, activation)
-                }
+    /// `value` where `valid`, else `fallback`.
+    fn pick(
+        &mut self,
+        ty: Word,
+        valid: Word,
+        value: Word,
+        fallback: Word,
+    ) -> Result<Word, EmitError> {
+        Ok(self.b.select(ty, None, valid, value, fallback)?)
+    }
+
+    /// The tiled matmul of `[m, k] x [k, n]` (DESIGN.md § 5.2). Workgroup `g` computes the block
+    /// of row block `g / ⌈n / cols⌉` and column block `g % ⌈n / cols⌉`. For each tile of `depth`
+    /// values of the contracting index, from `k = 0` up, its invocations read the block's
+    /// `a[rows, tile]` and `b[tile, cols]` into registers `ahead` tiles early, stage them in
+    /// workgroup memory (`b` transposed), wait on a barrier, and each invocation adds the
+    /// tile's products to each of its `rows` accumulators in ascending `k`, the first product of
+    /// the first tile starting the sum. Values outside the matrices are staged but never enter
+    /// a written output, and the last tile has its own trip count, so no padding term is added:
+    /// every output element is `a[i, 0] * b[0, j]`, then each next product added in ascending
+    /// `k`, as the CPU computes it. With an [`Epilogue`] the rounded sum is written to the
+    /// pre-activation binding when the kernel keeps it, and its `relu` to the result.
+    fn matmul(
+        &mut self,
+        m: u32,
+        k: u32,
+        n: u32,
+        epilogue: Option<Epilogue>,
+        tile: MatMulTile,
+    ) -> Result<(), EmitError> {
+        let local = self.local.expect("a module with workgroup memory");
+        let u32_ty = self.u32_ty;
+        let (size, cols, depth) = (tile.workgroup_size, tile.cols, tile.depth);
+        let block_rows = tile.rows_per_workgroup();
+        let thread_rows = size / cols;
+        let a_stride = depth;
+        let b_offset = block_rows * a_stride;
+
+        let index = self.index;
+        let size_c = self.uint(size);
+        let group = self.b.u_div(u32_ty, None, index, size_c)?;
+        let col_blocks = self.uint(n.div_ceil(cols));
+        let block_row = self.b.u_div(u32_ty, None, group, col_blocks)?;
+        let block_col = self.b.u_mod(u32_ty, None, group, col_blocks)?;
+        let block_rows_c = self.uint(block_rows);
+        let row0 = self.mul(block_row, block_rows_c)?;
+        let cols_c = self.uint(cols);
+        let col0 = self.mul(block_col, cols_c)?;
+        let thread_col = self.b.u_mod(u32_ty, None, local, cols_c)?;
+        let thread_row = self.b.u_div(u32_ty, None, local, cols_c)?;
+        let j = self.add(col0, thread_col)?;
+        let (m_c, k_c, n_c) = (self.uint(m), self.uint(k), self.uint(n));
+        let depth_c = self.uint(depth);
+        let a_stride_c = self.uint(a_stride);
+        let b_offset_c = self.uint(b_offset);
+        let b_stride_c = self.uint(tile.b_stride());
+        let b_col = self.mul(thread_col, b_stride_c)?;
+        let b_col = self.add(b_offset_c, b_col)?;
+        let mut local_rows = Vec::new();
+        for q in 0..tile.rows {
+            let offset = self.uint(q * thread_rows);
+            local_rows.push(self.add(thread_row, offset)?);
+        }
+        let mut a_rows = Vec::new();
+        for &row in &local_rows {
+            a_rows.push(self.mul(row, a_stride_c)?);
+        }
+
+        // This invocation's staging slots, the same in every tile: the `a` values it stages,
+        // then the `b` values. A slot outside the matrices reads element `0` of the tile's
+        // offset instead, a value no written output uses.
+        struct Slot {
+            /// `a` (binding 0) or `b` (binding 1).
+            is_a: bool,
+            /// The element read for the tile from `k = 0`, before the tile's offset.
+            at: Word,
+            /// Where the value goes in a workgroup memory buffer.
+            to: Word,
+            /// The slot's index along the contracting index, within the tile.
+            along: Word,
+            /// Whether the slot lies inside the matrices.
+            valid: Word,
+            /// On a last step that not every invocation takes, whether this one takes it.
+            taken: Option<Word>,
+        }
+        let mut slots = Vec::new();
+        let zero = self.uint(0);
+        for (total, is_a) in [(block_rows * depth, true), (depth * cols, false)] {
+            let total_c = self.uint(total);
+            for step in 0..total.div_ceil(size) {
+                let offset = self.uint(step * size);
+                let e = self.add(local, offset)?;
+                let taken = if (step + 1) * size > total {
+                    Some(self.less(e, total_c)?)
+                } else {
+                    None
+                };
+                let (along, to, at, valid) = if is_a {
+                    let r = self.b.u_div(u32_ty, None, e, depth_c)?;
+                    let c = self.b.u_mod(u32_ty, None, e, depth_c)?;
+                    let row = self.add(row0, r)?;
+                    let valid = self.less(row, m_c)?;
+                    let row_at = self.mul(row, k_c)?;
+                    let at = self.add(row_at, c)?;
+                    let r_at = self.mul(r, a_stride_c)?;
+                    let to = self.add(r_at, c)?;
+                    (c, to, at, valid)
+                } else {
+                    let p = self.b.u_div(u32_ty, None, e, cols_c)?;
+                    let c = self.b.u_mod(u32_ty, None, e, cols_c)?;
+                    let col = self.add(col0, c)?;
+                    let valid = self.less(col, n_c)?;
+                    let p_at = self.mul(p, n_c)?;
+                    let at = self.add(p_at, col)?;
+                    let c_at = self.mul(c, b_stride_c)?;
+                    let c_at = self.add(b_offset_c, c_at)?;
+                    let to = self.add(c_at, p)?;
+                    (p, to, at, valid)
+                };
+                let valid = match taken {
+                    Some(taken) => self.and(valid, taken)?,
+                    None => valid,
+                };
+                let at = self.pick(u32_ty, valid, at, zero)?;
+                slots.push(Slot {
+                    is_a,
+                    at,
+                    to,
+                    along,
+                    valid,
+                    taken,
+                });
             }
-        })
+        }
+
+        // Reads this invocation's share of the tile of `len` values of the contracting index
+        // from `base` into registers: each value with its slot.
+        let fetch = |s: &mut Self, base: u32, len: u32| -> Result<Vec<(Word, &Slot)>, EmitError> {
+            let mut fetched = Vec::new();
+            for slot in &slots {
+                let offset = s.uint(if slot.is_a { base } else { base * n });
+                let mut at = s.add(slot.at, offset)?;
+                if len < depth {
+                    let len_c = s.uint(len);
+                    let inside = s.less(slot.along, len_c)?;
+                    let inside = s.and(slot.valid, inside)?;
+                    let zero = s.uint(0);
+                    at = s.pick(u32_ty, inside, at, zero)?;
+                }
+                let value = s.read(if slot.is_a { 0 } else { 1 }, at)?;
+                fetched.push((value, slot));
+            }
+            Ok(fetched)
+        };
+
+        // Writes fetched values to the workgroup memory buffer at `buffer`.
+        let store =
+            |s: &mut Self, staged: Vec<(Word, &Slot)>, buffer: Word| -> Result<(), EmitError> {
+                for (value, slot) in staged {
+                    let (to, taken) = (slot.to, slot.taken);
+                    let to = s.add(buffer, to)?;
+                    match taken {
+                        Some(taken) => s.when(taken, |s| s.store_shared(to, value))?,
+                        None => s.store_shared(to, value)?,
+                    }
+                }
+                Ok(())
+            };
+
+        // Adds the products of the first `len` values of the tile staged in the buffer at
+        // `buffer` to the accumulators, the first product starting the sum when `opening`.
+        let compute =
+            |s: &mut Self, buffer: Word, len: u32, opening: bool| -> Result<(), EmitError> {
+                let vars = s.accumulators.clone();
+                let mut sums: Vec<Option<Word>> = Vec::new();
+                for &var in &vars {
+                    sums.push(if opening {
+                        None
+                    } else {
+                        Some(s.b.load(s.f32_ty, None, var, None, [])?)
+                    });
+                }
+                let b_start = s.add(buffer, b_col)?;
+                let mut a_starts = Vec::new();
+                for &a_row in &a_rows {
+                    a_starts.push(s.add(buffer, a_row)?);
+                }
+                for p in 0..len {
+                    let p_c = s.uint(p);
+                    let b_at = s.add(b_start, p_c)?;
+                    let b = s.load_shared(b_at)?;
+                    for (sum, &a_start) in sums.iter_mut().zip(&a_starts) {
+                        let a_at = s.add(a_start, p_c)?;
+                        let a = s.load_shared(a_at)?;
+                        let product = s.f_mul(a, b)?;
+                        *sum = Some(match *sum {
+                            None => product,
+                            Some(acc) => s.f_add(acc, product)?,
+                        });
+                    }
+                }
+                for (&var, sum) in vars.iter().zip(sums) {
+                    if let Some(sum) = sum {
+                        s.b.store(var, sum, None, [])?;
+                    }
+                }
+                Ok(())
+            };
+        let buffer_values = tile.buffer_values();
+        let buffers = tile.buffers;
+        let buffer_of =
+            |s: &mut Self, tile_index: u32| s.uint((tile_index % buffers) * buffer_values);
+
+        // The tiles of the contracting index, from `k = 0` up; the last may be short. Tile `i`
+        // is read into registers `ahead` tiles before it is computed, so its reads overlap the
+        // products of the tiles before it, and staged in buffer `i % 2`: one barrier per tile
+        // both publishes it and frees the buffer of tile `i - 1` for tile `i + 1`.
+        let ahead = tile.ahead.max(1) as usize;
+        let tiles: Vec<(u32, u32)> = (0..k.div_ceil(depth))
+            .map(|i| (i * depth, (k - i * depth).min(depth)))
+            .collect();
+        let mut fetched = std::collections::VecDeque::new();
+        for &(base, len) in tiles.iter().take(ahead) {
+            fetched.push_back(fetch(self, base, len)?);
+        }
+        let buffer = buffer_of(self, 0);
+        let first = fetched.pop_front().expect("k is at least 1");
+        store(self, first, buffer)?;
+        self.barrier()?;
+        for (i, &(_, len)) in tiles.iter().enumerate() {
+            if let Some(&(base, next_len)) = tiles.get(i + ahead) {
+                fetched.push_back(fetch(self, base, next_len)?);
+            }
+            let buffer = buffer_of(self, i as u32);
+            compute(self, buffer, len, i == 0)?;
+            if i + 1 < tiles.len() {
+                let next = fetched.pop_front().expect("fetched ahead");
+                let buffer = buffer_of(self, i as u32 + 1);
+                store(self, next, buffer)?;
+                self.barrier()?;
+            }
+        }
+
+        for (q, &row) in local_rows.iter().enumerate() {
+            let row = self.add(row0, row)?;
+            let row_inside = self.less(row, m_c)?;
+            let col_inside = self.less(j, n_c)?;
+            let inside = self.and(row_inside, col_inside)?;
+            let var = self.accumulators[q];
+            self.when(inside, |s| {
+                let row_at = s.mul(row, n_c)?;
+                let at = s.add(row_at, j)?;
+                let sum = s.b.load(s.f32_ty, None, var, None, [])?;
+                match epilogue {
+                    None => s.write(at, sum),
+                    Some(Epilogue::Relu {
+                        writes_pre_activation,
+                    }) => {
+                        if writes_pre_activation {
+                            s.write_to(0, at, sum)?;
+                        }
+                        let activation = s.relu(sum)?;
+                        s.write(at, activation)
+                    }
+                }
+            })?;
+        }
+        Ok(())
     }
 }

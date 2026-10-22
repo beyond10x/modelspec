@@ -1,8 +1,9 @@
 //! The fixed safe schedule of M1 (DESIGN.md § 5.2, § 5.3): a verified training step to Kernel IR
 //! and its execution plans.
 //!
-//! Ops run in Training IR order. Each elementwise, broadcast, transpose, matmul and SGD op is one
-//! Dispatch, one invocation per output element; the `mse` loss is one Dispatch of one workgroup
+//! Ops run in Training IR order. Each elementwise, broadcast, transpose and SGD op is one
+//! Dispatch, one invocation per output element; a matmul is one Dispatch of the workgroups of its
+//! [`MatMulTile`]; the `mse` loss is one Dispatch of one workgroup
 //! (DESIGN.md § 5.4); every other reduce is four consecutive steps: an `Allocate` of its partials
 //! buffer, a stage-1 Dispatch that writes one partial per workgroup into it, a `Barrier`, and a
 //! stage-2 Dispatch of one workgroup that reads the partials. `Input`, `ParamRead` and `Scalar`
@@ -40,7 +41,7 @@ use thiserror::Error;
 
 use crate::artifact::{DataRole, DataSpec, ParameterSpec, canonical_parameter_id};
 use crate::ir::kernel::{
-    BufferView, Epilogue, ExecutionPlan, Kernel, KernelKind, Operand, PlanOp, PlanStep,
+    BufferView, Epilogue, ExecutionPlan, Kernel, KernelKind, MatMulTile, Operand, PlanOp, PlanStep,
 };
 use crate::ir::tensor::{DType, Dim, TensorNode, TensorOp, TensorType, ValueId};
 use crate::ir::training::{TrainConfig, TrainingStep};
@@ -447,12 +448,18 @@ pub fn schedule(
 
         let output = elements(&node.ty).ok_or_else(shape_error)?;
         let one = |kind: KernelKind, operands: Vec<Operand>| -> Result<Kernel, ScheduleError> {
-            let workgroups = match kind {
-                KernelKind::LossSum => [1, 1, 1],
+            let tile = match kind {
+                KernelKind::MatMul => Some(matmul_tile(&operands).ok_or_else(shape_error)?),
+                _ => None,
+            };
+            let workgroups = match (kind, tile) {
+                (KernelKind::LossSum, _) => [1, 1, 1],
+                (_, Some((tile, m, n))) => spread(node, tile.workgroups(m, n))?,
                 _ => spread(node, output.div_ceil(u64::from(kind.workgroup_size())))?,
             };
             let mut built = kernel(kind, node, operands, node.ty.clone(), None, workgroups);
-            if kind == KernelKind::MatMul && epilogue.is_some() {
+            if let Some((tile, _, _)) = tile {
+                built.workgroup_size = tile.workgroup_size;
                 built.epilogue = epilogue;
                 built.id = Kernel::module_id(&built.signature());
             }
@@ -643,6 +650,12 @@ fn spread(node: &TensorNode, groups: u64) -> Result<[u32; 3], ScheduleError> {
         return Err(too_many);
     }
     Ok([x as u32, y as u32, z as u32])
+}
+
+/// The tile of a matmul over `operands` `[m, k]` and `[k, n]`, with `m` and `n`.
+fn matmul_tile(operands: &[Operand]) -> Option<(MatMulTile, u64, u64)> {
+    let (m, k, n) = Kernel::matmul_shape(operands)?;
+    Some((MatMulTile::of(m, k, n), m, n))
 }
 
 fn kernel(

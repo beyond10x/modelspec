@@ -14,7 +14,8 @@ use std::path::{Path, PathBuf};
 use modelspec_core::artifact::{Backend, CompiledArtifact};
 use modelspec_core::compile::{self, CompiledTraining};
 use modelspec_core::ir::kernel::{
-    Epilogue, ExecutionPlan, Kernel, KernelKind, Operand, PlanOp, PlanStep,
+    Epilogue, ExecutionPlan, Kernel, KernelKind, MIN_SHARED_MEMORY_BYTES, MatMulTile, Operand,
+    PlanOp, PlanStep,
 };
 use modelspec_core::ir::print::print_kernel;
 use modelspec_core::ir::tensor::{TensorNode, TensorOp, ValueId};
@@ -509,22 +510,31 @@ fn the_schedule_entry_point_takes_no_device_profile() {
 }
 
 #[test]
-fn every_printed_kernel_shows_the_workgroup_size_of_its_kind() {
+fn every_printed_kernel_shows_the_workgroup_size_of_its_kind_or_its_matmul_tile() {
+    let mut matmuls = 0;
     for path in [LINEAR, TWO_LAYER] {
         let artifact = artifact(&source(path), Backend::Vulkan);
         let printed = print_kernel(&artifact.execution);
         for kernel in &artifact.execution.kernels {
-            assert_eq!(kernel.workgroup_size, kernel.kind.workgroup_size());
+            let size = match Kernel::matmul_shape(&kernel.operands) {
+                Some((m, k, n)) if kernel.kind == KernelKind::MatMul => {
+                    let tile = MatMulTile::of(m, k, n);
+                    let groups: u64 = kernel.workgroups.iter().map(|&g| u64::from(g)).product();
+                    assert_eq!(groups, tile.workgroups(m, n), "{}", kernel.signature());
+                    matmuls += 1;
+                    tile.workgroup_size
+                }
+                _ => kernel.kind.workgroup_size(),
+            };
+            assert_eq!(kernel.workgroup_size, size, "{}", kernel.signature());
             let line = printed
                 .lines()
                 .find(|l| l.contains(&kernel.id.to_string()))
                 .unwrap_or_else(|| panic!("{} is printed\n{printed}", kernel.id));
-            assert!(
-                line.contains(&format!("workgroup_size {}", kernel.kind.workgroup_size())),
-                "{line}"
-            );
+            assert!(line.contains(&format!("workgroup_size {size}")), "{line}");
         }
     }
+    assert!(matmuls > 0, "the examples have matmul kernels");
     for kind in [
         KernelKind::LossSum,
         KernelKind::Elementwise,
@@ -876,4 +886,65 @@ fn a_mul_of_two_scalars_is_folded_into_its_readers_immediate() {
         })
         .collect();
     assert_eq!(immediates, vec![0x3B03_126F], "{}", kernel.signature());
+}
+
+// story:m1-f-forward-matmul-tiled: the tile of a matmul is a function of its shape.
+
+#[test]
+fn a_matmul_tile_fits_the_minimum_workgroup_memory_and_covers_its_output() {
+    let shapes = [
+        (100, 784, 64),
+        (784, 100, 64),
+        (100, 64, 10),
+        (64, 100, 10),
+        (100, 10, 64),
+        (1, 1, 1),
+        (9, 65, 17),
+        (129, 200, 1),
+        (3, 128, 3),
+        (1, 100_000, 1),
+    ];
+    for (m, k, n) in shapes {
+        let tile = MatMulTile::of(m, k, n);
+        let what = format!("[{m}, {k}] x [{k}, {n}]: {tile:?}");
+        assert_eq!(tile, MatMulTile::of(m, k, n), "{what}");
+        assert_eq!(tile.workgroup_size, 128, "{what}");
+        assert!(tile.cols.is_power_of_two() && tile.workgroup_size.is_multiple_of(tile.cols));
+        assert_eq!(
+            u64::from(tile.cols),
+            n.min(16).next_power_of_two(),
+            "{what}"
+        );
+        assert_eq!(tile.rows, 1, "{what}");
+        assert!(
+            tile.depth >= 1 && u64::from(tile.depth) <= k.min(64),
+            "{what}"
+        );
+        assert!(tile.shared_bytes() <= MIN_SHARED_MEMORY_BYTES, "{what}");
+        let tiles = k.div_ceil(u64::from(tile.depth));
+        assert_eq!(tile.buffers, if tiles > 1 { 2 } else { 1 }, "{what}");
+        assert_eq!(
+            tile.workgroups(m, n),
+            m.div_ceil(u64::from(tile.rows_per_workgroup())) * n.div_ceil(u64::from(tile.cols)),
+            "{what}"
+        );
+        assert_eq!(
+            tile.shared_values(),
+            tile.buffers
+                * (tile.rows_per_workgroup() * tile.depth
+                    + tile.cols * (tile.depth.next_multiple_of(4) + 4)),
+            "{what}"
+        );
+    }
+    let mnist = MatMulTile::of(100, 784, 64);
+    assert_eq!(
+        (mnist.cols, mnist.depth, mnist.ahead, mnist.buffers),
+        (16, 64, 6, 2),
+        "the forward matmul of the MNIST example"
+    );
+    assert_eq!(
+        MatMulTile::of(129, 200, 1).depth,
+        8,
+        "128 rows of 16 overflow 16 KiB"
+    );
 }
