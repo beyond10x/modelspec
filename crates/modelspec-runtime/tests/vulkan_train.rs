@@ -49,9 +49,14 @@ fn runs(file: &str) -> Runs {
         .join("../..")
         .join(file);
     let source = std::fs::read_to_string(&path).expect("the example reads");
-    let compiled = compile_training(file, &source).expect("the example compiles");
+    runs_of(file, &source)
+}
+
+/// [`runs`] of the program `source`, named `file` in its diagnostics.
+fn runs_of(file: &str, source: &str) -> Runs {
+    let compiled = compile_training(file, source).expect("the example compiles");
     let artifact =
-        compile_artifact(file, &source, Backend::Vulkan).expect("the example compiles for Vulkan");
+        compile_artifact(file, source, Backend::Vulkan).expect("the example compiles for Vulkan");
     let cpu = runner::run(&compiled).expect("the CPU run finishes");
 
     let vulkan = Vulkan::load().expect("the Vulkan loader opens");
@@ -204,9 +209,58 @@ fn mnist_mlp_trains_on_the_device_with_one_host_wait() {
         "params and 1,801 losses down"
     );
     assert_eq!(stats.bytes_downloaded, 210_468);
+    assert_eq!(
+        stats.dispatches_per_step, 14,
+        "the fused step plan of story m1-fuse-elementwise"
+    );
     eprintln!(
         "{MNIST_MLP}: steady state {:.3} us/step, {} dispatches/step",
         stats.us_per_step(),
         stats.dispatches_per_step
     );
+}
+
+/// `relu(matmul(x, transpose(x)))` with `x` an input: no gradient reads the pre-activation, so
+/// the matmul kernel's ReLU epilogue writes only the activation (story m1-fuse-elementwise).
+const GRAM: &str = "model Gram {
+    param w: Tensor<f32, [16, 1]> = xavier_uniform();
+
+    fn forward(x: Tensor<f32, [16, 4]>)
+        -> Tensor<f32, [16, 1]> {
+        let h = relu(matmul(x, transpose(x)));
+        return matmul(h, w);
+    }
+}
+
+train FitGram {
+    model = Gram;
+    input x: Tensor<f32, [16, 4]>;
+    target y: Tensor<f32, [16, 1]>;
+    loss = mse(model.forward(x), y);
+    optimizer = sgd(lr = 0.05);
+    steps = 200;
+    seed = 7;
+    device = cpu;
+}
+";
+
+#[test]
+#[ignore = "needs a Vulkan device"]
+fn a_relu_epilogue_without_its_pre_activation_trains_on_the_device_within_tolerance() {
+    let file = "gram.mspec";
+    let artifact = compile_artifact(file, GRAM, Backend::Vulkan).expect("the model compiles");
+    let epilogues: Vec<String> = artifact
+        .execution
+        .kernels
+        .iter()
+        .filter_map(|k| k.epilogue.map(|e| e.to_string()))
+        .collect();
+    assert_eq!(
+        epilogues,
+        vec!["epilogue Relu"],
+        "one ReLU epilogue, without the pre-activation"
+    );
+    let runs = runs_of(file, GRAM);
+    assert_matches_the_cpu(file, &runs);
+    assert_one_wait_and_the_counted_bytes(file, &runs, 200);
 }

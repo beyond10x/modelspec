@@ -8,10 +8,15 @@
 //! their capabilities to a loss-sum or matmul module exactly when the device profile reports all
 //! three for f32; no other module declares a float-control mode. Every `OpFAdd`, `OpFSub` and
 //! `OpFMul` of a reduction, loss-sum or matmul module is decorated `NoContraction`, so no driver
-//! fuses a multiply and an add.
+//! fuses a multiply and an add; so are the multiply and the subtraction of an SGD update with
+//! three operands, `p - (lr * g)` (DESIGN.md § 3.1).
+//!
+//! A matmul with a `relu` epilogue applies the compare and select of the `relu` kernel to its
+//! rounded sum and writes that; when it keeps the pre-activation, it writes the sum first.
 //!
 //! Bindings, all in descriptor set 0: each buffer operand of the kernel in order (read, decorated
-//! `NonWritable`), then the result (written). A push constant holds the dispatch's count: the
+//! `NonWritable`), then what it writes: the pre-activation of an epilogue that keeps it, then the
+//! result. A push constant holds the dispatch's count: the
 //! output elements of an elementwise, transpose or matmul kernel, the elements a reduction stage
 //! or a loss sum reads. A rank-0 buffer operand of an elementwise kernel is read at element 0 by
 //! every invocation; an immediate operand is a constant of the module.
@@ -30,7 +35,7 @@ use std::collections::BTreeMap;
 
 use modelspec_core::artifact::{CompiledArtifact, ContentHash};
 use modelspec_core::device::DeviceProfile;
-use modelspec_core::ir::kernel::{Kernel, KernelKind, KernelModuleId, Operand};
+use modelspec_core::ir::kernel::{Epilogue, Kernel, KernelKind, KernelModuleId, Operand};
 use modelspec_core::ir::tensor::{DType, Dim, TensorType};
 use rspirv::binary::Assemble;
 use rspirv::dr::{self, Builder};
@@ -73,7 +78,7 @@ pub const FLOAT_CONTROL_CAPABILITIES: [&str; 3] = [
 pub struct KernelCacheKey {
     /// blake3 of the kernel's signature and the module variant.
     pub ir_hash: ContentHash,
-    /// The shape of each buffer operand in binding order, then the result's.
+    /// The shape of each buffer operand in binding order, then each written binding's.
     pub shapes: Vec<Vec<u64>>,
     pub dtype: DType,
     pub fast_math: bool,
@@ -192,7 +197,8 @@ fn module_for(
             shapes.push(static_shape(kernel, ty)?);
         }
     }
-    shapes.push(static_shape(kernel, &kernel.result)?);
+    let result = static_shape(kernel, &kernel.result)?;
+    shapes.extend(std::iter::repeat_n(result, kernel.written()));
     let mut capabilities = vec!["Shader".to_owned()];
     if float_controls {
         capabilities.extend(
@@ -294,6 +300,7 @@ enum Body {
     MatMul {
         k: u32,
         n: u32,
+        epilogue: Option<Epilogue>,
     },
 }
 
@@ -404,6 +411,7 @@ fn body_of(kernel: &Kernel, variant: Variant, shared_bytes: u32) -> Result<Body,
                     Body::MatMul {
                         k: u32_of(kernel, *k)?,
                         n: u32_of(kernel, *n)?,
+                        epilogue: kernel.epilogue,
                     }
                 }
                 _ => {
@@ -430,6 +438,9 @@ enum Arith {
     Mul,
     Relu,
     ReluGrad,
+    /// `a - (b * c)`, the SGD update with its scaled gradient: the product rounded, then the
+    /// difference, both decorated `NoContraction`.
+    ScaledSub,
     Copy,
 }
 
@@ -437,6 +448,7 @@ impl Arith {
     fn of(kernel: &Kernel) -> Result<Self, EmitError> {
         let arith = match (kernel.kind, kernel.op) {
             (KernelKind::Elementwise, "Add") => Self::Add,
+            (KernelKind::SgdUpdate, "Sub") if kernel.operands.len() == 3 => Self::ScaledSub,
             (KernelKind::Elementwise, "Sub") | (KernelKind::SgdUpdate, "Sub") => Self::Sub,
             (KernelKind::Elementwise, "Mul") => Self::Mul,
             (KernelKind::Elementwise, "Relu") => Self::Relu,
@@ -451,6 +463,7 @@ impl Arith {
         match self {
             Self::Relu | Self::Copy => 1,
             Self::Add | Self::Sub | Self::Mul | Self::ReluGrad => 2,
+            Self::ScaledSub => 3,
         }
     }
 }
@@ -534,8 +547,21 @@ fn build(
         Body::LossSum { chunk, .. } => Some(chunk),
         _ => None,
     };
+    if kernel.epilogue.is_some() && !matches!(body, Body::MatMul { .. }) {
+        return Err(operands_error(
+            kernel,
+            "only a matmul kernel has an epilogue",
+        ));
+    }
     let exact = !matches!(body, Body::Elementwise(..));
-    let mut m = Shell::new(reads, kernel.workgroup_size, shared, float_controls, exact)?;
+    let mut m = Shell::new(
+        reads,
+        kernel.written(),
+        kernel.workgroup_size,
+        shared,
+        float_controls,
+        exact,
+    )?;
     match body {
         Body::Elementwise(arith, sources) => m.elementwise(arith, &sources)?,
         Body::Stage1 => m.stage1()?,
@@ -546,7 +572,7 @@ fn build(
             chunk,
         } => m.loss_sum(divide_by, terms, chunk)?,
         Body::Transpose { rows, cols } => m.transpose(rows, cols)?,
-        Body::MatMul { k, n } => m.matmul(k, n)?,
+        Body::MatMul { k, n, epilogue } => m.matmul(k, n, epilogue)?,
     }
     m.finish()
 }
@@ -560,7 +586,8 @@ struct Shell {
     element_ptr: Word,
     shared_ptr: Word,
     buffers: Vec<Word>,
-    out: Word,
+    /// The written bindings, after the read ones; the last is the result.
+    outs: Vec<Word>,
     shared: Option<Word>,
     /// The invocation's flat index over every workgroup.
     index: Word,
@@ -581,6 +608,7 @@ struct Shell {
 impl Shell {
     fn new(
         reads: usize,
+        writes: usize,
         workgroup_size: u32,
         shared: Option<u32>,
         float_controls: bool,
@@ -667,7 +695,9 @@ impl Shell {
         let buffers: Vec<Word> = (0..reads as u32)
             .map(|binding| bind(&mut b, read_ptr, binding))
             .collect();
-        let out = bind(&mut b, write_ptr, reads as u32);
+        let outs: Vec<Word> = (0..writes as u32)
+            .map(|at| bind(&mut b, write_ptr, reads as u32 + at))
+            .collect();
         let pc = b.variable(pc_ptr, None, StorageClass::PushConstant, None);
         let shared_var = if let Some(length) = shared {
             let length = match u32_constants.get(&length) {
@@ -689,7 +719,8 @@ impl Shell {
         let mut interface = vec![gid, nwg];
         interface.extend(lid);
         interface.extend(&buffers);
-        interface.extend([out, pc]);
+        interface.extend(&outs);
+        interface.push(pc);
         interface.extend(shared_var);
         b.entry_point(ExecutionModel::GLCompute, main, "main", interface);
         b.execution_mode(main, ExecutionMode::LocalSize, [workgroup_size, 1, 1]);
@@ -736,7 +767,7 @@ impl Shell {
             element_ptr,
             shared_ptr,
             buffers,
-            out,
+            outs,
             shared: shared_var,
             index,
             local,
@@ -831,14 +862,26 @@ impl Shell {
         Ok(self.b.load(self.f32_ty, None, ptr, None, [])?)
     }
 
-    /// Writes `value` to element `at` of the result.
+    /// Writes `value` to element `at` of the result, the last written binding.
     fn write(&mut self, at: Word, value: Word) -> Result<(), EmitError> {
+        self.write_to(self.outs.len() - 1, at, value)
+    }
+
+    /// Writes `value` to element `at` of written binding `output`.
+    fn write_to(&mut self, output: usize, at: Word, value: Word) -> Result<(), EmitError> {
         let zero = self.uint(0);
         let ptr = self
             .b
-            .access_chain(self.element_ptr, None, self.out, [zero, at])?;
+            .access_chain(self.element_ptr, None, self.outs[output], [zero, at])?;
         self.b.store(ptr, value, None, [])?;
         Ok(())
+    }
+
+    /// `relu(x)`: `x` where `x > 0`, else `0.0`, a compare and a select.
+    fn relu(&mut self, x: Word) -> Result<Word, EmitError> {
+        let f_zero = self.float(0.0);
+        let positive = self.b.f_ord_greater_than(self.bool_ty, None, x, f_zero)?;
+        Ok(self.b.select(self.f32_ty, None, positive, x, f_zero)?)
     }
 
     fn shared_at(&mut self, at: Word) -> Result<Word, EmitError> {
@@ -960,13 +1003,17 @@ impl Shell {
                 Arith::Add => m.b.f_add(f32_ty, None, values[0], values[1])?,
                 Arith::Sub => m.b.f_sub(f32_ty, None, values[0], values[1])?,
                 Arith::Mul => m.b.f_mul(f32_ty, None, values[0], values[1])?,
-                Arith::Relu => {
-                    let positive = m.b.f_ord_greater_than(bool_ty, None, values[0], f_zero)?;
-                    m.b.select(f32_ty, None, positive, values[0], f_zero)?
-                }
+                Arith::Relu => m.relu(values[0])?,
                 Arith::ReluGrad => {
                     let positive = m.b.f_ord_greater_than(bool_ty, None, values[0], f_zero)?;
                     m.b.select(f32_ty, None, positive, values[1], f_zero)?
+                }
+                Arith::ScaledSub => {
+                    let product = m.b.f_mul(f32_ty, None, values[1], values[2])?;
+                    m.b.decorate(product, Decoration::NoContraction, []);
+                    let difference = m.b.f_sub(f32_ty, None, values[0], product)?;
+                    m.b.decorate(difference, Decoration::NoContraction, []);
+                    difference
                 }
                 Arith::Copy => values[0],
             };
@@ -1215,8 +1262,9 @@ impl Shell {
     }
 
     /// Output element `o = i n + j` of `[m, n]`: `a[i, 0] * b[0, j]`, then each next product
-    /// added in ascending `k`; no split-K.
-    fn matmul(&mut self, k: u32, n: u32) -> Result<(), EmitError> {
+    /// added in ascending `k`; no split-K. With an [`Epilogue`] the rounded sum is written to
+    /// the pre-activation binding when the kernel keeps it, and its `relu` to the result.
+    fn matmul(&mut self, k: u32, n: u32, epilogue: Option<Epilogue>) -> Result<(), EmitError> {
         let (index, count) = (self.index, self.count);
         let inside = self.less(index, count)?;
         let var = self.u32_vars[0];
@@ -1241,7 +1289,18 @@ impl Shell {
                 m.accumulate(product)
             })?;
             let sum = m.b.load(m.f32_ty, None, m.f32_var, None, [])?;
-            m.write(index, sum)
+            match epilogue {
+                None => m.write(index, sum),
+                Some(Epilogue::Relu {
+                    writes_pre_activation,
+                }) => {
+                    if writes_pre_activation {
+                        m.write_to(0, index, sum)?;
+                    }
+                    let activation = m.relu(sum)?;
+                    m.write(index, activation)
+                }
+            }
         })
     }
 }

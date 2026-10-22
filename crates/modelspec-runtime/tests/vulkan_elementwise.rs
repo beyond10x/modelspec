@@ -434,6 +434,82 @@ fn vulkan_dispatch_binds_one_element_only_where_the_kernel_has_a_rank0_operand()
     ));
 }
 
+/// Story m1-fuse-elementwise: the MNIST step scales its loss gradient by `1.0 * 0.002`, two
+/// compile-time scalars. Before the fusion a rank-0 `elementwise Mul (1.0, 0.002)` kernel computed
+/// it on the device; the schedule now folds it into its reader's immediate. The folded immediate
+/// must be the bits that kernel leaves on this device.
+#[test]
+#[ignore = "needs a Vulkan device"]
+fn vulkan_the_folded_scalar_is_the_product_the_device_computed() {
+    use modelspec_core::artifact::Backend;
+    use modelspec_core::compile::compile_artifact;
+    use modelspec_core::ir::kernel::Operand;
+    use modelspec_core::ir::tensor::TensorType;
+
+    let vulkan = open();
+    let candidates = vulkan.candidates().expect("the devices are probed");
+    let negotiated = negotiate(&candidates[0].profile).expect("device 0 negotiates");
+    let device = vulkan
+        .create_device(0, &negotiated)
+        .expect("device 0 opens");
+    let case = Case {
+        name: "mul_immediate_immediate".to_owned(),
+        op: ElementwiseOp::Mul,
+        operands: vec![Form::Immediate(1.0), Form::Immediate(0.002)],
+    };
+    let mut kernel = common::kernel(&case, 1);
+    kernel.result = TensorType::f32_scalar();
+    kernel.id = Kernel::module_id(&kernel.signature());
+    assert_eq!(
+        kernel.id.to_string(),
+        "5bb7932a-569c-85fe-8946-5a688a1299e5",
+        "the module k5 of the unfused MNIST plan: {}",
+        kernel.signature()
+    );
+    let got = dispatch_case(&device, &case, &kernel, 1, &[]);
+    let messages = vulkan.take_validation_messages();
+
+    let file = "examples/mnist_mlp.mspec";
+    let source = std::fs::read_to_string(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join(file),
+    )
+    .expect("the example reads");
+    let artifact = compile_artifact(file, &source, Backend::Vulkan).expect("the example compiles");
+    let folded: Vec<u32> = artifact
+        .execution
+        .kernels
+        .iter()
+        .filter(|k| k.op == "Mul")
+        .flat_map(|k| k.operands.iter())
+        .filter_map(|o| match o {
+            Operand::Immediate(v) => Some(v.to_bits()),
+            Operand::Buffer(_) => None,
+        })
+        .collect();
+    eprintln!(
+        "vulkan_folded_scalar: device 1.0 * 0.002 = {:#010x}, MNIST Mul immediates {folded:08x?}, \
+         {} validation messages",
+        got[0].to_bits(),
+        messages.len()
+    );
+    assert!(messages.is_empty(), "{messages:#?}");
+    assert_eq!(got[0].to_bits(), 0x3B03_126F, "the device's product");
+    assert_eq!(
+        folded,
+        vec![got[0].to_bits()],
+        "the folded immediate is the device's product"
+    );
+    assert_eq!(
+        (0..GUARD_WORDS)
+            .filter(|&i| got[1 + i].to_bits() != guard(i))
+            .count(),
+        0,
+        "the guard words are unchanged"
+    );
+}
+
 /// `a + b`, then `relu`, then the SGD update of `p` by the result, in place.
 fn chain_cpu(a: &[f32], b: &[f32], p: &[f32]) -> Vec<f32> {
     let n = a.len() as u64;

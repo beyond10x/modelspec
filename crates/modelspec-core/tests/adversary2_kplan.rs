@@ -136,42 +136,47 @@ fn a_step_reading_an_updated_parameter_as_its_second_operand_is_refused() {
     let updated = plan.step[first_update].writes[0];
     let pending = plan.step[second_update].writes[0];
     assert_ne!(updated.buffer, pending.buffer);
-    let guard = plan.step[second_update].depends_on.clone();
-    assert_eq!(guard.len(), 1, "the second update waits on one barrier");
-    let guard = guard[0];
-    assert!(guard > first_update && plan.step[guard].op == PlanOp::Barrier);
+    assert!(first_update < second_update);
 
+    // The two updates may share a barrier group (story m1-fuse-elementwise): the reader gets
+    // its own group between them, a barrier after the first update and one before the second.
     let out = fresh_view(&mut plan, pending.element_count);
     let at = second_update;
-    let reader = PlanStep {
+    let shift = 3;
+    let mut steps: Vec<PlanStep> = plan.step[..at].to_vec();
+    steps.push(barrier(vec![first_update]));
+    steps.push(PlanStep {
         op: PlanOp::Copy,
         kernel_module_id: None,
         workgroups: None,
         reads: vec![pending, updated],
         writes: vec![out],
-        depends_on: vec![guard],
+        depends_on: vec![at],
         value: None,
-    };
-    let mut steps: Vec<PlanStep> = plan.step[..at].to_vec();
-    steps.push(reader);
-    steps.push(barrier(vec![guard, at]));
+    });
+    steps.push(barrier(vec![at, at + 1]));
     for step in &plan.step[at..] {
         let mut moved = step.clone();
         for on in &mut moved.depends_on {
             if *on >= at {
-                *on += 2;
+                *on += shift;
             }
         }
         steps.push(moved);
     }
-    steps[at + 2].depends_on = vec![at + 1];
+    steps[at + shift].depends_on = vec![at + 2];
     plan.step = steps;
 
     let result = verify_plan(&plan);
     assert!(
-        result.is_err(),
-        "step {at} reads parameter buffer b{} after update step {first_update} wrote it in the \
+        matches!(
+            result,
+            Err(modelspec_core::ir::verify::PlanVerifyError::ReadAfterUpdate { step, update, .. })
+                if step == at + 1 && update == first_update
+        ),
+        "step {} reads parameter buffer b{} after update step {first_update} wrote it in the \
          same recording: {result:?}",
+        at + 1,
         updated.buffer
     );
 }

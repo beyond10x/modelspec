@@ -62,6 +62,7 @@ fn mse_kernel(shape: &[u64]) -> Kernel {
         operands: vec![Operand::Buffer(ty.clone()), Operand::Buffer(ty)],
         result: TensorType::f32_scalar(),
         reduces: None,
+        epilogue: None,
         workgroup_size: KernelKind::LossSum.workgroup_size(),
         workgroups: [1, 1, 1],
     };

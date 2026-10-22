@@ -2,7 +2,8 @@
 //! story m1-kernel-plan).
 //!
 //! Every case compiles a real `.mspec` file through `compile::compile_artifact` and reads the
-//! artifact's [`ExecutionPlan`]: one Dispatch per computing op of the training step, the `mse` loss
+//! artifact's [`ExecutionPlan`]: one Dispatch per computing op of the training step but the fused
+//! and folded ones of DESIGN.md § 3.1 (story m1-fuse-elementwise), the `mse` loss
 //! sum as one Dispatch of one workgroup, every other reduce as `Allocate`, stage 1, `Barrier`,
 //! stage 2, no `Complete` step, one view per parameter, and a forward plan that writes no
 //! parameter.
@@ -12,7 +13,9 @@ use std::path::{Path, PathBuf};
 
 use modelspec_core::artifact::{Backend, CompiledArtifact};
 use modelspec_core::compile::{self, CompiledTraining};
-use modelspec_core::ir::kernel::{ExecutionPlan, KernelKind, PlanOp, PlanStep};
+use modelspec_core::ir::kernel::{
+    Epilogue, ExecutionPlan, Kernel, KernelKind, Operand, PlanOp, PlanStep,
+};
 use modelspec_core::ir::print::print_kernel;
 use modelspec_core::ir::tensor::{TensorNode, TensorOp, ValueId};
 use modelspec_core::ir::verify::verify_plan;
@@ -83,6 +86,121 @@ fn parameter_buffers(plan: &ExecutionPlan) -> BTreeSet<u32> {
         .collect()
 }
 
+/// How the step plan computes one op (DESIGN.md § 3.1).
+#[derive(Debug, PartialEq)]
+enum Cover {
+    /// One Dispatch names the op.
+    Own,
+    /// A `relu` the Dispatch of its matmul computes as the kernel's epilogue.
+    Epilogue,
+    /// An `lr * g` the Dispatch of its only reader, an SGD update, computes.
+    Scaled,
+    /// A rank-0 op of compile-time scalars, an immediate equal to its `f32` value in every
+    /// kernel that reads it.
+    Folded,
+}
+
+fn node_of(training: &CompiledTraining, value: ValueId) -> &TensorNode {
+    training
+        .training
+        .training
+        .program
+        .node(value)
+        .expect("the value is a node of the step")
+}
+
+fn readers(training: &CompiledTraining, value: ValueId) -> Vec<&TensorNode> {
+    training
+        .training
+        .training
+        .program
+        .nodes
+        .iter()
+        .filter(|n| n.operands.contains(&value))
+        .collect()
+}
+
+fn kernel_of<'a>(plan: &'a ExecutionPlan, step: &PlanStep) -> &'a Kernel {
+    plan.kernel(step.kernel_module_id.expect("a Dispatch names its module"))
+        .expect("the module is one of the plan's kernels")
+}
+
+/// The `f32` value of a compile-time scalar: a `Scalar`, or an `Add`, `Sub` or `Mul` of them,
+/// each one correctly rounded operation.
+fn constant(training: &CompiledTraining, value: ValueId) -> Option<f32> {
+    let node = node_of(training, value);
+    let operands: Option<Vec<f32>> = node
+        .operands
+        .iter()
+        .map(|&o| constant(training, o))
+        .collect();
+    match (&node.op, operands?.as_slice()) {
+        (TensorOp::Scalar(v), []) => Some(*v),
+        (TensorOp::Add, [a, b]) => Some(a + b),
+        (TensorOp::Sub, [a, b]) => Some(a - b),
+        (TensorOp::Mul, [a, b]) => Some(a * b),
+        _ => None,
+    }
+}
+
+/// Every way the step plan of `plan` computes `node`; exactly one is right.
+fn coverage(plan: &ExecutionPlan, training: &CompiledTraining, node: &TensorNode) -> Vec<Cover> {
+    let mut covers = Vec::new();
+    let own = dispatches_of(&plan.step, node.id);
+    if own.len() == 1 {
+        covers.push(Cover::Own);
+    }
+    if !own.is_empty() {
+        return covers;
+    }
+    if let (TensorOp::Relu, [matmul]) = (&node.op, &node.operands[..])
+        && let [at] = dispatches_of(&plan.step, *matmul)[..]
+    {
+        let kernel = kernel_of(plan, &plan.step[at]);
+        if kernel.kind == KernelKind::MatMul && kernel.epilogue.is_some() {
+            covers.push(Cover::Epilogue);
+        }
+    }
+    let updates: BTreeSet<ValueId> = training
+        .training
+        .optimizer
+        .updates
+        .values()
+        .copied()
+        .collect();
+    if let [reader] = readers(training, node.id)[..]
+        && node.op == TensorOp::Mul
+        && updates.contains(&reader.id)
+        && let [at] = dispatches_of(&plan.step, reader.id)[..]
+    {
+        let kernel = kernel_of(plan, &plan.step[at]);
+        if kernel.kind == KernelKind::SgdUpdate && kernel.operands.len() == 3 {
+            covers.push(Cover::Scaled);
+        }
+    }
+    if let Some(value) = constant(training, node.id).filter(|_| node.ty.rank() == 0) {
+        let immediate_everywhere = readers(training, node.id).iter().all(|reader| {
+            let mut sites = dispatches_of(&plan.step, reader.id);
+            sites.extend(
+                readers(training, reader.id)
+                    .iter()
+                    .filter(|r| updates.contains(&r.id))
+                    .flat_map(|r| dispatches_of(&plan.step, r.id)),
+            );
+            sites.iter().any(|&at| {
+                kernel_of(plan, &plan.step[at])
+                    .operands
+                    .iter()
+                    .any(|o| matches!(o, Operand::Immediate(v) if v.to_bits() == value.to_bits()))
+            })
+        });
+        if immediate_everywhere {
+            covers.push(Cover::Folded);
+        }
+    }
+    covers
+}
+
 /// Acceptance 2 for one model file.
 fn the_step_plan_of_a_mse_model_is_one_dispatch_per_computing_op(path: &str) {
     let text = source(path);
@@ -93,28 +211,27 @@ fn the_step_plan_of_a_mse_model_is_one_dispatch_per_computing_op(path: &str) {
 
     let computing = computing(&training);
     assert!(!computing.is_empty());
+    let mut own = 0;
     for node in &computing {
-        let dispatches = dispatches_of(&plan.step, node.id);
+        let covers = coverage(plan, &training, node);
         assert_eq!(
-            dispatches.len(),
+            covers.len(),
             1,
-            "{} {} has {} dispatches\n{}",
+            "{} {} is covered by {covers:?}\n{}",
             node.id,
             node.op.name(),
-            dispatches.len(),
             print_kernel(plan)
         );
+        if covers == [Cover::Own] {
+            own += 1;
+        }
     }
     let all: usize = plan
         .step
         .iter()
         .filter(|s| s.op == PlanOp::Dispatch)
         .count();
-    assert_eq!(
-        all,
-        computing.len(),
-        "no Dispatch outside the computing ops"
-    );
+    assert_eq!(all, own, "no Dispatch outside the computing ops");
 
     let mse = computing
         .iter()
@@ -281,13 +398,8 @@ fn a_reduce_mean_is_allocate_stage_1_barrier_stage_2() {
     assert_eq!(second.workgroups, Some([1, 1, 1]));
 
     for node in computing.iter().filter(|n| n.id != mean.id) {
-        assert_eq!(
-            dispatches_of(&plan.step, node.id).len(),
-            1,
-            "{} {}",
-            node.id,
-            node.op.name()
-        );
+        let covers = coverage(plan, &training, node);
+        assert_eq!(covers.len(), 1, "{} {} {covers:?}", node.id, node.op.name());
     }
     assert!(plan.step.iter().all(|s| s.op != PlanOp::Complete));
 }
@@ -504,4 +616,264 @@ fn a_shape_too_large_to_dispatch_is_refused_with_its_target_code() {
     assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
     assert_eq!(diagnostics[0].code, compile::codes::TOO_LARGE_FOR_TARGET);
     assert_eq!(diagnostics[0].code.as_str(), "E-TARGET-010");
+}
+
+// Story m1-fuse-elementwise: the fusions and folded constants of DESIGN.md § 3.1.
+
+const MNIST: &str = "examples/mnist_mlp.mspec";
+
+#[test]
+fn mnist_mlp_step_plan_covers_every_computing_op_once() {
+    the_step_plan_of_a_mse_model_is_one_dispatch_per_computing_op(MNIST);
+}
+
+/// The dispatch that names `value`, which must be the only one.
+fn only_dispatch(plan: &ExecutionPlan, value: ValueId) -> &PlanStep {
+    let [at] = dispatches_of(&plan.step, value)[..] else {
+        panic!("{value} has one dispatch\n{}", print_kernel(plan));
+    };
+    &plan.step[at]
+}
+
+/// The first node of `op` in the step.
+fn first<'a>(training: &'a CompiledTraining, op: &TensorOp) -> &'a TensorNode {
+    training
+        .training
+        .training
+        .program
+        .nodes
+        .iter()
+        .find(|n| &n.op == op)
+        .expect("the step has the op")
+}
+
+#[test]
+fn the_mnist_step_plan_is_14_dispatches_in_8_barrier_groups() {
+    let plan = artifact(&source(MNIST), Backend::Vulkan).execution;
+    verify_plan(&plan).expect("the plan verifies");
+    let count = |op: PlanOp| plan.step.iter().filter(|s| s.op == op).count();
+    assert_eq!(count(PlanOp::Dispatch), 14, "{}", print_kernel(&plan));
+    assert_eq!(count(PlanOp::Barrier), 8, "{}", print_kernel(&plan));
+}
+
+#[test]
+fn no_kernel_computes_from_compile_time_scalars_alone() {
+    for path in [MNIST, LINEAR, TWO_LAYER] {
+        let plan = artifact(&source(path), Backend::Vulkan).execution;
+        for kernel in &plan.kernels {
+            assert!(
+                kernel
+                    .operands
+                    .iter()
+                    .any(|o| matches!(o, Operand::Buffer(_))),
+                "{path}: {}",
+                kernel.signature()
+            );
+        }
+    }
+}
+
+/// On MNIST, `relu(%4)` has a second reader of `%4`: the `ReluGrad` of the backward pass.
+#[test]
+fn a_relu_whose_matmul_has_a_second_reader_is_an_epilogue_writing_both() {
+    let text = source(MNIST);
+    let plan = artifact(&text, Backend::Vulkan).execution;
+    let training = training(&text);
+    let relu = first(&training, &TensorOp::Relu);
+    let matmul = relu.operands[0];
+    assert_eq!(node_of(&training, matmul).op, TensorOp::MatMul);
+
+    let step = only_dispatch(&plan, matmul);
+    let kernel = kernel_of(&plan, step);
+    assert_eq!(kernel.kind, KernelKind::MatMul);
+    assert_eq!(
+        kernel.epilogue,
+        Some(Epilogue::Relu {
+            writes_pre_activation: true
+        })
+    );
+    assert_eq!(
+        plan.kernels[0].id, kernel.id,
+        "the ReLU is the epilogue of k0"
+    );
+    let [pre_activation, activation] = step.writes[..] else {
+        panic!("the kernel writes two views: {:?}", step.writes);
+    };
+    assert_ne!(pre_activation.buffer, activation.buffer);
+    assert!(dispatches_of(&plan.step, relu.id).is_empty());
+
+    let relu_grad = first(&training, &TensorOp::ReluGrad);
+    assert_eq!(relu_grad.operands[0], matmul);
+    assert_eq!(
+        only_dispatch(&plan, relu_grad.id).reads[0],
+        pre_activation,
+        "ReluGrad reads the pre-activation"
+    );
+    for reader in readers(&training, relu.id) {
+        assert!(
+            only_dispatch(&plan, reader.id).reads.contains(&activation),
+            "{} reads the activation",
+            reader.id
+        );
+    }
+}
+
+/// `relu(matmul(x, transpose(x)))` with `x` an input: no gradient reads the pre-activation.
+fn no_second_reader_source() -> String {
+    "model Gram {
+    param w: Tensor<f32, [16, 1]> = xavier_uniform();
+
+    fn forward(x: Tensor<f32, [16, 4]>)
+        -> Tensor<f32, [16, 1]> {
+        let h = relu(matmul(x, transpose(x)));
+        return matmul(h, w);
+    }
+}
+
+train FitGram {
+    model = Gram;
+    input x: Tensor<f32, [16, 4]>;
+    target y: Tensor<f32, [16, 1]>;
+    loss = mse(model.forward(x), y);
+    optimizer = sgd(lr = 0.05);
+    steps = 10;
+    seed = 7;
+    device = cpu;
+}
+"
+    .to_string()
+}
+
+#[test]
+fn a_relu_whose_matmul_has_no_other_reader_writes_only_the_activation() {
+    let text = no_second_reader_source();
+    let plan = artifact(&text, Backend::Vulkan).execution;
+    let training = training(&text);
+    verify_plan(&plan).expect("the plan verifies");
+    let relu = first(&training, &TensorOp::Relu);
+    let matmul = relu.operands[0];
+    assert_eq!(
+        readers(&training, matmul).len(),
+        1,
+        "the relu is the matmul's only reader"
+    );
+
+    let step = only_dispatch(&plan, matmul);
+    let kernel = kernel_of(&plan, step);
+    assert_eq!(
+        kernel.epilogue,
+        Some(Epilogue::Relu {
+            writes_pre_activation: false
+        })
+    );
+    let [activation] = step.writes[..] else {
+        panic!("the kernel writes the activation alone: {:?}", step.writes);
+    };
+    for reader in readers(&training, relu.id) {
+        assert!(only_dispatch(&plan, reader.id).reads.contains(&activation));
+    }
+
+    let named: BTreeSet<u32> = plan
+        .step
+        .iter()
+        .chain(&plan.forward)
+        .flat_map(|s| s.reads.iter().chain(&s.writes))
+        .map(|v| v.buffer)
+        .chain(plan.data.iter().map(|d| d.view.buffer))
+        .chain(parameter_buffers(&plan))
+        .collect();
+    assert_eq!(
+        named.len(),
+        plan.buffers.len(),
+        "every buffer is used; none is left for a pre-activation\n{}",
+        print_kernel(&plan)
+    );
+}
+
+#[test]
+fn each_sgd_update_is_one_kernel_reading_its_gradient() {
+    for path in [MNIST, TWO_LAYER, LINEAR] {
+        let text = source(path);
+        let plan = artifact(&text, Backend::Vulkan).execution;
+        let training = training(&text);
+        let lr = training.training.optimizer.lr;
+        for (param, &update) in &training.training.optimizer.updates {
+            let node = node_of(&training, update);
+            assert_eq!(node.op, TensorOp::Sub);
+            let product = node_of(&training, node.operands[1]);
+            assert_eq!(product.op, TensorOp::Mul);
+            let gradient = product.operands[1];
+            assert!(dispatches_of(&plan.step, product.id).is_empty(), "{path}");
+
+            let step = only_dispatch(&plan, update);
+            let kernel = kernel_of(&plan, step);
+            assert_eq!(kernel.kind, KernelKind::SgdUpdate, "{path}");
+            let path_of = &training.training.training.program.params[param].path;
+            let view = plan
+                .parameters
+                .iter()
+                .find(|p| &p.path == path_of)
+                .expect("the parameter has a view")
+                .views[0];
+            assert_eq!(
+                kernel.operands,
+                vec![
+                    Operand::Buffer(node.ty.clone()),
+                    Operand::Immediate(lr),
+                    Operand::Buffer(node_of(&training, gradient).ty.clone()),
+                ],
+                "{path}"
+            );
+            let gradient_view = only_dispatch(&plan, gradient).writes[0];
+            assert_eq!(step.reads, vec![view, gradient_view], "{path}");
+            assert_eq!(step.writes, vec![view], "{path}");
+        }
+    }
+}
+
+/// `%11 = Mul %8, %10` of MNIST, `1.0 * 0.002`, is the immediate of `%12`, with the bits the
+/// device computed for it before: one round-to-nearest-even `f32` product.
+#[test]
+fn a_mul_of_two_scalars_is_folded_into_its_readers_immediate() {
+    let text = source(MNIST);
+    let plan = artifact(&text, Backend::Vulkan).execution;
+    let training = training(&text);
+    let folded = training
+        .training
+        .training
+        .program
+        .nodes
+        .iter()
+        .find(|n| {
+            n.op == TensorOp::Mul
+                && n.operands
+                    .iter()
+                    .all(|&o| matches!(node_of(&training, o).op, TensorOp::Scalar(_)))
+        })
+        .expect("the step scales the loss gradient by two scalars");
+    let [a, b] = folded.operands[..] else {
+        panic!("a Mul has two operands");
+    };
+    let (TensorOp::Scalar(a), TensorOp::Scalar(b)) =
+        (&node_of(&training, a).op, &node_of(&training, b).op)
+    else {
+        unreachable!()
+    };
+    assert_eq!((a.to_bits(), b.to_bits()), (0x3F80_0000, 0x3B03_126F));
+    assert_eq!((a * b).to_bits(), 0x3B03_126F);
+    assert!(dispatches_of(&plan.step, folded.id).is_empty());
+
+    let [reader] = readers(&training, folded.id)[..] else {
+        panic!("one reader");
+    };
+    let kernel = kernel_of(&plan, only_dispatch(&plan, reader.id));
+    let immediates: Vec<u32> = kernel
+        .operands
+        .iter()
+        .filter_map(|o| match o {
+            Operand::Immediate(v) => Some(v.to_bits()),
+            Operand::Buffer(_) => None,
+        })
+        .collect();
+    assert_eq!(immediates, vec![0x3B03_126F], "{}", kernel.signature());
 }

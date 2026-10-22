@@ -190,8 +190,8 @@ impl Device<'_> {
 }
 
 impl<'d> DescriptorArena<'d> {
-    /// Binds `buffers` to the module of `kernel`, operands then result, as
-    /// [`Recording::dispatch_kernel`] would, in a new descriptor set of the arena.
+    /// Binds `buffers` to the module of `kernel`, its buffer operands then each binding it
+    /// writes, as [`Recording::dispatch_kernel`] would, in a new descriptor set of the arena.
     pub fn bind<'a>(
         &'a self,
         pipeline: &'a Pipeline<'_>,
@@ -577,8 +577,9 @@ impl<'r> Recording<'r> {
     }
 
     /// Dispatches the module of `kernel`, built by the emitter, with `buffers` bound to its
-    /// operands then its result: the count, the elements each binding must hold and the
-    /// invocations its workgroups must cover come from the kernel ([`kernel_bindings`]).
+    /// buffer operands then each binding it writes ([`Kernel::written`]): the count, the
+    /// elements each binding must hold and the invocations its workgroups must cover come from
+    /// the kernel ([`kernel_bindings`]).
     pub fn dispatch_kernel(
         &mut self,
         pipeline: &'r Pipeline<'_>,
@@ -665,7 +666,8 @@ pub struct KernelBindings {
     /// The push constant: the output elements of an elementwise, broadcast, SGD, transpose or
     /// matmul kernel; the elements a reduction stage or a loss sum reads.
     pub count: u32,
-    /// The elements each binding must hold, operands then result.
+    /// The elements each binding must hold, operands then each written binding
+    /// ([`Kernel::written`]).
     pub elements: Vec<u64>,
     /// The invocations the workgroups must cover.
     pub invocations: u64,
@@ -709,7 +711,11 @@ pub fn kernel_bindings(kernel: &Kernel) -> Result<KernelBindings, ExecError> {
             .map(|&(scalar, _)| if scalar { 1 } else { count })
             .chain([count])
             .collect(),
-        _ => operands.iter().map(|&(_, n)| n).chain([result]).collect(),
+        _ => operands
+            .iter()
+            .map(|&(_, n)| n)
+            .chain(std::iter::repeat_n(result, kernel.written()))
+            .collect(),
     };
     let count = u32::try_from(count).map_err(|_| ExecError::KernelShape {
         kernel: kernel.signature(),
