@@ -1,0 +1,13 @@
+{
+  "at": "2026-10-22T07:37:06Z",
+  "actor": "human:timo",
+  "artifact": "story:m1-vulkan-elementwise",
+  "kind": "story",
+  "revision": 9,
+  "change": {
+    "change": "evidence",
+    "kind": "test_result",
+    "source": "GitHub check.yml task ci on PR 14 head adca91f (spirv-tools installed): pass",
+    "reference": "https://github.com/beyond10x/modelspec/pull/14"
+  }
+}

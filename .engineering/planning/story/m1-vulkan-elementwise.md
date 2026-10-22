@@ -2,7 +2,7 @@
 format: aep.planning-md/3
 id: story:m1-vulkan-elementwise
 kind: story
-status: active
+status: implemented
 title: Vulkan memory, pipelines and dispatch, with SPIR-V elementwise, broadcast and SGD kernels
 summary: The elementwise GPU tolerance in DESIGN.md, rspirv elementwise, broadcast and SGD kernels, spirv-val in CI, buffers, pipelines, barriers and fences with record, submit and wait apart
 relations:
@@ -40,10 +40,11 @@ scope:
   path: crates/modelspec-runtime/tests/spirv_val.rs
 - confidence: inferred
   path: crates/modelspec-runtime/tests/vulkan_elementwise.rs
-revision: 9
+revision: 10
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-22T06:15:16Z", actor: "human:timo", revision: 8, decided_on: {"recorded":{"review_outcome":2}}}
 - {from: "proposed", to: "active", at: "2026-10-22T06:15:16Z", actor: "human:timo", revision: 9, decided_on: {"recorded":{"review_outcome":2}}}
+- {from: "active", to: "implemented", at: "2026-10-22T07:37:07Z", actor: "human:timo", revision: 10, decided_on: {"recorded":{"test_result":3,"review_outcome":4}}}
 ---
 # Vulkan memory, pipelines and dispatch, with SPIR-V elementwise, broadcast and SGD kernels
 

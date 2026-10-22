@@ -1,0 +1,13 @@
+{
+  "at": "2026-10-22T07:37:06Z",
+  "actor": "human:timo",
+  "artifact": "story:m1-vulkan-elementwise",
+  "kind": "story",
+  "revision": 9,
+  "change": {
+    "change": "evidence",
+    "kind": "test_result",
+    "source": "RTX 3090, MODELSPEC_VK_VALIDATION=1 cargo test -p modelspec-runtime --features vulkan --test vulkan_elementwise --test adversary_elementwise --test adversary_elementwise_2 -- --ignored on wave/m1-b adca91f: 18 passed, 0 failed; 120 cases, 1653800 elements, 0 outside tolerance, 0 guard words changed, 0 validation messages; chained case 1 host wait",
+    "reference": "https://github.com/beyond10x/modelspec/commit/adca91f"
+  }
+}
