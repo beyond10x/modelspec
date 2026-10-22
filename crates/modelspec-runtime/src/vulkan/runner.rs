@@ -324,9 +324,9 @@ fn execute(
         .iter()
         .filter_map(|action| site(PlanName::Step, action))
         .collect();
-    let forward_sites: Vec<Site> = actions[..loss_end]
+    let final_sites: Vec<Site> = actions[..loss_end]
         .iter()
-        .filter_map(|action| site(PlanName::Forward, action))
+        .filter_map(|action| site(PlanName::Final, action))
         .collect();
     let clock = device
         .clock()
@@ -339,7 +339,7 @@ fn execute(
             let chunk_steps = (steps - chunk * CHUNK_STEPS).min(CHUNK_STEPS);
             let mut queries = per_step * chunk_steps;
             if chunk + 1 == chunks {
-                queries += 2 * forward_sites.len() as u64;
+                queries += 2 * final_sites.len() as u64;
             }
             let queries = u32::try_from(queries).map_err(|_| {
                 VulkanRunError::Plan(format!("{queries} timestamp queries do not fit u32"))
@@ -446,7 +446,7 @@ fn execute(
                     stamps.extend(pool.read()?);
                 }
                 Some(
-                    timings(&step_sites, &forward_sites, steps, &stamps, clock)
+                    timings(&step_sites, &final_sites, steps, &stamps, clock)
                         .map_err(VulkanRunError::Plan)?,
                 )
             }

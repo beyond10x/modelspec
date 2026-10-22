@@ -244,7 +244,7 @@ fn mnist_mlp_profile_prints_every_dispatch_site_and_leaves_stdout_alone() {
         .chain(
             final_sites
                 .iter()
-                .map(|(at, id)| ("forward".to_owned(), *at, id.clone(), 1)),
+                .map(|(at, id)| ("final".to_owned(), *at, id.clone(), 1)),
         )
         .collect();
     let got: Vec<(String, usize, String, u64)> = lines

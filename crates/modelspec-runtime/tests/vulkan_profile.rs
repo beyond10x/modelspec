@@ -53,23 +53,23 @@ fn stats() -> RunStats {
     }
 }
 
-/// Two step sites (positions 0 and 2, the second sharing the first's module) and one forward
+/// Two step sites (positions 0 and 2, the second sharing the first's module) and one final
 /// site, three steps: the stamps are `(start, end)` pairs in recording order, steps first.
 fn three_steps() -> (Vec<Site>, Vec<Site>, Vec<u64>) {
     let steps = vec![site(PlanName::Step, 0, 1), site(PlanName::Step, 2, 1)];
-    let forward = vec![site(PlanName::Forward, 0, 1)];
+    let last = vec![site(PlanName::Final, 0, 1)];
     let stamps = vec![
         100, 110, 120, 125, // step 0: 10 and 5 ticks
         200, 212, 230, 236, // step 1: 12 and 6 ticks
         300, 314, 330, 337, // step 2: 14 and 7 ticks
         400, 403, // the final loss: 3 ticks
     ];
-    (steps, forward, stamps)
+    (steps, last, stamps)
 }
 
 #[test]
 fn timings_sum_each_site_over_the_steps_and_count_the_final_loss_once() {
-    let (steps, forward, stamps) = three_steps();
+    let (steps, last, stamps) = three_steps();
     let clock = Clock {
         valid_bits: 64,
         period_ns: 2.0,
@@ -77,7 +77,7 @@ fn timings_sum_each_site_over_the_steps_and_count_the_final_loss_once() {
     let Timings {
         sites,
         steady_us_per_step,
-    } = timings(&steps, &forward, 3, &stamps, clock).expect("the stamps fit the sites");
+    } = timings(&steps, &last, 3, &stamps, clock).expect("the stamps fit the sites");
     assert_eq!(
         sites.len(),
         3,
@@ -85,7 +85,7 @@ fn timings_sum_each_site_over_the_steps_and_count_the_final_loss_once() {
     );
     assert_eq!(sites[0].site, steps[0]);
     assert_eq!(sites[1].site, steps[1]);
-    assert_eq!(sites[2].site, forward[0]);
+    assert_eq!(sites[2].site, last[0]);
     assert_eq!(sites.iter().map(|s| s.calls).collect::<Vec<_>>(), [3, 3, 1]);
     // Ticks times 2 ns: 36, 18 and 3 ticks.
     let totals: Vec<f64> = sites.iter().map(|s| s.total_us()).collect();
@@ -100,14 +100,14 @@ fn timings_sum_each_site_over_the_steps_and_count_the_final_loss_once() {
 #[test]
 fn a_timestamp_that_wraps_its_valid_bits_counts_the_ticks_past_the_wrap() {
     let steps = vec![site(PlanName::Step, 0, 1)];
-    let forward = vec![site(PlanName::Forward, 0, 1)];
+    let last = vec![site(PlanName::Final, 0, 1)];
     let clock = Clock {
         valid_bits: 8,
         period_ns: 1000.0,
     };
     // Bits above the valid ones are garbage; 250 to 4 is 10 ticks past the wrap at 256.
     let stamps = [0xff00 | 250, 0xab00 | 4, 7, 8];
-    let timed = timings(&steps, &forward, 1, &stamps, clock).expect("the stamps fit");
+    let timed = timings(&steps, &last, 1, &stamps, clock).expect("the stamps fit");
     assert_eq!(timed.sites[0].total_us(), 10.0);
     assert_eq!(timed.sites[1].total_us(), 1.0);
 }
@@ -115,7 +115,7 @@ fn a_timestamp_that_wraps_its_valid_bits_counts_the_ticks_past_the_wrap() {
 #[test]
 fn the_steady_state_runs_from_the_first_step_after_the_warm_up_to_the_final_loss() {
     let steps = vec![site(PlanName::Step, 0, 1)];
-    let forward = vec![site(PlanName::Forward, 0, 1)];
+    let final_sites = vec![site(PlanName::Final, 0, 1)];
     let n = WARMUP_STEPS + 4;
     let mut stamps = Vec::new();
     for k in 0..n {
@@ -133,30 +133,30 @@ fn the_steady_state_runs_from_the_first_step_after_the_warm_up_to_the_final_loss
         valid_bits: 64,
         period_ns: 1.0,
     };
-    let timed = timings(&steps, &forward, n, &stamps, clock).expect("the stamps fit");
+    let timed = timings(&steps, &final_sites, n, &stamps, clock).expect("the stamps fit");
     assert_eq!(timed.steady_us_per_step, Some(0.05));
 }
 
 #[test]
 fn stamps_that_do_not_fit_the_sites_are_refused() {
-    let (steps, forward, mut stamps) = three_steps();
+    let (steps, last, mut stamps) = three_steps();
     let clock = Clock {
         valid_bits: 64,
         period_ns: 1.0,
     };
     stamps.pop();
-    assert!(timings(&steps, &forward, 3, &stamps, clock).is_err());
+    assert!(timings(&steps, &last, 3, &stamps, clock).is_err());
 }
 
 #[test]
 fn the_report_prints_one_line_per_site_then_the_counters() {
-    let (steps, forward, stamps) = three_steps();
+    let (steps, last, stamps) = three_steps();
     let clock = Clock {
         valid_bits: 64,
         period_ns: 2.0,
     };
     let profile = Profile {
-        timings: Some(timings(&steps, &forward, 3, &stamps, clock).expect("the stamps fit")),
+        timings: Some(timings(&steps, &last, 3, &stamps, clock).expect("the stamps fit")),
         pipeline_creation: Duration::from_micros(1500),
         compile: Duration::from_nanos(2_250_500),
     };
@@ -166,7 +166,7 @@ fn the_report_prints_one_line_per_site_then_the_counters() {
         format!(
             "profile dispatch step 0 {id} main calls 3 total_us 0.072 mean_us 0.024\n\
              profile dispatch step 2 {id} main calls 3 total_us 0.036 mean_us 0.012\n\
-             profile dispatch forward 0 {id} main calls 1 total_us 0.006 mean_us 0.006\n\
+             profile dispatch final 0 {id} main calls 1 total_us 0.006 mean_us 0.006\n\
              profile dispatches 7\n\
              profile submits 1\n\
              profile host_waits 1\n\
@@ -283,7 +283,7 @@ fn mnist_mlp_profile_times_every_dispatch_site_without_changing_the_run() {
     let expected: Vec<(PlanName, usize, KernelModuleId, u64)> = dispatch_positions
         .iter()
         .map(|&at| (PlanName::Step, at, steps))
-        .chain(final_positions.iter().map(|&at| (PlanName::Forward, at, 1)))
+        .chain(final_positions.iter().map(|&at| (PlanName::Final, at, 1)))
         .map(|(name, at, calls)| {
             let id = plan.step[at]
                 .kernel_module_id

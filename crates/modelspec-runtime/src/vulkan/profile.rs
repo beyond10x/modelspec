@@ -25,14 +25,14 @@ pub enum PlanName {
     /// The step plan, recorded once per training step.
     Step,
     /// The final loss evaluation after the last step: the step plan up to the loss.
-    Forward,
+    Final,
 }
 
 impl fmt::Display for PlanName {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             PlanName::Step => "step",
-            PlanName::Forward => "forward",
+            PlanName::Final => "final",
         })
     }
 }
@@ -106,10 +106,10 @@ pub struct Timings {
 }
 
 /// Sums the `stamps` of a run of `steps` steps per site. The stamps are `(start, end)` pairs in
-/// recording order: `step_sites` for each step, then `forward_sites` once.
+/// recording order: `step_sites` for each step, then `final_sites` once.
 pub fn timings(
     step_sites: &[Site],
-    forward_sites: &[Site],
+    final_sites: &[Site],
     steps: u64,
     stamps: &[u64],
     clock: Clock,
@@ -117,7 +117,7 @@ pub fn timings(
     let per_step = step_sites.len() as u64;
     let pairs = steps
         .checked_mul(per_step)
-        .and_then(|n| n.checked_add(forward_sites.len() as u64))
+        .and_then(|n| n.checked_add(final_sites.len() as u64))
         .ok_or_else(|| format!("{steps} steps of {per_step} dispatches overflow"))?;
     if stamps.len() as u64 != 2 * pairs {
         return Err(format!(
@@ -129,7 +129,7 @@ pub fn timings(
     let span = |pair: usize| clock.span_ns(stamps[2 * pair], stamps[2 * pair + 1]);
     let mut sites: Vec<SiteTime> = step_sites
         .iter()
-        .chain(forward_sites)
+        .chain(final_sites)
         .map(|site| SiteTime {
             site: site.clone(),
             calls: 0,
@@ -148,7 +148,7 @@ pub fn timings(
     }
     let steady_us_per_step = (steps > WARMUP_STEPS && per_step > 0).then(|| {
         let from = stamps[2 * (WARMUP_STEPS * per_step) as usize];
-        let to = if forward_sites.is_empty() {
+        let to = if final_sites.is_empty() {
             stamps[2 * stepped - 1]
         } else {
             stamps[2 * stepped]

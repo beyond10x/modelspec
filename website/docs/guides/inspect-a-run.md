@@ -56,8 +56,8 @@ kernel k3 74ad23b6-fbc9-8e86-838a-df791b52e3e4 loss_sum Mse f32 (Tensor<f32, [10
 ```
 
 `plan step` is the training step, numbered: `dispatch` steps run a kernel, `barrier` steps order
-them. `plan forward` is the forward program alone. The position of a `dispatch` step in its plan is
-how the profile below names it.
+them. `plan forward` is the forward program alone; `train` does not run it. The profile below
+names a dispatch by its position in `plan step`.
 
 ## 4. The time of every dispatch
 
@@ -87,10 +87,10 @@ profile dispatch step 22 439f693b-8fb5-8576-af67-d32fa5e4ffd9 main calls 1800 to
 profile dispatch step 24 3bc9dcb8-58e7-83b0-8cb6-bf00889c72a6 main calls 1800 total_us 4438.016 mean_us 2.466
 profile dispatch step 25 2c3a7723-5b74-8340-98fa-af1482f88b90 main calls 1800 total_us 3427.328 mean_us 1.904
 profile dispatch step 27 542d4968-c52b-82e3-b383-b5d27b90cf46 main calls 1800 total_us 3495.936 mean_us 1.942
-profile dispatch forward 0 d68423b2-42d6-8f30-bd4a-492a35a66f06 main calls 1 total_us 17.088 mean_us 17.088
-profile dispatch forward 2 b2485573-41c1-86a6-89c9-3ee7b0b0159b main calls 1 total_us 2.048 mean_us 2.048
-profile dispatch forward 4 cba0fd87-5af6-8f98-bc8b-1d9d5aee7e7f main calls 1 total_us 3.072 mean_us 3.072
-profile dispatch forward 6 74ad23b6-fbc9-8e86-838a-df791b52e3e4 main calls 1 total_us 29.696 mean_us 29.696
+profile dispatch final 0 d68423b2-42d6-8f30-bd4a-492a35a66f06 main calls 1 total_us 17.088 mean_us 17.088
+profile dispatch final 2 b2485573-41c1-86a6-89c9-3ee7b0b0159b main calls 1 total_us 2.048 mean_us 2.048
+profile dispatch final 4 cba0fd87-5af6-8f98-bc8b-1d9d5aee7e7f main calls 1 total_us 3.072 mean_us 3.072
+profile dispatch final 6 74ad23b6-fbc9-8e86-838a-df791b52e3e4 main calls 1 total_us 29.696 mean_us 29.696
 profile dispatches 32404
 profile submits 8
 profile host_waits 1
@@ -104,7 +104,7 @@ profile steady_us_per_step 93.205
 | Field | What it says |
 |---|---|
 | `step <position>` | a `dispatch` step of `plan step`, run once per training step: `calls` is the number of steps |
-| `forward <position>` | the loss of the final parameters, computed once after the last step by the steps of `plan step` up to the loss; `<position>` is the index in `plan step` |
+| `final <position>` | the loss of the final parameters, computed once after the last step by the steps of `plan step` up to the loss; `<position>` is the index in `plan step` |
 | `<kernel_module_id> <entry>` | the module and its entry point; find the module id on a `kernel` line of `--stage kernel` |
 | `total_us`, `mean_us` | GPU time from just before the dispatch starts to just after it ends, summed over the calls and per call |
 | `steady_us_per_step` | GPU time per step from step 20 to the final loss, so the first 20 steps are left out as warm-up |
