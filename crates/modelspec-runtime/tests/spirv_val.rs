@@ -722,15 +722,13 @@ fn loop_merges(module: &[u32]) -> usize {
 const OP_LOOP_MERGE: u32 = 246;
 
 // review-result:m1-f-forward-adversary-1, blockers 1 and 2: the module of a matmul is bounded
-// whatever its `k`.
-
-/// Constants a large `k` may hold apart where a small one shares them with others: its own
-/// value, the loop's trip count and the offsets of its passes, each 4 words and 1 id.
-const SPARE_CONSTANTS: usize = 4;
+// whatever its `k`. review-result:m1-f-forward-adversary-2: the slack over the 16-tile bound is
+// the `k`-dependent constants of `common::matmul_k_constants`, not a fixed 4; `[208, k] x [k, 2]`
+// holds 5 of them apart.
 
 #[test]
 fn a_matmul_module_is_no_larger_at_any_k_than_at_a_k_of_sixteen_tiles() {
-    for (m, n) in [(100, 64), (4, 1), (9, 17), (784, 64), (5, 3)] {
+    for (m, n) in [(100, 64), (4, 1), (9, 17), (784, 64), (5, 3), (208, 2)] {
         let depth = u64::from(MatMulTile::of(m, 1 << 20, n).depth);
         let words = |k: u64| -> (usize, u32) {
             let module = emit(&common::matmul_kernel(m, k, n)).expect("the matmul emits");
@@ -751,10 +749,12 @@ fn a_matmul_module_is_no_larger_at_any_k_than_at_a_k_of_sixteen_tiles() {
                 }
                 let (len, bound) = words(at);
                 let what = format!("[{m}, {at}] x [{at}, {n}]: {len} words, id bound {bound}");
+                let spare = common::matmul_k_constants(at, &MatMulTile::of(m, at, n));
                 assert!(
-                    len <= small.0 + 4 * SPARE_CONSTANTS
-                        && bound <= small.1 + SPARE_CONSTANTS as u32,
-                    "{what}, above {small:?}, the largest at k up to {}, by more than {SPARE_CONSTANTS} constants",
+                    len <= small.0 + common::CONSTANT_WORDS * spare
+                        && bound <= small.1 + spare as u32,
+                    "{what}, above {small:?}, the largest at k up to {}, by more than its {spare} \
+                     k-dependent constants",
                     16 * depth
                 );
                 let module = emit(&common::matmul_kernel(m, at, n)).expect("emits");

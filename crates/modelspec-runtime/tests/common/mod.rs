@@ -522,6 +522,30 @@ pub fn matmul_kernel_with(m: u64, k: u64, n: u64, epilogue: Option<Epilogue>) ->
     })
 }
 
+/// The words of one `u32` `OpConstant`: opcode and count, type, result id, value.
+pub const CONSTANT_WORDS: usize = 4;
+
+/// The `u32` constants of a `k`-deep matmul module whose values depend on `k`, for a `k` whose
+/// tile loop runs at least one pass. The emitter (`emit.rs` `matmul`) keeps one constant per
+/// value, and every other constant it emits is a function of the tile, `m` and `n`, or is a
+/// tile length below `depth`. These are `k` itself (the row stride of `a`), the loop's trip
+/// count, and the `a` and `b` offsets of each tile read after the loop: tiles `resume..count`
+/// read tile `i + ahead` while it exists, at most `MATMUL_UNROLL` of them (the 0 to 3 full
+/// tiles the passes leave, and a partial last tile). A module at a `k` of 16 tiles or fewer
+/// with the same leftover tiles and last tile length has the same instructions, its
+/// `k`-dependent values possibly shared with other constants, so a large `k` adds at most
+/// these constants over it: 2 to 10, whatever `k`.
+pub fn matmul_k_constants(k: u64, tile: &MatMulTile) -> usize {
+    let depth = u64::from(tile.depth);
+    let ahead = u64::from(tile.ahead.max(1));
+    let passes = (k / depth).saturating_sub(ahead + 1) / 4;
+    assert!(passes > 0, "k = {k} runs no tile loop with {tile:?}");
+    let resume = 1 + 4 * passes;
+    let reads = k.div_ceil(depth).saturating_sub(resume + ahead);
+    assert!(reads <= 4, "k = {k}: {reads} reads after the loop");
+    2 + 2 * reads as usize
+}
+
 /// The element counts of the reduction and `mse` cases of `story:m1-vulkan-reduce-matmul`.
 pub const REDUCE_COUNTS: [u64; 7] = [1, 63, 64, 65, 1_000, 4_097, 78_400];
 
