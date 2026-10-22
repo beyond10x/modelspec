@@ -541,11 +541,15 @@ fn actions<'a>(
                     .iter()
                     .position(|kernel| kernel.id == id)
                     .ok_or_else(|| unexpected(at, step, "the plan has no such kernel"))?;
-                let [written] = step.writes[..] else {
-                    return Err(unexpected(at, step, "a dispatch writes one view"));
-                };
-                let mut bound = Vec::with_capacity(step.reads.len() + 1);
-                for view in step.reads.iter().chain([&written]) {
+                if step.writes.len() != plan.kernels[index].written() {
+                    return Err(unexpected(
+                        at,
+                        step,
+                        "a dispatch writes the views its kernel writes",
+                    ));
+                }
+                let mut bound = Vec::with_capacity(step.reads.len() + step.writes.len());
+                for view in step.reads.iter().chain(&step.writes) {
                     if view.offset != 0 {
                         return Err(unexpected(at, step, "a dispatch binds a view at offset 0"));
                     }

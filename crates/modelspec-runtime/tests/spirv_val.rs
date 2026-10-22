@@ -29,7 +29,8 @@ fn repository() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
-/// The elementwise, broadcast and SGD kernels of the Vulkan artifact of `path`.
+/// The elementwise, broadcast and SGD kernels of the Vulkan artifact of `path`, and its matmul
+/// kernels with an epilogue.
 fn kernels_of(path: &str) -> Vec<Kernel> {
     let source = std::fs::read_to_string(repository().join(path)).expect("the example reads");
     let artifact = compile_artifact(path, &source, Backend::Vulkan).expect("the example compiles");
@@ -41,7 +42,7 @@ fn kernels_of(path: &str) -> Vec<Kernel> {
             matches!(
                 kernel.kind,
                 KernelKind::Elementwise | KernelKind::Broadcast | KernelKind::SgdUpdate
-            )
+            ) || kernel.epilogue.is_some()
         })
         .collect()
 }
@@ -61,20 +62,38 @@ fn spirv_val_accepts_every_elementwise_broadcast_and_sgd_module_of_the_examples(
     for path in [
         "examples/linear_regression.mspec",
         "crates/modelspec-docs/models/two_layer_relu.mspec",
+        "examples/mnist_mlp.mspec",
     ] {
         let kernels = kernels_of(path);
         assert!(!kernels.is_empty(), "{path} has elementwise kernels");
         for kernel in &kernels {
             assert_valid(kernel);
             kinds.push(kernel.kind);
-            ops.push(kernel.op);
+            ops.push(match kernel.epilogue {
+                Some(_) => "Relu",
+                None => kernel.op,
+            });
+            if kernel.kind == KernelKind::SgdUpdate && kernel.operands.len() == 3 {
+                let words = emit(kernel).expect("the update emits");
+                let (missing, all) = common::words::uncontracted_arithmetic(&words);
+                assert_eq!(all, 2, "{path}: the scaled update multiplies and subtracts");
+                assert!(
+                    missing.is_empty(),
+                    "{path}: no NoContraction on {missing:?}"
+                );
+                ops.push("ScaledSub");
+            }
         }
         total += kernels.len();
     }
-    for kind in [KernelKind::Elementwise, KernelKind::SgdUpdate] {
+    for kind in [
+        KernelKind::Elementwise,
+        KernelKind::SgdUpdate,
+        KernelKind::MatMul,
+    ] {
         assert!(kinds.contains(&kind), "the examples have a {kind} kernel");
     }
-    for op in ["Sub", "Mul", "Relu", "ReluGrad"] {
+    for op in ["Sub", "Mul", "Relu", "ReluGrad", "ScaledSub"] {
         assert!(ops.contains(&op), "the examples have a {op} kernel");
     }
     eprintln!("spirv_val: {total} example modules pass spirv-val --target-env {TARGET_ENV}");

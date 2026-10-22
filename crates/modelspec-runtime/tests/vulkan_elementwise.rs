@@ -434,6 +434,210 @@ fn vulkan_dispatch_binds_one_element_only_where_the_kernel_has_a_rank0_operand()
     ));
 }
 
+/// Story m1-fuse-elementwise: the MNIST step scales its loss gradient by `1.0 * 0.002`, two
+/// compile-time scalars. Before the fusion a rank-0 `elementwise Mul (1.0, 0.002)` kernel computed
+/// it on the device; the schedule now folds it into its reader's immediate. The folded immediate
+/// must be the bits that kernel leaves on this device.
+#[test]
+#[ignore = "needs a Vulkan device"]
+fn vulkan_the_folded_scalar_is_the_product_the_device_computed() {
+    use modelspec_core::artifact::Backend;
+    use modelspec_core::compile::compile_artifact;
+    use modelspec_core::ir::kernel::Operand;
+    use modelspec_core::ir::tensor::TensorType;
+
+    let vulkan = open();
+    let candidates = vulkan.candidates().expect("the devices are probed");
+    let negotiated = negotiate(&candidates[0].profile).expect("device 0 negotiates");
+    let device = vulkan
+        .create_device(0, &negotiated)
+        .expect("device 0 opens");
+    let case = Case {
+        name: "mul_immediate_immediate".to_owned(),
+        op: ElementwiseOp::Mul,
+        operands: vec![Form::Immediate(1.0), Form::Immediate(0.002)],
+    };
+    let mut kernel = common::kernel(&case, 1);
+    kernel.result = TensorType::f32_scalar();
+    kernel.id = Kernel::module_id(&kernel.signature());
+    assert_eq!(
+        kernel.id.to_string(),
+        "5bb7932a-569c-85fe-8946-5a688a1299e5",
+        "the module k5 of the unfused MNIST plan: {}",
+        kernel.signature()
+    );
+    let got = dispatch_case(&device, &case, &kernel, 1, &[]);
+    let messages = vulkan.take_validation_messages();
+
+    let file = "examples/mnist_mlp.mspec";
+    let source = std::fs::read_to_string(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join(file),
+    )
+    .expect("the example reads");
+    let artifact = compile_artifact(file, &source, Backend::Vulkan).expect("the example compiles");
+    let folded: Vec<u32> = artifact
+        .execution
+        .kernels
+        .iter()
+        .filter(|k| k.op == "Mul")
+        .flat_map(|k| k.operands.iter())
+        .filter_map(|o| match o {
+            Operand::Immediate(v) => Some(v.to_bits()),
+            Operand::Buffer(_) => None,
+        })
+        .collect();
+    eprintln!(
+        "vulkan_folded_scalar: device 1.0 * 0.002 = {:#010x}, MNIST Mul immediates {folded:08x?}, \
+         {} validation messages",
+        got[0].to_bits(),
+        messages.len()
+    );
+    assert!(messages.is_empty(), "{messages:#?}");
+    assert_eq!(got[0].to_bits(), 0x3B03_126F, "the device's product");
+    assert_eq!(
+        folded,
+        vec![got[0].to_bits()],
+        "the folded immediate is the device's product"
+    );
+    assert_eq!(
+        (0..GUARD_WORDS)
+            .filter(|&i| got[1 + i].to_bits() != guard(i))
+            .count(),
+        0,
+        "the guard words are unchanged"
+    );
+}
+
+/// The compile-time scalar pairs of the rounding fold case, written as the source writes them:
+/// products, a sum and a difference whose exact value is not an `f32`, so the result rounds.
+const ROUNDING_FOLDS: [(ElementwiseOp, &str, &str); 8] = [
+    (ElementwiseOp::Mul, "0.7", "0.3"),
+    (ElementwiseOp::Mul, "0.1", "0.3"),
+    (ElementwiseOp::Mul, "1.1", "1.1"),
+    (ElementwiseOp::Mul, "0.7", "0.07"),
+    (ElementwiseOp::Mul, "3.0", "0.1"),
+    (ElementwiseOp::Mul, "0.002", "0.9"),
+    (ElementwiseOp::Add, "0.1", "0.2"),
+    (ElementwiseOp::Sub, "0.3", "0.1"),
+];
+
+/// A model whose forward adds `op(a, b)` of two compile-time scalars to a matmul: the `add` takes
+/// an immediate, so the schedule folds `op(a, b)` into it.
+fn folding_model(op: ElementwiseOp, a: &str, b: &str) -> String {
+    let name = match op {
+        ElementwiseOp::Mul => "mul",
+        ElementwiseOp::Add => "add",
+        ElementwiseOp::Sub => "sub",
+        _ => unreachable!("only mul, add and sub fold"),
+    };
+    format!(
+        "model Folding {{
+    param w1: Tensor<f32, [12, 9]> = xavier_uniform();
+    fn forward(x: Tensor<f32, [10, 12]>)
+        -> Tensor<f32, [10, 9]> {{
+        return add(matmul(x, w1), {name}({a}, {b}));
+    }}
+}}
+
+train Fit {{
+    model = Folding;
+    input x: Tensor<f32, [10, 12]>;
+    target y: Tensor<f32, [10, 9]>;
+    loss = mse(model.forward(x), y);
+    optimizer = sgd(lr = 0.07);
+    steps = 30;
+    seed = 3;
+    device = vulkan(0);
+}}
+"
+    )
+}
+
+/// The folded immediate is the bits the unfused rank-0 kernel leaves on the device for every pair
+/// of [`ROUNDING_FOLDS`], each a result that rounds in `f32`.
+#[test]
+#[ignore = "needs a Vulkan device"]
+fn vulkan_a_folded_scalar_that_rounds_is_the_bits_the_device_computed() {
+    use modelspec_core::artifact::Backend;
+    use modelspec_core::compile::compile_artifact;
+    use modelspec_core::ir::kernel::Operand;
+    use modelspec_core::ir::tensor::TensorType;
+
+    let vulkan = open();
+    let candidates = vulkan.candidates().expect("the devices are probed");
+    let negotiated = negotiate(&candidates[0].profile).expect("device 0 negotiates");
+    let device = vulkan
+        .create_device(0, &negotiated)
+        .expect("device 0 opens");
+    let mut rows = Vec::new();
+    let mut differ = Vec::new();
+    for (op, a, b) in ROUNDING_FOLDS {
+        let (x, y): (f32, f32) = (a.parse().unwrap(), b.parse().unwrap());
+        let case = Case {
+            name: format!("{op:?}_{a}_{b}"),
+            op,
+            operands: vec![Form::Immediate(x), Form::Immediate(y)],
+        };
+        let mut kernel = common::kernel(&case, 1);
+        kernel.result = TensorType::f32_scalar();
+        kernel.id = Kernel::module_id(&kernel.signature());
+        let got = dispatch_case(&device, &case, &kernel, 1, &[]);
+        let exact = match op {
+            ElementwiseOp::Mul => f64::from(x) * f64::from(y),
+            ElementwiseOp::Add => f64::from(x) + f64::from(y),
+            _ => f64::from(x) - f64::from(y),
+        };
+        assert_ne!(
+            f64::from(got[0]),
+            exact,
+            "{op:?}({a}, {b}) is an f32, so it does not round"
+        );
+        assert_eq!(
+            (0..GUARD_WORDS)
+                .filter(|&i| got[1 + i].to_bits() != guard(i))
+                .count(),
+            0,
+            "{op:?}({a}, {b}): the guard words are unchanged"
+        );
+        let source = folding_model(op, a, b);
+        let artifact = compile_artifact("folding.mspec", &source, Backend::Vulkan)
+            .expect("the model compiles");
+        let folded: BTreeMap<u32, ()> = artifact
+            .execution
+            .kernels
+            .iter()
+            .filter(|k| k.op == "Add")
+            .flat_map(|k| k.operands.iter())
+            .filter_map(|o| match o {
+                Operand::Immediate(v) => Some((v.to_bits(), ())),
+                Operand::Buffer(_) => None,
+            })
+            .collect();
+        let folded: Vec<u32> = folded.into_keys().collect();
+        rows.push(format!(
+            "{op:?}({a}, {b}) device {:#010x} folded {folded:08x?}",
+            got[0].to_bits()
+        ));
+        if folded != vec![got[0].to_bits()] {
+            differ.push(rows.last().cloned().unwrap());
+        }
+    }
+    let messages = vulkan.take_validation_messages();
+    eprintln!(
+        "vulkan_rounding_folds: {} validation messages\n{}",
+        messages.len(),
+        rows.join("\n")
+    );
+    assert!(messages.is_empty(), "{messages:#?}");
+    assert!(
+        differ.is_empty(),
+        "the folded immediate is not the device's result:\n{}",
+        differ.join("\n")
+    );
+}
+
 /// `a + b`, then `relu`, then the SGD update of `p` by the result, in place.
 fn chain_cpu(a: &[f32], b: &[f32], p: &[f32]) -> Vec<f32> {
     let n = a.len() as u64;

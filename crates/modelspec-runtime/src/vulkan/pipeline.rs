@@ -108,7 +108,8 @@ pub fn declared_sets(words: &[u32]) -> Option<Vec<u32>> {
 }
 
 /// The storage-buffer bindings of a Kernel IR kernel, in binding order: each buffer operand,
-/// then the result. `true` marks a rank-0 operand, which every invocation reads at index 0.
+/// then each written binding ([`Kernel::written`]). `true` marks a rank-0 operand, which every
+/// invocation reads at index 0.
 pub fn kernel_broadcast(kernel: &Kernel) -> Vec<bool> {
     kernel
         .operands
@@ -117,7 +118,7 @@ pub fn kernel_broadcast(kernel: &Kernel) -> Vec<bool> {
             Operand::Buffer(ty) => Some(ty.rank() == 0),
             Operand::Immediate(_) => None,
         })
-        .chain([false])
+        .chain(std::iter::repeat_n(false, kernel.written()))
         .collect()
 }
 
@@ -259,6 +260,7 @@ mod tests {
             ],
             result: TensorType::f32(&[5]),
             reduces: None,
+            epilogue: None,
             workgroup_size: 64,
             workgroups: [1, 1, 1],
         };

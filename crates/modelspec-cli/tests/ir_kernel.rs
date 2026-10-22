@@ -3,7 +3,8 @@
 //!
 //! The golden `tests/golden/linear_regression.kernel.ir` is what `print_kernel` prints for the
 //! example's Vulkan artifact; the cases below check it against the plan the compiler builds, so a
-//! golden regenerated from a wrong plan does not pass.
+//! golden regenerated from a wrong plan does not pass. `tests/golden/mnist_mlp.kernel.ir` is the
+//! MNIST example's, with the fusions of DESIGN.md § 3.1 (story m1-fuse-elementwise).
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -60,6 +61,100 @@ fn the_golden_shows_both_plans_and_no_completion_point() {
         loss_sum.ends_with("workgroup_size 64 workgroups [1, 1, 1]"),
         "{loss_sum}"
     );
+}
+
+const MNIST: &str = "examples/mnist_mlp.mspec";
+const MNIST_GOLDEN: &str = include_str!("golden/mnist_mlp.kernel.ir");
+
+/// The lines of `plan` in `text`, from its header to the next plan or the end.
+fn plan_lines<'a>(text: &'a str, plan: &str) -> Vec<&'a str> {
+    text.lines()
+        .skip_while(|l| *l != format!("plan {plan}"))
+        .skip(1)
+        .take_while(|l| !l.starts_with("plan "))
+        .collect()
+}
+
+/// The `kernel k<n>` line of `text`.
+fn kernel_line(text: &str, n: usize) -> &str {
+    text.lines()
+        .find(|l| l.starts_with(&format!("kernel k{n} ")))
+        .unwrap_or_else(|| panic!("no kernel k{n}"))
+}
+
+/// Story m1-fuse-elementwise acceptance 1, read off what `modelspec ir` prints.
+#[test]
+fn ir_stage_kernel_of_mnist_shows_the_fused_step_plan() {
+    let output = modelspec(&["ir", MNIST, "--stage", "kernel"]);
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output.stderr));
+    let printed = text(&output.stdout);
+    assert_eq!(printed, MNIST_GOLDEN);
+
+    let step = plan_lines(&printed, "step");
+    let dispatches = step.iter().filter(|l| l.contains(": dispatch ")).count();
+    let barriers = step.iter().filter(|l| l.contains(": barrier")).count();
+    assert_eq!((dispatches, barriers), (14, 8), "{printed}");
+
+    for line in printed.lines().filter(|l| l.starts_with("kernel ")) {
+        let operands = line
+            .split_once(" (")
+            .and_then(|(_, rest)| rest.split_once(") -> "))
+            .map(|(operands, _)| operands)
+            .expect("a kernel line lists its operands");
+        assert!(
+            operands.contains("Tensor<"),
+            "a kernel with compile-time scalars alone: {line}"
+        );
+    }
+
+    let k0 = kernel_line(&printed, 0);
+    assert!(
+        k0.contains(" matmul MatMul ") && k0.contains(" epilogue Relu writes pre-activation "),
+        "{k0}"
+    );
+    assert!(!printed.contains(" elementwise Relu "), "{printed}");
+    let first = step
+        .iter()
+        .find(|l| l.contains(": dispatch "))
+        .expect("a dispatch");
+    assert!(first.contains(": dispatch k0 "), "{first}");
+    let writes = first
+        .split_once(" writes ")
+        .map(|(_, w)| w)
+        .expect("k0 writes");
+    assert_eq!(
+        writes.matches("[f32 x 6400,").count(),
+        2,
+        "k0 writes the pre-activation and the activation: {first}"
+    );
+
+    let updates: Vec<&str> = printed
+        .lines()
+        .filter(|l| l.contains(" sgd_update "))
+        .collect();
+    assert_eq!(
+        updates.len(),
+        2,
+        "one sgd_update per parameter: {updates:?}"
+    );
+    for update in &updates {
+        assert!(
+            update.contains(" sgd_update Sub f32 (Tensor<") && update.contains(", 0.1, Tensor<"),
+            "the update reads p, lr and the gradient: {update}"
+        );
+    }
+    assert!(
+        !printed.contains(" elementwise Mul f32 (0.1, "),
+        "no separate lr * g kernel: {printed}"
+    );
+}
+
+#[test]
+fn the_mnist_golden_is_the_printed_plan_of_the_vulkan_artifact() {
+    let source = std::fs::read_to_string(repo_root().join(MNIST)).expect("the example exists");
+    let artifact =
+        compile::compile_artifact(MNIST, &source, Backend::Vulkan).expect("the example compiles");
+    assert_eq!(print_kernel(&artifact.execution), MNIST_GOLDEN);
 }
 
 #[test]

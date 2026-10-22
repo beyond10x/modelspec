@@ -130,9 +130,11 @@ pub enum KernelKind {
     /// them in row-major order (DESIGN.md § 5.2, § 5.4).
     LossSum,
     Transpose,
-    /// One invocation per output element.
+    /// One invocation per output element, with an optional [`Epilogue`] on its rounded sum.
     MatMul,
-    /// The SGD update `p - lr * grad`, written in place into the parameter's view.
+    /// The SGD update, written in place into the parameter's view: with operands `(p, lr, g)`
+    /// (or `(p, g, lr)`) it is `p - (lr * g)`, the product rounded before the subtraction and
+    /// neither contracted; with operands `(p, d)` it is `p - d`.
     SgdUpdate,
 }
 
@@ -174,8 +176,31 @@ impl fmt::Display for Operand {
     }
 }
 
-/// One kernel of Kernel IR. Its bindings are its buffer operands in order, each read, then its
-/// result, written.
+/// An elementwise op a matmul kernel applies to each rounded output element before it stores it
+/// (DESIGN.md § 3.1): the same instructions the op's own kernel runs on the value it loads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Epilogue {
+    /// `relu`, a compare and a select. With `writes_pre_activation` the kernel also writes the
+    /// sum before it, for a reader other than the `relu`; then the sum's binding comes before the
+    /// activation's.
+    Relu { writes_pre_activation: bool },
+}
+
+impl fmt::Display for Epilogue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Epilogue::Relu {
+                writes_pre_activation: false,
+            } => f.write_str("epilogue Relu"),
+            Epilogue::Relu {
+                writes_pre_activation: true,
+            } => f.write_str("epilogue Relu writes pre-activation"),
+        }
+    }
+}
+
+/// One kernel of Kernel IR. Its bindings are its buffer operands in order, each read, then what
+/// it writes: the pre-activation of an [`Epilogue`] that keeps it, then its result.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Kernel {
     /// [`Kernel::module_id`] of the other fields.
@@ -188,11 +213,25 @@ pub struct Kernel {
     pub result: TensorType,
     /// The tensor a reduce stage reduces, so that both stages name its element count.
     pub reduces: Option<TensorType>,
+    /// What a matmul kernel applies to each output element before storing it; `None` on every
+    /// other kind.
+    pub epilogue: Option<Epilogue>,
     pub workgroup_size: u32,
     pub workgroups: [u32; 3],
 }
 
 impl Kernel {
+    /// The bindings the kernel writes, after its buffer operands: 2 for an epilogue that keeps
+    /// the pre-activation, else 1. Each has the result's type.
+    pub fn written(&self) -> usize {
+        match self.epilogue {
+            Some(Epilogue::Relu {
+                writes_pre_activation: true,
+            }) => 2,
+            _ => 1,
+        }
+    }
+
     /// The text the module id is derived from: every field but the id.
     pub fn signature(&self) -> String {
         let mut text = format!("{} {} {} (", self.kind, self.op, self.dtype);
@@ -205,6 +244,9 @@ impl Kernel {
         text.push_str(&format!(") -> {}", self.result));
         if let Some(reduces) = &self.reduces {
             text.push_str(&format!(" over {reduces}"));
+        }
+        if let Some(epilogue) = &self.epilogue {
+            text.push_str(&format!(" {epilogue}"));
         }
         let [x, y, z] = self.workgroups;
         text.push_str(&format!(

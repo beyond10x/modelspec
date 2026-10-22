@@ -297,6 +297,7 @@ pub fn kernel(case: &Case, count: u64) -> Kernel {
             shape: vec![Dim::Static(count)],
         },
         reduces: None,
+        epilogue: None,
         workgroup_size: kind.workgroup_size(),
         workgroups: [
             u32::try_from(groups).expect("a test count fits one dimension"),
@@ -436,6 +437,7 @@ pub fn reduce_kernels(mean: bool, count: u64) -> (Kernel, Kernel) {
         operands: vec![Operand::Buffer(reduced.clone())],
         result: partials.clone(),
         reduces: Some(reduced.clone()),
+        epilogue: None,
         workgroup_size: KernelKind::ReduceStage1.workgroup_size(),
         workgroups: groups_of(count, KernelKind::ReduceStage1),
     });
@@ -447,6 +449,7 @@ pub fn reduce_kernels(mean: bool, count: u64) -> (Kernel, Kernel) {
         operands: vec![Operand::Buffer(partials)],
         result: TensorType::f32_scalar(),
         reduces: Some(reduced),
+        epilogue: None,
         workgroup_size: KernelKind::ReduceStage2.workgroup_size(),
         workgroups: [1, 1, 1],
     });
@@ -466,6 +469,7 @@ pub fn loss_sum_kernel(count: u64) -> Kernel {
         ],
         result: TensorType::f32_scalar(),
         reduces: None,
+        epilogue: None,
         workgroup_size: KernelKind::LossSum.workgroup_size(),
         workgroups: [1, 1, 1],
     })
@@ -481,6 +485,7 @@ pub fn transpose_kernel(rows: u64, cols: u64) -> Kernel {
         operands: vec![Operand::Buffer(TensorType::f32(&[rows, cols]))],
         result: TensorType::f32(&[cols, rows]),
         reduces: None,
+        epilogue: None,
         workgroup_size: KernelKind::Transpose.workgroup_size(),
         workgroups: groups_of(rows * cols, KernelKind::Transpose),
     })
@@ -499,6 +504,7 @@ pub fn matmul_kernel(m: u64, k: u64, n: u64) -> Kernel {
         ],
         result: TensorType::f32(&[m, n]),
         reduces: None,
+        epilogue: None,
         workgroup_size: KernelKind::MatMul.workgroup_size(),
         workgroups: groups_of(m * n, KernelKind::MatMul),
     })
