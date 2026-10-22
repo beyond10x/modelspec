@@ -2,7 +2,7 @@
 format: aep.planning-md/3
 id: story:cpu-matmul-row-order
 kind: story
-status: active
+status: implemented
 title: CPU matmul in row order, with the same bits
 relations:
 - serves: vision:modelspec
@@ -18,10 +18,11 @@ scope:
   path: crates/modelspec-runtime/src/cpu/interpreter.rs
 - confidence: cited
   path: crates/modelspec-runtime/tests
-revision: 8
+revision: 9
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-21T20:50:24Z", actor: "human:timo", revision: 7}
 - {from: "proposed", to: "active", at: "2026-10-21T20:50:24Z", actor: "human:timo", revision: 8}
+- {from: "active", to: "implemented", at: "2026-10-22T01:39:54Z", actor: "human:timo", revision: 9, decided_on: {"recorded":{"test_result":1,"review_outcome":1}}}
 ---
 # CPU `matmul` in row order, with the same bits
 

@@ -1,0 +1,13 @@
+{
+  "at": "2026-10-22T03:50:00Z",
+  "actor": "human:timo",
+  "artifact": "story:cpu-matmul-row-order",
+  "kind": "story",
+  "revision": 8,
+  "change": {
+    "change": "evidence",
+    "kind": "test_result",
+    "source": "task ci on c1c47c7 (PR 8)",
+    "reference": "https://github.com/beyond10x/modelspec/actions/runs/39706801381"
+  }
+}
