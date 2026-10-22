@@ -1,0 +1,13 @@
+{
+  "at": "2026-10-22T02:57:26Z",
+  "actor": "human:timo",
+  "artifact": "story:cpu-matmul-avx2-blocking",
+  "kind": "story",
+  "revision": 14,
+  "change": {
+    "change": "evidence",
+    "kind": "test_result",
+    "source": "b10x-build-slot task ci on wave/cpu-perf-2 984c022, plus release cargo test of matmul_row_order, adversary_avx2_kernel and adversary_avx2_counts",
+    "reference": "task ci rc=0 and release tests rc=0 on 984c022: 47 test binaries, 657 passed, 0 failed (lint, core-no-vulkan, check-examples, docs-check, spec-validate, schema-check included)"
+  }
+}

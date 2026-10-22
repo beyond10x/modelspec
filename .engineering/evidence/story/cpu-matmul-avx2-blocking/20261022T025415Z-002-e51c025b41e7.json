@@ -1,0 +1,13 @@
+{
+  "at": "2026-10-22T02:54:15Z",
+  "actor": "human:timo",
+  "artifact": "story:cpu-matmul-avx2-blocking",
+  "kind": "story",
+  "revision": 11,
+  "change": {
+    "change": "evidence",
+    "kind": "metric_observation",
+    "source": "mnist_shape --bench, 9 interleaved pairs on core 3",
+    "reference": "change 405 us/step (390-668), base 1207 us/step (1186-1933), 2.98x; weights blake3 805f64bd...02df and loss bits 0x3dbbe63b on all 18 runs"
+  }
+}

@@ -2,7 +2,7 @@
 format: aep.planning-md/3
 id: story:cpu-matmul-avx2-blocking
 kind: story
-status: active
+status: implemented
 title: CPU matmul with AVX2 and register blocking, with the same bits
 relations:
 - serves: vision:modelspec
@@ -12,21 +12,24 @@ scope:
 - confidence: cited
   path: CHANGELOG.md
 - confidence: cited
-  path: crates/modelspec-runtime/benches
-- confidence: cited
   path: crates/modelspec-runtime/src/cpu/interpreter.rs
-- confidence: inferred
+- confidence: cited
   path: crates/modelspec-runtime/src/cpu/matmul.rs
-- confidence: inferred
+- confidence: cited
   path: crates/modelspec-runtime/src/cpu/mod.rs
-- confidence: inferred
+- confidence: cited
   path: crates/modelspec-runtime/src/cpu/tensor.rs
 - confidence: cited
-  path: crates/modelspec-runtime/tests
-revision: 11
+  path: crates/modelspec-runtime/tests/adversary_avx2_counts.rs
+- confidence: cited
+  path: crates/modelspec-runtime/tests/adversary_avx2_kernel.rs
+- confidence: cited
+  path: crates/modelspec-runtime/tests/matmul_row_order.rs
+revision: 15
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-22T02:05:23Z", actor: "human:timo", revision: 10}
 - {from: "proposed", to: "active", at: "2026-10-22T02:05:23Z", actor: "human:timo", revision: 11}
+- {from: "active", to: "implemented", at: "2026-10-22T02:57:26Z", actor: "human:timo", revision: 15, decided_on: {"recorded":{"test_result":1,"metric_observation":1,"review_outcome":2,"verification":1}}}
 ---
 # CPU `matmul` with AVX2 and register blocking, with the same bits
 
@@ -54,31 +57,21 @@ scalar. Rust never contracts a multiply and an add into an FMA on its own.
 
 ## Scope
 
-Derived 2026-10-22 by `story-scoper`. Each line is **cited** (read from the story or the tree) or
-**inferred**.
+Derived 2026-10-22 by `story-scoper`; rewritten at the close of wave `cpu-perf-2` from the diff of
+`f250dd5` against `cfb771b` (8 files, +1,174 / −40). Every line is now **cited** from that diff.
 
-- Primary surface: `crates/modelspec-runtime`, the `cpu` module (cited).
-- `crates/modelspec-runtime/src/cpu/interpreter.rs`: `matmul` (line 317), `transpose` (340),
-  `eval_node` (223–272), `run` (115–129), `evaluate` / `evaluate_all` (75, 85) (cited).
-- A new kernel module `crates/modelspec-runtime/src/cpu/matmul.rs`, declared in
-  `crates/modelspec-runtime/src/cpu/mod.rs` (inferred; the story says "a new module beside it").
-- `crates/modelspec-runtime/src/cpu/tensor.rs` (`Element`, lines 15–36): the kernel is generic over
-  `T: Element`, so f32 and f64 reach AVX2 through a trait hook or a type dispatch (inferred).
-- Tests: `crates/modelspec-runtime/tests/matmul_row_order.rs` holds the 0.1.1 reference loop and the
-  seeded cases; a new test or an extension of it, with a hook that forces the portable path
-  (cited for the file, inferred for the hook).
-- `crates/modelspec-runtime/benches/mnist_shape.rs` (cited); `CHANGELOG.md` `[Unreleased]` (cited).
-- Not touched: `modelspec-core`. `ops.rs:238` and `:242` emit `Transpose` → `MatMul`; the
-  interpreter can read the transposed operand in place from the operand's defining node, and
-  DESIGN.md § 3.1 leaves layout to the backend (cited), so no IR or design change (inferred).
-- Not touched: CLI goldens, `website/docs/**` (no CPU timing stated), workspace `Cargo.toml` (cited).
-- Constraint: `evaluate_all` promises every node's value (`interpreter.rs:62-67`, pinned by
-  `tests/cpu_golden.rs:457-460`), so only `evaluate` (the `sgd_step` path) may skip the transpose
-  copy (cited).
-- Constraint: edition 2024 and `task lint` with `-D warnings` make `unsafe_op_in_unsafe_fn` an
-  error, so intrinsics need explicit `unsafe {}` blocks; the runtime has no `unsafe` today and no
-  lint forbids it (cited for the lint table, inferred for the gate effect).
-- Confidence: high.
+- `crates/modelspec-runtime/src/cpu/matmul.rs` (new, declared in `cpu/mod.rs`): public `Kernel`,
+  `Lhs` and `matmul`; f32x8 and f64x4 AVX2 kernels with register blocks and runtime detection; the
+  portable i-k-j loop; `element_counts`, which checks `m*k`, `k*n` and `m*n` with `checked_mul`.
+- `crates/modelspec-runtime/src/cpu/tensor.rs`: the hidden `Element::matmul_avx2` hook.
+- `crates/modelspec-runtime/src/cpu/interpreter.rs`: a `Transpose` left operand of `matmul` is
+  read in place; `evaluate` borrows inputs and parameters; `evaluate_all` still copies every node.
+- `crates/modelspec-runtime/tests/matmul_row_order.rs` (extended),
+  `tests/adversary_avx2_kernel.rs` and `tests/adversary_avx2_counts.rs` (new, from the adversary).
+- `CHANGELOG.md` `[Unreleased]`, one line under `### Changed`.
+- Not touched, as scoped: `modelspec-core`, CLI goldens, `website/docs/**`, `Cargo.toml`.
+- Not touched, against the scoper's estimate: `benches/mnist_shape.rs` (the bench needed no change).
+- Left for later: the right-operand transpose is still copied; no blocking over `k`.
 
 ## Acceptance
 

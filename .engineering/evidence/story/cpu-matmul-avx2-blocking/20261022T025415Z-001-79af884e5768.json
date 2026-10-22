@@ -1,0 +1,13 @@
+{
+  "at": "2026-10-22T02:54:15Z",
+  "actor": "human:timo",
+  "artifact": "story:cpu-matmul-avx2-blocking",
+  "kind": "story",
+  "revision": 11,
+  "change": {
+    "change": "evidence",
+    "kind": "verification",
+    "source": "mnist_shape --bench, base cfb771b and change interleaved on core 3 with taskset and perf stat, 9 pairs",
+    "reference": "scratch ab-interleaved.log of wave cpu-perf-2: base median 1.207 ms/step, change median 0.405 ms/step, target 0.600; VERIFIED"
+  }
+}
