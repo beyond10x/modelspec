@@ -14,6 +14,10 @@ scope:
 - confidence: cited
   path: CHANGELOG.md
 - confidence: cited
+  path: Cargo.lock
+- confidence: cited
+  path: Cargo.toml
+- confidence: cited
   path: DESIGN.md
 - confidence: inferred
   path: crates/modelspec-cli/src/infer.rs
@@ -40,8 +44,10 @@ scope:
 - confidence: inferred
   path: crates/modelspec-runtime/tests/checkpoint_adversary.rs
 - confidence: cited
-  path: website/docs/reference
-revision: 3
+  path: website/docs/reference/cli.md
+- confidence: cited
+  path: website/docs/reference/diagnostics.md
+revision: 5
 ---
 # Checkpoints on the CPU: `.msckpt` save and resume, and `modelspec infer --backend cpu`
 
@@ -68,7 +74,8 @@ read-back.
 - `crates/modelspec-runtime/src/train/checkpoint.rs`: write and read `.msckpt`. The reader checks,
   in order, the header, the checksum, `manifest_size` against the file size, the manifest
   invariants of `spec/domains/checkpoint.yaml`, every offset and length against `file_size` and
-  `alignment`, and the payload hash, before it allocates a tensor.
+  `alignment`, and the payload hash, before it allocates a tensor. The manifest is JSON through
+  `serde` and `serde_json`.
 - `modelspec train ... --checkpoint <path>` writes the state at the end of the run;
   `--checkpoint-every <n>` also writes `<stem>-<k>.msckpt` beside it at every step `k` that is a
   multiple of `n` before the end; `--resume <path>` continues from a checkpoint; `--steps <n>`
@@ -97,23 +104,33 @@ read-back.
 ## Scope
 
 - `crates/modelspec-runtime/src/train/checkpoint.rs` (new), `crates/modelspec-runtime/src/train/mod.rs`,
-  `crates/modelspec-runtime/src/train/runner.rs`, `crates/modelspec-runtime/Cargo.toml`.
+  `crates/modelspec-runtime/src/train/runner.rs`.
+- `crates/modelspec-runtime/Cargo.toml` (`serde`, `serde_json`); its bench entry from
+  `story:cpu-matmul-row-order` is the only other edit to this file, and that story merges first.
+  `Cargo.toml` (`serde` and `serde_json` in `[workspace.dependencies]` if wave observatory-1 did not
+  add them) and `Cargo.lock`.
 - `crates/modelspec-runtime/tests/checkpoint.rs` (new),
   `crates/modelspec-runtime/tests/checkpoint_adversary.rs` (new).
 - `crates/modelspec-cli/src/train.rs`, `crates/modelspec-cli/src/infer.rs` (new),
   `crates/modelspec-cli/src/lib.rs`, `crates/modelspec-cli/tests/checkpoint_cpu.rs` (new).
-- `crates/modelspec-docs/src/diagnostics.rs`, `crates/modelspec-docs/src/cli.rs`,
-  `website/docs/reference/` through `task docs-generate`.
-- `DESIGN.md` § 6.2 and § 8, revision line bumped. `CHANGELOG.md`.
+- `train/runner.rs`, `cli/src/train.rs`, root `Cargo.toml` and `Cargo.lock` are also edited by
+  `story:observatory-live-event-stream` (wave observatory-1); this story depends on it and is scoped
+  against `main` after that wave merges.
+- `crates/modelspec-docs/src/diagnostics.rs`, `crates/modelspec-docs/src/cli.rs`, and through
+  `task docs-generate` `website/docs/reference/cli.md` and `website/docs/reference/diagnostics.md`.
+- `DESIGN.md` § 6.2 and § 8. The revision line, the § 8 verb table and `CHANGELOG.md` are
+  append-only surfaces: this story adds its entry, and the wave coordinator assigns the revision
+  number at merge.
+- `CHANGELOG.md`.
 
 ## Acceptance
 
 A CPU run saved and resumed ends with the same bytes as one that never stopped, `infer` reproduces
-the run final loss from a checkpoint, and every malformed checkpoint is refused with a stated code
-before anything is allocated.
+the final loss of the run from a checkpoint, and every malformed checkpoint is refused with a stated
+code before anything is allocated.
 
 1. First: DESIGN.md § 6.2 states the header byte layout, the 64-byte alignment and the payload
-   hash, with the revision line bumped.
+   hash.
 2. `cargo test -p modelspec-cli --test checkpoint_cpu resume_equals_uninterrupted`, in `task ci`,
    on `examples/linear_regression.mspec`: `--steps 500 --checkpoint a.msckpt`, and `--steps 250
    --checkpoint h.msckpt` then `--resume h.msckpt --steps 250 --checkpoint b.msckpt`, give `a` and
@@ -121,15 +138,19 @@ before anything is allocated.
 3. The same test file: `infer examples/linear_regression.mspec --backend cpu --checkpoint
    a.msckpt` exits 0 and its `loss` value equals the `step 500` loss byte for byte;
    `--checkpoint-every 100` with 500 steps writes exactly 4 extra files, at steps 100 to 400.
-4. `cargo test -p modelspec-runtime --test checkpoint_adversary`, in `task ci`: the reader refuses,
-   with the code stated and no panic and no allocation larger than the file: a truncated file
-   (002), a changed checksum byte (001), the big-endian marker (001), an offset past the file
-   (002), an offset not a multiple of 64 (002), a length that is not shape times dtype size (002),
-   `manifest_size` of `u64::MAX` (002) and a changed payload byte (004).
+4. `cargo test -p modelspec-runtime --test checkpoint_adversary`, in `task ci`: the reader refuses
+   each of eight altered files with the code stated and without a panic: a truncated file (002), a
+   changed checksum byte (001), the big-endian marker (001), an offset past the file (002), an
+   offset not a multiple of 64 (002), a length that is not shape times dtype size (002),
+   `manifest_size` of `u64::MAX` (002) and a changed payload byte (004). The test binary installs a
+   counting `#[global_allocator]` over `std::alloc::System` that records, per thread, the largest
+   single allocation; for every case, the largest allocation made while the reader runs is at most
+   the file size plus 4,096 bytes.
 5. Resume of a `two_layer_relu` checkpoint into `examples/linear_regression.mspec` exits 1 with
    E-CKPT-003 naming the first differing parameter path; a changed learning rate exits 1 with
    E-CKPT-003 naming the optimizer.
-6. `task ci` exits 0, `task docs-check` included, with E-CKPT-001 to 004 on the diagnostics page.
+6. `task ci` exits 0, `task docs-check` included, with E-CKPT-001 to 004 on the diagnostics page and
+   `infer` on the CLI page.
 
 ## Out of scope
 

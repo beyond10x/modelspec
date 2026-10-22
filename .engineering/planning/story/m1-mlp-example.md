@@ -9,6 +9,7 @@ relations:
 - serves: vision:modelspec
 - depends_on: epic:m1-vulkan-execution
 - informed_by: epic:pytorch-10x-mnist
+- depends_on: story:observatory-live-event-stream
 scope:
 - confidence: cited
   path: AGENTS.md
@@ -21,14 +22,10 @@ scope:
 - confidence: inferred
   path: crates/modelspec-cli/tests/mnist_mlp.rs
 - confidence: cited
-  path: crates/modelspec-docs/src/example.rs
-- confidence: cited
   path: crates/modelspec-runtime/tests/gradients.rs
 - confidence: inferred
   path: examples/mnist_mlp.mspec
-- confidence: cited
-  path: website/docs/examples
-revision: 4
+revision: 6
 ---
 # The MNIST-shaped MLP as an example, gradient-checked and trained on the CPU reference
 
@@ -45,7 +42,7 @@ and validates gradients". M0 already meets all three, for linear regression
 
 It exists for two consumers. The GPU stories of this epic need one MLP whose shapes they all run
 (`story:m1-vulkan-elementwise`, `story:m1-compile-artifact`, `story:m1-vulkan-train`), and
-`epic:pytorch-10x-mnist`, which this story serves, measures the shapes of the MNIST benchmark
+`epic:pytorch-10x-mnist` (related as `informed_by`) measures the shapes of the MNIST benchmark
 example: 784 → 64 ReLU → 10, no bias, f32, MSE, SGD lr 0.1, batch 100, 1,800 steps
 (`verification-report:mnist-benchmark-0-1-1`). This story puts that model into `examples/` in the
 M0 subset, so the M1 device runs and the 10× work share one file. M1 has no data file (DESIGN.md
@@ -79,8 +76,9 @@ and no type in `spec/`.
 - `crates/modelspec-runtime/tests/gradients.rs` (a `mnist_mlp_sampled` test).
 - `crates/modelspec-cli/tests/mnist_mlp.rs` (new) and
   `crates/modelspec-cli/tests/golden/mnist_mlp.training.ir` (new).
-- `crates/modelspec-docs/src/example.rs` and `website/docs/examples/` through `task docs-generate`,
-  only if the generator pages every file of `examples/`.
+- Not `crates/modelspec-docs/src/example.rs` or `website/docs/examples/`: the generator pages the
+  fixed list `EXAMPLES` (`crates/modelspec-docs/src/example.rs:62`), not every file of `examples/`,
+  so a new example gets no page unless it is added there, and this story adds none.
 - `CHANGELOG.md`, one line. It is an append-only surface: this story adds its line under
   `## [Unreleased]` and orders against no other story for it.
 

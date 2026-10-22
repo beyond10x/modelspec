@@ -3,16 +3,19 @@ format: aep.planning-md/3
 id: story:m1-inspect-device
 kind: story
 status: draft
-title: 'Vulkan device discovery: modelspec inspect-device --backend vulkan'
-summary: A compute-only Vulkan device through a run-time loader, DeviceProfile probed and printed as text or JSON, E-TARGET-002 and E-TARGET-003, and an RTX 3090 profile fixture
+title: 'Vulkan device discovery and feature negotiation: modelspec inspect-device --backend vulkan'
+summary: A compute-only Vulkan 1.2 device through a run-time loader, DeviceProfile with the three float-control fields probed and printed as text or JSON, negotiation in one pure function, E-TARGET-002 to 004, and an RTX 3090 profile fixture
 relations:
 - serves: vision:modelspec
 - depends_on: epic:m1-vulkan-execution
+- depends_on: story:observatory-live-event-stream
 scope:
 - confidence: cited
   path: AGENTS.md
 - confidence: cited
   path: CHANGELOG.md
+- confidence: cited
+  path: Cargo.lock
 - confidence: cited
   path: Cargo.toml
 - confidence: cited
@@ -27,6 +30,8 @@ scope:
   path: crates/modelspec-cli/src/main.rs
 - confidence: inferred
   path: crates/modelspec-cli/tests/inspect_device.rs
+- confidence: cited
+  path: crates/modelspec-core/Cargo.toml
 - confidence: inferred
   path: crates/modelspec-core/src/device.rs
 - confidence: cited
@@ -46,8 +51,12 @@ scope:
 - confidence: inferred
   path: crates/modelspec-runtime/tests/vulkan_device.rs
 - confidence: cited
-  path: website/docs/reference
-revision: 4
+  path: spec/domains/device.yaml
+- confidence: cited
+  path: website/docs/reference/cli.md
+- confidence: cited
+  path: website/docs/reference/diagnostics.md
+revision: 6
 ---
 # Vulkan device discovery and feature negotiation: `modelspec inspect-device --backend vulkan`
 

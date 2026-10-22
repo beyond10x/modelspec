@@ -4,7 +4,7 @@ id: story:m1-vulkan-elementwise
 kind: story
 status: draft
 title: Vulkan memory, pipelines and dispatch, with SPIR-V elementwise, broadcast and SGD kernels
-summary: The M1 GPU tolerances in DESIGN.md, rspirv elementwise and SGD kernels, spirv-val in CI, buffers, pipelines, barriers and fences with record, submit and wait apart
+summary: The elementwise GPU tolerance in DESIGN.md, rspirv elementwise, broadcast and SGD kernels, spirv-val in CI, buffers, pipelines, barriers and fences with record, submit and wait apart
 relations:
 - serves: vision:modelspec
 - depends_on: epic:m1-vulkan-execution
@@ -18,6 +18,8 @@ scope:
   path: AGENTS.md
 - confidence: cited
   path: CHANGELOG.md
+- confidence: cited
+  path: Cargo.lock
 - confidence: cited
   path: Cargo.toml
 - confidence: cited
@@ -38,7 +40,7 @@ scope:
   path: crates/modelspec-runtime/tests/spirv_val.rs
 - confidence: inferred
   path: crates/modelspec-runtime/tests/vulkan_elementwise.rs
-revision: 3
+revision: 6
 ---
 # Vulkan memory, pipelines and dispatch, with SPIR-V elementwise, broadcast and SGD kernels
 
@@ -53,21 +55,29 @@ yet; `story:bert-vulkan-kernels-rowwise` uses `|g - c| <= 1e-5 + 1e-4 * |c|` and
 M1 if M1 documents others. Gate 6 runs `spirv-val` on every generated module in CI and validation
 layers in GPU tests.
 
-`story:m1-inspect-device` brings the device; `story:m1-kernel-plan` brings the kernels and plan
-this story turns into SPIR-V and dispatches.
+This story is written against DESIGN.md revision 0.9 (the 10× patch). Its § 4 and § 5.4 keep the
+tolerance check for every GPU result and add a bit-for-bit check for some; which M1 kernels are in
+that class, and the execution modes it needs, are `story:m1-vulkan-reduce-matmul`. The gate-5
+numerics contract has one owner per class: this story states the reference `r` for elementwise,
+broadcast and SGD kernels only, and `story:m1-vulkan-reduce-matmul` extends gate 5 to reductions,
+matmul and a whole run.
+
+`story:m1-inspect-device` brings the device, the Vulkan 1.2 negotiation and the profile fixture;
+`story:m1-kernel-plan` brings the kernels and plan this story turns into SPIR-V and dispatches.
 
 ## What it adds
 
-- The M1 tolerances, in DESIGN.md § 9 gate 5 and as `GPU_ATOL = 1e-5` and `GPU_RTOL = 1e-4` in
-  `crates/modelspec-runtime/tests/common/mod.rs`: an element passes when `|g - c| <= GPU_ATOL +
-  GPU_RTOL * r`, where `r` is `|c|` for elementwise kernels and the sum of the absolute values of
-  the terms for a reduction or a matmul element; after a run every parameter passes `||g - c||_2 <=
-  1e-4 * ||c||_2`.
+- The M1 elementwise tolerance, in DESIGN.md § 9 gate 5 and as `GPU_ATOL = 1e-5` and
+  `GPU_RTOL = 1e-4` in `crates/modelspec-runtime/tests/common/mod.rs`: an element passes when
+  `|g - c| <= GPU_ATOL + GPU_RTOL * r`, with `r = |c|` for an elementwise, broadcast or SGD
+  kernel. The helper takes `r` as an argument, so the reduction and matmul rule of
+  `story:m1-vulkan-reduce-matmul` adds its own `r` without a second pair of constants.
 - `crates/modelspec-runtime/src/spirv/emit.rs`: one compute module per Kernel IR elementwise kernel
   (add, sub, mul, each also with a rank-0 operand; relu; relu-grad; scalar broadcast; SGD update),
-  flat index, a bounds check against an element count, f32 only, workgroup size 64.
-  `crates/modelspec-runtime/src/spirv/validate.rs` runs `spirv-val --target-env vulkan1.1` on a
-  module and returns its verdict.
+  flat index, a bounds check against an element count, f32 only, at the workgroup size the Kernel
+  IR states for the kind (64). No float-control execution mode is declared here.
+  `crates/modelspec-runtime/src/spirv/validate.rs` runs `spirv-val --target-env vulkan1.2` (the
+  version `story:m1-inspect-device` negotiates) on a module and returns its verdict.
 - `crates/modelspec-runtime/src/vulkan/{memory,pipeline,dispatch,sync}.rs` behind the `vulkan`
   feature: device-local buffers and staging buffers aligned to the profile limits, typed
   allocation errors instead of panics, a compute pipeline per module, descriptor sets and push
@@ -82,34 +92,44 @@ this story turns into SPIR-V and dispatches.
 ## Domain relations
 
 - A KernelModule carries its `cache_key` with the vendor, device and driver of the profile it was
-  built for (`spec/domains/artifact.yaml:146`). Inferable from ess/1.
+  built for (`KernelModule.cache_key`, type `KernelCacheKey`, `spec/domains/artifact.yaml`).
+  Inferable from ess/1.
 
 ## Scope
 
-- `Cargo.toml` (workspace dependency `rspirv`), `crates/modelspec-runtime/Cargo.toml`,
+- `Cargo.toml` (workspace dependency `rspirv`), `Cargo.lock`. Root `Cargo.toml` is also edited by
+  `story:observatory-live-event-stream` (wave observatory-1); this story is scoped against `main`
+  after that wave merges.
+- `crates/modelspec-runtime/Cargo.toml` (the `vulkan` feature gains `rspirv`; the bench entry of
+  `story:cpu-matmul-row-order` is the only other edit to this file, and that story merges first),
   `crates/modelspec-runtime/src/lib.rs`, `crates/modelspec-runtime/src/spirv/` (new),
   `crates/modelspec-runtime/src/vulkan/`.
 - `crates/modelspec-runtime/tests/common/mod.rs` (new), `crates/modelspec-runtime/tests/spirv_val.rs`
   (new), `crates/modelspec-runtime/tests/vulkan_elementwise.rs` (new).
-- `Taskfile.yml` (`test`, `lint`), `.github/workflows/check.yml`.
-- `DESIGN.md` § 9 gate 5 (the tolerances), revision line bumped. `AGENTS.md` (Commands: the
-  `--features vulkan` runs and `MODELSPEC_VK_VALIDATION`), `CHANGELOG.md`.
+- `Taskfile.yml` (`test`, `lint`), `.github/workflows/check.yml`, `AGENTS.md` (Commands: the
+  `--features vulkan` runs and `MODELSPEC_VK_VALIDATION`). `story:m1-mlp-example` edits
+  `Taskfile.yml` and `AGENTS.md` first (this story depends on it); `story:observatory-live-event-stream`
+  edits all three in wave observatory-1, and this story is scoped against `main` after that wave
+  merges.
+- `DESIGN.md` § 9 gate 5 (the elementwise tolerance). The revision line and `CHANGELOG.md` are
+  append-only surfaces: this story adds its entry, and the wave coordinator assigns the revision
+  number at merge.
 
 ## Acceptance
 
 Every elementwise, broadcast and SGD kernel is valid SPIR-V in CI and, on the RTX 3090, matches the
-CPU interpreter within the documented tolerance on sizes that do not fill a workgroup, with one
-host wait per test case.
+CPU interpreter within the documented elementwise tolerance on sizes that do not fill a workgroup,
+with one host wait per test case.
 
-1. First: DESIGN.md § 9 gate 5 states `GPU_ATOL = 1e-5`, `GPU_RTOL = 1e-4`, the reference `r` per
-   kernel kind and the end-of-run bound `1e-4` relative L2 per parameter, with the revision line
-   bumped; `crates/modelspec-runtime/tests/common/mod.rs` defines both constants and nothing else
-   in the tests repeats the numbers.
-2. `cargo test -p modelspec-runtime --features vulkan --test spirv_val`, in `task ci`: every module
-   the emitter builds for the kernels of `examples/linear_regression.mspec` and
-   `crates/modelspec-docs/models/two_layer_relu.mspec` passes `spirv-val --target-env vulkan1.1`,
-   and a module with one instruction removed fails it. With `spirv-val` absent the test fails; it
-   does not skip.
+1. First: DESIGN.md § 9 gate 5 states `GPU_ATOL = 1e-5`, `GPU_RTOL = 1e-4` and `r = |c|` for
+   elementwise, broadcast and SGD kernels, and says reductions and matmul get their `r` from
+   `story:m1-vulkan-reduce-matmul`; `crates/modelspec-runtime/tests/common/mod.rs` defines both
+   constants and nothing else in the tests repeats the numbers.
+2. `cargo test -p modelspec-runtime --features vulkan --test spirv_val`, in `task ci`: every
+   elementwise, broadcast and SGD module the emitter builds for the kernels of
+   `examples/linear_regression.mspec` and `crates/modelspec-docs/models/two_layer_relu.mspec` passes
+   `spirv-val --target-env vulkan1.2`, and a module with one instruction removed fails it. With
+   `spirv-val` absent the test fails; it does not skip.
 3. `.github/workflows/check.yml` installs `spirv-tools`, and its `check` job is green on the
    change with acceptance 2 among the tests it ran.
 4. Operator run on the RTX 3090 (the operator starts it): `MODELSPEC_VK_VALIDATION=1 cargo test -p
@@ -124,7 +144,10 @@ host wait per test case.
 
 ## Out of scope
 
-- Reductions, transpose and matmul: `story:m1-vulkan-reduce-matmul`.
+- Reductions, transpose, matmul, the emit entry for a whole artifact, the float-control execution
+  modes and the bit-for-bit class: `story:m1-vulkan-reduce-matmul`.
+- The tolerance of a whole run: `story:m1-vulkan-reduce-matmul` states it, `story:m1-vulkan-train`
+  checks it.
 - The artifact on disk and `compile`: `story:m1-compile-artifact`.
 - A whole training run on the GPU: `story:m1-vulkan-train`.
 - Vectorized loads, fusion and tuned workgroup sizes (M2).
