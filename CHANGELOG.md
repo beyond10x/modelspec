@@ -9,6 +9,10 @@ history.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-23
+
+Faster Vulkan training: the `MatMul` kernel stages its operand tiles in workgroup memory, and the MNIST benchmark example measured 27.282 µs per step on an RTX 3090 (median of 5 runs of 144,000 steps, mean P0 clock 1957 to 1965 MHz), down from 40.225 µs in 0.4.0. ADR-007's accuracy and final-weight conditions were not measured for this release.
+
 ### Changed
 
 - The Vulkan `MatMul` kernel stages tiles of its operands in workgroup memory (`modelspec_core::ir::kernel::MatMulTile`, 128 invocations per block of 8 rows by 16 columns, or 16 rows at two per invocation when 8 need at least 256 workgroups) with the same bits as before, its tiles of `k` in a loop of 4-tile passes so a module's size does not grow with `k`; the forward matmul of the MNIST example falls from 18.5 to 8.3 µs per step and the MNIST step from 40.2 to 27.3 µs on an RTX 3090 (medians of 3 profiled and 5 timed runs of 144,000 steps), and a tile larger than the device's workgroup memory is refused with `EmitError::SharedMemory` (DESIGN.md § 5.2) (story:m1-f-forward-matmul-tiled)
@@ -110,7 +114,8 @@ with `E-TARGET-001`.
 - `examples/linear_regression.mspec` checks and trains; `task check-examples` runs `modelspec check` on it
 - ESS contracts for the compiled artifact, checkpoint, device profile and training run in `spec/`
 
-[Unreleased]: https://github.com/beyond10x/modelspec/compare/0.4.0...HEAD
+[Unreleased]: https://github.com/beyond10x/modelspec/compare/0.5.0...HEAD
+[0.5.0]: https://github.com/beyond10x/modelspec/compare/0.4.0...0.5.0
 [0.4.0]: https://github.com/beyond10x/modelspec/compare/0.3.0...0.4.0
 [0.3.0]: https://github.com/beyond10x/modelspec/compare/0.2.0...0.3.0
 [0.2.0]: https://github.com/beyond10x/modelspec/compare/0.1.1...0.2.0
