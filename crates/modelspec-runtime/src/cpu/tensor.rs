@@ -8,6 +8,8 @@ use std::ops::{Add, Div, Mul, Sub};
 
 use thiserror::Error;
 
+use super::matmul::Lhs;
+
 /// An element type the CPU interpreter computes in.
 ///
 /// Every operation rounds to this type: the interpreter evaluates an `f32`-typed program in
@@ -33,6 +35,25 @@ pub trait Element:
 
     /// An element count in this type, rounded to nearest.
     fn from_count(count: u64) -> Self;
+
+    /// The AVX2 `matmul` kernel for this type ([`Kernel::Avx2`](super::matmul::Kernel::Avx2)):
+    /// writes `out`, `m * n` elements, and returns true; `m`, `k` and `n` are nonzero. False,
+    /// writing nothing, where the type has no such kernel or the CPU no AVX2, which is the default.
+    /// Panics when `m * k`, `k * n` or `m * n` overflows `usize` or a slice is not that long.
+    #[doc(hidden)]
+    fn matmul_avx2(
+        out: &mut [Self],
+        a: &[Self],
+        _lhs: Lhs,
+        b: &[Self],
+        m: usize,
+        k: usize,
+        n: usize,
+    ) -> bool {
+        let (mk, kn, mn) = super::matmul::element_counts(m, k, n);
+        assert!(out.len() == mn && a.len() == mk && b.len() == kn);
+        false
+    }
 }
 
 impl Element for f32 {
@@ -45,6 +66,19 @@ impl Element for f32 {
     fn from_count(count: u64) -> Self {
         count as f32
     }
+
+    #[cfg(target_arch = "x86_64")]
+    fn matmul_avx2(
+        out: &mut [Self],
+        a: &[Self],
+        lhs: Lhs,
+        b: &[Self],
+        m: usize,
+        k: usize,
+        n: usize,
+    ) -> bool {
+        super::matmul::avx2::f32x8::matmul(out, a, lhs, b, m, k, n)
+    }
 }
 
 impl Element for f64 {
@@ -56,6 +90,19 @@ impl Element for f64 {
 
     fn from_count(count: u64) -> Self {
         count as f64
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn matmul_avx2(
+        out: &mut [Self],
+        a: &[Self],
+        lhs: Lhs,
+        b: &[Self],
+        m: usize,
+        k: usize,
+        n: usize,
+    ) -> bool {
+        super::matmul::avx2::f64x4::matmul(out, a, lhs, b, m, k, n)
     }
 }
 

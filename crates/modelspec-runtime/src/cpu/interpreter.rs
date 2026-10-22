@@ -15,6 +15,7 @@
 //! Every value is allocated through one checked path; a value the host cannot hold is a
 //! [`RuntimeError::Allocation`].
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 
 use modelspec_core::ir::tensor::{
@@ -23,6 +24,7 @@ use modelspec_core::ir::tensor::{
 use modelspec_core::ir::verify::{VerifyError, verify};
 use thiserror::Error;
 
+use super::matmul::{self, Kernel, Lhs};
 use super::tensor::{Element, HostTensor};
 
 /// Why the interpreter refused a program or its inputs (DESIGN.md § 8.1, runtime class).
@@ -77,7 +79,7 @@ pub fn evaluate<T: Element>(
     inputs: &BTreeMap<String, HostTensor<T>>,
     params: &BTreeMap<ParamId, HostTensor<T>>,
 ) -> Result<Vec<HostTensor<T>>, RuntimeError> {
-    let values = run(program, inputs, params)?;
+    let values = run(program, inputs, params, Keep::Outputs)?;
     outputs(program, &values)
 }
 
@@ -87,17 +89,20 @@ pub fn evaluate_all<T: Element>(
     inputs: &BTreeMap<String, HostTensor<T>>,
     params: &BTreeMap<ParamId, HostTensor<T>>,
 ) -> Result<Evaluation<T>, RuntimeError> {
-    let values = run(program, inputs, params)?;
+    let values = run(program, inputs, params, Keep::Every)?;
     Ok(Evaluation {
         outputs: outputs(program, &values)?,
-        values,
+        values: values
+            .into_iter()
+            .map(|(id, value)| (id, value.into_owned()))
+            .collect(),
     })
 }
 
 /// Copies of the output values, each allocated through [`allocate`].
 fn outputs<T: Element>(
     program: &TensorProgram,
-    values: &BTreeMap<ValueId, HostTensor<T>>,
+    values: &BTreeMap<ValueId, Cow<'_, HostTensor<T>>>,
 ) -> Result<Vec<HostTensor<T>>, RuntimeError> {
     program
         .outputs
@@ -111,21 +116,70 @@ fn outputs<T: Element>(
         .collect()
 }
 
-/// Verifies, checks the supplied tensors, then evaluates every node in definition order.
-fn run<T: Element>(
+/// Which values a run must hold when it ends.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Keep {
+    /// Every node's value, each its own copy, as [`evaluate_all`] promises.
+    Every,
+    /// Only what the outputs need: an input or parameter read is the supplied tensor itself, not
+    /// a copy, and a `transpose` read only as a `matmul`'s left operand has no value; the
+    /// `matmul` reads its operand in place.
+    Outputs,
+}
+
+/// Verifies, checks the supplied tensors, then evaluates every node in definition order, except
+/// a `transpose` that [`in_place_transposes`] names under [`Keep::Outputs`].
+fn run<'a, T: Element>(
     program: &TensorProgram,
-    inputs: &BTreeMap<String, HostTensor<T>>,
-    params: &BTreeMap<ParamId, HostTensor<T>>,
-) -> Result<BTreeMap<ValueId, HostTensor<T>>, RuntimeError> {
+    inputs: &'a BTreeMap<String, HostTensor<T>>,
+    params: &'a BTreeMap<ParamId, HostTensor<T>>,
+    keep: Keep,
+) -> Result<BTreeMap<ValueId, Cow<'a, HostTensor<T>>>, RuntimeError> {
     verify(program)?;
     check_inputs(program, inputs)?;
     check_params(program, params)?;
+    let in_place = match keep {
+        Keep::Every => BTreeMap::new(),
+        Keep::Outputs => in_place_transposes(program),
+    };
     let mut values = BTreeMap::new();
     for node in &program.nodes {
-        let value = eval_node(program, node, &values, inputs, params)?;
+        if in_place.contains_key(&node.id) {
+            continue;
+        }
+        let value = match (&node.op, keep) {
+            (TensorOp::Input { name }, Keep::Outputs) => Cow::Borrowed(input(inputs, name)?),
+            (TensorOp::ParamRead { param: id }, Keep::Outputs) => {
+                Cow::Borrowed(param(program, params, *id)?)
+            }
+            _ => Cow::Owned(eval_node(
+                program, node, &values, &in_place, inputs, params,
+            )?),
+        };
         values.insert(node.id, value);
     }
     Ok(values)
+}
+
+/// Each `transpose` whose every reader is a `matmul` reading it as its left operand, and which is
+/// not an output, mapped to the value it transposes.
+fn in_place_transposes(program: &TensorProgram) -> BTreeMap<ValueId, ValueId> {
+    let mut readers_elsewhere: BTreeSet<ValueId> = program.outputs.iter().copied().collect();
+    for node in &program.nodes {
+        for (i, &operand) in node.operands.iter().enumerate() {
+            if !(matches!(node.op, TensorOp::MatMul) && i == 0) {
+                readers_elsewhere.insert(operand);
+            }
+        }
+    }
+    program
+        .nodes
+        .iter()
+        .filter(|node| {
+            matches!(node.op, TensorOp::Transpose) && !readers_elsewhere.contains(&node.id)
+        })
+        .map(|node| (node.id, node.operands[0]))
+        .collect()
 }
 
 /// Every Input node has a supplied tensor of its declared shape, and nothing else is supplied.
@@ -223,13 +277,19 @@ fn static_shape(ty: &TensorType) -> Vec<u64> {
 fn eval_node<T: Element>(
     program: &TensorProgram,
     node: &TensorNode,
-    values: &BTreeMap<ValueId, HostTensor<T>>,
+    values: &BTreeMap<ValueId, Cow<'_, HostTensor<T>>>,
+    in_place: &BTreeMap<ValueId, ValueId>,
     inputs: &BTreeMap<String, HostTensor<T>>,
     params: &BTreeMap<ParamId, HostTensor<T>>,
 ) -> Result<HostTensor<T>, RuntimeError> {
     // The verifier guarantees every operand is defined by an earlier node, and that the element
-    // count of every type fits `u64`.
-    let arg = |i: usize| &values[&node.operands[i]];
+    // count of every type fits `u64`. An in-place transpose is read only as a `matmul`'s left
+    // operand, below, so every other operand has a value.
+    let arg = |i: usize| -> &HostTensor<T> { &values[&node.operands[i]] };
+    let lhs = || match in_place.get(&node.operands[0]) {
+        Some(source) => (&*values[source], Lhs::Transposed),
+        None => (arg(0), Lhs::RowMajor),
+    };
     let shape = static_shape(&node.ty);
     let (mut data, n) = allocate::<T>(node.id, shape.iter().product())?;
     match &node.op {
@@ -241,7 +301,10 @@ fn eval_node<T: Element>(
         TensorOp::Add => elementwise(&mut data, arg(0), arg(1), |a, b| a + b),
         TensorOp::Sub => elementwise(&mut data, arg(0), arg(1), |a, b| a - b),
         TensorOp::Mul => elementwise(&mut data, arg(0), arg(1), |a, b| a * b),
-        TensorOp::MatMul => matmul(&mut data, arg(0), arg(1)),
+        TensorOp::MatMul => {
+            let (a, layout) = lhs();
+            matmul(&mut data, a, layout, arg(1));
+        }
         TensorOp::Relu => data.extend(arg(0).data().iter().map(|&x| relu_where(x, x))),
         TensorOp::Transpose => transpose(&mut data, arg(0)),
         TensorOp::ReduceSum => data.push(sum(arg(0).data().iter().copied())),
@@ -309,30 +372,19 @@ fn elementwise<T: Element>(
     }
 }
 
-/// `[M, K] x [K, N] -> [M, N]`; each element sums its `K` products in ascending `k`.
-///
-/// Loop order `i`, `k`, `j`, so the inner loop reads a row of `b`: each output row starts as its
-/// `k = 0` products (not `+0`, so an all-`-0` sum stays `-0`) and every later `k` adds its
-/// products in turn, the same sequence of roundings per element as summing over `k` directly.
-fn matmul<T: Element>(data: &mut Vec<T>, a: &HostTensor<T>, b: &HostTensor<T>) {
-    let m = a.shape()[0] as usize;
-    let k = a.shape()[1] as usize;
-    let n = b.shape()[1] as usize;
+/// `[M, K] x [K, N] -> [M, N]`; each element sums its `K` products in ascending `k`, by the
+/// kernel [`Kernel::detected`] names (the module [`super::matmul`] holds both kernels). `a` is
+/// the `[M, K]` operand, or under [`Lhs::Transposed`] the `[K, M]` value it is the transpose of.
+fn matmul<T: Element>(data: &mut Vec<T>, a: &HostTensor<T>, lhs: Lhs, b: &HostTensor<T>) {
+    let (m, k) = match lhs {
+        Lhs::RowMajor => (a.shape()[0], a.shape()[1]),
+        Lhs::Transposed => (a.shape()[1], a.shape()[0]),
+    };
+    let (m, k, n) = (m as usize, k as usize, b.shape()[1] as usize);
     let (a, b) = (a.data(), b.data());
-    if k == 0 || n == 0 {
-        data.extend(std::iter::repeat_n(T::ZERO, m * n));
-        return;
-    }
-    for a_row in a.chunks_exact(k) {
-        let start = data.len();
-        let (&first, rest) = a_row.split_first().expect("k > 0");
-        data.extend(b[..n].iter().map(|&y| first * y));
-        let row = &mut data[start..];
-        for (&x, b_row) in rest.iter().zip(b[n..].chunks_exact(n)) {
-            for (acc, &y) in row.iter_mut().zip(b_row) {
-                *acc = *acc + x * y;
-            }
-        }
+    if !matmul::matmul_into(Kernel::detected(), data, a, lhs, b, m, k, n) {
+        let portable = matmul::matmul_into(Kernel::Portable, data, a, lhs, b, m, k, n);
+        debug_assert!(portable, "the portable kernel runs everywhere");
     }
 }
 

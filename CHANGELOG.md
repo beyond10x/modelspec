@@ -9,6 +9,10 @@ history.
 
 ## [Unreleased]
 
+### Changed
+
+- CPU reference: `matmul` runs an AVX2 kernel with register blocks where the CPU has AVX2 (`modelspec_runtime::cpu::matmul::Kernel`), and `evaluate` reads inputs, parameters and a transposed left `matmul` operand in place, with the same bits as 0.1.1 (`cpu-matmul-avx2-blocking`)
+
 ## [0.2.0] - 2026-10-22
 
 Live training events, input adjoints and a 15× faster CPU `matmul` with the same bits.

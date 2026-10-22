@@ -3,6 +3,7 @@
 //! tokens and state versions are metadata, and the host runner applies parameter writes.
 
 pub mod interpreter;
+pub mod matmul;
 pub mod tensor;
 
 pub use interpreter::{Evaluation, RuntimeError, evaluate, evaluate_all};
