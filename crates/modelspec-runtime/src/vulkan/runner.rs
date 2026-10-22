@@ -11,6 +11,10 @@
 //! the other without waiting, the last behind a fence, and the host waits once, then reads the
 //! parameters and the `steps + 1` losses back. The result is a [`Run`] the CPU run can be
 //! compared with, and the [`RunStats`] of the device.
+//!
+//! [`train_profiled`] runs the same recording with a timestamp before and after each dispatch,
+//! written into one query pool per command buffer and read after the one wait, and returns a
+//! [`Profile`] of every dispatch site (DESIGN.md § 8, `--profile`).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -23,10 +27,11 @@ use modelspec_core::diag::Diagnostic;
 use modelspec_core::ir::kernel::{BufferView, ExecutionPlan, KernelKind, PlanOp, PlanStep};
 use thiserror::Error;
 
-use super::dispatch::{Bound, DescriptorArena, Recording};
+use super::dispatch::{Bound, DescriptorArena, Recording, TimestampPool};
 use super::memory::Buffer;
 use super::negotiate::{Negotiated, NumericsClass, negotiate};
 use super::pipeline::Pipeline;
+use super::profile::{PlanName, Profile, Site, timings};
 use super::select::select_device;
 use super::sync::Barrier;
 use super::{Device, ExecError, Vulkan};
@@ -122,6 +127,17 @@ pub fn train_on_device(
     compiled: &CompiledTraining,
     artifact: &CompiledArtifact,
 ) -> Result<(Run, RunStats), DeviceRunError> {
+    let (run, stats, _) = train_on_device_with(device, compiled, artifact, false)?;
+    Ok((run, stats))
+}
+
+/// [`train_on_device`], running [`train_profiled`] instead of [`train`] when `profiled`.
+pub fn train_on_device_with(
+    device: Option<usize>,
+    compiled: &CompiledTraining,
+    artifact: &CompiledArtifact,
+    profiled: bool,
+) -> Result<(Run, RunStats, Option<Profile>), DeviceRunError> {
     let vulkan = Vulkan::load().map_err(DeviceRunError::Refused)?;
     let candidates = vulkan.candidates().map_err(DeviceRunError::Refused)?;
     let index =
@@ -131,14 +147,25 @@ pub fn train_on_device(
     let opened = vulkan
         .create_device(index, &negotiated)
         .map_err(DeviceRunError::Refused)?;
-    Ok(train(&opened, profile, &negotiated, compiled, artifact)?)
+    Ok(execute(
+        &opened,
+        profile,
+        &negotiated,
+        compiled,
+        artifact,
+        profiled,
+    )?)
 }
 
 /// One recorded command of the step plan.
 enum Action<'a> {
-    Dispatch(Bound<'a>),
+    /// A dispatch and the index of its step in the step plan.
+    Dispatch(Bound<'a>, usize),
     Barrier,
-    Copy { from: BufferView, to: BufferView },
+    Copy {
+        from: BufferView,
+        to: BufferView,
+    },
 }
 
 /// Trains `compiled` on `device`, whose profile is `profile` and which was opened with
@@ -150,6 +177,42 @@ pub fn train(
     compiled: &CompiledTraining,
     artifact: &CompiledArtifact,
 ) -> Result<(Run, RunStats), VulkanRunError> {
+    let (run, stats, _) = execute(device, profile, negotiated, compiled, artifact, false)?;
+    Ok((run, stats))
+}
+
+/// [`train`], with a timestamp before and after every dispatch it records when the device has
+/// timestamp queries: the timestamps go into one query pool per command buffer and are read
+/// back after the run's one host wait, without a wait of their own, and summed per dispatch
+/// site ([`profile::timings`]). The run's commands, results and [`RunStats`] are those of
+/// [`train`]; the [`Profile`] adds the time to emit the SPIR-V and create the pipelines.
+pub fn train_profiled(
+    device: &Device<'_>,
+    profile: &DeviceProfile,
+    negotiated: &Negotiated,
+    compiled: &CompiledTraining,
+    artifact: &CompiledArtifact,
+) -> Result<(Run, RunStats, Profile), VulkanRunError> {
+    let (run, stats, profiled) = execute(device, profile, negotiated, compiled, artifact, true)?;
+    let profiled = profiled.expect("a profiled run returns its profile");
+    Ok((run, stats, profiled))
+}
+
+/// The timestamps of one command buffer: its pool and the next query to write.
+struct Stamps<'p> {
+    pool: &'p TimestampPool<'p>,
+    next: u32,
+}
+
+/// [`train`], profiled when `profiled`.
+fn execute(
+    device: &Device<'_>,
+    profile: &DeviceProfile,
+    negotiated: &Negotiated,
+    compiled: &CompiledTraining,
+    artifact: &CompiledArtifact,
+    profiled: bool,
+) -> Result<(Run, RunStats, Option<Profile>), VulkanRunError> {
     let plan = &artifact.execution;
     let config = &compiled.config;
     let steps = config.steps;
@@ -159,11 +222,15 @@ pub fn train(
         .map_err(|error| refused(error.into()))?;
     let data = synthetic(config, forward).map_err(|error| refused(error.into()))?;
 
+    let emitting = Instant::now();
     let modules = emit_kernels(artifact, profile)?;
+    let emitted = emitting.elapsed();
+    let creating = Instant::now();
     let mut pipelines = Vec::with_capacity(plan.kernels.len());
     for (kernel, module) in plan.kernels.iter().zip(&modules) {
         pipelines.push(device.kernel_pipeline(kernel, &module.spirv)?);
     }
+    let pipeline_creation = creating.elapsed();
 
     // The plan's `Allocate` steps: the scratch buffers, made once for the whole run.
     let scratch: BTreeMap<u32, BufferView> = plan
@@ -233,6 +300,55 @@ pub fn train(
     let arena = device.descriptor_arena(count_u32(dispatch_steps)?, count_u32(descriptors)?)?;
     let (actions, loss_end) = actions(plan, &arena, &pipelines, &buffers)?;
 
+    // The dispatch sites a profile times, and one timestamp pool per command buffer: two
+    // queries per dispatch it records.
+    let site = |plan_name: PlanName, action: &Action<'_>| match action {
+        Action::Dispatch(_, at) => {
+            let id = plan.step[*at].kernel_module_id?;
+            let entry = plan
+                .kernels
+                .iter()
+                .zip(&modules)
+                .find(|(kernel, _)| kernel.id == id)
+                .map(|(_, module)| module.entry_point.clone())?;
+            Some(Site {
+                plan: plan_name,
+                position: *at,
+                kernel_module_id: id,
+                entry,
+            })
+        }
+        _ => None,
+    };
+    let step_sites: Vec<Site> = actions
+        .iter()
+        .filter_map(|action| site(PlanName::Step, action))
+        .collect();
+    let forward_sites: Vec<Site> = actions[..loss_end]
+        .iter()
+        .filter_map(|action| site(PlanName::Forward, action))
+        .collect();
+    let clock = device
+        .clock()
+        .filter(|_| profiled && profile.timestamp_queries);
+    let mut pools = Vec::new();
+    if clock.is_some() {
+        let per_step = 2 * step_sites.len() as u64;
+        let chunks = steps.div_ceil(CHUNK_STEPS).max(1);
+        for chunk in 0..chunks {
+            let chunk_steps = (steps - chunk * CHUNK_STEPS).min(CHUNK_STEPS);
+            let mut queries = per_step * chunk_steps;
+            if chunk + 1 == chunks {
+                queries += 2 * forward_sites.len() as u64;
+            }
+            let queries = u32::try_from(queries).map_err(|_| {
+                VulkanRunError::Plan(format!("{queries} timestamp queries do not fit u32"))
+            })?;
+            pools.push(device.timestamp_pool(queries)?);
+        }
+    }
+    let stamps_of = |chunk: usize| pools.get(chunk).map(|pool| Stamps { pool, next: 0 });
+
     let class = numerics_class(negotiated, plan);
     let waits_before = device.host_waits();
     let submits_before = device.submits();
@@ -245,6 +361,11 @@ pub fn train(
         let loss = buffer(&buffers, &plan.loss_view)?;
         let mut chain = device.chain();
         let mut recording = device.record()?;
+        let mut chunk = 0;
+        let mut stamps = stamps_of(chunk);
+        if let Some(stamps) = &stamps {
+            recording.reset_timestamps(stamps.pool);
+        }
         let mut at = 0;
         for (view, _) in &uploads {
             recording.copy_region(
@@ -263,15 +384,25 @@ pub fn train(
                 first_submit.get_or_insert_with(Instant::now);
                 chain.submit(recorded)?;
                 recording = device.record()?;
+                chunk += 1;
+                stamps = stamps_of(chunk);
+                if let Some(stamps) = &stamps {
+                    recording.reset_timestamps(stamps.pool);
+                }
             }
             let before = recording.dispatches();
-            record(&mut recording, &actions, &buffers)?;
+            record(&mut recording, &actions, &buffers, stamps.as_mut())?;
             dispatches_per_step = recording.dispatches() - before;
             recording.barrier(Barrier::ComputeToTransfer);
             recording.copy_region(loss, plan.loss_view.offset, &losses, 4 * k, 4)?;
             recording.barrier(Barrier::TransferToCompute);
         }
-        record(&mut recording, &actions[..loss_end], &buffers)?;
+        record(
+            &mut recording,
+            &actions[..loss_end],
+            &buffers,
+            stamps.as_mut(),
+        )?;
         recording.barrier(Barrier::ComputeToTransfer);
         recording.copy_region(loss, plan.loss_view.offset, &losses, 4 * steps, 4)?;
         let mut at = 0;
@@ -307,6 +438,29 @@ pub fn train(
         elapsed,
     };
 
+    let profiled = if profiled {
+        let timings = match clock {
+            Some(clock) => {
+                let mut stamps = Vec::new();
+                for pool in &pools {
+                    stamps.extend(pool.read()?);
+                }
+                Some(
+                    timings(&step_sites, &forward_sites, steps, &stamps, clock)
+                        .map_err(VulkanRunError::Plan)?,
+                )
+            }
+            None => None,
+        };
+        Some(Profile {
+            timings,
+            pipeline_creation,
+            compile: emitted,
+        })
+    } else {
+        None
+    };
+
     let read = download.read_f32()?;
     let mut values = BTreeMap::new();
     let mut at = 0usize;
@@ -332,7 +486,7 @@ pub fn train(
         state,
         teacher: data.teacher,
     };
-    Ok((run, stats))
+    Ok((run, stats, profiled))
 }
 
 /// The plan buffer `view` lies in.
@@ -397,11 +551,10 @@ fn actions<'a>(
                     }
                     bound.push(buffer(buffers, view)?);
                 }
-                actions.push(Action::Dispatch(arena.bind(
-                    &pipelines[index],
-                    &plan.kernels[index],
-                    &bound,
-                )?));
+                actions.push(Action::Dispatch(
+                    arena.bind(&pipelines[index], &plan.kernels[index], &bound)?,
+                    at,
+                ));
             }
             PlanOp::Complete => {
                 return Err(unexpected(at, step, "a runner places completion points"));
@@ -440,15 +593,25 @@ fn unexpected(at: usize, step: &PlanStep, reason: &str) -> VulkanRunError {
 }
 
 /// Records `actions`: a plan barrier as a compute-to-compute barrier, a plan copy between the
-/// barriers that order it after the dispatches before it and before the ones after it.
+/// barriers that order it after the dispatches before it and before the ones after it. With
+/// `stamps`, a timestamp before and after each dispatch into its next two queries.
 fn record<'r>(
     recording: &mut Recording<'r>,
     actions: &'r [Action<'_>],
     buffers: &'r [Buffer<'_>],
+    mut stamps: Option<&mut Stamps<'r>>,
 ) -> Result<(), VulkanRunError> {
     for action in actions {
         match action {
-            Action::Dispatch(bound) => recording.dispatch_bound(bound),
+            Action::Dispatch(bound, _) => match stamps.as_deref_mut() {
+                Some(stamps) => {
+                    recording.timestamp(stamps.pool, stamps.next, false)?;
+                    recording.dispatch_bound(bound);
+                    recording.timestamp(stamps.pool, stamps.next + 1, true)?;
+                    stamps.next += 2;
+                }
+                None => recording.dispatch_bound(bound),
+            },
             Action::Barrier => recording.barrier(Barrier::ComputeToCompute),
             Action::Copy { from, to } => {
                 recording.barrier(Barrier::ComputeToTransfer);

@@ -303,6 +303,66 @@ fn allocate_set(
     Ok(set)
 }
 
+/// A pool of timestamp queries, written by [`Recording::timestamp`] and read back once the
+/// recordings that write it have been waited on ([`TimestampPool::read`]).
+pub struct TimestampPool<'d> {
+    device: &'d Device<'d>,
+    pool: vk::QueryPool,
+    count: u32,
+}
+
+impl Drop for TimestampPool<'_> {
+    fn drop(&mut self) {
+        // SAFETY: every recording that writes the pool borrows it, so none is pending here.
+        unsafe { self.device.device.destroy_query_pool(self.pool, None) };
+    }
+}
+
+impl<'d> Device<'d> {
+    /// A pool of `count` timestamp queries, which a recording resets before it writes them
+    /// ([`Recording::reset_timestamps`]).
+    pub fn timestamp_pool(&'d self, count: u32) -> Result<TimestampPool<'d>, ExecError> {
+        let info = vk::QueryPoolCreateInfo::default()
+            .query_type(vk::QueryType::TIMESTAMP)
+            .query_count(count.max(1));
+        // SAFETY: `info` outlives the call; the pool is destroyed by the `TimestampPool`'s drop.
+        let pool = unsafe { self.device.create_query_pool(&info, None) }
+            .map_err(ExecError::call("vkCreateQueryPool"))?;
+        Ok(TimestampPool {
+            device: self,
+            pool,
+            count,
+        })
+    }
+}
+
+impl TimestampPool<'_> {
+    /// The queries of the pool.
+    pub fn count(&self) -> u32 {
+        self.count
+    }
+
+    /// The timestamps of the pool's queries, in query order. The recordings that wrote them
+    /// must have been waited on: this does not wait, and a query without its result fails.
+    pub fn read(&self) -> Result<Vec<u64>, ExecError> {
+        let mut stamps = vec![0u64; self.count as usize];
+        if self.count == 0 {
+            return Ok(stamps);
+        }
+        // SAFETY: the pool belongs to this device and `stamps` holds one u64 per query.
+        unsafe {
+            self.device.device.get_query_pool_results(
+                self.pool,
+                0,
+                &mut stamps,
+                vk::QueryResultFlags::TYPE_64,
+            )
+        }
+        .map_err(ExecError::call("vkGetQueryPoolResults"))?;
+        Ok(stamps)
+    }
+}
+
 impl<'d> Device<'d> {
     /// Starts a recording on a new command pool of the device's queue family.
     pub fn record<'r>(&'r self) -> Result<Recording<'r>, ExecError>
@@ -445,6 +505,43 @@ impl<'r> Recording<'r> {
             device.cmd_dispatch(command, workgroups[0], workgroups[1], workgroups[2]);
         }
         self.commands.counts.dispatches += 1;
+    }
+
+    /// Resets every query of `pool`, before the recording writes any of them.
+    pub fn reset_timestamps(&mut self, pool: &'r TimestampPool<'_>) {
+        // SAFETY: `command` is recording and the pool outlives the submission (`'r`).
+        unsafe {
+            self.device()
+                .cmd_reset_query_pool(self.commands.command, pool.pool, 0, pool.count)
+        };
+    }
+
+    /// Writes a timestamp into query `query` of `pool`: once every command recorded before has
+    /// started, at `end` false (top of pipe), or finished, at `end` true (bottom of pipe).
+    pub fn timestamp(
+        &mut self,
+        pool: &'r TimestampPool<'_>,
+        query: u32,
+        end: bool,
+    ) -> Result<(), ExecError> {
+        if query >= pool.count {
+            return Err(ExecError::QueryPastPool {
+                query,
+                count: pool.count,
+            });
+        }
+        let stage = if end {
+            vk::PipelineStageFlags::BOTTOM_OF_PIPE
+        } else {
+            vk::PipelineStageFlags::TOP_OF_PIPE
+        };
+        // SAFETY: `command` is recording, the query lies in the pool, and the pool outlives the
+        // submission (`'r`).
+        unsafe {
+            self.device()
+                .cmd_write_timestamp(self.commands.command, stage, pool.pool, query)
+        };
+        Ok(())
     }
 
     /// Records `barrier`.
