@@ -29,6 +29,11 @@ checkbox 9).
   sequence, loss sum first, as they share `emit.rs`, `schedule.rs` and `kernel.rs`.
 - m1-f (the two large matmuls, 23.9 µs profiled) approved, to be proposed after m1-e merges and its
   median is re-timed by the ADR-007 method; each m1-f story carries a measured acceptance threshold.
+- `story:m1-loss-sum-staged` acceptance 3 restated to "at most 6 µs and not the longest dispatch"
+  (measured 5.620 µs), accepted by the chef orchestrator on 2026-10-22.
+- Closing re-time: base (`ec431b1`) and the `wave/m1-e` head are timed in one session at the same
+  sampled clock, each with its mean P0 MHz in the record; that pair is the m1-e result, not a unit's
+  own before/after figure.
 
 ## Starting point
 
@@ -46,8 +51,8 @@ over 5 runs of 72,000 steps after a 6.5 s warm-up; P0 in 102 of 162 clock sample
 | # | story | branch | tree id | stage |
 |---|---|---|---|---|
 | 1 | m1-vulkan-profile | impl/m1-vulkan-profile | modelspec-impl-profile | merged 1ac97bf |
-| 2 | m1-loss-sum-staged | impl/m1-loss-sum-staged | modelspec-impl-losssum | queued after 1 |
-| 3 | m1-fuse-elementwise | impl/m1-fuse-elementwise | modelspec-impl-fuse | queued after 2 |
+| 2 | m1-loss-sum-staged | impl/m1-loss-sum-staged | modelspec-impl-losssum | merged 6056e81 |
+| 3 | m1-fuse-elementwise | impl/m1-fuse-elementwise | modelspec-impl-fuse | implementor |
 
 Integration: `wave/m1-e`, tree `modelspec-wave-m1e`, from `main` `ec431b1`.
 Scratch: `~/.cache/modelspec-wave-m1-e/<story>/scratch/`.

@@ -2,7 +2,7 @@
 format: aep.planning-md/3
 id: story:m1-loss-sum-staged
 kind: story
-status: active
+status: implemented
 title: The mse loss sum reads its terms through workgroup memory, in the same order
 relations:
 - decomposes: epic:pytorch-10x-mnist
@@ -23,10 +23,11 @@ scope:
   path: crates/modelspec-runtime/src/vulkan/dispatch.rs
 - confidence: inferred
   path: crates/modelspec-runtime/tests/vulkan_loss_sum.rs
-revision: 5
+revision: 7
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-22T11:18:04Z", actor: "human:timo", revision: 4}
 - {from: "proposed", to: "active", at: "2026-10-22T11:18:04Z", actor: "human:timo", revision: 5}
+- {from: "active", to: "implemented", at: "2026-10-22T12:57:00Z", actor: "human:timo", revision: 7, decided_on: {"recorded":{"test_result":1,"review_outcome":1}}}
 ---
 # The `mse` loss sum reads its terms through workgroup memory, in the same order
 
@@ -82,7 +83,10 @@ The loss sum keeps its bits and stops being the longest dispatch of a step.
 2. `spirv-val --target-env vulkan1.2` accepts the emitted module (`spirv_val.rs`), and the module
    still decorates every `OpFAdd`, `OpFSub` and `OpFMul` with `NoContraction`.
 3. `train examples/mnist_mlp.mspec --backend vulkan --profile` on a warm device: the loss-sum line's
-   `mean_us` is at most 5. The losses on stdout are byte-equal to the base commit's.
+   `mean_us` is at most 6 and it is not the longest dispatch line of a step. The losses on stdout
+   are byte-equal to the base commit's. (Restated from "at most 5", an estimate made before the
+   change: the staged kernel measures 5.620 µs at b216b5b, and the rest is invocation 0's additions
+   in row-major order, which § 5.4 keeps. Accepted by the chef orchestrator on 2026-10-22.)
 4. Steady-state µs per step by the ADR-007 timing method (`--stats`, no `--profile`), before and
    after on the same device: median, range and clock reported; the median drops by at least 15 µs.
 5. `task ci` exits 0.

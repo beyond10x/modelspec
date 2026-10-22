@@ -1,0 +1,15 @@
+{
+  "at": "2026-10-22T12:57:00Z",
+  "actor": "human:timo",
+  "artifact": "story:m1-loss-sum-staged",
+  "kind": "story",
+  "revision": 6,
+  "change": {
+    "change": "evidence",
+    "kind": "review_outcome",
+    "source": "adversary at b216b5b; findings fixed in b55d843, acceptance 3 restated in story revision 6",
+    "reference": "https://github.com/beyond10x/modelspec/commit/b55d8436bbf4c9de8fa42b2e5859a824cea7f1b2",
+    "review": "review-result:m1-loss-sum-staged-adversary-1",
+    "outcome": "fixed"
+  }
+}

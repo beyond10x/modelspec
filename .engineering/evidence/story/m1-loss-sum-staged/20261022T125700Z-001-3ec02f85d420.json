@@ -1,0 +1,13 @@
+{
+  "at": "2026-10-22T12:57:00Z",
+  "actor": "human:timo",
+  "artifact": "story:m1-loss-sum-staged",
+  "kind": "story",
+  "revision": 6,
+  "change": {
+    "change": "evidence",
+    "kind": "test_result",
+    "source": "task ci: 1237 passed, 0 failed, 68 ignored; RTX 3090 vulkan_loss_sum 189 runs 0 findings, adversary_loss_sum 78 device runs 0 differ; ADR-007 median 85.813 to 66.093 us",
+    "reference": "https://github.com/beyond10x/modelspec/commit/b55d8436bbf4c9de8fa42b2e5859a824cea7f1b2"
+  }
+}
