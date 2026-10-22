@@ -23,10 +23,12 @@
 //! `steps + 1` the run records, and `RunFinished` once stdout is written, or `RunFailed` with the
 //! failure stderr reports. Stdout is byte for byte what the run prints without the flag. The
 //! process then keeps serving, so a client that connects late reads the whole stream, until
-//! SIGINT or SIGTERM, on which it exits with the run's own status: 0 for a run that finished, 1
-//! for one that failed (wave observatory-1 coordinator, 2026-10-21). A signal before the run ends
-//! stops the process as it stops a run without the flag; a file that does not compile is reported
-//! and exits 1 without serving.
+//! SIGINT, SIGTERM or SIGHUP, on which it exits with the run's own status: 0 for a run that
+//! finished, 1 for one that failed (wave observatory-1 coordinator, 2026-10-21). The run has ended
+//! once it has printed its last stdout line, or for a run that fails its failure on stderr, so a
+//! signal sent after that line or after `RunFinished` or `RunFailed` gets the run's status
+//! (coordinator, 2026-10-22). A signal before the run ends stops the process as it stops a run
+//! without the flag; a file that does not compile is reported and exits 1 without serving.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -61,7 +63,7 @@ pub struct Args {
     pub backend: Backend,
     /// Stream the run's events as text/event-stream at path /events of ADDR, a loopback address
     /// such as 127.0.0.1:8080 or localhost:8080 (port 0 picks a free one); the process keeps
-    /// serving after the run until SIGINT or SIGTERM, then exits with the run's status.
+    /// serving after the run until SIGINT, SIGTERM or SIGHUP, then exits with the run's status.
     #[arg(long, value_name = "ADDR", value_parser = modelspec_observatory::parse_serve_address)]
     pub serve: Option<SocketAddr>,
 }
@@ -134,13 +136,25 @@ pub fn run(args: Args, stdout: &mut dyn Write, stderr: &mut dyn Write) -> u8 {
         steps: compiled.config.steps,
         start_step: 0,
     }));
-    let outcome = train(&file, &compiled, &emit, stdout, stderr);
+    let mut handler = None;
+    let outcome = train(
+        &file,
+        &compiled,
+        &emit,
+        &mut || {
+            if server.is_some() && handler.is_none() {
+                handler = Some(interrupted());
+            }
+        },
+        stdout,
+        stderr,
+    );
     let _ = stderr.flush();
     let (code, last) = match outcome {
         Ok(()) => (crate::EXIT_SUCCESS, RunEventBody::RunFinished),
         Err(failed) => (crate::EXIT_FAILURE, RunEventBody::RunFailed(failed)),
     };
-    let interrupted = server.as_ref().and_then(|_| interrupted());
+    let interrupted = handler.flatten();
     emit(last);
     match (server, interrupted) {
         (Some(_server), Some(interrupted)) => {
@@ -155,10 +169,10 @@ pub fn run(args: Args, stdout: &mut dyn Write, stderr: &mut dyn Write) -> u8 {
     }
 }
 
-/// A receiver that gets a message on SIGINT or SIGTERM from now on (and on SIGHUP, which `ctrlc`'s
-/// `termination` feature catches with them), or `None` when the handler cannot be installed (one
-/// is installed already). Installed only once the run has ended, so a signal during the run stops
-/// the process as it stops a run without `--serve`.
+/// A receiver that gets a message on SIGINT, SIGTERM or SIGHUP (the three `ctrlc`'s `termination`
+/// feature catches) from now on, or `None` when the handler cannot be installed (one is installed
+/// already). Installed only as the run ends, before its last stdout line or its failure line on
+/// stderr, so a signal earlier in the run stops the process as it stops a run without `--serve`.
 fn interrupted() -> Option<mpsc::Receiver<()>> {
     let (send, receive) = mpsc::channel();
     ctrlc::set_handler(move || {
@@ -170,10 +184,12 @@ fn interrupted() -> Option<mpsc::Receiver<()>> {
 
 /// Trains `compiled`, emits a `StepCompleted` for each loss as it is recorded and writes the run
 /// to stdout. A failure is reported on stderr and returned as the `RunFailed` that ends the stream.
+/// `end` is called as the run ends: before the last stdout line, and before a failure line.
 fn train(
     file: &str,
     compiled: &CompiledTraining,
     emit: &dyn Fn(RunEventBody),
+    end: &mut dyn FnMut(),
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
 ) -> Result<(), RunFailed> {
@@ -188,6 +204,7 @@ fn train(
     let run = match observed {
         Ok(run) => run,
         Err(RunError::Data(DataError::Refused(diagnostic))) => {
+            end();
             let _ = writeln!(stderr, "{diagnostic}");
             return Err(RunFailed {
                 code: Some(diagnostic.code.to_string()),
@@ -195,6 +212,7 @@ fn train(
             });
         }
         Err(error) => {
+            end();
             let _ = writeln!(stderr, "modelspec train {file}: {error}");
             return Err(RunFailed {
                 code: None,
@@ -202,12 +220,21 @@ fn train(
             });
         }
     };
-    match stdout
-        .write_all(report(compiled, &run).as_bytes())
+    let printed = report(compiled, &run);
+    let body = printed.trim_end_matches('\n');
+    let (head, last) = printed.split_at(body.rfind('\n').map_or(0, |i| i + 1));
+    let written = stdout
+        .write_all(head.as_bytes())
         .and_then(|()| stdout.flush())
-    {
+        .and_then(|()| {
+            end();
+            stdout.write_all(last.as_bytes())
+        })
+        .and_then(|()| stdout.flush());
+    match written {
         Ok(()) => Ok(()),
         Err(error) => {
+            end();
             let message = format!("cannot write the run: {error}");
             let _ = writeln!(stderr, "modelspec train {file}: {message}");
             Err(RunFailed {

@@ -13,14 +13,18 @@
 //! [`final_loss_equals_cli`], and `observatory.stream.lifecycle-order` is [`lifecycle_order`] and
 //! [`a_data_refusal_ends_the_stream_with_run_failed`].
 
+use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
+use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::sync::mpsc;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
+use nix::sys::signal::{Signal, kill};
+use nix::unistd::Pid;
 use serde_json::Value;
 
 const EXAMPLE: &str = "examples/linear_regression.mspec";
@@ -404,6 +408,102 @@ fn an_interrupted_server_exits_with_the_runs_status() {
             }
         }
     }
+}
+
+/// Starts a serving run of `path`, reads stderr (`watch_stderr`) or stdout line by line until `end`
+/// says the lines read so far call for the signal, sends SIGTERM at once and returns the exit code
+/// (128 + the signal for a process a signal killed).
+fn terminate_on_line(path: &str, watch_stderr: bool, end: &dyn Fn(&[String]) -> bool) -> i32 {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_modelspec"))
+        .args(["train", path, "--backend", "cpu", "--serve", "127.0.0.1:0"])
+        .current_dir(repo_root())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("modelspec starts");
+    let out = child.stdout.take().expect("stdout is piped");
+    let err = child.stderr.take().expect("stderr is piped");
+    let (watched, other): (Box<dyn Read + Send>, Box<dyn Read + Send>) = if watch_stderr {
+        (Box::new(err), Box::new(out))
+    } else {
+        (Box::new(out), Box::new(err))
+    };
+    let drain = std::thread::spawn(move || {
+        let mut other = other;
+        let _ = std::io::copy(&mut other, &mut std::io::sink());
+    });
+    let mut seen = Vec::new();
+    for line in BufReader::new(watched).lines() {
+        let Ok(line) = line else { break };
+        seen.push(line);
+        if end(&seen) {
+            let pid = Pid::from_raw(i32::try_from(child.id()).expect("a pid"));
+            kill(pid, Signal::SIGTERM).expect("SIGTERM is sent");
+            break;
+        }
+    }
+    let start = std::time::Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait().expect("the status is read") {
+            break status;
+        }
+        if start.elapsed() > WAIT {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("the process still serves after SIGTERM: {seen:?}");
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    let _ = drain.join();
+    status
+        .code()
+        .unwrap_or_else(|| 128 + status.signal().expect("a code or a signal"))
+}
+
+/// `StreamFrame` (wave observatory-1 coordinator, 2026-10-22): the run has ended once it has
+/// printed its last stdout line, or for a failed run its failure on stderr, so a SIGTERM sent the
+/// moment that line is read exits with the run's status, 0 or 1, every time and never 143.
+#[test]
+fn a_signal_on_the_last_line_exits_with_the_runs_status() {
+    const RUNS: usize = 100;
+    let last_param = |seen: &[String]| {
+        let inits = seen.iter().filter(|l| l.starts_with("init @")).count();
+        let params = seen.iter().filter(|l| l.starts_with("param @")).count();
+        inits > 0 && params == inits
+    };
+    let refused = source_file("unread_x_last_line.mspec", UNREAD_X);
+    let failure_line = |seen: &[String]| seen.last().is_some_and(|l| l.starts_with("E-DATA-003:"));
+    let mut wrong = Vec::new();
+    for (path, watch_stderr, end, code) in [
+        (EXAMPLE, false, &last_param as &dyn Fn(&[String]) -> bool, 0),
+        (refused.as_str(), true, &failure_line, 1),
+    ] {
+        let mut codes = BTreeMap::new();
+        for _ in 0..RUNS {
+            *codes
+                .entry(terminate_on_line(path, watch_stderr, end))
+                .or_insert(0usize) += 1;
+        }
+        if codes.keys().any(|c| *c != code) {
+            wrong.push(format!(
+                "{path}: {RUNS} runs, expected exit {code} every run, got {codes:?}"
+            ));
+        }
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+}
+
+/// `StreamFrame`: "a signal before the run ends stops the process as it stops a run without the
+/// flag". A run of 200000 steps signalled on its `serving` line is killed by SIGTERM.
+#[test]
+fn a_signal_before_the_run_ends_kills_the_process() {
+    let long = std::fs::read_to_string(repo_root().join(EXAMPLE))
+        .expect("the example is readable")
+        .replace("steps = 500;", "steps = 200000;");
+    let path = source_file("long_run.mspec", &long);
+    let serving = |seen: &[String]| seen.last().is_some_and(|l| l.starts_with("serving "));
+    assert_eq!(terminate_on_line(&path, true, &serving), 128 + 15);
 }
 
 #[test]

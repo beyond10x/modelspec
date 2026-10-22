@@ -542,6 +542,7 @@ dependencies = [
  "modelspec-core",
  "modelspec-observatory",
  "modelspec-runtime",
+ "nix",
  "serde_json",
 ]
 

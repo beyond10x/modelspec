@@ -76,7 +76,7 @@ types:
       - name: loss
         type: Optional<Binary64>
         presence: null_when_absent
-        summary: The rank-0 loss value of the step (DESIGN.md § 2.2, § 8); null when the loss is NaN or ±inf, which Binary64 does not hold, as a diverging run records (wave observatory-1 coordinator, 2026-10-21). The CLI's `step <k> loss <v>` line on stdout for that step names which, `NaN`, `inf` or `-inf`.
+        summary: The rank-0 loss value of the step (DESIGN.md § 2.2, § 8); null when the loss is NaN or ±inf, which Binary64 does not hold, as a diverging run records (wave observatory-1 coordinator, 2026-10-21). The CLI prints a `step <k> loss <v>` line on stdout only for step 0, every 50th step and the last step; for a printed step whose loss is null that line names which, `NaN`, `inf` or `-inf`, and for any other step nothing names it (wave observatory-1 coordinator, 2026-10-22).
       - name: metrics
         type: List<modelspec.observatory.MetricSample>
         summary: Metric samples of the step besides the loss; names are unique.
@@ -144,7 +144,7 @@ types:
   - name: modelspec.observatory.StreamFrame
     kind: struct
     naming:
-      summary: One Server-Sent Events frame of the live stream (epic:training-observatory, In scope, first bullet; wave observatory-1 coordinator, 2026-10-21), the lines `event:`, `id:` and `data:` and a blank line. `GET /events` at the ServeAddress answers 200 with `Content-Type text/event-stream` and sends the run's events in sequence order from sequence 0, or from the one after a `Last-Event-ID` request header, then each new event as the run emits it, and closes the response after RunFinished or RunFailed; any other path answers 404. The process keeps serving after the run ends, so a client that connects late reads the whole stream; on SIGINT or SIGTERM after the run ends it stops serving and exits with the run's own status, 0 for a run that finished and 1 for a run that failed, the code `modelspec train` gives without the flag (wave observatory-1 coordinator, 2026-10-21); a signal before the run ends stops the process as it stops a run without the flag.
+      summary: One Server-Sent Events frame of the live stream (epic:training-observatory, In scope, first bullet; wave observatory-1 coordinator, 2026-10-21), the lines `event:`, `id:` and `data:` and a blank line. `GET /events` at the ServeAddress answers 200 with `Content-Type text/event-stream` and sends the run's events in sequence order from sequence 0, or from the one after a `Last-Event-ID` request header, then each new event as the run emits it, and closes the response after RunFinished or RunFailed; any other path answers 404. The process keeps serving after the run ends, so a client that connects late reads the whole stream; on SIGINT, SIGTERM or SIGHUP after the run ends it stops serving and exits with the run's own status, 0 for a run that finished and 1 for a run that failed, the code `modelspec train` gives without the flag (wave observatory-1 coordinator, 2026-10-21); a signal before the run ends stops the process as it stops a run without the flag. The run has ended once it has printed its last stdout line, or for a run that fails its failure on stderr, which come before RunFinished and RunFailed, so a signal sent after any of them gets the run's status (wave observatory-1 coordinator, 2026-10-22).
     fields:
       - name: event
         type: modelspec.observatory.RunEventKind

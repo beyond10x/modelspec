@@ -190,42 +190,61 @@ train Fit {
 }
 ";
 
-/// `StepCompleted.loss`: "null when the loss is NaN or ±inf ... The CLI's `step <k> loss <v>`
-/// line on stdout for that step names which, `NaN`, `inf` or `-inf`." Each `StepCompleted` whose
-/// loss is `null` therefore has that line on stdout.
+/// `StepCompleted.loss` (wave observatory-1 coordinator, 2026-10-22): "null when the loss is NaN
+/// or ±inf ... The CLI prints a `step <k> loss <v>` line on stdout only for step 0, every 50th
+/// step and the last; for a printed step whose loss is null that line names which". Stdout prints
+/// exactly those steps, each printed step with a null loss names `NaN`, `inf` or `-inf`, and a
+/// printed step names one of them only when its loss is null. Run at 50 steps, where the last
+/// step is a 50th, and at 120, where it is not.
 #[test]
-fn every_null_loss_has_the_stdout_line_that_names_it() {
-    let path = source_file("diverging.mspec", DIVERGING);
-    let mut served = Served::start(&path);
-    let events = events(&body(&served.address));
-    let stdout = String::from_utf8(served.stdout()).unwrap();
-    let null_steps: Vec<u64> = events
-        .iter()
-        .filter(|e| e["body"]["kind"] == "StepCompleted")
-        .filter(|e| e["body"]["value"]["loss"].is_null())
-        .map(|e| e["body"]["value"]["step"].as_u64().unwrap())
-        .collect();
-    assert!(!null_steps.is_empty(), "the run does not diverge: {stdout}");
-    let unnamed: Vec<u64> = null_steps
-        .iter()
-        .copied()
-        .filter(|k| {
-            !["NaN", "inf", "-inf"]
-                .iter()
-                .any(|v| stdout.lines().any(|l| l == format!("step {k} loss {v}")))
-        })
-        .collect();
-    assert!(
-        unnamed.is_empty(),
-        "{} of {} null-loss steps have no `step <k> loss NaN|inf|-inf` line on stdout: {unnamed:?}; \
-         the step lines are {:?}",
-        unnamed.len(),
-        null_steps.len(),
-        stdout
+fn every_printed_null_loss_step_names_nan_or_inf() {
+    for steps in [50u64, 120] {
+        let source = DIVERGING.replace("steps = 50;", &format!("steps = {steps};"));
+        let path = source_file(&format!("diverging_{steps}.mspec"), &source);
+        let mut served = Served::start(&path);
+        let events = events(&body(&served.address));
+        let stdout = String::from_utf8(served.stdout()).unwrap();
+        let losses: Vec<(u64, &Value)> = events
+            .iter()
+            .filter(|e| e["body"]["kind"] == "StepCompleted")
+            .map(|e| {
+                let value = &e["body"]["value"];
+                (value["step"].as_u64().unwrap(), &value["loss"])
+            })
+            .collect();
+        assert_eq!(losses.len() as u64, steps + 1, "{steps} steps");
+        assert!(
+            losses.iter().any(|(_, loss)| loss.is_null()),
+            "the run does not diverge: {stdout}"
+        );
+        let printed: Vec<(u64, &str)> = stdout
             .lines()
-            .filter(|l| l.starts_with("step "))
-            .collect::<Vec<_>>()
-    );
+            .filter_map(|l| l.strip_prefix("step "))
+            .map(|rest| {
+                let (k, v) = rest.split_once(" loss ").unwrap();
+                (k.parse().unwrap(), v)
+            })
+            .collect();
+        let expected: Vec<u64> = (0..=steps).filter(|k| k % 50 == 0 || *k == steps).collect();
+        assert_eq!(
+            printed.iter().map(|(k, _)| *k).collect::<Vec<_>>(),
+            expected,
+            "{steps} steps: the printed steps"
+        );
+        let mut wrong = Vec::new();
+        for (k, v) in &printed {
+            let null = losses[*k as usize].1.is_null();
+            let names = ["NaN", "inf", "-inf"].contains(v);
+            if null != names {
+                wrong.push(format!("step {k}: loss {v}, event loss null {null}"));
+            }
+        }
+        assert!(
+            printed.iter().any(|(k, _)| losses[*k as usize].1.is_null()),
+            "{steps} steps: no printed step has a null loss: {printed:?}"
+        );
+        assert!(wrong.is_empty(), "{steps} steps: {wrong:?}");
+    }
 }
 
 /// `StreamFrame`: "on SIGINT or SIGTERM after the run ends it stops serving and exits with the
