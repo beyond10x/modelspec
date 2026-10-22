@@ -1,0 +1,13 @@
+{
+  "at": "2026-10-22T11:31:30Z",
+  "actor": "human:timo",
+  "artifact": "story:m1-vulkan-profile",
+  "kind": "story",
+  "revision": 11,
+  "change": {
+    "change": "evidence",
+    "kind": "test_result",
+    "source": "task ci: 1233 passed, 0 failed, 64 ignored; RTX 3090 vulkan_profile 7, vulkan_profile_adversary 3, train_profile_adversary 2, train_vulkan 6 pass",
+    "reference": "https://github.com/beyond10x/modelspec/commit/8fc261f29292b45a2e4b2e450ea72c4daec32f12"
+  }
+}

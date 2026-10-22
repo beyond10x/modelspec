@@ -22,6 +22,13 @@ checkbox 9).
   the fusion stories in parallel; m1-f waits for the profile and a further approval.
 - `approval-record:m1-waves-and-device-runs`: the M1 waves and device runs on the RTX 3090.
 - `approval-record:m1-tolerance-numerics-class`: every GPU test names its tolerance per operator.
+- Sizing from the profile, accepted by the chef orchestrator on 2026-10-22: the loss sum kept as
+  `story:m1-loss-sum-staged` (about 27 µs); the relu epilogue (about 2 %) and the fused SGD update
+  (about 4.6 %) each under 5 %, merged with the constant fold into `story:m1-fuse-elementwise`
+  (about 6.6 %); the relu-grad fold dropped (its group is set by longer kernels). The two run in
+  sequence, loss sum first, as they share `emit.rs`, `schedule.rs` and `kernel.rs`.
+- m1-f (the two large matmuls, 23.9 µs profiled) approved, to be proposed after m1-e merges and its
+  median is re-timed by the ADR-007 method; each m1-f story carries a measured acceptance threshold.
 
 ## Starting point
 
@@ -38,7 +45,9 @@ over 5 runs of 72,000 steps after a 6.5 s warm-up; P0 in 102 of 162 clock sample
 
 | # | story | branch | tree id | stage |
 |---|---|---|---|---|
-| 1 | m1-vulkan-profile | impl/m1-vulkan-profile | modelspec-impl-profile | dispatched |
+| 1 | m1-vulkan-profile | impl/m1-vulkan-profile | modelspec-impl-profile | merged 1ac97bf |
+| 2 | m1-loss-sum-staged | impl/m1-loss-sum-staged | modelspec-impl-losssum | queued after 1 |
+| 3 | m1-fuse-elementwise | impl/m1-fuse-elementwise | modelspec-impl-fuse | queued after 2 |
 
 Integration: `wave/m1-e`, tree `modelspec-wave-m1e`, from `main` `ec431b1`.
 Scratch: `~/.cache/modelspec-wave-m1-e/<story>/scratch/`.

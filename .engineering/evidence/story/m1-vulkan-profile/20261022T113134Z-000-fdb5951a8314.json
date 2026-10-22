@@ -1,0 +1,15 @@
+{
+  "at": "2026-10-22T11:31:34Z",
+  "actor": "human:timo",
+  "artifact": "story:m1-vulkan-profile",
+  "kind": "story",
+  "revision": 12,
+  "change": {
+    "change": "evidence",
+    "kind": "review_outcome",
+    "source": "finding runner.rs:327 fixed in 8fc261f",
+    "reference": "https://github.com/beyond10x/modelspec/commit/8fc261f29292b45a2e4b2e450ea72c4daec32f12",
+    "review": "review-result:m1-vulkan-profile-adversary-1",
+    "outcome": "fixed"
+  }
+}

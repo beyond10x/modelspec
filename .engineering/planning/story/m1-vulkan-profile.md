@@ -2,7 +2,7 @@
 format: aep.planning-md/3
 id: story:m1-vulkan-profile
 kind: story
-status: active
+status: implemented
 title: 'Inspectable GPU runs: per-dispatch timestamps and run counters with train --profile'
 summary: Timestamp queries per dispatch read back at run end with no extra host wait, run counters on stderr, and a guide covering IR, kernels, plan and timings
 relations:
@@ -28,10 +28,11 @@ scope:
   path: website/docs/reference/cli.md
 - confidence: cited
   path: website/sidebars.ts
-revision: 10
+revision: 12
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-22T10:29:20Z", actor: "human:timo", revision: 9, decided_on: {"recorded":{"review_outcome":3}}}
 - {from: "proposed", to: "active", at: "2026-10-22T10:29:20Z", actor: "human:timo", revision: 10, decided_on: {"recorded":{"review_outcome":3}}}
+- {from: "active", to: "implemented", at: "2026-10-22T11:31:30Z", actor: "human:timo", revision: 12, decided_on: {"recorded":{"test_result":1,"review_outcome":3}}}
 ---
 # Inspectable GPU runs: per-dispatch timestamps and run counters with `train --profile`
 
@@ -58,7 +59,7 @@ below assume.
   every step, written into a query pool and read back with the results at the end of the run
   (no extra wait). Stderr gets one line per dispatch site, that is per Dispatch step of a plan:
   `profile dispatch <plan> <position> <kernel_module_id> <entry> calls <n> total_us <t> mean_us
-  <m>`, with `<plan>` `step` or `forward` and `<position>` the index of the step in that plan. Two
+  <m>`, with `<plan>` `step` or `final` and `<position>` the index of the step in the step plan. Two
   Dispatch steps that name one content-hashed module are two lines. Then one line each for
   dispatches, submits, host waits, bytes uploaded, bytes downloaded, pipeline creation time, compile
   time and steady-state time per step after a 20-step warm-up. Stdout is unchanged. On a device
@@ -98,14 +99,14 @@ waits and the same stdout as an unprofiled run, and the guide shows the IR, plan
 1. Operator run on the RTX 3090 (the operator starts it): `cargo test --release -p
    modelspec-runtime --features vulkan --test vulkan_profile -- --ignored` passes. For
    `examples/mnist_mlp.mspec`, `train --backend vulkan --profile` prints exactly one `profile
-   dispatch` line per Dispatch step of the step plan and of the forward plan (the count is per
+   dispatch` line per Dispatch step of the step plan, and one `final` line per Dispatch step of the step plan up to the loss, recorded once after the last step (the count is per
    dispatch site, not per module, so two sites that share a module are two lines); every `step`
-   line has `calls` 1,800 and every `forward` line `calls` 1; and the sum of `total_us` over all
+   line has `calls` 1,800 and every `final` line `calls` 1; and the sum of `total_us` over all
    lines is at most the measured wall time of the run.
 2. In that run, `RunStats` host waits with `--profile` equal those without (1), and stdout with and
    without `--profile` is byte-equal.
 3. In that run the counter lines match `RunStats`: dispatches equal 1,800 times the step-plan
-   dispatch count plus the forward-plan count, and the byte counts equal those of
+   dispatch count plus the number of its Dispatch steps up to the loss, and the byte counts equal those of
    `story:m1-vulkan-train` acceptance 2. The output is attached to the verification evidence.
 4. `cargo test -p modelspec-cli --test train_vulkan`, in `task ci`: `train --backend cpu --profile`
    exits 2 with a usage error naming `--profile` as Vulkan only.
