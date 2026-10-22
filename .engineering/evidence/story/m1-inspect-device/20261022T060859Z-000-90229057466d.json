@@ -1,0 +1,13 @@
+{
+  "at": "2026-10-22T06:08:59Z",
+  "actor": "human:timo",
+  "artifact": "story:m1-inspect-device",
+  "kind": "story",
+  "revision": 10,
+  "change": {
+    "change": "evidence",
+    "kind": "test_result",
+    "source": "b10x-build-slot task ci on wave/m1-a cc1555c: 789 passed, 0 failed, exit 0",
+    "reference": "https://github.com/beyond10x/modelspec/commit/cc1555c"
+  }
+}

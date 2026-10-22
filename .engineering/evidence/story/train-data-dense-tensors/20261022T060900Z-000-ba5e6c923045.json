@@ -1,0 +1,13 @@
+{
+  "at": "2026-10-22T06:09:00Z",
+  "actor": "human:timo",
+  "artifact": "story:train-data-dense-tensors",
+  "kind": "story",
+  "revision": 5,
+  "change": {
+    "change": "evidence",
+    "kind": "test_result",
+    "source": "release modelspec train on MNIST dense files, wave/m1-a cc1555c: eval loss=0.026219031689688563 accuracy=0.9088, as verification-report:mnist-benchmark-0-1-1",
+    "reference": "https://github.com/beyond10x/modelspec/commit/cc1555c"
+  }
+}

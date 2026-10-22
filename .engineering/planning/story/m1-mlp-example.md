@@ -2,7 +2,7 @@
 format: aep.planning-md/3
 id: story:m1-mlp-example
 kind: story
-status: active
+status: implemented
 title: The MNIST-shaped MLP as an example, gradient-checked and trained on the CPU reference
 summary: examples/mnist_mlp.mspec, 784-64-10 with SGD lr 0.1 for 1,800 steps on synthetic data, in check-examples with a sampled gradient check and a training-IR golden file
 relations:
@@ -25,10 +25,11 @@ scope:
   path: crates/modelspec-runtime/tests/gradients.rs
 - confidence: inferred
   path: examples/mnist_mlp.mspec
-revision: 9
+revision: 10
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-22T03:18:54Z", actor: "human:timo", revision: 8, decided_on: {"recorded":{"review_outcome":1}}}
 - {from: "proposed", to: "active", at: "2026-10-22T03:18:54Z", actor: "human:timo", revision: 9, decided_on: {"recorded":{"review_outcome":1}}}
+- {from: "active", to: "implemented", at: "2026-10-22T06:09:00Z", actor: "human:timo", revision: 10, decided_on: {"recorded":{"test_result":1,"review_outcome":2}}}
 ---
 # The MNIST-shaped MLP as an example, gradient-checked and trained on the CPU reference
 

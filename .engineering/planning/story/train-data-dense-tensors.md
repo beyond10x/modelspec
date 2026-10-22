@@ -2,7 +2,7 @@
 format: aep.planning-md/3
 id: story:train-data-dense-tensors
 kind: story
-status: active
+status: implemented
 title: 'Train on dense f32 tensors from files: modelspec train --data, --init, --eval'
 summary: modelspec train reads dense f32 input and target tensors, optional sample order and initial params from a directory, and prints test loss and accuracy, so the MNIST benchmark runs through the release CLI
 relations:
@@ -15,8 +15,12 @@ scope:
   path: DESIGN.md
 - confidence: inferred
   path: crates/modelspec-cli/src/train.rs
+- confidence: cited
+  path: crates/modelspec-cli/tests/adversary_dense_1.rs
 - confidence: inferred
   path: crates/modelspec-cli/tests/train_dense_data.rs
+- confidence: cited
+  path: crates/modelspec-docs/src/diagnostics.rs
 - confidence: inferred
   path: crates/modelspec-runtime/src/train/data.rs
 - confidence: inferred
@@ -29,10 +33,11 @@ scope:
   path: website/docs/reference/cli.md
 - confidence: inferred
   path: website/docs/reference/diagnostics.md
-revision: 4
+revision: 6
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-22T03:24:51Z", actor: "human:timo", revision: 3}
 - {from: "proposed", to: "active", at: "2026-10-22T03:24:51Z", actor: "human:timo", revision: 4}
+- {from: "active", to: "implemented", at: "2026-10-22T06:09:00Z", actor: "human:timo", revision: 6, decided_on: {"recorded":{"test_result":2,"review_outcome":1}}}
 ---
 # Train on dense f32 tensors from files: modelspec train --data, --init, --eval
 

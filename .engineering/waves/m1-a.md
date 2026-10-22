@@ -43,12 +43,27 @@ MNIST benchmark, the unit and merge commits, and landing on `main` through PRs.
 
 | # | story | branch | tree id | stage |
 |---|---|---|---|---|
-| 1 | m1-kernel-plan | impl/m1-kernel-plan | modelspec-impl-kplan | dispatched |
-| 2 | m1-mlp-example | impl/m1-mlp-example | modelspec-impl-mlp | dispatched |
-| 3 | m1-inspect-device | impl/m1-inspect-device | modelspec-impl-inspect | dispatched |
-| 4 | train-data-dense-tensors | impl/train-data-dense-tensors | modelspec-impl-dense | dispatched |
+| 1 | m1-kernel-plan | impl/m1-kernel-plan | modelspec-impl-kplan | merged `82310da` (unit `da28295`) |
+| 2 | m1-mlp-example | impl/m1-mlp-example | modelspec-impl-mlp | merged `53e4b84` (unit `5a6bd88`) |
+| 3 | m1-inspect-device | impl/m1-inspect-device | modelspec-impl-inspect | merged `f542ac4` (unit `0b53fe9`) |
+| 4 | train-data-dense-tensors | impl/train-data-dense-tensors | modelspec-impl-dense | merged `cc1555c` (unit `c8860dc`) |
 
 Integration: `wave/m1-a`, tree `modelspec-wave-m1a`, from `main` `a5f2b06` (release 0.3.0).
 Scratch per unit: `~/.cache/modelspec-wave-m1-a/<story>/scratch/`.
 
 Dispatch: `aep:implementor`, then `aep:adversary`.
+
+## Close
+
+- Adversary passes: kernel-plan 2, inspect-device 2, mlp-example 1, dense-tensors 1; every red
+  case fixed and verified green by the coordinator. Recorded as
+  `review-result:adversary-<story>-pass-<n>` with a `fixed` review outcome each.
+- Merge conflicts in `CHANGELOG.md`, `DESIGN.md`, `AGENTS.md` and
+  `crates/modelspec-docs/src/diagnostics.rs` resolved by keeping both sides; DESIGN.md revisions
+  0.10 (inspect-device), 0.11 (kernel plan), 0.12 (dense tensors). Observatory schemas and the
+  generated reference pages regenerated on `wave/m1-a`.
+- Gate: `b10x-build-slot task ci` on `cc1555c`, 789 passed, 0 failed, exit 0.
+- MNIST on the merged release binary: `eval loss=0.026219031689688563 accuracy=0.9088`, the
+  accuracy of `verification-report:mnist-benchmark-0-1-1`.
+- Moved to implemented: all four units.
+- Next: wave m1-b (`m1-vulkan-elementwise`), under `approval-record:m1-tolerance-numerics-class`.

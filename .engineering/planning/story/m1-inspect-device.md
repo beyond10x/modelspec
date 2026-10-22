@@ -2,7 +2,7 @@
 format: aep.planning-md/3
 id: story:m1-inspect-device
 kind: story
-status: active
+status: implemented
 title: 'Vulkan device discovery and feature negotiation: modelspec inspect-device --backend vulkan'
 summary: A compute-only Vulkan 1.2 device through a run-time loader, DeviceProfile with the three float-control fields probed and printed as text or JSON, negotiation in one pure function, E-TARGET-002 to 004, and an RTX 3090 profile fixture
 relations:
@@ -23,21 +23,29 @@ scope:
 - confidence: cited
   path: DESIGN.md
 - confidence: cited
+  path: Taskfile.yml
+- confidence: cited
   path: crates/modelspec-cli/Cargo.toml
 - confidence: inferred
   path: crates/modelspec-cli/src/inspect_device.rs
 - confidence: cited
   path: crates/modelspec-cli/src/lib.rs
 - confidence: cited
-  path: crates/modelspec-cli/src/main.rs
+  path: crates/modelspec-cli/tests/adversary2_inspect_pre_1_2.rs
+- confidence: cited
+  path: crates/modelspec-cli/tests/adversary_inspect_old_device.rs
 - confidence: inferred
   path: crates/modelspec-cli/tests/inspect_device.rs
+- confidence: cited
+  path: crates/modelspec-cli/tests/inspect_device_stand_in.rs
 - confidence: cited
   path: crates/modelspec-core/Cargo.toml
 - confidence: inferred
   path: crates/modelspec-core/src/device.rs
 - confidence: cited
   path: crates/modelspec-core/src/lib.rs
+- confidence: cited
+  path: crates/modelspec-docs/src/cli.rs
 - confidence: cited
   path: crates/modelspec-docs/src/diagnostics.rs
 - confidence: cited
@@ -48,6 +56,10 @@ scope:
   path: crates/modelspec-runtime/src/lib.rs
 - confidence: inferred
   path: crates/modelspec-runtime/src/vulkan
+- confidence: cited
+  path: crates/modelspec-runtime/tests/adversary2_create_device_old.rs
+- confidence: cited
+  path: crates/modelspec-runtime/tests/adversary2_fake_loader.c
 - confidence: inferred
   path: crates/modelspec-runtime/tests/fixtures/rtx3090.device.json
 - confidence: inferred
@@ -58,10 +70,11 @@ scope:
   path: website/docs/reference/cli.md
 - confidence: cited
   path: website/docs/reference/diagnostics.md
-revision: 9
+revision: 11
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-22T03:18:54Z", actor: "human:timo", revision: 8, decided_on: {"recorded":{"review_outcome":6}}}
 - {from: "proposed", to: "active", at: "2026-10-22T03:18:54Z", actor: "human:timo", revision: 9, decided_on: {"recorded":{"review_outcome":6}}}
+- {from: "active", to: "implemented", at: "2026-10-22T06:09:00Z", actor: "human:timo", revision: 11, decided_on: {"recorded":{"test_result":1,"review_outcome":8}}}
 ---
 # Vulkan device discovery and feature negotiation: `modelspec inspect-device --backend vulkan`
 

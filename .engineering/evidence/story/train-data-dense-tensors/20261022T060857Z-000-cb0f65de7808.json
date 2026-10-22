@@ -1,0 +1,14 @@
+{
+  "at": "2026-10-22T06:08:57Z",
+  "actor": "human:timo",
+  "artifact": "story:train-data-dense-tensors",
+  "kind": "story",
+  "revision": 5,
+  "change": {
+    "change": "evidence",
+    "kind": "review_outcome",
+    "source": "review-result:adversary-train-data-dense-tensors-pass-1",
+    "review": "review-result:adversary-train-data-dense-tensors-pass-1",
+    "outcome": "fixed"
+  }
+}

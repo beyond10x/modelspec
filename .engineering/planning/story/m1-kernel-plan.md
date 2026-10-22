@@ -2,7 +2,7 @@
 format: aep.planning-md/3
 id: story:m1-kernel-plan
 kind: story
-status: active
+status: implemented
 title: Kernel IR, a fixed safe schedule and the execution plan of a training step, in modelspec-core
 summary: Parameter, data, loss and prediction views and a forward plan in spec, Kernel IR with fixed workgroup sizes, a verified step plan with every reduce in it (one-invocation Mse loss sum, two stages around a partials buffer and a barrier otherwise) and no completion point, and modelspec ir --stage kernel
 relations:
@@ -18,10 +18,14 @@ scope:
   path: DESIGN.md
 - confidence: cited
   path: crates/modelspec-cli/src/ir.rs
+- confidence: cited
+  path: crates/modelspec-cli/tests/adversary_kplan_cli.rs
 - confidence: inferred
   path: crates/modelspec-cli/tests/golden/linear_regression.kernel.ir
 - confidence: inferred
   path: crates/modelspec-cli/tests/ir_kernel.rs
+- confidence: cited
+  path: crates/modelspec-cli/tests/ir_tensor.rs
 - confidence: cited
   path: crates/modelspec-core/Cargo.toml
 - confidence: inferred
@@ -40,6 +44,12 @@ scope:
   path: crates/modelspec-core/src/lib.rs
 - confidence: inferred
   path: crates/modelspec-core/src/schedule.rs
+- confidence: cited
+  path: crates/modelspec-core/tests/adversary2_kplan.rs
+- confidence: cited
+  path: crates/modelspec-core/tests/adversary_kplan_sources.rs
+- confidence: cited
+  path: crates/modelspec-core/tests/adversary_kplan_verifier.rs
 - confidence: inferred
   path: crates/modelspec-core/tests/kernel_plan.rs
 - confidence: inferred
@@ -47,13 +57,16 @@ scope:
 - confidence: cited
   path: crates/modelspec-docs/src/cli.rs
 - confidence: cited
+  path: crates/modelspec-docs/src/diagnostics.rs
+- confidence: cited
   path: spec/domains/artifact.yaml
 - confidence: cited
   path: website/docs/reference/cli.md
-revision: 10
+revision: 12
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-22T03:18:54Z", actor: "human:timo", revision: 9, decided_on: {"recorded":{"review_outcome":4}}}
 - {from: "proposed", to: "active", at: "2026-10-22T03:18:54Z", actor: "human:timo", revision: 10, decided_on: {"recorded":{"review_outcome":4}}}
+- {from: "active", to: "implemented", at: "2026-10-22T06:09:00Z", actor: "human:timo", revision: 12, decided_on: {"recorded":{"test_result":1,"review_outcome":6}}}
 ---
 # Kernel IR, a fixed safe schedule and the execution plan of a training step, in modelspec-core
 
