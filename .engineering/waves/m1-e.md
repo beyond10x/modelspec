@@ -58,3 +58,21 @@ Integration: `wave/m1-e`, tree `modelspec-wave-m1e`, from `main` `ec431b1`.
 Scratch: `~/.cache/modelspec-wave-m1-e/<story>/scratch/`.
 
 Dispatch: `aep:implementor`, then `aep:adversary`.
+
+## Close
+
+Closing re-time on 2026-10-22, release builds of `ec431b1` and `7a488c1` alternated in one session
+on the RTX 3090, validation off, no other compute process, after a warm-up run of each: P0 in 525 of
+526 clock samples.
+
+| run | `ec431b1` µs per step | `7a488c1` µs per step | mean P0 MHz (base / wave) |
+|---|---|---|---|
+| 144,000 steps, 5 runs each, median | 69.184 (68.659 to 69.768) | 40.225 (39.647 to 40.619) | 1935 to 1965 / 1935 to 1951 |
+| 1,800 steps, 5 runs each, median | 69.762 (69.012 to 71.616) | 42.745 (40.182 to 43.294) | 1935 / 1935 |
+| dispatches per step (`--stats`) | 18 | 14 | |
+| stdout of the 1,800-step run, sha256 | `b9bb028a…6904` | `b9bb028a…6904` | |
+
+The m1-e result is 69.184 to 40.225 µs per step (−41.9 %) at the same clock. On the 1,800-step run,
+42.745 µs per step with batch 100 is 2,339,455 images/s against the ADR-007 gate of 1,927,410; the
+gate's accuracy and final-weight conditions were not measured here. The working target is 31.4 µs
+per step.
