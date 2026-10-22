@@ -1,0 +1,13 @@
+{
+  "at": "2026-10-22T23:28:38Z",
+  "actor": "human:timo",
+  "artifact": "story:m1-f-forward-matmul-tiled",
+  "kind": "story",
+  "revision": 12,
+  "change": {
+    "change": "evidence",
+    "kind": "test_result",
+    "source": "task ci exit 0 on merge 5efefae: 1268 passed, 0 failed, 90 ignored over 132 test-result lines; RTX 3090 runtime (vulkan) 323 passed at 07f6edf; k0 18.372 to 8.302 us, MNIST step 40.225 to 27.282 us median of 5 runs of 144,000 steps, mean P0 1957 to 1965 MHz; 1,800-step stdout sha256 b9bb028a...6904 in 5 of 5 runs",
+    "reference": "https://github.com/beyond10x/modelspec/commit/07f6edf6ffc8cac55508a996dd403da1184ddc26"
+  }
+}

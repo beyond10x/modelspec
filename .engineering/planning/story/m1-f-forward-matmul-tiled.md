@@ -2,7 +2,7 @@
 format: aep.planning-md/3
 id: story:m1-f-forward-matmul-tiled
 kind: story
-status: active
+status: implemented
 title: Tiled matmul kernel with workgroup-memory staging, measured on the forward matmul
 relations:
 - decomposes: epic:pytorch-10x-mnist
@@ -27,10 +27,11 @@ scope:
   path: crates/modelspec-runtime/src/vulkan/dispatch.rs
 - confidence: inferred
   path: crates/modelspec-runtime/tests
-revision: 12
+revision: 13
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-22T15:28:53Z", actor: "human:timo", revision: 11}
 - {from: "proposed", to: "active", at: "2026-10-22T15:28:53Z", actor: "human:timo", revision: 12}
+- {from: "active", to: "implemented", at: "2026-10-22T23:28:38Z", actor: "human:timo", revision: 13, decided_on: {"recorded":{"test_result":1,"review_outcome":2}}}
 ---
 # Tiled matmul kernel with workgroup-memory staging, measured on the forward matmul
 

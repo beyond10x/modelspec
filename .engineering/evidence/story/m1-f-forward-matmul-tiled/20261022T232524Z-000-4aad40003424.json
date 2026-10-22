@@ -1,0 +1,15 @@
+{
+  "at": "2026-10-22T23:25:24Z",
+  "actor": "human:timo",
+  "artifact": "story:m1-f-forward-matmul-tiled",
+  "kind": "story",
+  "revision": 12,
+  "change": {
+    "change": "evidence",
+    "kind": "review_outcome",
+    "source": "adversary pass 2 at ab375a5; 1 test-only warning (size-bound slack at n = 2) fixed in 07f6edf, slack derived from the emitter's k-dependent constants",
+    "reference": "https://github.com/beyond10x/modelspec/commit/07f6edf",
+    "review": "review-result:m1-f-forward-adversary-2",
+    "outcome": "fixed"
+  }
+}

@@ -16,7 +16,8 @@ longest dispatches of the step.
 - `approval-record:m1-waves-and-device-runs`: device runs on the RTX 3090.
 - `approval-record:m1-tolerance-numerics-class`: per-operator tolerances in every GPU test.
 - Commits: one per unit, the merges into `wave/m1-f`, the closing store commit and the fast-forward
-  of `main`, all through the bot. No tag, no release.
+  of `main`, all through the bot. No tag, no release; superseded on 2026-10-23 by Timo's request
+  for release 0.5.0 (see Resumed).
 
 ## Starting point
 
@@ -47,10 +48,10 @@ of 1951 MHz, mean µs per site over the 3 runs:
 
 | # | story | branch | tree id | build dir | stage |
 |---|---|---|---|---|---|
-| 1 | m1-f-forward-matmul-tiled | impl/m1-f-forward-matmul-tiled | modelspec-impl-m1f-forward | `<tree>/target` | adversary pass 1 NEEDS-CHANGE; fix round 1 not started |
-| 2 | m1-f-weight-grad-matmul-tiled | impl/m1-f-weight-grad-matmul-tiled | modelspec-impl-m1f-wgrad | `<tree>/target` | planned |
+| 1 | m1-f-forward-matmul-tiled | impl/m1-f-forward-matmul-tiled | modelspec-impl-m1f-fwd2 | `<tree>/target` | merged into `wave/m1-f` at `5efefae`; head `07f6edf` |
+| 2 | m1-f-weight-grad-matmul-tiled | impl/m1-f-weight-grad-matmul-tiled | none | | moved to the next wave |
 
-Integration: `wave/m1-f`, tree `modelspec-wave-m1f`, from `main` `e77066f`.
+Integration: `wave/m1-f`, tree `modelspec-wave-m1f2`, from `main` `e77066f`.
 Scratch: `~/.cache/modelspec-wave-m1-f/<story>/scratch/`.
 
 Dispatch: `aep:implementor`, then `aep:adversary`.
@@ -66,3 +67,28 @@ Dispatch: `aep:implementor`, then `aep:adversary`.
   until the fix.
 - Resume: recreate both trees from the pushed branches, then dispatch fix round 1 with
   `~/.cache/modelspec-wave-m1-f/brief-forward-fix1.md`. Unit 2 follows the merged unit 1.
+
+## Resumed, 2026-10-23
+
+- Timo asked for a commit and a new version before the next wave. The wave closes with unit 1
+  alone; unit 2 joins the next wave. Release 0.5.0 follows the merge of `wave/m1-f` into `main`,
+  through the `AGENTS.md` § Releases procedure, on Timo's request.
+- Trees recreated from the pushed branches: `modelspec-impl-m1f-fwd2` at `41868b8`,
+  `modelspec-wave-m1f2` at `9b4518b`. Build floor 25G free, at the orchestrator's request.
+- Fix round 1, `ab375a5`: the k-tiles run in a loop of 4-tile passes, so a module's size does not
+  grow with `k`; a 2-row tile from 256 one-row workgroups. `k0` 8.302 / 8.279 / 8.352 µs, 27.282 µs
+  per step (27.267 to 27.435), median of 5 runs of 144,000 steps at a mean P0 of 1957 to 1965 MHz;
+  sha256 `b9bb028a…6904` in 5 of 5 runs.
+- `review-result:m1-f-forward-adversary-2`: 1 warning, test only. The size-bound slack of 4
+  constants in `spirv_val.rs` is 5 ids short at `[208, k] x [k, 2]`. Correction 2, `07f6edf`,
+  derives the slack from the emitter's k-dependent constants; no change under `src/`.
+- Findings per pass: 5, then 1; 0 carried.
+
+## Close, 2026-10-23
+
+- `wave/m1-f` merge `5efefae` (no-ff of `07f6edf`): `task ci` exit 0, 1268 passed, 0 failed, 90
+  ignored; `aep plan artifact validate`: 135 artifacts, valid.
+- `story:m1-f-forward-matmul-tiled` implemented (test_result 1, review_outcome 2).
+- `story:m1-f-weight-grad-matmul-tiled` stays active and moves to the next wave.
+- `main` moves to the `wave/m1-f` head after its pull request's required checks pass; release 0.5.0
+  follows.
