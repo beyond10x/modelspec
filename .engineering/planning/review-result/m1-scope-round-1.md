@@ -6,6 +6,9 @@ status: active
 title: Plan critic, scope lens, round 1, decomposition of epic:m1-vulkan-execution
 relations:
 - reviews: epic:m1-vulkan-execution
+- reviews: story:m1-inspect-device
+- reviews: story:m1-mlp-example
+- reviews: story:m1-compile-artifact
 revision: 1
 ---
 needs-revision

@@ -6,6 +6,11 @@ status: active
 title: Plan critic, acceptance lens, round 1, decomposition of epic:m1-vulkan-execution
 relations:
 - reviews: epic:m1-vulkan-execution
+- reviews: story:m1-compile-artifact
+- reviews: story:m1-vulkan-train
+- reviews: story:m1-inspect-device
+- reviews: story:m1-checkpoint-cpu
+- reviews: story:m1-vulkan-profile
 revision: 1
 ---
 needs-revision

@@ -6,6 +6,13 @@ status: active
 title: Plan critic, parallel-safety lens, round 1, decomposition of epic:m1-vulkan-execution
 relations:
 - reviews: epic:m1-vulkan-execution
+- reviews: story:m1-checkpoint-cpu
+- reviews: story:m1-vulkan-train
+- reviews: story:m1-vulkan-profile
+- reviews: story:m1-inspect-device
+- reviews: story:m1-vulkan-elementwise
+- reviews: story:m1-vulkan-reduce-matmul
+- reviews: story:m1-kernel-plan
 revision: 1
 ---
 needs-revision
