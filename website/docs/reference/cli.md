@@ -9,7 +9,7 @@ custom_edit_url: null
 
 Generated from the clap definition of the `modelspec` command line in [`crates/modelspec-cli/src/lib.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-cli/src/lib.rs) by `modelspec-docs`. It lists only commands that exist.
 
-> Compile, check and train .mspec models
+> Compile, check, train and run .mspec models
 
 `modelspec --version` prints its version, and `--help` after any command prints the text below.
 
@@ -26,6 +26,7 @@ Generated from the clap definition of the `modelspec` command line in [`crates/m
 | Command | What it does |
 |---|---|
 | [`modelspec check`](#modelspec-check) | Parse and type-check a `.mspec` file |
+| [`modelspec infer`](#modelspec-infer) | Run the forward program of a `.mspec` model with the parameters of a checkpoint |
 | [`modelspec inspect-device`](#modelspec-inspect-device) | Print the profile and negotiation verdict of each Vulkan physical device |
 | [`modelspec ir`](#modelspec-ir) | Print the IR of a `.mspec` file at a stage |
 | [`modelspec train`](#modelspec-train) | Train a `.mspec` model |
@@ -43,6 +44,22 @@ Every argument is required and has no default.
 | Argument | Meaning |
 |---|---|
 | `<PATH>` | The .mspec file to check. |
+
+## `modelspec infer`
+
+Run the forward program of a `.mspec` model with the parameters of a checkpoint
+
+```text
+Usage: modelspec infer --backend <BACKEND> --checkpoint <PATH> <PATH>
+```
+
+Every argument is required and has no default.
+
+| Argument | Meaning |
+|---|---|
+| `<PATH>` | The .mspec file whose forward program runs. |
+| `--backend <BACKEND>` | The backend that runs the forward program. One of:<br/>`cpu`: The CPU interpreter<br/>`vulkan`: Vulkan compute: not available in M0 |
+| `--checkpoint <PATH>` | The .msckpt file whose parameters the forward program reads. |
 
 ## `modelspec inspect-device`
 
@@ -89,3 +106,7 @@ Usage: modelspec train [OPTIONS] --backend <BACKEND> <PATH>
 | `--data <DIR>` | no | none | Train on the dense f32 files of DIR instead of synthetic data: NAME.f32 for the input and the target declaration NAME, row-major little-endian, and an optional order.u32 of sample indices. |
 | `--init <DIR>` | no | none | Start each parameter that has a file DIR/P.f32, P its path without the model name, from that file instead of its initializer. |
 | `--eval <DIR>` | no | none | After the last step, run the forward program over every sample of DIR, laid out as for --data, and print `eval loss=<mean loss> accuracy=<fraction>`. |
+| `--steps <N>` | no | none | Run N steps instead of the steps of the file's train block; a resumed run ends at its checkpoint's step plus N. |
+| `--checkpoint <PATH>` | no | none | After the last step, write the parameters, step and optimizer to the .msckpt file PATH. |
+| `--checkpoint-every <N>` | no | none | Also write STEM-K.msckpt beside the --checkpoint file at every step K after the start that is a multiple of N and before the end. |
+| `--resume <PATH>` | no | none | Continue from the .msckpt file PATH: its parameters and step instead of the initializers and step 0, refused unless it matches the compiled file and its optimizer. |

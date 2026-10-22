@@ -178,6 +178,11 @@ mod tests {
         assert!(page.contains("custom_edit_url: null"));
         assert!(page.contains("| [`modelspec check`](#modelspec-check) |"));
         assert!(page.contains("## `modelspec train`"));
+        assert!(page.contains("| [`modelspec infer`](#modelspec-infer) |"));
+        assert!(
+            page.contains("Usage: modelspec infer --backend <BACKEND> --checkpoint <PATH> <PATH>")
+        );
+        assert!(page.contains("| `--resume <PATH>` | no | none |"));
         assert!(page.contains("Usage: modelspec train [OPTIONS] --backend <BACKEND> <PATH>"));
         assert!(page.contains(
             "Every argument is required and has no default.\n\n| Argument | Meaning |\n|---|---|\n\

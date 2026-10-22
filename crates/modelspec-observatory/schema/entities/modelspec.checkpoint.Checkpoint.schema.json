@@ -47,7 +47,7 @@
     },
     "payload_hash": {
       "$ref": "#/$defs/modelspec.artifact.ContentHash",
-      "description": "Optional verification hash of the payload (DESIGN.md § 6.2)."
+      "description": "Verification hash of the payload, blake3 over the bytes from the payload start to the end of the file; format version 1 always writes it and a reader refuses a manifest without it (DESIGN.md § 6.2)."
     },
     "optimizer": {
       "$ref": "#/$defs/modelspec.training.OptimizerConfig",
@@ -79,6 +79,7 @@
     "alignment",
     "schema_hash",
     "step",
+    "payload_hash",
     "optimizer",
     "optimizer_slots",
     "rng",
@@ -88,8 +89,8 @@
   "x-ess-provenance": {
     "system": "modelspec",
     "specification_version": "v1",
-    "source_digest": "f47dc3a22c6da571dea6fc59a2f9ee411e4e813d75ec76a136e55fb4c8d1f0eb",
-    "contract_digest": "slice-sha256/2:c68ad13ed61b9f5f58361fb4a41d65acd8a05c3b25feb10cf81592e8ae03fd02",
+    "source_digest": "1bd8d57a927df02d36616a66d9ea166191f89849cdd332323e9598f07ac26d1d",
+    "contract_digest": "slice-sha256/2:2815223e3b46802bf3974cfb39c02fb14e13e1fa026050a5a3800e98c324a692",
     "regenerate": "ess generate"
   },
   "$defs": {

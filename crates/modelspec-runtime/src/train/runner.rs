@@ -8,8 +8,10 @@
 //! the final parameters. A run therefore records `steps + 1` losses.
 //!
 //! [`run_with`] trains on dense data read from files instead, optionally from parameter values read
-//! from files, and [`evaluate_dense`] measures the trained parameters on an eval directory. A run
-//! depends on nothing but the compiled program, its seed, and the files of `--data` and `--init`.
+//! from files, and [`evaluate_dense`] measures the trained parameters on an eval directory.
+//! [`run_from`] resumes at a checkpoint's step and reports the state after each update, for
+//! `--checkpoint-every`. A run depends on nothing but the compiled program, its seed, its start
+//! step, and the files of `--data`, `--init` and `--resume`.
 
 use std::borrow::Cow;
 use std::collections::BTreeMap;
@@ -18,6 +20,7 @@ use modelspec_core::compile::CompiledTraining;
 use modelspec_core::ir::tensor::ParamId;
 use thiserror::Error;
 
+use super::checkpoint::CheckpointError;
 use super::data::{DataError, DenseData, SyntheticData, synthetic};
 use super::init::{InitError, Stream, initialize};
 use super::optimizer::{ParamState, StepError, sgd_step};
@@ -26,9 +29,11 @@ use crate::cpu::{HostTensor, RuntimeError, evaluate, evaluate_all};
 /// A finished run.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Run {
+    /// The step the run started at: 0, or the step of the checkpoint it resumed from.
+    pub start_step: u64,
     /// Each declared parameter's value before the first step.
     pub initial: BTreeMap<ParamId, HostTensor<f32>>,
-    /// The loss after `k` updates at index `k`, for `k` in `0..=steps`.
+    /// The loss after `start_step + i` updates at index `i`, for `i` in `0..=steps`.
     pub losses: Vec<f32>,
     /// The parameters' values and versions after the last step.
     pub state: ParamState,
@@ -50,6 +55,15 @@ pub enum RunError {
     /// The forward program failed on the final parameters.
     #[error("final loss: {0}")]
     Runtime(#[from] RuntimeError),
+    /// A checkpoint could not be written: [`CheckpointError::Refused`] does not occur here.
+    #[error(transparent)]
+    Checkpoint(#[from] CheckpointError),
+    /// `start_step + steps` is past `u64::MAX`.
+    #[error(
+        "a run from step {start} for {steps} steps ends past step {}",
+        u64::MAX
+    )]
+    StepCount { start: u64, steps: u64 },
 }
 
 /// Runs `compiled.config.steps` SGD steps of `compiled.training` on synthetic data from
@@ -77,9 +91,29 @@ pub fn run_with(
     compiled: &CompiledTraining,
     data: Option<&DenseData>,
     init: &BTreeMap<ParamId, HostTensor<f32>>,
+    observe: impl FnMut(u64, f32),
+) -> Result<Run, RunError> {
+    run_from(compiled, data, init, 0, observe, |_, _| Ok(()))
+}
+
+/// Runs as [`run_with`] does, from step `start` instead of 0: the steps are numbered
+/// `start..=start + steps`, step `k` feeds [`DenseData::step`]`(k)`, and each parameter with an
+/// update starts at version `start`. A resumed run passes the checkpoint's step and parameters as
+/// `start` and `init`. After each update `after(k, state)` is called with the number of updates
+/// `k` so far and the state they reached; an error from it stops the run.
+pub fn run_from(
+    compiled: &CompiledTraining,
+    data: Option<&DenseData>,
+    init: &BTreeMap<ParamId, HostTensor<f32>>,
+    start: u64,
     mut observe: impl FnMut(u64, f32),
+    mut after: impl FnMut(u64, &ParamState) -> Result<(), CheckpointError>,
 ) -> Result<Run, RunError> {
     let config = &compiled.config;
+    let end = start.checked_add(config.steps).ok_or(RunError::StepCount {
+        start,
+        steps: config.steps,
+    })?;
     let forward = &compiled.forward.program;
     let mut initial = initialize(forward, config.seed, Stream::Init)?;
     initial.extend(init.iter().map(|(&p, v)| (p, v.clone())));
@@ -92,17 +126,24 @@ pub fn run_with(
         Feed::Dense(d) => Cow::Owned(d.step(step)),
     };
     let mut state = ParamState::new(&compiled.training, initial.clone());
+    for param in compiled.training.optimizer.updates.keys() {
+        if let Some(version) = state.versions.get_mut(param) {
+            version.0 = version.0.saturating_add(start);
+        }
+    }
     let mut losses = Vec::new();
-    for step in 0..config.steps {
+    for step in start..end {
         let loss = sgd_step(&compiled.training, &inputs(step), &mut state)
             .map_err(|source| RunError::Step { step, source })?;
         observe(step, loss);
         losses.push(loss);
+        after(step + 1, &state)?;
     }
-    let last = evaluate(forward, &inputs(config.steps), &state.values)?[0].data()[0];
-    observe(config.steps, last);
+    let last = evaluate(forward, &inputs(end), &state.values)?[0].data()[0];
+    observe(end, last);
     losses.push(last);
     Ok(Run {
+        start_step: start,
         initial,
         losses,
         state,
