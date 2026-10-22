@@ -10,17 +10,21 @@
 //! kernels that read it.
 //!
 //! Three exceptions remove dispatches without changing a bit of any result (DESIGN.md § 3.1,
-//! § 5.4). An `Add`, `Sub`, `Mul`, `Relu` or `ReluGrad` of rank 0 whose operands are all
-//! compile-time scalars is folded: the host computes it with the device's rounded `f32`
-//! instruction, and every reader takes the result as an immediate. It is not folded when it is
-//! the loss, the prediction or an update, or when a reader takes no immediate. The first `Relu`
+//! § 5.4). An `Add`, `Sub` or `Mul` of rank 0 whose operands are all compile-time scalars is
+//! folded: the host computes it as one round-to-nearest-even `f32` operation, and every reader
+//! takes the result as an immediate. It is not folded when an operand or the result is infinite,
+//! NaN or subnormal, when it is the loss, the prediction or an update, or when a reader takes no
+//! immediate; a `Relu` or `ReluGrad` of compile-time scalars is never folded and stays a kernel
+//! whose operands are immediates. The first `Relu`
 //! that reads a `MatMul` output is the matmul kernel's [`Epilogue`]: the kernel writes the
 //! activation, and also the pre-activation when another op, the loss or the prediction reads it.
 //! An SGD update `p - m` whose `m` is `lr * g`, with one scalar factor and no other reader, is
 //! one `SgdUpdate` dispatch over `(p, lr, g)` in the factors' order, and `m` has no buffer.
 //!
-//! Every value has its own buffer (no reuse), and each SGD update writes its parameter's one
-//! view in place. A `Barrier` precedes any Dispatch that reads a buffer an earlier Dispatch wrote
+//! There is no buffer reuse: every stored value has its own buffer, except that each SGD update
+//! writes its parameter's one view in place, a folded scalar is an immediate, the `lr * g` of a
+//! fused update has no buffer, and a pre-activation that nothing but its epilogue `Relu` reads
+//! has none either. A `Barrier` precedes any Dispatch that reads a buffer an earlier Dispatch wrote
 //! since the last barrier, or writes one an earlier Dispatch read or wrote since then; it depends
 //! on the previous barrier and on every Dispatch since, so a step after it is ordered after
 //! everything before it. Each plan ends with its one fence, a `Barrier` with no dependencies, so

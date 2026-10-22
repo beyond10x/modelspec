@@ -24,7 +24,7 @@ history.
 ### Changed
 
 - The `mse` loss sum kernel of `modelspec_runtime::spirv::emit` runs one workgroup of 64 invocations that stage the terms in workgroup memory, in chunks of `max_shared_memory_bytes / 4`, and invocation 0 adds them in the same row-major order, so the loss sum and its bits are unchanged; `KernelKind::LossSum.workgroup_size()` is now 64 and its kernel module id changes (story:m1-loss-sum-staged)
-- `modelspec_core::schedule::schedule` fuses a `relu` of a `matmul` output into the matmul kernel (`Epilogue::Relu`, writing the pre-activation too when the `relu` gradient reads it), runs each SGD update `p - lr * g` as one `sgd_update` kernel that reads the gradient, and folds a `mul`, `add` or `sub` of two compile-time scalars into its reader's immediate, with the same bits: the MNIST step is 14 dispatches in 8 barrier groups instead of 18 in 11 (story:m1-fuse-elementwise)
+- `modelspec_core::schedule::schedule` fuses a `relu` of a `matmul` output into the matmul kernel (`Epilogue::Relu`, writing the pre-activation too when the `relu` gradient reads it), runs each SGD update `p - lr * g` as one `sgd_update` kernel that reads the gradient, and folds a `mul`, `add` or `sub` of two compile-time scalars into its reader's immediate (it stays a kernel when a reader takes no immediate), with the same bits: the MNIST step is 14 dispatches in 8 barrier groups instead of 18 in 11 (story:m1-fuse-elementwise)
 
 ## [0.3.0] - 2026-10-22
 
