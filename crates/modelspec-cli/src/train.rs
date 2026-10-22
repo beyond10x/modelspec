@@ -1,8 +1,10 @@
-//! `modelspec train <file> --backend cpu`: compile a `.mspec` file for training and run its SGD
-//! steps on the CPU interpreter with M0 synthetic data (DESIGN.md § 6, § 8, § 9 gate 4).
+//! `modelspec train <file> --backend cpu|vulkan`: compile a `.mspec` file for training and run
+//! its SGD steps on the CPU interpreter or on one Vulkan device with M0 synthetic data
+//! (DESIGN.md § 6, § 8, § 9 gates 4 and 5).
 //!
 //! The run takes its steps, learning rate and seed from the file's `train` block; the backend
-//! comes from `--backend`, not from the block's `device`. Stdout is, one line each:
+//! comes from `--backend`, not from the block's `device`. Both backends print the same lines,
+//! each value the backend's own. Stdout is, one line each:
 //!
 //! - `init @<path>: <type> = [v, ...]` for every parameter before the first step;
 //! - `step <k> loss <v>` at step 0, every 50 steps and the last step, where step `k` is the loss
@@ -10,11 +12,22 @@
 //! - `param @<path>: <type> = [v, ...]` for every parameter after the last step.
 //!
 //! Parameters are listed by canonical path, values in row-major order, each `f32` in its shortest
-//! round-trip decimal form. `--backend vulkan` exits 1 with [`E_TARGET_001`] before the file is
-//! read: M0 has no Vulkan backend. A file that does not compile, or data the file's declarations
+//! round-trip decimal form. A file that does not compile, or data the file's declarations
 //! cannot have, prints its diagnostics to stderr and exits 1; a file that cannot be read, a run
 //! that fails, or a run that cannot be written to stdout (a closed pipe, a full device) is
 //! reported on one line and exits 1.
+//!
+//! `--backend vulkan` compiles the file's execution plan for Vulkan and trains on device 0, or
+//! on the device `--device <index>` names, in the loader's enumeration order
+//! ([`modelspec_runtime::vulkan::runner`]): the host waits for the device once, after the last
+//! step. `--stats` prints the run's counters on stderr after it (host waits, submits,
+//! dispatches, bytes up and down, the numerics class, microseconds per step). The file is
+//! compiled before the loader is opened; then a missing loader exits 1 with `E-TARGET-002`, no
+//! device or a `--device` that names none with `E-TARGET-003`, and a device below the
+//! requirements with `E-TARGET-004`. A build without the `vulkan` feature refuses the backend
+//! with [`E_TARGET_001`] before the file is read. `--data`, `--init`, `--eval`, `--checkpoint`
+//! and `--resume` are CPU-only, and `--device` and `--stats` Vulkan-only: naming one with the
+//! other backend is a usage error (exit 2).
 //!
 //! `--data <dir>` trains on dense `f32` files instead of synthetic data, `--init <dir>` starts
 //! the parameters that have a file from it, and `--eval <dir>` adds a last line
@@ -65,7 +78,8 @@ use modelspec_runtime::train::init;
 use modelspec_runtime::train::optimizer::ParamState;
 use modelspec_runtime::train::runner::{self, Eval, Run, RunError};
 
-/// The selected backend is not available in this build.
+/// The selected backend is not available: `train --backend vulkan` in a build without the `vulkan`
+/// feature, and `infer --backend vulkan` in every M1 build.
 pub const E_TARGET_001: Code = Code::new("E-TARGET-001");
 
 /// A loss line is printed every this many steps, besides the last.
@@ -112,6 +126,61 @@ pub struct Args {
     /// and step 0, refused unless it matches the compiled file and its optimizer.
     #[arg(long, value_name = "PATH", conflicts_with = "init")]
     pub resume: Option<PathBuf>,
+    /// With --backend vulkan, train on the physical device INDEX, in the order the Vulkan loader
+    /// lists them, instead of device 0.
+    #[arg(long, value_name = "INDEX")]
+    pub device: Option<usize>,
+    /// With --backend vulkan, print the run's host waits, submits, dispatches, bytes copied up
+    /// and down, numerics class and microseconds per step on stderr after it.
+    #[arg(long)]
+    pub stats: bool,
+}
+
+/// The flag of `args` the backend cannot take, if one is given.
+fn misplaced_flag(args: &Args) -> Option<&'static str> {
+    match args.backend {
+        Backend::Cpu => [("--device", args.device.is_some()), ("--stats", args.stats)]
+            .into_iter()
+            .find_map(|(flag, given)| given.then_some(flag)),
+        Backend::Vulkan => [
+            ("--data", args.data.is_some()),
+            ("--init", args.init.is_some()),
+            ("--eval", args.eval.is_some()),
+            ("--checkpoint", args.checkpoint.is_some()),
+            ("--resume", args.resume.is_some()),
+        ]
+        .into_iter()
+        .find_map(|(flag, given)| given.then_some(flag)),
+    }
+}
+
+/// What runs the steps: the CPU interpreter, or a Vulkan device with the file's execution plan.
+enum Engine {
+    Cpu,
+    #[cfg(feature = "vulkan")]
+    Vulkan {
+        artifact: Box<modelspec_core::artifact::CompiledArtifact>,
+        device: Option<usize>,
+        stats: bool,
+    },
+}
+
+/// Why a run produced no stdout: a diagnostic printed as it is, or a failure on one line.
+enum Failure {
+    Refused(Diagnostic),
+    Failed(String),
+}
+
+impl From<RunError> for Failure {
+    fn from(error: RunError) -> Self {
+        match error {
+            RunError::Data(DataError::Refused(diagnostic))
+            | RunError::Checkpoint(CheckpointError::Refused(diagnostic)) => {
+                Failure::Refused(diagnostic)
+            }
+            error => Failure::Failed(error.to_string()),
+        }
+    }
 }
 
 /// The directories of `--data`, `--init` and `--eval`, and the checkpoints of `--resume`,
@@ -173,19 +242,34 @@ impl Files {
 pub enum Backend {
     /// The CPU interpreter.
     Cpu,
-    /// Vulkan compute: not available in M0.
+    /// Vulkan compute on one device: `train` only, in a build with the vulkan feature.
     Vulkan,
 }
 
 /// Runs `modelspec train` and returns the process exit code.
 pub fn run(args: Args, stdout: &mut dyn Write, stderr: &mut dyn Write) -> u8 {
+    if let Some(flag) = misplaced_flag(&args) {
+        let backend = match args.backend {
+            Backend::Cpu => "cpu",
+            Backend::Vulkan => "vulkan",
+        };
+        let _ = writeln!(
+            stderr,
+            "error: the argument '{flag}' cannot be used with '--backend {backend}'"
+        );
+        return crate::EXIT_USAGE;
+    }
+    #[cfg(not(feature = "vulkan"))]
     if args.backend == Backend::Vulkan {
         let _ = writeln!(
             stderr,
             "{}",
-            Diagnostic::new(E_TARGET_001, "the vulkan backend is not available in M0")
-                .with("backend", "vulkan")
-                .with("available", "cpu")
+            Diagnostic::new(
+                E_TARGET_001,
+                "the vulkan backend is not available in this build"
+            )
+            .with("backend", "vulkan")
+            .with("available", "cpu")
         );
         return crate::EXIT_FAILURE;
     }
@@ -209,6 +293,28 @@ pub fn run(args: Args, stdout: &mut dyn Write, stderr: &mut dyn Write) -> u8 {
     if let Some(steps) = args.steps {
         compiled.config.steps = steps;
     }
+    let engine = match args.backend {
+        Backend::Cpu => Engine::Cpu,
+        #[cfg(not(feature = "vulkan"))]
+        Backend::Vulkan => unreachable!("refused above in a build without the vulkan feature"),
+        #[cfg(feature = "vulkan")]
+        Backend::Vulkan => {
+            use modelspec_core::artifact::Backend as Target;
+            match compile::compile_artifact(&file, &source, Target::Vulkan) {
+                Ok(artifact) => Engine::Vulkan {
+                    artifact: Box::new(artifact),
+                    device: args.device,
+                    stats: args.stats,
+                },
+                Err(diagnostics) => {
+                    for diagnostic in &diagnostics {
+                        let _ = writeln!(stderr, "{diagnostic}");
+                    }
+                    return crate::EXIT_FAILURE;
+                }
+            }
+        }
+    };
     let resume = match &args.resume {
         None => None,
         Some(path) => {
@@ -263,6 +369,7 @@ pub fn run(args: Args, stdout: &mut dyn Write, stderr: &mut dyn Write) -> u8 {
     let outcome = train(
         &file,
         &compiled,
+        &engine,
         &files,
         &emit,
         &mut || {
@@ -306,30 +413,58 @@ fn interrupted() -> Option<mpsc::Receiver<()>> {
     Some(receive)
 }
 
-/// Trains `compiled`, emits a `StepCompleted` for each loss as it is recorded and writes the run
-/// to stdout. A failure is reported on stderr and returned as the `RunFailed` that ends the stream.
-/// `end` is called as the run ends: before the last stdout line, and before a failure line.
+/// Trains `compiled` on `engine`, emits a `StepCompleted` for each loss as it is recorded and
+/// writes the run to stdout. A failure is reported on stderr and returned as the `RunFailed`
+/// that ends the stream. `end` is called as the run ends: before the last stdout line, and
+/// before a failure line. A device run records its losses on the device and emits them once the
+/// host has read them back.
+#[allow(clippy::too_many_arguments)]
 fn train(
     file: &str,
     compiled: &CompiledTraining,
+    engine: &Engine,
     files: &Files,
     emit: &dyn Fn(RunEventBody),
     end: &mut dyn FnMut(),
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
 ) -> Result<(), RunFailed> {
-    let observed: Result<(Run, Option<Eval>), RunError> = 'run: {
+    let observe = |step, loss| {
+        emit(RunEventBody::StepCompleted(StepCompleted {
+            step,
+            loss: f64::from(loss),
+            metrics: Vec::new(),
+            parameters: Vec::new(),
+        }));
+    };
+    let observed: Result<(Run, Option<Eval>), Failure> = 'run: {
+        #[cfg(feature = "vulkan")]
+        if let Engine::Vulkan {
+            artifact,
+            device,
+            stats,
+        } = engine
+        {
+            use modelspec_runtime::vulkan::runner::{DeviceRunError, train_on_device};
+            break 'run match train_on_device(*device, compiled, artifact) {
+                Ok((run, counted)) => {
+                    for (k, &loss) in (run.start_step..).zip(&run.losses) {
+                        observe(k, loss);
+                    }
+                    if *stats {
+                        let _ = write!(stderr, "{counted}");
+                    }
+                    Ok((run, None))
+                }
+                Err(DeviceRunError::Refused(diagnostic)) => Err(Failure::Refused(diagnostic)),
+                Err(DeviceRunError::Failed(error)) => Err(Failure::Failed(error.to_string())),
+            };
+        }
+        #[cfg(not(feature = "vulkan"))]
+        let Engine::Cpu = engine;
         let loaded = match files.load(compiled) {
             Ok(loaded) => loaded,
-            Err(error) => break 'run Err(error.into()),
-        };
-        let observe = |step, loss| {
-            emit(RunEventBody::StepCompleted(StepCompleted {
-                step,
-                loss: f64::from(loss),
-                metrics: Vec::new(),
-                parameters: Vec::new(),
-            }));
+            Err(error) => break 'run Err(RunError::from(error).into()),
         };
         let start = files.start();
         let end = start.saturating_add(compiled.config.steps);
@@ -349,29 +484,26 @@ fn train(
             after,
         ) {
             Ok(run) => run,
-            Err(error) => break 'run Err(error),
+            Err(error) => break 'run Err(error.into()),
         };
         let eval = match &loaded.eval {
             None => None,
             Some(data) => match runner::evaluate_dense(compiled, data, &run.state.values) {
                 Ok(eval) => Some(eval),
-                Err(error) => break 'run Err(error),
+                Err(error) => break 'run Err(error.into()),
             },
         };
         if let Some(path) = &files.checkpoint {
             let last = Checkpoint::of_state(compiled, end, &run.state.values);
             if let Err(error) = checkpoint::write(path, &last) {
-                break 'run Err(error.into());
+                break 'run Err(RunError::from(error).into());
             }
         }
         Ok((run, eval))
     };
     let (run, eval) = match observed {
         Ok(done) => done,
-        Err(
-            RunError::Data(DataError::Refused(diagnostic))
-            | RunError::Checkpoint(CheckpointError::Refused(diagnostic)),
-        ) => {
+        Err(Failure::Refused(diagnostic)) => {
             end();
             let _ = writeln!(stderr, "{diagnostic}");
             return Err(RunFailed {
@@ -379,12 +511,12 @@ fn train(
                 message: diagnostic.message.clone(),
             });
         }
-        Err(error) => {
+        Err(Failure::Failed(message)) => {
             end();
-            let _ = writeln!(stderr, "modelspec train {file}: {error}");
+            let _ = writeln!(stderr, "modelspec train {file}: {message}");
             return Err(RunFailed {
                 code: None,
-                message: error.to_string(),
+                message,
             });
         }
     };

@@ -162,12 +162,12 @@ pub const CAPABILITIES: &[Capability] = &[
     ),
     shipped(
         "Training",
-        "The Vulkan backend is refused in M0",
-        "modelspec train --backend vulkan exits 1 with E-TARGET-001 before the file is read.",
+        "A binary built without the vulkan feature refuses the Vulkan backend",
+        "modelspec train --backend vulkan exits 1 with E-TARGET-001 before the file is read when the binary has no Vulkan code.",
         Evidence::Test(
-            "crates/modelspec-cli/tests/train_linear.rs::the_vulkan_backend_is_refused_in_m0",
+            "crates/modelspec-cli/tests/train_linear.rs::a_build_without_the_vulkan_feature_refuses_the_vulkan_backend",
         ),
-        "/docs/roadmap",
+        "/docs/reference/diagnostics",
     ),
     shipped(
         "Project",
@@ -192,26 +192,32 @@ pub const CAPABILITIES: &[Capability] = &[
         ),
         "/docs/reference/cli",
     ),
-    planned(
+    shipped(
         "GPU",
         "Headless Vulkan runtime",
-        "Allocation, dispatch and synchronization through ash. Not built.",
-        M1,
-        "/docs/roadmap",
+        "Allocation, dispatch and synchronization through ash, without a window: a training run uploads once, chains its command buffers and waits on the host once.",
+        Evidence::Test(
+            "crates/modelspec-runtime/tests/vulkan_train.rs::mnist_mlp_trains_on_the_device_with_one_host_wait",
+        ),
+        "/docs/reference/cli",
     ),
-    planned(
+    shipped(
         "GPU",
         "SPIR-V kernels for the M0 operators and SGD",
-        "Emitted with rspirv: elementwise, reductions, transpose, a naive matmul. Not built.",
-        M1,
-        "/docs/roadmap",
+        "Emitted with rspirv: elementwise and broadcast kernels, two-stage reductions, the mse loss sum, transpose, matmul and SGD; spirv-val accepts every module.",
+        Evidence::Test(
+            "crates/modelspec-runtime/tests/spirv_val.rs::spirv_val_accepts_every_form_of_the_catalog_at_every_test_size",
+        ),
+        "/docs/concepts/pipeline",
     ),
-    planned(
+    shipped(
         "GPU",
         "End-to-end f32 training on an RTX 3090",
-        "The CPU reference stays the oracle the GPU results are compared with. Not built.",
-        M1,
-        "/docs/roadmap",
+        "modelspec train --backend vulkan trains both examples on the device; every loss and final parameter lies within the GPU tolerance of the CPU reference run.",
+        Evidence::Test(
+            "crates/modelspec-runtime/tests/vulkan_train.rs::linear_regression_trains_on_the_device_within_tolerance_of_the_cpu",
+        ),
+        "/docs/reference/cli",
     ),
     planned(
         "Command line",

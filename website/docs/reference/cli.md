@@ -58,7 +58,7 @@ Every argument is required and has no default.
 | Argument | Meaning |
 |---|---|
 | `<PATH>` | The .mspec file whose forward program runs. |
-| `--backend <BACKEND>` | The backend that runs the forward program. One of:<br/>`cpu`: The CPU interpreter<br/>`vulkan`: Vulkan compute: not available in M0 |
+| `--backend <BACKEND>` | The backend that runs the forward program. One of:<br/>`cpu`: The CPU interpreter<br/>`vulkan`: Vulkan compute on one device: `train` only, in a build with the vulkan feature |
 | `--checkpoint <PATH>` | The .msckpt file whose parameters the forward program reads. |
 
 ## `modelspec inspect-device`
@@ -101,7 +101,7 @@ Usage: modelspec train [OPTIONS] --backend <BACKEND> <PATH>
 | Argument | Required | Default | Meaning |
 |---|---|---|---|
 | `<PATH>` | yes | none | The .mspec file to train. |
-| `--backend <BACKEND>` | yes | none | The backend that runs the training step. One of:<br/>`cpu`: The CPU interpreter<br/>`vulkan`: Vulkan compute: not available in M0 |
+| `--backend <BACKEND>` | yes | none | The backend that runs the training step. One of:<br/>`cpu`: The CPU interpreter<br/>`vulkan`: Vulkan compute on one device: `train` only, in a build with the vulkan feature |
 | `--serve <ADDR>` | no | none | Stream the run's events as text/event-stream at path /events of ADDR, a loopback address such as 127.0.0.1:8080 or localhost:8080 (port 0 picks a free one); the process keeps serving after the run until SIGINT, SIGTERM or SIGHUP, then exits with the run's status. |
 | `--data <DIR>` | no | none | Train on the dense f32 files of DIR instead of synthetic data: NAME.f32 for the input and the target declaration NAME, row-major little-endian, and an optional order.u32 of sample indices. |
 | `--init <DIR>` | no | none | Start each parameter that has a file DIR/P.f32, P its path without the model name, from that file instead of its initializer. |
@@ -110,3 +110,5 @@ Usage: modelspec train [OPTIONS] --backend <BACKEND> <PATH>
 | `--checkpoint <PATH>` | no | none | After the last step, write the parameters, step and optimizer to the .msckpt file PATH. |
 | `--checkpoint-every <N>` | no | none | Also write STEM-K.msckpt beside the --checkpoint file at every step K after the start that is a multiple of N and before the end. |
 | `--resume <PATH>` | no | none | Continue from the .msckpt file PATH: its parameters and step instead of the initializers and step 0, refused unless it matches the compiled file and its optimizer. |
+| `--device <INDEX>` | no | none | With --backend vulkan, train on the physical device INDEX, in the order the Vulkan loader lists them, instead of device 0. |
+| `--stats` | no | `false` | With --backend vulkan, print the run's host waits, submits, dispatches, bytes copied up and down, numerics class and microseconds per step on stderr after it. |

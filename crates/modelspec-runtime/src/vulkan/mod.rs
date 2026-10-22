@@ -10,8 +10,11 @@
 //!
 //! On a [`Device`], [`memory`] allocates storage and staging buffers, [`pipeline`] turns one
 //! SPIR-V module into a compute pipeline, and [`dispatch`] records copies, [`sync`] barriers and
-//! dispatches into one command buffer, submits it and waits on its fence. Every host wait is
-//! counted ([`Device::host_waits`]).
+//! dispatches into one command buffer, submits it and waits on its fence, or chains several
+//! command buffers behind one fence. Every host wait, submit, dispatch and staging copy is
+//! counted ([`Device::host_waits`], [`Device::submits`], [`Device::dispatches`],
+//! [`Device::bytes_uploaded`], [`Device::bytes_downloaded`]). [`runner`] trains a compiled
+//! artifact on the device.
 //!
 //! With [`VALIDATION_ENV`] set to `1`, the instance is created with the Khronos validation layer
 //! and a debug messenger that keeps every warning and error it reports
@@ -23,6 +26,7 @@ pub mod memory;
 pub mod negotiate;
 pub mod pipeline;
 mod probe;
+pub mod runner;
 pub mod select;
 pub mod sync;
 
@@ -389,6 +393,10 @@ impl Vulkan {
             memory,
             limits,
             host_waits: Cell::new(0),
+            submits: Cell::new(0),
+            dispatches: Cell::new(0),
+            bytes_uploaded: Cell::new(0),
+            bytes_downloaded: Cell::new(0),
             _vulkan: self,
         })
     }
@@ -419,6 +427,10 @@ pub struct Device<'a> {
     memory: vk::PhysicalDeviceMemoryProperties,
     limits: vk::PhysicalDeviceLimits,
     host_waits: Cell<u64>,
+    submits: Cell<u64>,
+    dispatches: Cell<u64>,
+    bytes_uploaded: Cell<u64>,
+    bytes_downloaded: Cell<u64>,
     _vulkan: &'a Vulkan,
 }
 
@@ -427,6 +439,26 @@ impl Device<'_> {
     /// [`dispatch::Submitted`].
     pub fn host_waits(&self) -> u64 {
         self.host_waits.get()
+    }
+
+    /// How many command buffers have been submitted to the device's queue.
+    pub fn submits(&self) -> u64 {
+        self.submits.get()
+    }
+
+    /// How many dispatches the submitted command buffers recorded.
+    pub fn dispatches(&self) -> u64 {
+        self.dispatches.get()
+    }
+
+    /// The bytes the submitted command buffers copy from a staging buffer to a device-local one.
+    pub fn bytes_uploaded(&self) -> u64 {
+        self.bytes_uploaded.get()
+    }
+
+    /// The bytes the submitted command buffers copy from a device-local buffer to a staging one.
+    pub fn bytes_downloaded(&self) -> u64 {
+        self.bytes_downloaded.get()
     }
 
     /// The device extensions passed to `vkCreateDevice`.

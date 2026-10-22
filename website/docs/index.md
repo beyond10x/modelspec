@@ -51,7 +51,8 @@ ModelSpec is at milestone M0; the latest release is [0.3.0](https://github.com/b
 | `modelspec train --serve <addr>`: stream the run as typed events over Server-Sent Events | the observatory UI, run recording and replay |
 | one `model` and one `train` block per file, static `f32` shapes, nine operators, SGD | modules, layers, generics, other dtypes and optimizers |
 
-`modelspec train --backend vulkan` is refused with `E-TARGET-001` until M1. [Status](./status.mdx)
+`modelspec train --backend vulkan` is refused with `E-TARGET-001` in 0.3.0; on `main`, built from
+source, it trains on one Vulkan device (M1, not released yet). [Status](./status.mdx)
 lists every shipped capability with the test that holds it, and [Roadmap](./roadmap.md) says what
 M1 to M4 add.
 
