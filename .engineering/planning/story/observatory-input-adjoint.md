@@ -2,7 +2,7 @@
 format: aep.planning-md/3
 id: story:observatory-input-adjoint
 kind: story
-status: active
+status: implemented
 title: 'Input adjoint: gradient of a rank-0 value with respect to a named input'
 relations:
 - decomposes: epic:training-observatory
@@ -17,10 +17,11 @@ scope:
   path: crates/modelspec-core/tests/input_adjoint.rs
 - confidence: cited
   path: crates/modelspec-runtime/tests/input_adjoint.rs
-revision: 9
+revision: 10
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-21T20:16:24Z", actor: "human:timo", revision: 8, decided_on: {"recorded":{"review_outcome":3}}}
 - {from: "proposed", to: "active", at: "2026-10-21T20:16:24Z", actor: "human:timo", revision: 9, decided_on: {"recorded":{"review_outcome":3}}}
+- {from: "active", to: "implemented", at: "2026-10-22T01:40:57Z", actor: "human:timo", revision: 10, decided_on: {"recorded":{"test_result":1,"review_outcome":4,"verification":1}}}
 ---
 # Input adjoint: the gradient of a rank-0 value with respect to a named input
 

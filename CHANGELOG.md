@@ -12,6 +12,7 @@ history.
 ### Added
 
 - `modelspec train --serve <addr>` streams the run as typed `RunEvent`s over Server-Sent Events at `http://<addr>/events` on a loopback address, in the new crate `modelspec-observatory` (story:observatory-live-event-stream)
+- `modelspec_core::autodiff::differentiate_inputs` builds the gradient of a rank-0 value with respect to named inputs, and `output_element_target` builds the rank-0 target for one element of a model output (story:observatory-input-adjoint)
 
 ## [0.1.1] - 2026-10-21
 

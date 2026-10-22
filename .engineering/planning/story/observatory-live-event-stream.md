@@ -2,7 +2,7 @@
 format: aep.planning-md/3
 id: story:observatory-live-event-stream
 kind: story
-status: active
+status: implemented
 title: Stream a CPU training run as typed RunEvents over Server-Sent Events
 summary: modelspec train --backend cpu with a serve flag streams one schema-valid RunEvent per step and per lifecycle change; settles the live transport and run lifecycle markers.
 relations:
@@ -41,10 +41,11 @@ scope:
   path: website/docs/reference/cli.md
 - confidence: cited
   path: website/docs/reference/crates.md
-revision: 22
+revision: 23
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-21T20:16:24Z", actor: "human:timo", revision: 21, decided_on: {"recorded":{"review_outcome":3}}}
 - {from: "proposed", to: "active", at: "2026-10-21T20:16:24Z", actor: "human:timo", revision: 22, decided_on: {"recorded":{"review_outcome":3}}}
+- {from: "active", to: "implemented", at: "2026-10-22T01:40:57Z", actor: "human:timo", revision: 23, decided_on: {"recorded":{"test_result":1,"review_outcome":9}}}
 ---
 # Stream a CPU training run as typed RunEvents over Server-Sent Events
 

@@ -1,0 +1,12 @@
+{
+  "at": "2026-10-22T04:05:00Z",
+  "actor": "human:timo",
+  "artifact": "story:observatory-live-event-stream",
+  "kind": "story",
+  "revision": 22,
+  "change": {
+    "change": "evidence",
+    "kind": "test_result",
+    "source": "task ci on wave/observatory-1 f4b3968, exit 0"
+  }
+}

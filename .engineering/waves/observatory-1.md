@@ -76,6 +76,20 @@ directory 1.9G; N = 2. Unit briefs: `~/.cache/modelspec-wave-observatory-1/<unit
 
 Subagent types: `aep:story-scoper` (done), `aep:implementor`, `aep:adversary`.
 
+## Closed 2026-10-22
+
+- Unit 1: fix pass 1 `627c650`, adversary pass 2 cases `7668994` (3 findings: 1 warning, 2
+  notes), fix pass 2 `91624a0`; merged into `wave/observatory-1` as `f4b3968`. Pass-1 outcomes
+  fixed, fixed, no-op, fixed; pass-2 outcomes fixed ×3.
+- D6 (coordinator): the `modelspec-docs` CLI page test, red since `99902f4` because `--serve`
+  added `[OPTIONS]` and a Required column, is fixed in `627c650`.
+- D7 (adversary pass 2, F1): the stdout promise is narrowed to "every printed step whose loss is
+  null names NaN or Inf"; F2 and F3: the signal handler is installed before the last stdout line
+  and covers SIGHUP.
+- `task ci` on `f4b3968`: exit 0. Both stories moved active → implemented.
+- Merged with `main` at `c1c47c7` (wave cpu-perf-1) and `plan/observatory`, and DESIGN.md
+  revision 0.9 (ADR-007), before the PR into `main`.
+
 ## Paused 2026-10-21
 
 The operator paused modelspec on 2026-10-21. Nothing is merged into `main`; `main` is not pushed.
