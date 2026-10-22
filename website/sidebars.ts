@@ -18,7 +18,7 @@ const sidebars: SidebarsConfig = {
       type: 'category',
       label: 'Guides',
       collapsed: false,
-      items: ['guides/write-a-model', 'guides/read-a-diagnostic'],
+      items: ['guides/write-a-model', 'guides/read-a-diagnostic', 'guides/inspect-a-run'],
     },
     {
       type: 'category',

@@ -1,0 +1,353 @@
+//! `train --profile` on a Vulkan device (DESIGN.md § 8; `story:m1-vulkan-profile`): a timestamp
+//! before and after every dispatch of every step, read back with the results after the run's one
+//! host wait, summed per dispatch site.
+//!
+//! The first tests need no device: they feed [`timings`] timestamps by hand and check what it
+//! sums, and check the lines [`Profile::report`] prints. The last test is ignored by default
+//! because it creates a Vulkan instance, which `task ci` never does; run it with
+//! `MODELSPEC_VK_VALIDATION=1 cargo test --release -p modelspec-runtime --features vulkan --test vulkan_profile -- --ignored`;
+//! every message of the Khronos validation layer fails it.
+//! It trains `examples/mnist_mlp.mspec` with and without the profile and checks
+//!
+//! - one site per Dispatch step of the step plan, `calls` the steps, and one per Dispatch step
+//!   the final loss evaluation records, `calls` 1 (acceptance 1);
+//! - the sum of every site's total is at most the wall time of the profiled run (acceptance 1);
+//! - the same host waits and bit-equal losses and parameters with and without (acceptance 2);
+//! - the counter lines are the run's `RunStats` (acceptance 3).
+#![cfg(feature = "vulkan")]
+
+use std::time::{Duration, Instant};
+
+use modelspec_core::artifact::Backend;
+use modelspec_core::compile::{compile_artifact, compile_training};
+use modelspec_core::ir::kernel::{KernelModuleId, PlanOp};
+use modelspec_runtime::vulkan::negotiate::{NumericsClass, negotiate};
+use modelspec_runtime::vulkan::profile::{
+    Clock, PlanName, Profile, Site, Timings, WARMUP_STEPS, timings,
+};
+use modelspec_runtime::vulkan::runner::{RunStats, train, train_profiled};
+use modelspec_runtime::vulkan::{VALIDATION_ENV, Vulkan};
+
+const MNIST_MLP: &str = "examples/mnist_mlp.mspec";
+
+fn site(plan: PlanName, position: usize, id: u8) -> Site {
+    Site {
+        plan,
+        position,
+        kernel_module_id: KernelModuleId([id; 16]),
+        entry: "main".to_owned(),
+    }
+}
+
+fn stats() -> RunStats {
+    RunStats {
+        steps: 3,
+        host_waits: 1,
+        submits: 1,
+        dispatches: 7,
+        dispatches_per_step: 2,
+        bytes_uploaded: 40,
+        bytes_downloaded: 28,
+        class: NumericsClass::Tolerance,
+        elapsed: Duration::from_micros(90),
+    }
+}
+
+/// Two step sites (positions 0 and 2, the second sharing the first's module) and one final
+/// site, three steps: the stamps are `(start, end)` pairs in recording order, steps first.
+fn three_steps() -> (Vec<Site>, Vec<Site>, Vec<u64>) {
+    let steps = vec![site(PlanName::Step, 0, 1), site(PlanName::Step, 2, 1)];
+    let last = vec![site(PlanName::Final, 0, 1)];
+    let stamps = vec![
+        100, 110, 120, 125, // step 0: 10 and 5 ticks
+        200, 212, 230, 236, // step 1: 12 and 6 ticks
+        300, 314, 330, 337, // step 2: 14 and 7 ticks
+        400, 403, // the final loss: 3 ticks
+    ];
+    (steps, last, stamps)
+}
+
+#[test]
+fn timings_sum_each_site_over_the_steps_and_count_the_final_loss_once() {
+    let (steps, last, stamps) = three_steps();
+    let clock = Clock {
+        valid_bits: 64,
+        period_ns: 2.0,
+    };
+    let Timings {
+        sites,
+        steady_us_per_step,
+    } = timings(&steps, &last, 3, &stamps, clock).expect("the stamps fit the sites");
+    assert_eq!(
+        sites.len(),
+        3,
+        "two sites that share a module are two sites"
+    );
+    assert_eq!(sites[0].site, steps[0]);
+    assert_eq!(sites[1].site, steps[1]);
+    assert_eq!(sites[2].site, last[0]);
+    assert_eq!(sites.iter().map(|s| s.calls).collect::<Vec<_>>(), [3, 3, 1]);
+    // Ticks times 2 ns: 36, 18 and 3 ticks.
+    let totals: Vec<f64> = sites.iter().map(|s| s.total_us()).collect();
+    assert_eq!(totals, [0.072, 0.036, 0.006]);
+    assert_eq!(sites[0].mean_us(), 0.024);
+    assert_eq!(
+        steady_us_per_step, None,
+        "3 steps have no steady state after a {WARMUP_STEPS}-step warm-up"
+    );
+}
+
+#[test]
+fn a_timestamp_that_wraps_its_valid_bits_counts_the_ticks_past_the_wrap() {
+    let steps = vec![site(PlanName::Step, 0, 1)];
+    let last = vec![site(PlanName::Final, 0, 1)];
+    let clock = Clock {
+        valid_bits: 8,
+        period_ns: 1000.0,
+    };
+    // Bits above the valid ones are garbage; 250 to 4 is 10 ticks past the wrap at 256.
+    let stamps = [0xff00 | 250, 0xab00 | 4, 7, 8];
+    let timed = timings(&steps, &last, 1, &stamps, clock).expect("the stamps fit");
+    assert_eq!(timed.sites[0].total_us(), 10.0);
+    assert_eq!(timed.sites[1].total_us(), 1.0);
+}
+
+#[test]
+fn the_steady_state_runs_from_the_first_step_after_the_warm_up_to_the_final_loss() {
+    let steps = vec![site(PlanName::Step, 0, 1)];
+    let final_sites = vec![site(PlanName::Final, 0, 1)];
+    let n = WARMUP_STEPS + 4;
+    let mut stamps = Vec::new();
+    for k in 0..n {
+        // The warm-up steps take 1,000 ns each, the steady ones 50.
+        let start = if k <= WARMUP_STEPS {
+            1000 * k
+        } else {
+            1000 * WARMUP_STEPS + 50 * (k - WARMUP_STEPS)
+        };
+        stamps.extend([start, start + 10]);
+    }
+    let last = 1000 * WARMUP_STEPS + 50 * (n - WARMUP_STEPS);
+    stamps.extend([last, last + 10]);
+    let clock = Clock {
+        valid_bits: 64,
+        period_ns: 1.0,
+    };
+    let timed = timings(&steps, &final_sites, n, &stamps, clock).expect("the stamps fit");
+    assert_eq!(timed.steady_us_per_step, Some(0.05));
+}
+
+#[test]
+fn stamps_that_do_not_fit_the_sites_are_refused() {
+    let (steps, last, mut stamps) = three_steps();
+    let clock = Clock {
+        valid_bits: 64,
+        period_ns: 1.0,
+    };
+    stamps.pop();
+    assert!(timings(&steps, &last, 3, &stamps, clock).is_err());
+}
+
+#[test]
+fn the_report_prints_one_line_per_site_then_the_counters() {
+    let (steps, last, stamps) = three_steps();
+    let clock = Clock {
+        valid_bits: 64,
+        period_ns: 2.0,
+    };
+    let profile = Profile {
+        timings: Some(timings(&steps, &last, 3, &stamps, clock).expect("the stamps fit")),
+        pipeline_creation: Duration::from_micros(1500),
+        compile: Duration::from_nanos(2_250_500),
+    };
+    let id = KernelModuleId([1; 16]);
+    assert_eq!(
+        profile.report(&stats()),
+        format!(
+            "profile dispatch step 0 {id} main calls 3 total_us 0.072 mean_us 0.024\n\
+             profile dispatch step 2 {id} main calls 3 total_us 0.036 mean_us 0.012\n\
+             profile dispatch final 0 {id} main calls 1 total_us 0.006 mean_us 0.006\n\
+             profile dispatches 7\n\
+             profile submits 1\n\
+             profile host_waits 1\n\
+             profile bytes_uploaded 40\n\
+             profile bytes_downloaded 28\n\
+             profile pipeline_creation_us 1500.000\n\
+             profile compile_us 2250.500\n\
+             profile steady_us_per_step unavailable\n"
+        )
+    );
+}
+
+#[test]
+fn without_timestamp_queries_the_report_says_so_and_still_prints_the_counters() {
+    let profile = Profile {
+        timings: None,
+        pipeline_creation: Duration::from_micros(1),
+        compile: Duration::from_micros(2),
+    };
+    assert_eq!(
+        profile.report(&stats()),
+        "profile kernel timings unavailable: no timestamp queries\n\
+         profile dispatches 7\n\
+         profile submits 1\n\
+         profile host_waits 1\n\
+         profile bytes_uploaded 40\n\
+         profile bytes_downloaded 28\n\
+         profile pipeline_creation_us 1.000\n\
+         profile compile_us 2.000\n\
+         profile steady_us_per_step unavailable\n"
+    );
+}
+
+/// The counter value of the report line `profile <name> <value>`.
+fn counter<'a>(report: &'a str, name: &str) -> &'a str {
+    let head = format!("profile {name} ");
+    report
+        .lines()
+        .find_map(|line| line.strip_prefix(head.as_str()))
+        .unwrap_or_else(|| panic!("no line {head}<value> in\n{report}"))
+}
+
+#[test]
+#[ignore = "needs a Vulkan device"]
+fn mnist_mlp_profile_times_every_dispatch_site_without_changing_the_run() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join(MNIST_MLP);
+    let source = std::fs::read_to_string(&path).expect("the example reads");
+    let compiled = compile_training(MNIST_MLP, &source).expect("the example compiles");
+    let artifact = compile_artifact(MNIST_MLP, &source, Backend::Vulkan)
+        .expect("the example compiles for Vulkan");
+    let plan = &artifact.execution;
+    let steps = compiled.config.steps;
+    assert_eq!(steps, 1800);
+
+    let vulkan = Vulkan::load().expect("the Vulkan loader opens");
+    assert_eq!(
+        vulkan.validation_enabled(),
+        std::env::var(VALIDATION_ENV).as_deref() == Ok("1"),
+        "the validation layer is on exactly when {VALIDATION_ENV}=1"
+    );
+    let candidates = vulkan.candidates().expect("the devices are probed");
+    let device_profile = candidates[0].profile.clone();
+    assert!(
+        device_profile.timestamp_queries,
+        "device 0 has timestamp queries"
+    );
+    let negotiated = negotiate(&device_profile).expect("device 0 negotiates");
+    let device = vulkan
+        .create_device(0, &negotiated)
+        .expect("device 0 opens");
+    let (plain, plain_stats) = train(&device, &device_profile, &negotiated, &compiled, &artifact)
+        .expect("the unprofiled run finishes");
+    let wall = Instant::now();
+    let (profiled, stats, profile) =
+        train_profiled(&device, &device_profile, &negotiated, &compiled, &artifact)
+            .expect("the profiled run finishes");
+    let wall = wall.elapsed();
+    drop(device);
+    let messages = vulkan.take_validation_messages();
+    assert!(
+        messages.is_empty(),
+        "{} validation messages: {messages:#?}",
+        messages.len()
+    );
+    let report = profile.report(&stats);
+    eprintln!("{MNIST_MLP}: wall {wall:?}\n{stats}{report}");
+
+    // Acceptance 1: one site per Dispatch step of the step plan, called once per step, then one
+    // per Dispatch step the final loss evaluation records (the step plan up to the loss).
+    let dispatch_positions: Vec<usize> = plan
+        .step
+        .iter()
+        .enumerate()
+        .filter(|(_, step)| step.op == PlanOp::Dispatch)
+        .map(|(at, _)| at)
+        .collect();
+    let loss_at = plan
+        .step
+        .iter()
+        .rposition(|step| {
+            step.writes
+                .iter()
+                .any(|view| view.buffer == plan.loss_view.buffer)
+        })
+        .expect("a step writes the loss");
+    let final_positions: Vec<usize> = dispatch_positions
+        .iter()
+        .copied()
+        .filter(|&at| at <= loss_at)
+        .collect();
+    let timed = profile.timings.as_ref().expect("the device has timestamps");
+    let expected: Vec<(PlanName, usize, KernelModuleId, u64)> = dispatch_positions
+        .iter()
+        .map(|&at| (PlanName::Step, at, steps))
+        .chain(final_positions.iter().map(|&at| (PlanName::Final, at, 1)))
+        .map(|(name, at, calls)| {
+            let id = plan.step[at]
+                .kernel_module_id
+                .expect("a dispatch names a kernel");
+            (name, at, id, calls)
+        })
+        .collect();
+    let got: Vec<(PlanName, usize, KernelModuleId, u64)> = timed
+        .sites
+        .iter()
+        .map(|s| {
+            (
+                s.site.plan,
+                s.site.position,
+                s.site.kernel_module_id,
+                s.calls,
+            )
+        })
+        .collect();
+    assert_eq!(got, expected);
+    assert_eq!(
+        report
+            .lines()
+            .filter(|l| l.starts_with("profile dispatch "))
+            .count(),
+        dispatch_positions.len() + final_positions.len()
+    );
+    assert!(timed.sites.iter().all(|s| s.total_us() > 0.0), "{report}");
+    let sum_us: f64 = timed.sites.iter().map(|s| s.total_us()).sum();
+    assert!(
+        sum_us <= wall.as_secs_f64() * 1e6,
+        "the site totals sum to {sum_us} us, more than the run's wall time {wall:?}"
+    );
+    assert!(timed.steady_us_per_step.is_some_and(|us| us > 0.0));
+
+    // Acceptance 2: the same host waits and the same results.
+    assert_eq!(stats.host_waits, 1);
+    assert_eq!(stats.host_waits, plain_stats.host_waits);
+    assert_eq!(stats.submits, plain_stats.submits);
+    assert_eq!(profiled.losses, plain.losses, "bit-equal losses");
+    assert_eq!(
+        profiled.state.values, plain.state.values,
+        "bit-equal parameters"
+    );
+    assert_eq!(profiled.initial, plain.initial);
+
+    // Acceptance 3: the counter lines are the run's `RunStats`.
+    let per_step = dispatch_positions.len() as u64;
+    assert_eq!(
+        stats.dispatches,
+        steps * per_step + final_positions.len() as u64
+    );
+    assert_eq!(stats.dispatches, plain_stats.dispatches);
+    assert_eq!(counter(&report, "dispatches"), stats.dispatches.to_string());
+    assert_eq!(counter(&report, "submits"), stats.submits.to_string());
+    assert_eq!(counter(&report, "host_waits"), "1");
+    assert_eq!(counter(&report, "bytes_uploaded"), "520864");
+    assert_eq!(counter(&report, "bytes_downloaded"), "210468");
+    assert_eq!(stats.bytes_uploaded, 520_864);
+    assert_eq!(stats.bytes_downloaded, 210_468);
+    for name in ["pipeline_creation_us", "compile_us", "steady_us_per_step"] {
+        let value: f64 = counter(&report, name)
+            .parse()
+            .unwrap_or_else(|_| panic!("{name} is a number in\n{report}"));
+        assert!(value > 0.0, "{name} {value}");
+    }
+}

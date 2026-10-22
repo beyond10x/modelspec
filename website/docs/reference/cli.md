@@ -112,3 +112,4 @@ Usage: modelspec train [OPTIONS] --backend <BACKEND> <PATH>
 | `--resume <PATH>` | no | none | Continue from the .msckpt file PATH: its parameters and step instead of the initializers and step 0, refused unless it matches the compiled file and its optimizer. |
 | `--device <INDEX>` | no | none | With --backend vulkan, train on the physical device INDEX, in the order the Vulkan loader lists them, instead of device 0. |
 | `--stats` | no | `false` | With --backend vulkan, print the run's host waits, submits, dispatches, bytes copied up and down, numerics class and microseconds per step on stderr after it. |
+| `--profile` | no | `false` | With --backend vulkan, time every dispatch with GPU timestamp queries and print one `profile dispatch` line per dispatch site, then the run's counters, compile and pipeline creation time and steady-state microseconds per step on stderr after it. |

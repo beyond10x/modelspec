@@ -21,12 +21,17 @@
 //! on the device `--device <index>` names, in the loader's enumeration order
 //! ([`modelspec_runtime::vulkan::runner`]): the host waits for the device once, after the last
 //! step. `--stats` prints the run's counters on stderr after it (host waits, submits,
-//! dispatches, bytes up and down, the numerics class, microseconds per step). The file is
+//! dispatches, bytes up and down, the numerics class, microseconds per step). `--profile` times
+//! every dispatch with GPU timestamp queries, read back after the one host wait, and prints on
+//! stderr after it one `profile dispatch <plan> <position> <kernel_module_id> <entry> calls <n>
+//! total_us <t> mean_us <m>` line per dispatch site, then the counters, the compile and
+//! pipeline creation times and the steady-state microseconds per step
+//! ([`modelspec_runtime::vulkan::profile`]); stdout is unchanged. The file is
 //! compiled before the loader is opened; then a missing loader exits 1 with `E-TARGET-002`, no
 //! device or a `--device` that names none with `E-TARGET-003`, and a device below the
 //! requirements with `E-TARGET-004`. A build without the `vulkan` feature refuses the backend
 //! with [`E_TARGET_001`] before the file is read. `--data`, `--init`, `--eval`, `--checkpoint`
-//! and `--resume` are CPU-only, and `--device` and `--stats` Vulkan-only: naming one with the
+//! and `--resume` are CPU-only, and `--device`, `--stats` and `--profile` Vulkan-only: naming one with the
 //! other backend is a usage error (exit 2).
 //!
 //! `--data <dir>` trains on dense `f32` files instead of synthetic data, `--init <dir>` starts
@@ -134,14 +139,23 @@ pub struct Args {
     /// and down, numerics class and microseconds per step on stderr after it.
     #[arg(long)]
     pub stats: bool,
+    /// With --backend vulkan, time every dispatch with GPU timestamp queries and print one
+    /// `profile dispatch` line per dispatch site, then the run's counters, compile and pipeline
+    /// creation time and steady-state microseconds per step on stderr after it.
+    #[arg(long)]
+    pub profile: bool,
 }
 
 /// The flag of `args` the backend cannot take, if one is given.
 fn misplaced_flag(args: &Args) -> Option<&'static str> {
     match args.backend {
-        Backend::Cpu => [("--device", args.device.is_some()), ("--stats", args.stats)]
-            .into_iter()
-            .find_map(|(flag, given)| given.then_some(flag)),
+        Backend::Cpu => [
+            ("--device", args.device.is_some()),
+            ("--stats", args.stats),
+            ("--profile", args.profile),
+        ]
+        .into_iter()
+        .find_map(|(flag, given)| given.then_some(flag)),
         Backend::Vulkan => [
             ("--data", args.data.is_some()),
             ("--init", args.init.is_some()),
@@ -162,6 +176,8 @@ enum Engine {
         artifact: Box<modelspec_core::artifact::CompiledArtifact>,
         device: Option<usize>,
         stats: bool,
+        /// With `--profile`, the time the file and its artifact took to compile.
+        profile: Option<std::time::Duration>,
     },
 }
 
@@ -249,13 +265,14 @@ pub enum Backend {
 /// Runs `modelspec train` and returns the process exit code.
 pub fn run(args: Args, stdout: &mut dyn Write, stderr: &mut dyn Write) -> u8 {
     if let Some(flag) = misplaced_flag(&args) {
-        let backend = match args.backend {
-            Backend::Cpu => "cpu",
-            Backend::Vulkan => "vulkan",
+        let (backend, other) = match args.backend {
+            Backend::Cpu => ("cpu", "vulkan"),
+            Backend::Vulkan => ("vulkan", "cpu"),
         };
         let _ = writeln!(
             stderr,
-            "error: the argument '{flag}' cannot be used with '--backend {backend}'"
+            "error: the argument '{flag}' cannot be used with '--backend {backend}'; it is \
+             available only with '--backend {other}'"
         );
         return crate::EXIT_USAGE;
     }
@@ -281,6 +298,8 @@ pub fn run(args: Args, stdout: &mut dyn Write, stderr: &mut dyn Write) -> u8 {
             return crate::EXIT_FAILURE;
         }
     };
+    #[cfg(feature = "vulkan")]
+    let compiling = std::time::Instant::now();
     let mut compiled = match compile::compile_training(&file, &source) {
         Ok(compiled) => compiled,
         Err(diagnostics) => {
@@ -305,6 +324,7 @@ pub fn run(args: Args, stdout: &mut dyn Write, stderr: &mut dyn Write) -> u8 {
                     artifact: Box::new(artifact),
                     device: args.device,
                     stats: args.stats,
+                    profile: args.profile.then(|| compiling.elapsed()),
                 },
                 Err(diagnostics) => {
                     for diagnostic in &diagnostics {
@@ -443,16 +463,21 @@ fn train(
             artifact,
             device,
             stats,
+            profile,
         } = engine
         {
-            use modelspec_runtime::vulkan::runner::{DeviceRunError, train_on_device};
-            break 'run match train_on_device(*device, compiled, artifact) {
-                Ok((run, counted)) => {
+            use modelspec_runtime::vulkan::runner::{DeviceRunError, train_on_device_with};
+            break 'run match train_on_device_with(*device, compiled, artifact, profile.is_some()) {
+                Ok((run, counted, profiled)) => {
                     for (k, &loss) in (run.start_step..).zip(&run.losses) {
                         observe(k, loss);
                     }
                     if *stats {
                         let _ = write!(stderr, "{counted}");
+                    }
+                    if let (Some(mut profiled), Some(compiling)) = (profiled, *profile) {
+                        profiled.compile += compiling;
+                        let _ = write!(stderr, "{}", profiled.report(&counted));
                     }
                     Ok((run, None))
                 }

@@ -26,6 +26,7 @@ pub mod memory;
 pub mod negotiate;
 pub mod pipeline;
 mod probe;
+pub mod profile;
 pub mod runner;
 pub mod select;
 pub mod sync;
@@ -110,6 +111,9 @@ pub enum ExecError {
         covered: u64,
         count: u32,
     },
+    /// A timestamp was written to a query past the end of its pool.
+    #[error("query {query} is past the {count} queries of its pool")]
+    QueryPastPool { query: u32, count: u32 },
     /// A SPIR-V module declares no `LocalSize`.
     #[error("the SPIR-V module declares no LocalSize execution mode")]
     NoLocalSize,
@@ -384,9 +388,17 @@ impl Vulkan {
                     .limits,
             )
         };
+        // SAFETY: `physical` belongs to this instance.
+        let timestamp_valid_bits = unsafe {
+            self.instance
+                .get_physical_device_queue_family_properties(physical)
+        }
+        .get(queue_family as usize)
+        .map_or(0, |family| family.timestamp_valid_bits);
         Ok(Device {
             device,
             queue_family: queues[0].queue_family_index,
+            timestamp_valid_bits,
             api_version: self.api_version,
             enabled_extensions,
             enabled_features,
@@ -421,6 +433,8 @@ impl Drop for Vulkan {
 pub struct Device<'a> {
     device: ash::Device,
     queue_family: u32,
+    /// `timestampValidBits` of the queue family: 0 when its queue writes no timestamps.
+    timestamp_valid_bits: u32,
     api_version: u32,
     enabled_extensions: Vec<String>,
     enabled_features: Vec<String>,
@@ -479,6 +493,15 @@ impl Device<'_> {
     /// The queue family of the device's one queue.
     pub fn queue_family(&self) -> u32 {
         self.queue_family
+    }
+
+    /// The timestamp counter of the device's queue, or `None` when the queue writes no
+    /// timestamps (`timestampValidBits` 0).
+    pub fn clock(&self) -> Option<profile::Clock> {
+        (self.timestamp_valid_bits > 0).then_some(profile::Clock {
+            valid_bits: self.timestamp_valid_bits,
+            period_ns: self.limits.timestamp_period,
+        })
     }
 }
 
