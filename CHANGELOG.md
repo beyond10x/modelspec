@@ -9,16 +9,14 @@ history.
 
 ## [Unreleased]
 
-<<<<<<< HEAD
 ### Added
 
 - `modelspec train --serve <addr>` streams the run as typed `RunEvent`s over Server-Sent Events at `http://<addr>/events` on a loopback address, in the new crate `modelspec-observatory` (story:observatory-live-event-stream)
 - `modelspec_core::autodiff::differentiate_inputs` builds the gradient of a rank-0 value with respect to named inputs, and `output_element_target` builds the rank-0 target for one element of a model output (story:observatory-input-adjoint)
-=======
+
 ### Changed
 
 - CPU reference: `matmul` runs in loop order `i`, `k`, `j` with the same bits as 0.1.1, and the `mnist_shape` benchmark (`cargo bench -p modelspec-runtime --bench mnist_shape`) prints images/s for the 784 → 64 → 10 shape (`cpu-matmul-row-order`)
->>>>>>> c1c47c7ef3b00cac83695147d1e062a2fd2468ee
 
 ## [0.1.1] - 2026-10-21
 
