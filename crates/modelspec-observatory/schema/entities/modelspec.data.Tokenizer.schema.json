@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Tokenizer",
+  "description": "A tokenizer and the vocabulary it maps text to (epic:bert-from-scratch).",
+  "x-ess-name": "modelspec.data.Tokenizer",
+  "x-ess-kind": "entity",
+  "type": "object",
+  "properties": {
+    "tokenizer_id": {
+      "$ref": "#/$defs/modelspec.data.TokenizerId"
+    },
+    "kind": {
+      "$ref": "#/$defs/modelspec.data.TokenizerKind"
+    },
+    "vocabulary": {
+      "$ref": "#/$defs/modelspec.data.Vocabulary"
+    },
+    "state": {
+      "$ref": "#/$defs/modelspec.data.Tokenizer.State"
+    }
+  },
+  "required": [
+    "tokenizer_id",
+    "kind",
+    "vocabulary",
+    "state"
+  ],
+  "additionalProperties": false,
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "234f6a472e3807a40047accc727c1a09300421617ec3572a2b88aa81c79c672e",
+    "contract_digest": "slice-sha256/2:37868c122e3593e0c4e1e7f92b0f4ae10b007c24f5b12655cbf6ae30e26dbdf8",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.data.Tokenizer.State": {
+      "title": "State",
+      "x-ess-name": "modelspec.data.Tokenizer.State",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "Recorded"
+      ]
+    },
+    "modelspec.data.TokenizerId": {
+      "title": "TokenizerId",
+      "x-ess-name": "modelspec.data.TokenizerId",
+      "x-ess-kind": "newtype",
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    },
+    "modelspec.data.TokenizerKind": {
+      "title": "TokenizerKind",
+      "description": "The tokenization algorithm (epic:bert-from-scratch, \"a WordPiece (or byte-level) tokenizer\").",
+      "x-ess-name": "modelspec.data.TokenizerKind",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "WordPiece",
+        "ByteLevel"
+      ]
+    },
+    "modelspec.data.Vocabulary": {
+      "title": "Vocabulary",
+      "description": "The tokens a tokenizer maps text to; a token's id is its position in tokens (about 30k for BERT-tiny, epic:bert-from-scratch). mask_token_id names the token 80/10/10 masking substitutes.",
+      "x-ess-name": "modelspec.data.Vocabulary",
+      "x-ess-kind": "struct",
+      "type": "object",
+      "properties": {
+        "tokens": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "mask_token_id": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "tokens",
+        "mask_token_id"
+      ],
+      "additionalProperties": false,
+      "x-ess-invariants": [
+        "distinct token in tokens",
+        "mask_token_id >= 0",
+        "mask_token_id < tokens.count"
+      ]
+    }
+  }
+}

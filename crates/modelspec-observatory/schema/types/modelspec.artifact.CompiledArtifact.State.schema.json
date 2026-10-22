@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/modelspec.artifact.CompiledArtifact.State",
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "234f6a472e3807a40047accc727c1a09300421617ec3572a2b88aa81c79c672e",
+    "contract_digest": "slice-sha256/2:48a60799a778e3ba120841d2b403183844ed806668698323bd724ec4217384d4",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.artifact.CompiledArtifact.State": {
+      "title": "State",
+      "x-ess-name": "modelspec.artifact.CompiledArtifact.State",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "Compiled"
+      ]
+    }
+  }
+}

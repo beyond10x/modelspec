@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/modelspec.observatory.Insight.State",
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "234f6a472e3807a40047accc727c1a09300421617ec3572a2b88aa81c79c672e",
+    "contract_digest": "slice-sha256/2:a6ecd993f136c96bdb2c5f9c0bf10f45547e5f08d86db472e08ab98b8abe6eae",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.observatory.Insight.State": {
+      "title": "State",
+      "x-ess-name": "modelspec.observatory.Insight.State",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "Computed"
+      ]
+    }
+  }
+}

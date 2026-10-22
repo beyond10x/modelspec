@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/modelspec.observatory.ModelGraph.State",
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "234f6a472e3807a40047accc727c1a09300421617ec3572a2b88aa81c79c672e",
+    "contract_digest": "slice-sha256/2:f9d2730812b6b03a3550e1bfa88f9cee527e3d9c8a54a661567568c7924e1946",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.observatory.ModelGraph.State": {
+      "title": "State",
+      "x-ess-name": "modelspec.observatory.ModelGraph.State",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "Derived"
+      ]
+    }
+  }
+}

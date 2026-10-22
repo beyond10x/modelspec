@@ -12,10 +12,12 @@ A Rust compiler and runtime for `.mspec` tensor-program specifications. Humans s
 ## State
 
 Milestone M0 implemented (DESIGN.md revision 0.6, § 1 and § 11, iteration 1; wave `m0` closed);
-M1 (`epic:m1-vulkan-execution`) is next. A Cargo workspace of four crates: `modelspec-core`
+M1 (`epic:m1-vulkan-execution`) is next. A Cargo workspace of five crates: `modelspec-core`
 (parser, checker, Tensor IR, autodiff, lowering, DCE; no Vulkan), `modelspec-runtime` (CPU oracle
-and SGD training; the `vulkan` feature is empty until M1), `modelspec-cli` (binary `modelspec`)
-and `modelspec-docs` (repository tooling: the derived pages of the documentation site).
+and SGD training; the `vulkan` feature is empty until M1), `modelspec-observatory` (the typed
+`RunEvent`s of a run and their Server-Sent Events stream; its JSON Schema under `schema/` is
+`ess generate` output), `modelspec-cli` (binary `modelspec`) and `modelspec-docs` (repository
+tooling: the derived pages of the documentation site).
 `check` resolves names and checks types and shapes;
 `ir <file> --stage tensor|training` prints the verified Tensor IR or the verified training step;
 `train <file> --backend cpu` trains on the CPU reference (DESIGN.md § 8), and `--backend vulkan`
@@ -35,6 +37,11 @@ Entry points are the `Taskfile.yml` tasks (go-task):
   `examples/tiny_mlp.mspec` joins it when modules and generics land (DESIGN.md § 11 iteration 3).
 - `task docs-check`: `modelspec-docs generate --check`, which fails when a generated page of the
   documentation site differs from what the code produces now; `task docs-generate` rewrites them.
+- `task spec-validate`: `ess specify validate --path .` from inside `spec/`.
+- `task schema-check`: `ess generate --kind schema --check` from inside `spec/`, which fails when
+  a file the specification generates under `crates/modelspec-observatory/schema/` differs from it
+  or is missing; an extra file there passes. `task schema-generate` rewrites them. A change to any file under `spec/` changes the schema's
+  provenance digest, so run `task schema-generate` in the same change.
 - `task ci`: all of the above; the gate.
 - `task website`: `npm ci` and `npm run build` in `website/` (Node 22; nothing else uses Node).
 - `task release-check TAG=<version>`: refuses unless the tag is a bare version, equals

@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/modelspec.observatory.RunEventId",
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "234f6a472e3807a40047accc727c1a09300421617ec3572a2b88aa81c79c672e",
+    "contract_digest": "slice-sha256/2:b7b405dd237d9627f8b2dd2f91f4ea2c56761e0d4efd53389a64ac0649418fb0",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.observatory.RunEventId": {
+      "title": "RunEventId",
+      "x-ess-name": "modelspec.observatory.RunEventId",
+      "x-ess-kind": "newtype",
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    }
+  }
+}

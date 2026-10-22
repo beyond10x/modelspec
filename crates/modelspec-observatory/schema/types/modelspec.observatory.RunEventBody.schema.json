@@ -1,0 +1,311 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/modelspec.observatory.RunEventBody",
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "234f6a472e3807a40047accc727c1a09300421617ec3572a2b88aa81c79c672e",
+    "contract_digest": "slice-sha256/2:502fce38359a26cbaa11f8d8c46b9df9ce2ab7421fb0cb583e2f151f59ca88b7",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.checkpoint.ParameterPath": {
+      "title": "ParameterPath",
+      "description": "A stable canonical parameter path such as `TinyMLP.fc1.weight` (DESIGN.md § 2.3).",
+      "x-ess-name": "modelspec.checkpoint.ParameterPath",
+      "x-ess-kind": "newtype",
+      "type": "string"
+    },
+    "modelspec.observatory.Histogram": {
+      "title": "Histogram",
+      "description": "The distribution of one tensor's elements in bins; bin i counts the elements in [bin_edges[i], bin_edges[i+1]), so there is one more edge than counts, which ESS does not state here.",
+      "x-ess-name": "modelspec.observatory.Histogram",
+      "x-ess-kind": "struct",
+      "type": "object",
+      "properties": {
+        "bin_edges": {
+          "description": "The bin edges in ascending order; an edge is null when it is NaN or ±inf, which Binary64 does not hold (wave observatory-1 coordinator, 2026-10-21).",
+          "type": "array",
+          "items": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "counts": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          }
+        }
+      },
+      "required": [
+        "bin_edges",
+        "counts"
+      ],
+      "additionalProperties": false,
+      "x-ess-invariants": [
+        "forall count in counts: (count >= 0)"
+      ]
+    },
+    "modelspec.observatory.MetricSample": {
+      "title": "MetricSample",
+      "description": "One named metric value at a step, such as MLM accuracy (epic:training-observatory live metric charts, epic:bert-from-scratch evaluation).",
+      "x-ess-name": "modelspec.observatory.MetricSample",
+      "x-ess-kind": "struct",
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "value": {
+          "description": "The metric's value; null when it is NaN or ±inf, which Binary64 does not hold (wave observatory-1 coordinator, 2026-10-21).",
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "value"
+      ],
+      "additionalProperties": false
+    },
+    "modelspec.observatory.ParameterStatistics": {
+      "title": "ParameterStatistics",
+      "description": "The norm and histogram of one parameter's values or gradient at a step, by its stable path (DESIGN.md § 2.3; epic:training-observatory).",
+      "x-ess-name": "modelspec.observatory.ParameterStatistics",
+      "x-ess-kind": "struct",
+      "type": "object",
+      "properties": {
+        "path": {
+          "$ref": "#/$defs/modelspec.checkpoint.ParameterPath"
+        },
+        "subject": {
+          "$ref": "#/$defs/modelspec.observatory.StatisticsSubject"
+        },
+        "norm": {
+          "description": "The norm; null when it is NaN or ±inf, which Binary64 does not hold (wave observatory-1 coordinator, 2026-10-21).",
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "histogram": {
+          "$ref": "#/$defs/modelspec.observatory.Histogram"
+        }
+      },
+      "required": [
+        "path",
+        "subject",
+        "norm",
+        "histogram"
+      ],
+      "additionalProperties": false,
+      "x-ess-invariants": [
+        "(not (defined(norm)) or norm >= 0)"
+      ]
+    },
+    "modelspec.observatory.RunEventBody": {
+      "title": "RunEventBody",
+      "description": "The typed event the training process sends, one per step and one per run lifecycle change (epic:training-observatory). A run is started, then finished or failed, and its stream says so, RunStarted first, then one StepCompleted per recorded loss, then exactly one of RunFinished or RunFailed, last. These are not TrainingRun lifecycle states, which keep the one state Recorded of the record, because ESS moves an entity's state only by a command outcome (ESS-ENTITY-005), and this specification declares no commands. RunFinished carries nothing; the final loss is the last StepCompleted's. A run refused before its first step, such as by E-DATA-003, sends RunStarted then RunFailed and no StepCompleted.",
+      "x-ess-name": "modelspec.observatory.RunEventBody",
+      "x-ess-kind": "union",
+      "oneOf": [
+        {
+          "title": "RunFailed",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "RunFailed"
+            },
+            "value": {
+              "$ref": "#/$defs/modelspec.observatory.RunFailed"
+            }
+          },
+          "required": [
+            "kind",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "title": "RunFinished",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "RunFinished"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "title": "RunStarted",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "RunStarted"
+            },
+            "value": {
+              "$ref": "#/$defs/modelspec.observatory.RunStarted"
+            }
+          },
+          "required": [
+            "kind",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "title": "StepCompleted",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "StepCompleted"
+            },
+            "value": {
+              "$ref": "#/$defs/modelspec.observatory.StepCompleted"
+            }
+          },
+          "required": [
+            "kind",
+            "value"
+          ],
+          "additionalProperties": false
+        }
+      ],
+      "x-ess-union-tag": "kind"
+    },
+    "modelspec.observatory.RunFailed": {
+      "title": "RunFailed",
+      "description": "The event of a run failing, the last of its stream (RunEventBody). A failure is a diagnostic or a runtime error (DESIGN.md § 8.1, diagnostics distinguish user specification errors from runtime failures).",
+      "x-ess-name": "modelspec.observatory.RunFailed",
+      "x-ess-kind": "struct",
+      "type": "object",
+      "properties": {
+        "code": {
+          "description": "The diagnostic code that refused the run, such as E-DATA-003 (DESIGN.md § 8.1, M0 codes for `train`); absent for a runtime error, which has no code.",
+          "type": "string"
+        },
+        "message": {
+          "description": "The failure on one line, the diagnostic's message or the runtime error as `modelspec train` reports it.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "message"
+      ],
+      "additionalProperties": false
+    },
+    "modelspec.observatory.RunStarted": {
+      "title": "RunStarted",
+      "description": "The event of a run starting, the first of its stream (RunEventBody). It carries the two TrainingRun fields that say which steps follow, start_step through start_step + steps (DESIGN.md § 6); the other record fields are the run's artifact and record, which M0 does not write (story:m0-cpu-sgd-training, Out of scope).",
+      "x-ess-name": "modelspec.observatory.RunStarted",
+      "x-ess-kind": "struct",
+      "type": "object",
+      "properties": {
+        "steps": {
+          "description": "TrainingRun.steps, the steps of this invocation.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "start_step": {
+          "description": "TrainingRun.start_step, the step of the first StepCompleted.",
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "steps",
+        "start_step"
+      ],
+      "additionalProperties": false,
+      "x-ess-invariants": [
+        "steps >= 0",
+        "start_step >= 0"
+      ]
+    },
+    "modelspec.observatory.StatisticsSubject": {
+      "title": "StatisticsSubject",
+      "description": "Whether statistics describe a parameter's values or the gradient of the loss with respect to it (epic:training-observatory parameter/gradient histograms and norms).",
+      "x-ess-name": "modelspec.observatory.StatisticsSubject",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "Value",
+        "Gradient"
+      ]
+    },
+    "modelspec.observatory.StepCompleted": {
+      "title": "StepCompleted",
+      "description": "The event of one completed training step (epic:training-observatory), one for each of the steps + 1 losses a run records, steps start_step through start_step + steps in order; step k is the loss after k updates and the last is the loss of the final parameters (DESIGN.md § 8, the `step <k> loss <v>` lines; `train::runner` in modelspec-runtime). Its loss is the loss the CLI prints for that step (DESIGN.md § 8).",
+      "x-ess-name": "modelspec.observatory.StepCompleted",
+      "x-ess-kind": "struct",
+      "type": "object",
+      "properties": {
+        "step": {
+          "description": "The step number the run reached, as TrainingRun.current_step (DESIGN.md § 6.1 step number).",
+          "type": "integer",
+          "minimum": 0
+        },
+        "loss": {
+          "description": "The rank-0 loss value of the step (DESIGN.md § 2.2, § 8); null when the loss is NaN or ±inf, which Binary64 does not hold, as a diverging run records (wave observatory-1 coordinator, 2026-10-21). The CLI prints a `step <k> loss <v>` line on stdout only for step 0, every 50th step and the last step; for a printed step whose loss is null that line names which, `NaN`, `inf` or `-inf`, and for any other step nothing names it (wave observatory-1 coordinator, 2026-10-22).",
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "metrics": {
+          "description": "Metric samples of the step besides the loss; names are unique.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/modelspec.observatory.MetricSample"
+          }
+        },
+        "parameters": {
+          "description": "Value and gradient statistics per parameter; the pair (path, subject) is unique, which ESS does not state here. A parameter the loss does not read has no gradient (DESIGN.md § 3.3 step 4).",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/modelspec.observatory.ParameterStatistics"
+          }
+        }
+      },
+      "required": [
+        "step",
+        "loss",
+        "metrics",
+        "parameters"
+      ],
+      "additionalProperties": false,
+      "x-ess-invariants": [
+        "step >= 0",
+        "distinct sample in metrics by sample.name"
+      ]
+    }
+  }
+}

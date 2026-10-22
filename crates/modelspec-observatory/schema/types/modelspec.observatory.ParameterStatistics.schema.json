@@ -1,0 +1,107 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/modelspec.observatory.ParameterStatistics",
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "234f6a472e3807a40047accc727c1a09300421617ec3572a2b88aa81c79c672e",
+    "contract_digest": "slice-sha256/2:f71e88d5ca824dd7394f265698a32efe251db061d022615a1ed38d83ff0b8631",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.checkpoint.ParameterPath": {
+      "title": "ParameterPath",
+      "description": "A stable canonical parameter path such as `TinyMLP.fc1.weight` (DESIGN.md § 2.3).",
+      "x-ess-name": "modelspec.checkpoint.ParameterPath",
+      "x-ess-kind": "newtype",
+      "type": "string"
+    },
+    "modelspec.observatory.Histogram": {
+      "title": "Histogram",
+      "description": "The distribution of one tensor's elements in bins; bin i counts the elements in [bin_edges[i], bin_edges[i+1]), so there is one more edge than counts, which ESS does not state here.",
+      "x-ess-name": "modelspec.observatory.Histogram",
+      "x-ess-kind": "struct",
+      "type": "object",
+      "properties": {
+        "bin_edges": {
+          "description": "The bin edges in ascending order; an edge is null when it is NaN or ±inf, which Binary64 does not hold (wave observatory-1 coordinator, 2026-10-21).",
+          "type": "array",
+          "items": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "counts": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          }
+        }
+      },
+      "required": [
+        "bin_edges",
+        "counts"
+      ],
+      "additionalProperties": false,
+      "x-ess-invariants": [
+        "forall count in counts: (count >= 0)"
+      ]
+    },
+    "modelspec.observatory.ParameterStatistics": {
+      "title": "ParameterStatistics",
+      "description": "The norm and histogram of one parameter's values or gradient at a step, by its stable path (DESIGN.md § 2.3; epic:training-observatory).",
+      "x-ess-name": "modelspec.observatory.ParameterStatistics",
+      "x-ess-kind": "struct",
+      "type": "object",
+      "properties": {
+        "path": {
+          "$ref": "#/$defs/modelspec.checkpoint.ParameterPath"
+        },
+        "subject": {
+          "$ref": "#/$defs/modelspec.observatory.StatisticsSubject"
+        },
+        "norm": {
+          "description": "The norm; null when it is NaN or ±inf, which Binary64 does not hold (wave observatory-1 coordinator, 2026-10-21).",
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "histogram": {
+          "$ref": "#/$defs/modelspec.observatory.Histogram"
+        }
+      },
+      "required": [
+        "path",
+        "subject",
+        "norm",
+        "histogram"
+      ],
+      "additionalProperties": false,
+      "x-ess-invariants": [
+        "(not (defined(norm)) or norm >= 0)"
+      ]
+    },
+    "modelspec.observatory.StatisticsSubject": {
+      "title": "StatisticsSubject",
+      "description": "Whether statistics describe a parameter's values or the gradient of the loss with respect to it (epic:training-observatory parameter/gradient histograms and norms).",
+      "x-ess-name": "modelspec.observatory.StatisticsSubject",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "Value",
+        "Gradient"
+      ]
+    }
+  }
+}

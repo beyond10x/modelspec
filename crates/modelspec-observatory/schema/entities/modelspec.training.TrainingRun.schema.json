@@ -1,0 +1,244 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TrainingRun",
+  "description": "A run of one compiled artifact, with what § 6.1 says must be recorded to reproduce it. Source hash, compiler version, tensor shapes, compile flags (fast_math, deterministic) and backend are read through the artifact.",
+  "x-ess-name": "modelspec.training.TrainingRun",
+  "x-ess-kind": "entity",
+  "type": "object",
+  "properties": {
+    "training_run_id": {
+      "$ref": "#/$defs/modelspec.training.TrainingRunId"
+    },
+    "artifact_id": {
+      "$ref": "#/$defs/modelspec.artifact.ArtifactId",
+      "x-ess-relation": {
+        "name": "artifact",
+        "kind": "references",
+        "source": "modelspec.training.TrainingRun",
+        "target": "modelspec.artifact.CompiledArtifact",
+        "cardinality": "one",
+        "via": "artifact_id"
+      }
+    },
+    "steps": {
+      "description": "TrainConfig.steps, the steps of this invocation counted from start_step, so the run ends at start_step + steps (DESIGN.md § 6).",
+      "type": "integer"
+    },
+    "checkpoint_every": {
+      "description": "TrainConfig.checkpoint_every, a positive step interval; absent means no periodic checkpoints (DESIGN.md § 6).",
+      "type": "integer"
+    },
+    "start_step": {
+      "description": "The step number the run started at; 0 unless it resumed from a checkpoint (DESIGN.md § 6.1 step number, § 9 gate 7).",
+      "type": "integer"
+    },
+    "current_step": {
+      "description": "The step number the run has reached; current_step <= start_step + steps, where the run ends (DESIGN.md § 6, step counter; § 6.1 step number). ESS cannot add two facts, so this bound is not an invariant.",
+      "type": "integer"
+    },
+    "resumed_from_checkpoint_id": {
+      "$ref": "#/$defs/modelspec.checkpoint.CheckpointId",
+      "description": "The checkpoint a resumed run loaded; start_step equals its step (DESIGN.md § 6.2, § 9 gate 7).",
+      "x-ess-relation": {
+        "name": "resumed_from",
+        "kind": "references",
+        "source": "modelspec.training.TrainingRun",
+        "target": "modelspec.checkpoint.Checkpoint",
+        "cardinality": "one",
+        "via": "resumed_from_checkpoint_id"
+      }
+    },
+    "optimizer": {
+      "$ref": "#/$defs/modelspec.training.OptimizerConfig"
+    },
+    "rng": {
+      "$ref": "#/$defs/modelspec.training.RngState",
+      "description": "The RNG state the run started from; rng.seed is the run's single seed (DESIGN.md § 6.1)."
+    },
+    "device_profile_id": {
+      "$ref": "#/$defs/modelspec.device.DeviceProfileId",
+      "description": "Present exactly when the artifact's backend is Vulkan; a CPU run has no Vulkan device (DESIGN.md § 6.1 backend/device/driver). ESS cannot state the rule across the two entities.",
+      "x-ess-relation": {
+        "name": "device",
+        "kind": "references",
+        "source": "modelspec.training.TrainingRun",
+        "target": "modelspec.device.DeviceProfile",
+        "cardinality": "one",
+        "via": "device_profile_id"
+      }
+    },
+    "state": {
+      "$ref": "#/$defs/modelspec.training.TrainingRun.State"
+    }
+  },
+  "required": [
+    "training_run_id",
+    "artifact_id",
+    "steps",
+    "start_step",
+    "current_step",
+    "optimizer",
+    "rng",
+    "state"
+  ],
+  "additionalProperties": false,
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "234f6a472e3807a40047accc727c1a09300421617ec3572a2b88aa81c79c672e",
+    "contract_digest": "slice-sha256/2:0772d9b0cebc0b7eb26b5547a75bf5d5409e2d24d076f38621f3cb4be5811483",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.artifact.ArtifactId": {
+      "title": "ArtifactId",
+      "x-ess-name": "modelspec.artifact.ArtifactId",
+      "x-ess-kind": "newtype",
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    },
+    "modelspec.checkpoint.CheckpointId": {
+      "title": "CheckpointId",
+      "x-ess-name": "modelspec.checkpoint.CheckpointId",
+      "x-ess-kind": "newtype",
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    },
+    "modelspec.device.DeviceProfileId": {
+      "title": "DeviceProfileId",
+      "x-ess-name": "modelspec.device.DeviceProfileId",
+      "x-ess-kind": "newtype",
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    },
+    "modelspec.training.LearningRateSchedule": {
+      "title": "LearningRateSchedule",
+      "description": "How the learning rate varies over steps; a linear warmup over the first warmup_steps steps up to OptimizerConfig.learning_rate (epic:bert-from-scratch, AdamW with warmup).",
+      "x-ess-name": "modelspec.training.LearningRateSchedule",
+      "x-ess-kind": "struct",
+      "type": "object",
+      "properties": {
+        "warmup_steps": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "warmup_steps"
+      ],
+      "additionalProperties": false,
+      "x-ess-invariants": [
+        "warmup_steps >= 0"
+      ]
+    },
+    "modelspec.training.OptimizerConfig": {
+      "title": "OptimizerConfig",
+      "description": "Optimizer hyperparameters, recorded for reproducibility (DESIGN.md § 6.1). The AdamW fields are present exactly when kind is AdamW (Loshchilov and Hutter, decoupled weight decay); its first and second moments are a checkpoint's optimizer slots (DESIGN.md § 6.2).",
+      "x-ess-name": "modelspec.training.OptimizerConfig",
+      "x-ess-kind": "struct",
+      "type": "object",
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/modelspec.training.OptimizerKind"
+        },
+        "learning_rate": {
+          "description": "The base learning rate; the peak rate when a schedule is present.",
+          "type": "number"
+        },
+        "weight_decay": {
+          "description": "AdamW decoupled weight decay coefficient (epic:bert-from-scratch).",
+          "type": "number"
+        },
+        "beta1": {
+          "description": "AdamW first-moment decay rate.",
+          "type": "number"
+        },
+        "beta2": {
+          "description": "AdamW second-moment decay rate.",
+          "type": "number"
+        },
+        "epsilon": {
+          "description": "AdamW denominator term.",
+          "type": "number"
+        },
+        "schedule": {
+          "$ref": "#/$defs/modelspec.training.LearningRateSchedule",
+          "description": "Absent means a constant learning rate, as M0 SGD has."
+        }
+      },
+      "required": [
+        "kind",
+        "learning_rate"
+      ],
+      "additionalProperties": false,
+      "x-ess-invariants": [
+        "((kind == Sgd and not (defined(weight_decay)) and not (defined(beta1)) and not (defined(beta2)) and not (defined(epsilon))) or (kind == AdamW and defined(weight_decay) and defined(beta1) and defined(beta2) and defined(epsilon)))"
+      ]
+    },
+    "modelspec.training.OptimizerKind": {
+      "title": "OptimizerKind",
+      "description": "SGD from M0; AdamW with weight decay joins at M3 (DESIGN.md § 1, § 11 iteration 4; epic:bert-from-scratch). The CLI accepts only `sgd` until then.",
+      "x-ess-name": "modelspec.training.OptimizerKind",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "Sgd",
+        "AdamW"
+      ]
+    },
+    "modelspec.training.RngAlgorithm": {
+      "title": "RngAlgorithm",
+      "description": "The counter-based PRNG of DESIGN.md § 2.3.",
+      "x-ess-name": "modelspec.training.RngAlgorithm",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "Philox4x32x10"
+      ]
+    },
+    "modelspec.training.RngState": {
+      "title": "RngState",
+      "description": "RNG algorithm, seed and counter position (DESIGN.md § 2.3, § 6.1, § 6.2).",
+      "x-ess-name": "modelspec.training.RngState",
+      "x-ess-kind": "struct",
+      "type": "object",
+      "properties": {
+        "algorithm": {
+          "$ref": "#/$defs/modelspec.training.RngAlgorithm"
+        },
+        "seed": {
+          "type": "integer"
+        },
+        "counter": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "algorithm",
+        "seed",
+        "counter"
+      ],
+      "additionalProperties": false
+    },
+    "modelspec.training.TrainingRun.State": {
+      "title": "State",
+      "x-ess-name": "modelspec.training.TrainingRun.State",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "Recorded"
+      ]
+    },
+    "modelspec.training.TrainingRunId": {
+      "title": "TrainingRunId",
+      "x-ess-name": "modelspec.training.TrainingRunId",
+      "x-ess-kind": "newtype",
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    }
+  }
+}

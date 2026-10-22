@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Dataset",
+  "description": "The pre-training corpus, a small public one, and its splits (epic:bert-from-scratch \"corpus/dataset\"). Its data order in a run is deterministic from the run seed (DESIGN.md § 2.3).",
+  "x-ess-name": "modelspec.data.Dataset",
+  "x-ess-kind": "entity",
+  "type": "object",
+  "properties": {
+    "dataset_id": {
+      "$ref": "#/$defs/modelspec.data.DatasetId"
+    },
+    "name": {
+      "type": "string"
+    },
+    "splits": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/modelspec.data.DatasetSplit"
+      }
+    },
+    "state": {
+      "$ref": "#/$defs/modelspec.data.Dataset.State"
+    }
+  },
+  "required": [
+    "dataset_id",
+    "name",
+    "splits",
+    "state"
+  ],
+  "additionalProperties": false,
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "234f6a472e3807a40047accc727c1a09300421617ec3572a2b88aa81c79c672e",
+    "contract_digest": "slice-sha256/2:50281ea7ab415187d94a87a3f923868a23e3090d2dda09daf397e4d955efe93f",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.data.Dataset.State": {
+      "title": "State",
+      "x-ess-name": "modelspec.data.Dataset.State",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "Recorded"
+      ]
+    },
+    "modelspec.data.DatasetId": {
+      "title": "DatasetId",
+      "x-ess-name": "modelspec.data.DatasetId",
+      "x-ess-kind": "newtype",
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    },
+    "modelspec.data.DatasetSplit": {
+      "title": "DatasetSplit",
+      "description": "One split of a corpus.",
+      "x-ess-name": "modelspec.data.DatasetSplit",
+      "x-ess-kind": "struct",
+      "type": "object",
+      "properties": {
+        "role": {
+          "$ref": "#/$defs/modelspec.data.SplitRole"
+        }
+      },
+      "required": [
+        "role"
+      ],
+      "additionalProperties": false
+    },
+    "modelspec.data.SplitRole": {
+      "title": "SplitRole",
+      "description": "What a split is used for; MLM loss and accuracy are evaluated on the held-out split (epic:bert-from-scratch).",
+      "x-ess-name": "modelspec.data.SplitRole",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "Train",
+        "HeldOut"
+      ]
+    }
+  }
+}

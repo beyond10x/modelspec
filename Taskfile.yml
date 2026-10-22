@@ -30,6 +30,21 @@ tasks:
     cmds:
       - cargo run -q -p modelspec-docs -- generate --check
 
+  spec-validate:
+    dir: spec
+    cmds:
+      - ess specify validate --path .
+
+  schema-generate:
+    dir: spec
+    cmds:
+      - ess generate --kind schema --path . --out ../crates/modelspec-observatory
+
+  schema-check:
+    dir: spec
+    cmds:
+      - ess generate --kind schema --path . --out ../crates/modelspec-observatory --check
+
   website:
     dir: website
     cmds:
@@ -68,3 +83,5 @@ tasks:
       - task: core-no-vulkan
       - task: check-examples
       - task: docs-check
+      - task: spec-validate
+      - task: schema-check

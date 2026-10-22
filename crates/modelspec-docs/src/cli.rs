@@ -178,12 +178,15 @@ mod tests {
         assert!(page.contains("custom_edit_url: null"));
         assert!(page.contains("| [`modelspec check`](#modelspec-check) |"));
         assert!(page.contains("## `modelspec train`"));
-        assert!(page.contains("Usage: modelspec train --backend <BACKEND> <PATH>"));
+        assert!(page.contains("Usage: modelspec train [OPTIONS] --backend <BACKEND> <PATH>"));
         assert!(page.contains(
             "Every argument is required and has no default.\n\n| Argument | Meaning |\n|---|---|\n\
              | `<PATH>` | The .mspec file to check. |"
         ));
-        assert!(!page.contains("| Required |"));
+        let (before_train, train) = page.split_once("## `modelspec train`").unwrap();
+        assert!(!before_train.contains("| Required |"));
+        assert!(train.contains("| Argument | Required | Default | Meaning |"));
+        assert!(train.contains("| `--serve <ADDR>` | no | none |"));
         assert!(page.contains("One of:<br/>`cpu`: The CPU interpreter"));
         assert!(page.contains("<br/>`training`: Training IR"));
         assert!(page.contains("| `2` | a usage error |"));

@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/modelspec.observatory.Histogram",
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "234f6a472e3807a40047accc727c1a09300421617ec3572a2b88aa81c79c672e",
+    "contract_digest": "slice-sha256/2:87b1ce6174769942cdff3b165583f779c3e2cfd2bd58e25ee90f564c6bfd45b8",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.observatory.Histogram": {
+      "title": "Histogram",
+      "description": "The distribution of one tensor's elements in bins; bin i counts the elements in [bin_edges[i], bin_edges[i+1]), so there is one more edge than counts, which ESS does not state here.",
+      "x-ess-name": "modelspec.observatory.Histogram",
+      "x-ess-kind": "struct",
+      "type": "object",
+      "properties": {
+        "bin_edges": {
+          "description": "The bin edges in ascending order; an edge is null when it is NaN or ±inf, which Binary64 does not hold (wave observatory-1 coordinator, 2026-10-21).",
+          "type": "array",
+          "items": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "counts": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          }
+        }
+      },
+      "required": [
+        "bin_edges",
+        "counts"
+      ],
+      "additionalProperties": false,
+      "x-ess-invariants": [
+        "forall count in counts: (count >= 0)"
+      ]
+    }
+  }
+}

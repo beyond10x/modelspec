@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/modelspec.observatory.TensorOperator",
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "234f6a472e3807a40047accc727c1a09300421617ec3572a2b88aa81c79c672e",
+    "contract_digest": "slice-sha256/2:b4f8e9e5be59752f974d2c63da15b1a2b3055f9d141378ccbfd9200f91a82576",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.observatory.TensorOperator": {
+      "title": "TensorOperator",
+      "description": "The Tensor IR operations, ReluGrad and BroadcastScalar being internal gradient ops (DESIGN.md § 3.1, § 4; `TensorOp` in `modelspec-core/src/ir/tensor.rs`). The operators of epic:bert-from-scratch join as the compiler gains them.",
+      "x-ess-name": "modelspec.observatory.TensorOperator",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "Input",
+        "ParamRead",
+        "Scalar",
+        "Add",
+        "Sub",
+        "Mul",
+        "MatMul",
+        "Relu",
+        "Transpose",
+        "ReduceSum",
+        "ReduceMean",
+        "Mse",
+        "ReluGrad",
+        "BroadcastScalar"
+      ]
+    }
+  }
+}

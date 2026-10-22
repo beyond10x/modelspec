@@ -15,15 +15,34 @@
 //! cannot have, prints its diagnostics to stderr and exits 1; a file that cannot be read, a run
 //! that fails, or a run that cannot be written to stdout (a closed pipe, a full device) is
 //! reported on one line and exits 1.
+//!
+//! `--serve <addr>` also streams the run as `text/event-stream` at `http://<addr>/events`
+//! (`spec/domains/observatory.yaml`, `ServeAddress` and `StreamFrame`; [`modelspec_observatory`]).
+//! Once the file compiles the address is bound and `serving http://<bound address>/events` is
+//! printed on stderr; then the stream is `RunStarted`, one `StepCompleted` per loss, for each of the
+//! `steps + 1` the run records, and `RunFinished` once stdout is written, or `RunFailed` with the
+//! failure stderr reports. Stdout is byte for byte what the run prints without the flag. The
+//! process then keeps serving, so a client that connects late reads the whole stream, until
+//! SIGINT, SIGTERM or SIGHUP, on which it exits with the run's own status: 0 for a run that
+//! finished, 1 for one that failed (wave observatory-1 coordinator, 2026-10-21). The run has ended
+//! once it has printed its last stdout line, or for a run that fails its failure on stderr, so a
+//! signal sent after that line or after `RunFinished` or `RunFailed` gets the run's status
+//! (coordinator, 2026-10-22). A signal before the run ends stops the process as it stops a run
+//! without the flag; a file that does not compile is reported and exits 1 without serving.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::io::Write;
+use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::mpsc;
 
 use modelspec_core::compile::{self, CompiledTraining};
 use modelspec_core::diag::{Code, Diagnostic};
 use modelspec_core::ir::tensor::ParamId;
+use modelspec_observatory::{
+    EVENTS_PATH, RunEventBody, RunFailed, RunStarted, Server, StepCompleted, TrainingRunId,
+};
 use modelspec_runtime::cpu::HostTensor;
 use modelspec_runtime::train::data::DataError;
 use modelspec_runtime::train::runner::{self, Run, RunError};
@@ -42,6 +61,11 @@ pub struct Args {
     /// The backend that runs the training step.
     #[arg(long, value_enum)]
     pub backend: Backend,
+    /// Stream the run's events as text/event-stream at path /events of ADDR, a loopback address
+    /// such as 127.0.0.1:8080 or localhost:8080 (port 0 picks a free one); the process keeps
+    /// serving after the run until SIGINT, SIGTERM or SIGHUP, then exits with the run's status.
+    #[arg(long, value_name = "ADDR", value_parser = modelspec_observatory::parse_serve_address)]
+    pub serve: Option<SocketAddr>,
 }
 
 /// A backend `modelspec train` can name.
@@ -82,28 +106,141 @@ pub fn run(args: Args, stdout: &mut dyn Write, stderr: &mut dyn Write) -> u8 {
             return crate::EXIT_FAILURE;
         }
     };
-    let run = match runner::run(&compiled) {
-        Ok(run) => run,
-        Err(RunError::Data(DataError::Refused(diagnostic))) => {
-            let _ = writeln!(stderr, "{diagnostic}");
-            return crate::EXIT_FAILURE;
-        }
-        Err(error) => {
-            let _ = writeln!(stderr, "modelspec train {file}: {error}");
-            return crate::EXIT_FAILURE;
+    let server = match args.serve {
+        None => None,
+        Some(address) => match Server::bind(address, TrainingRunId::new()) {
+            Ok(server) => {
+                let _ = writeln!(
+                    stderr,
+                    "serving http://{}{EVENTS_PATH}",
+                    server.local_addr()
+                );
+                Some(server)
+            }
+            Err(error) => {
+                let _ = writeln!(
+                    stderr,
+                    "modelspec train {file}: cannot serve on {address}: {error}"
+                );
+                return crate::EXIT_FAILURE;
+            }
+        },
+    };
+    let _ = stderr.flush();
+    let emit = |body: RunEventBody| {
+        if let Some(server) = &server {
+            server.emit(body);
         }
     };
-    match stdout
-        .write_all(report(&compiled, &run).as_bytes())
-        .and_then(|()| stdout.flush())
-    {
-        Ok(()) => crate::EXIT_SUCCESS,
+    emit(RunEventBody::RunStarted(RunStarted {
+        steps: compiled.config.steps,
+        start_step: 0,
+    }));
+    let mut handler = None;
+    let outcome = train(
+        &file,
+        &compiled,
+        &emit,
+        &mut || {
+            if server.is_some() && handler.is_none() {
+                handler = Some(interrupted());
+            }
+        },
+        stdout,
+        stderr,
+    );
+    let _ = stderr.flush();
+    let (code, last) = match outcome {
+        Ok(()) => (crate::EXIT_SUCCESS, RunEventBody::RunFinished),
+        Err(failed) => (crate::EXIT_FAILURE, RunEventBody::RunFailed(failed)),
+    };
+    let interrupted = handler.flatten();
+    emit(last);
+    match (server, interrupted) {
+        (Some(_server), Some(interrupted)) => {
+            let _ = interrupted.recv();
+            code
+        }
+        (Some(server), None) => {
+            server.wait();
+            code
+        }
+        (None, _) => code,
+    }
+}
+
+/// A receiver that gets a message on SIGINT, SIGTERM or SIGHUP (the three `ctrlc`'s `termination`
+/// feature catches) from now on, or `None` when the handler cannot be installed (one is installed
+/// already). Installed only as the run ends, before its last stdout line or its failure line on
+/// stderr, so a signal earlier in the run stops the process as it stops a run without `--serve`.
+fn interrupted() -> Option<mpsc::Receiver<()>> {
+    let (send, receive) = mpsc::channel();
+    ctrlc::set_handler(move || {
+        let _ = send.send(());
+    })
+    .ok()?;
+    Some(receive)
+}
+
+/// Trains `compiled`, emits a `StepCompleted` for each loss as it is recorded and writes the run
+/// to stdout. A failure is reported on stderr and returned as the `RunFailed` that ends the stream.
+/// `end` is called as the run ends: before the last stdout line, and before a failure line.
+fn train(
+    file: &str,
+    compiled: &CompiledTraining,
+    emit: &dyn Fn(RunEventBody),
+    end: &mut dyn FnMut(),
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+) -> Result<(), RunFailed> {
+    let observed = runner::run_observed(compiled, |step, loss| {
+        emit(RunEventBody::StepCompleted(StepCompleted {
+            step,
+            loss: f64::from(loss),
+            metrics: Vec::new(),
+            parameters: Vec::new(),
+        }));
+    });
+    let run = match observed {
+        Ok(run) => run,
+        Err(RunError::Data(DataError::Refused(diagnostic))) => {
+            end();
+            let _ = writeln!(stderr, "{diagnostic}");
+            return Err(RunFailed {
+                code: Some(diagnostic.code.to_string()),
+                message: diagnostic.message.clone(),
+            });
+        }
         Err(error) => {
-            let _ = writeln!(
-                stderr,
-                "modelspec train {file}: cannot write the run: {error}"
-            );
-            crate::EXIT_FAILURE
+            end();
+            let _ = writeln!(stderr, "modelspec train {file}: {error}");
+            return Err(RunFailed {
+                code: None,
+                message: error.to_string(),
+            });
+        }
+    };
+    let printed = report(compiled, &run);
+    let body = printed.trim_end_matches('\n');
+    let (head, last) = printed.split_at(body.rfind('\n').map_or(0, |i| i + 1));
+    let written = stdout
+        .write_all(head.as_bytes())
+        .and_then(|()| stdout.flush())
+        .and_then(|()| {
+            end();
+            stdout.write_all(last.as_bytes())
+        })
+        .and_then(|()| stdout.flush());
+    match written {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            end();
+            let message = format!("cannot write the run: {error}");
+            let _ = writeln!(stderr, "modelspec train {file}: {message}");
+            Err(RunFailed {
+                code: None,
+                message,
+            })
         }
     }
 }

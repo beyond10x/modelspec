@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/modelspec.observatory.RunStarted",
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "234f6a472e3807a40047accc727c1a09300421617ec3572a2b88aa81c79c672e",
+    "contract_digest": "slice-sha256/2:d4a399d22fa4ab5639b8ab76d140a9b85d9d47f142aa905ba7bc642884d7f548",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.observatory.RunStarted": {
+      "title": "RunStarted",
+      "description": "The event of a run starting, the first of its stream (RunEventBody). It carries the two TrainingRun fields that say which steps follow, start_step through start_step + steps (DESIGN.md § 6); the other record fields are the run's artifact and record, which M0 does not write (story:m0-cpu-sgd-training, Out of scope).",
+      "x-ess-name": "modelspec.observatory.RunStarted",
+      "x-ess-kind": "struct",
+      "type": "object",
+      "properties": {
+        "steps": {
+          "description": "TrainingRun.steps, the steps of this invocation.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "start_step": {
+          "description": "TrainingRun.start_step, the step of the first StepCompleted.",
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "steps",
+        "start_step"
+      ],
+      "additionalProperties": false,
+      "x-ess-invariants": [
+        "steps >= 0",
+        "start_step >= 0"
+      ]
+    }
+  }
+}

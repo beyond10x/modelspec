@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/modelspec.observatory.StreamFrame",
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "234f6a472e3807a40047accc727c1a09300421617ec3572a2b88aa81c79c672e",
+    "contract_digest": "slice-sha256/2:0cd53fe82cb91336614b9f2b9ce280727a061ccd14567494263482b98b688e93",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.observatory.RunEventKind": {
+      "title": "RunEventKind",
+      "description": "The SSE `event:` name of a StreamFrame, the `kind` tag of its RunEvent's body (RunEventBody).",
+      "x-ess-name": "modelspec.observatory.RunEventKind",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "RunStarted",
+        "StepCompleted",
+        "RunFinished",
+        "RunFailed"
+      ]
+    },
+    "modelspec.observatory.StreamFrame": {
+      "title": "StreamFrame",
+      "description": "One Server-Sent Events frame of the live stream (epic:training-observatory, In scope, first bullet; wave observatory-1 coordinator, 2026-10-21), the lines `event:`, `id:` and `data:` and a blank line. `GET /events` at the ServeAddress answers 200 with `Content-Type text/event-stream` and sends the run's events in sequence order from sequence 0, or from the one after a `Last-Event-ID` request header, then each new event as the run emits it, and closes the response after RunFinished or RunFailed; any other path answers 404. The process keeps serving after the run ends, so a client that connects late reads the whole stream; on SIGINT, SIGTERM or SIGHUP after the run ends it stops serving and exits with the run's own status, 0 for a run that finished and 1 for a run that failed, the code `modelspec train` gives without the flag (wave observatory-1 coordinator, 2026-10-21); a signal before the run ends stops the process as it stops a run without the flag. The run has ended once it has printed its last stdout line, or for a run that fails its failure on stderr, which come before RunFinished and RunFailed, so a signal sent after any of them gets the run's status (wave observatory-1 coordinator, 2026-10-22).",
+      "x-ess-name": "modelspec.observatory.StreamFrame",
+      "x-ess-kind": "struct",
+      "type": "object",
+      "properties": {
+        "event": {
+          "$ref": "#/$defs/modelspec.observatory.RunEventKind"
+        },
+        "id": {
+          "description": "The RunEvent's sequence.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "data": {
+          "description": "The JSON of one RunEvent on one line, valid against the JSON Schema `ess generate --kind schema` writes for it.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "event",
+        "id",
+        "data"
+      ],
+      "additionalProperties": false,
+      "x-ess-invariants": [
+        "id >= 0"
+      ]
+    }
+  }
+}

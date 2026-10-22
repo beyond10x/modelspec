@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/modelspec.observatory.ModelGraphId",
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "234f6a472e3807a40047accc727c1a09300421617ec3572a2b88aa81c79c672e",
+    "contract_digest": "slice-sha256/2:c5e3b99c19891f26057b1c73cdeaf1380c5b8df00c8a600f8fbac0287a42a147",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.observatory.ModelGraphId": {
+      "title": "ModelGraphId",
+      "x-ess-name": "modelspec.observatory.ModelGraphId",
+      "x-ess-kind": "newtype",
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    }
+  }
+}
