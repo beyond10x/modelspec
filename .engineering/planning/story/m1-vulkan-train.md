@@ -2,7 +2,7 @@
 format: aep.planning-md/3
 id: story:m1-vulkan-train
 kind: story
-status: draft
+status: active
 title: 'modelspec train --backend vulkan: a whole training run on the GPU with one host wait'
 summary: Data and weights uploaded once, many steps per command buffer, losses kept on the device, one wait and one read-back per run, final parameters within 1e-4 relative L2 of the CPU, no CUDA
 relations:
@@ -57,7 +57,10 @@ scope:
   path: website/docs/reference/diagnostics.md
 - confidence: cited
   path: website/docs/roadmap.md
-revision: 8
+revision: 10
+transitions:
+- {from: "draft", to: "proposed", at: "2026-10-22T08:47:39Z", actor: "human:timo", revision: 9, decided_on: {"recorded":{"review_outcome":4}}}
+- {from: "proposed", to: "active", at: "2026-10-22T08:47:39Z", actor: "human:timo", revision: 10, decided_on: {"recorded":{"review_outcome":4}}}
 ---
 # `modelspec train --backend vulkan`: a whole training run on the GPU with one host wait
 
