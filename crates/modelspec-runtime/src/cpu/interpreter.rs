@@ -310,14 +310,28 @@ fn elementwise<T: Element>(
 }
 
 /// `[M, K] x [K, N] -> [M, N]`; each element sums its `K` products in ascending `k`.
+///
+/// Loop order `i`, `k`, `j`, so the inner loop reads a row of `b`: each output row starts as its
+/// `k = 0` products (not `+0`, so an all-`-0` sum stays `-0`) and every later `k` adds its
+/// products in turn, the same sequence of roundings per element as summing over `k` directly.
 fn matmul<T: Element>(data: &mut Vec<T>, a: &HostTensor<T>, b: &HostTensor<T>) {
     let m = a.shape()[0] as usize;
     let k = a.shape()[1] as usize;
     let n = b.shape()[1] as usize;
     let (a, b) = (a.data(), b.data());
-    for i in 0..m {
-        for j in 0..n {
-            data.push(sum((0..k).map(|p| a[i * k + p] * b[p * n + j])));
+    if k == 0 || n == 0 {
+        data.extend(std::iter::repeat_n(T::ZERO, m * n));
+        return;
+    }
+    for a_row in a.chunks_exact(k) {
+        let start = data.len();
+        let (&first, rest) = a_row.split_first().expect("k > 0");
+        data.extend(b[..n].iter().map(|&y| first * y));
+        let row = &mut data[start..];
+        for (&x, b_row) in rest.iter().zip(b[n..].chunks_exact(n)) {
+            for (acc, &y) in row.iter_mut().zip(b_row) {
+                *acc = *acc + x * y;
+            }
         }
     }
 }

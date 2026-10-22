@@ -14,3 +14,7 @@ vulkan = []
 modelspec-core.workspace = true
 thiserror.workspace = true
 blake3.workspace = true
+
+[[bench]]
+name = "mnist_shape"
+harness = false
