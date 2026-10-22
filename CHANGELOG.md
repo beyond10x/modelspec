@@ -21,6 +21,10 @@ history.
 - `modelspec train --backend vulkan [--device N] [--stats]` trains on one Vulkan device with one host wait per run (`modelspec_runtime::vulkan::runner::train`: chained command buffers of `CHUNK_STEPS` = 256 steps, one upload, one read-back) and prints the lines of the CPU run within the gate 5 tolerance; `--stats` prints the `RunStats` counters on stderr, `train` reports E-TARGET-002 to E-TARGET-004, and only a build without the `vulkan` feature refuses the backend with E-TARGET-001 (story:m1-vulkan-train)
 - `modelspec train --backend vulkan --profile` prints on stderr one `profile dispatch <plan> <position> <kernel_module_id> <entry> calls <n> total_us <t> mean_us <m>` line per dispatch site from timestamp queries read back with no extra host wait, then the run counters, pipeline creation and compile time and the steady-state µs per step after a 20-step warm-up (`modelspec_runtime::vulkan::runner::train_profiled`, `modelspec_runtime::vulkan::profile`); the guide `inspect-a-run` shows the IR, plan and timing paths (story:m1-vulkan-profile)
 
+### Changed
+
+- The `mse` loss sum kernel of `modelspec_runtime::spirv::emit` runs one workgroup of 64 invocations that stage the terms in workgroup memory, in chunks of `max_shared_memory_bytes / 4`, and invocation 0 adds them in the same row-major order, so the loss sum and its bits are unchanged; `KernelKind::LossSum.workgroup_size()` is now 64 and its kernel module id changes (story:m1-loss-sum-staged)
+
 ## [0.3.0] - 2026-10-22
 
 An AVX2 CPU `matmul`, 2.98× faster on the MNIST shape with the same bits.

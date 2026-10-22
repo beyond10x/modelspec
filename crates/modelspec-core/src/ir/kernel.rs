@@ -126,7 +126,8 @@ pub enum KernelKind {
     ReduceStage1,
     /// The second stage: one workgroup reads every partial and writes the result.
     ReduceStage2,
-    /// The `mse` loss, summed by one invocation in row-major order (DESIGN.md § 5.4).
+    /// The `mse` loss: one workgroup stages its terms in workgroup memory and invocation 0 sums
+    /// them in row-major order (DESIGN.md § 5.2, § 5.4).
     LossSum,
     Transpose,
     /// One invocation per output element.
@@ -136,13 +137,9 @@ pub enum KernelKind {
 }
 
 impl KernelKind {
-    /// The workgroup size of the kind in the fixed safe schedule: 64 invocations, except the loss
-    /// sum, which has 1.
+    /// The workgroup size of the kind in the fixed safe schedule: 64 invocations for every kind.
     pub const fn workgroup_size(self) -> u32 {
-        match self {
-            KernelKind::LossSum => 1,
-            _ => 64,
-        }
+        64
     }
 }
 

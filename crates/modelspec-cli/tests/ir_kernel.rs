@@ -57,7 +57,7 @@ fn the_golden_shows_both_plans_and_no_completion_point() {
         .find(|l| l.contains(" loss_sum Mse "))
         .expect("the golden has the mse loss-sum kernel");
     assert!(
-        loss_sum.ends_with("workgroup_size 1 workgroups [1, 1, 1]"),
+        loss_sum.ends_with("workgroup_size 64 workgroups [1, 1, 1]"),
         "{loss_sum}"
     );
 }

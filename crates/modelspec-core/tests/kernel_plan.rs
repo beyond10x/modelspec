@@ -3,7 +3,7 @@
 //!
 //! Every case compiles a real `.mspec` file through `compile::compile_artifact` and reads the
 //! artifact's [`ExecutionPlan`]: one Dispatch per computing op of the training step, the `mse` loss
-//! sum as one Dispatch of one invocation, every other reduce as `Allocate`, stage 1, `Barrier`,
+//! sum as one Dispatch of one workgroup, every other reduce as `Allocate`, stage 1, `Barrier`,
 //! stage 2, no `Complete` step, one view per parameter, and a forward plan that writes no
 //! parameter.
 
@@ -127,7 +127,7 @@ fn the_step_plan_of_a_mse_model_is_one_dispatch_per_computing_op(path: &str) {
     assert_eq!(step.workgroups, Some([1, 1, 1]));
     assert_eq!(kind(plan, step), KernelKind::LossSum);
     let kernel = plan.kernel(step.kernel_module_id.unwrap()).unwrap();
-    assert_eq!(kernel.workgroup_size, 1);
+    assert_eq!(kernel.workgroup_size, 64);
     assert_eq!(kernel.workgroups, [1, 1, 1]);
 
     assert_eq!(
@@ -413,8 +413,8 @@ fn every_printed_kernel_shows_the_workgroup_size_of_its_kind() {
             );
         }
     }
-    assert_eq!(KernelKind::LossSum.workgroup_size(), 1);
     for kind in [
+        KernelKind::LossSum,
         KernelKind::Elementwise,
         KernelKind::Broadcast,
         KernelKind::ReduceStage1,

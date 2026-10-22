@@ -427,3 +427,168 @@ fn emit_declares_the_workgroup_size_of_the_kind_and_no_float_control_mode() {
         "SPIR-V 1.5, the version of Vulkan 1.2"
     );
 }
+
+// story:m1-loss-sum-staged acceptance 2: the loss sum runs one workgroup of 64 that stages its
+// terms in workgroup memory, sized by the shape and the device's `max_shared_memory_bytes`.
+
+/// The `OpVariable`, `OpTypePointer`, `OpTypeArray`, `OpConstant` and `OpControlBarrier` opcodes,
+/// and the `Workgroup` storage class.
+const OP_VARIABLE: u32 = 59;
+const OP_TYPE_POINTER: u32 = 32;
+const OP_TYPE_ARRAY: u32 = 28;
+const OP_CONSTANT: u32 = 43;
+const OP_CONTROL_BARRIER: u32 = 224;
+const STORAGE_WORKGROUP: u32 = 4;
+
+/// The length of every `Workgroup` array variable of `module`, in declaration order.
+fn workgroup_array_lengths(module: &[u32]) -> Vec<u32> {
+    let all = common::words::instructions(module);
+    let find = |op: u32, id: u32| {
+        all.iter()
+            .find(|(o, w)| *o == op && w[1] == id)
+            .map(|(_, w)| *w)
+            .unwrap_or_else(|| panic!("opcode {op} defines %{id}"))
+    };
+    all.iter()
+        .filter(|(op, w)| *op == OP_VARIABLE && w[3] == STORAGE_WORKGROUP)
+        .map(|(_, w)| {
+            let pointer = find(OP_TYPE_POINTER, w[1]);
+            assert_eq!(pointer[2], STORAGE_WORKGROUP);
+            let array = find(OP_TYPE_ARRAY, pointer[3]);
+            all.iter()
+                .find(|(o, c)| *o == OP_CONSTANT && c[2] == array[3])
+                .map(|(_, c)| c[3])
+                .expect("the array length is a constant")
+        })
+        .collect()
+}
+
+fn local_size(module: &[u32]) -> Vec<u32> {
+    common::words::execution_modes(module)
+        .into_iter()
+        .find(|(mode, _)| *mode == 17)
+        .map(|(_, size)| size)
+        .expect("the module declares LocalSize")
+}
+
+/// The `OpLoad`, `OpStore`, `OpAccessChain` and `OpInBoundsAccessChain` opcodes.
+const OP_LOAD: u32 = 61;
+const OP_STORE: u32 = 62;
+const OP_ACCESS_CHAIN: u32 = 65;
+const OP_IN_BOUNDS_ACCESS_CHAIN: u32 = 66;
+
+/// Walks the module in layout order, in which the emitter places each staging loop before the
+/// sum that reads it and each chunk after the one before, and returns the stores and loads of
+/// workgroup memory as `'S'` and `'L'`, with `'B'` for each `OpControlBarrier`, plus every
+/// switch between a store and a load, either way round, that has no barrier between them: a
+/// read of a term before every invocation has staged it, or a store over a term before
+/// invocation 0 has added it.
+fn workgroup_accesses(module: &[u32]) -> (String, Vec<usize>) {
+    let all = common::words::instructions(module);
+    let mut shared: Vec<u32> = all
+        .iter()
+        .filter(|(op, w)| *op == OP_VARIABLE && w[3] == STORAGE_WORKGROUP)
+        .map(|(_, w)| w[2])
+        .collect();
+    let mut trace = String::new();
+    for (op, w) in &all {
+        match *op {
+            OP_ACCESS_CHAIN | OP_IN_BOUNDS_ACCESS_CHAIN if shared.contains(&w[3]) => {
+                shared.push(w[2]);
+            }
+            OP_STORE if shared.contains(&w[1]) => trace.push('S'),
+            OP_LOAD if shared.contains(&w[3]) => trace.push('L'),
+            OP_CONTROL_BARRIER => trace.push('B'),
+            _ => {}
+        }
+    }
+    let mut unguarded = Vec::new();
+    let mut last: Option<char> = None;
+    for (at, access) in trace.chars().enumerate() {
+        match (last, access) {
+            (_, 'B') => last = None,
+            (Some(before), now) if before != now => {
+                unguarded.push(at);
+                last = Some(now);
+            }
+            (_, now) => last = Some(now),
+        }
+    }
+    (trace, unguarded)
+}
+
+#[test]
+fn the_loss_sum_stages_its_terms_in_workgroup_memory_sized_by_the_shape_and_the_profile() {
+    let mut total = 0;
+    let mut hazards = Vec::new();
+    for bytes in [49_152u32, 260, 256] {
+        let mut profile = fixture_with([true; 3]);
+        profile.max_shared_memory_bytes = bytes;
+        for count in [1u64, 63, 64, 65, 1_000, 100_000] {
+            let kernel = common::loss_sum_kernel(count);
+            assert_eq!(kernel.workgroup_size, 64);
+            let chunk = count.min(u64::from(bytes / 4)) as u32;
+            for module in [
+                emit_module(&kernel, &profile).expect("the loss sum emits"),
+                emit_loss_sum_undivided(&kernel, &profile).expect("the undivided sum emits"),
+            ] {
+                let what = format!("{count} terms, {bytes} bytes");
+                validate(&module.spirv).unwrap_or_else(|error| panic!("{what}: {error}"));
+                assert_eq!(local_size(&module.spirv), [64, 1, 1], "{what}");
+                assert_eq!(
+                    workgroup_array_lengths(&module.spirv),
+                    [chunk],
+                    "{what}: one f32 array of min(count, bytes / 4)"
+                );
+                let (trace, unguarded) = workgroup_accesses(&module.spirv);
+                let chunks = count.div_ceil(u64::from(chunk)) as usize;
+                assert!(
+                    trace.contains('S') && trace.contains('L'),
+                    "{what}: stores and loads of workgroup memory, got {trace}"
+                );
+                if !unguarded.is_empty() {
+                    hazards.push(format!(
+                        "{what} ({chunks} chunks): unguarded at {unguarded:?} of {trace}"
+                    ));
+                }
+                if (chunks > 1) != trace.contains("LBS") {
+                    hazards.push(format!(
+                        "{what} ({chunks} chunks): a later chunk stages after a barrier after a \
+                         sum exactly when there is more than one chunk, in {trace}"
+                    ));
+                }
+                let (missing, all) = common::words::uncontracted_arithmetic(&module.spirv);
+                assert!(all > 0 && missing.is_empty(), "{what}: {missing:?}");
+                total += 1;
+            }
+        }
+    }
+    assert!(
+        hazards.is_empty(),
+        "a barrier between staging and summing, and between a chunk's sum and the next chunk's \
+         staging: {hazards:#?}"
+    );
+    let kernel = common::loss_sum_kernel(1_000);
+    let mut small = fixture();
+    small.max_shared_memory_bytes = 256;
+    assert_ne!(
+        emit_module(&kernel, &fixture()).unwrap().cache_key.ir_hash,
+        emit_module(&kernel, &small).unwrap().cache_key.ir_hash,
+        "the chunk is in the key"
+    );
+    let words = emit(&common::loss_sum_kernel(100_000)).expect("emits without a profile");
+    validate(&words).expect("valid");
+    assert_eq!(
+        workgroup_array_lengths(&words),
+        [4_096],
+        "without a profile, the 16384 bytes every Vulkan device has"
+    );
+    small.max_shared_memory_bytes = 3;
+    assert!(matches!(
+        emit_module(&kernel, &small),
+        Err(EmitError::Operands { .. })
+    ));
+    eprintln!(
+        "spirv_val: {total} staged loss-sum modules pass spirv-val --target-env {TARGET_ENV}"
+    );
+}

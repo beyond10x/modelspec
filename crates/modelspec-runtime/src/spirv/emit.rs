@@ -20,8 +20,11 @@
 //! sums 64 consecutive elements per workgroup with a pairwise tree in workgroup memory and writes
 //! one partial per workgroup; stage 2 runs one workgroup whose invocation `i` sums partials `i`,
 //! `i + 64`, … in ascending order and folds those 64 sums with the same tree. Neither stage adds a
-//! padding term. The loss sum and each matmul output run in one invocation, in ascending element
-//! or `k` order from the first term, as the CPU interpreter does.
+//! padding term. Each matmul output runs in one invocation, in ascending `k` order from the first
+//! term, as the CPU interpreter does. The loss sum runs one workgroup of 64: its invocations stage
+//! the terms `(a - b) * (a - b)` in workgroup memory, as many at a time as the device profile's
+//! `max_shared_memory_bytes` holds, and invocation 0 adds them in ascending element order from the
+//! first term, chunk after chunk, as the CPU interpreter does.
 
 use std::collections::BTreeMap;
 
@@ -109,9 +112,14 @@ enum Variant {
     Undivided,
 }
 
-/// The SPIR-V words of `kernel`'s compute module, with no float-control mode.
+/// The workgroup memory every Vulkan device provides, the minimum of
+/// `maxComputeSharedMemorySize`: what a module built without a device profile stages into.
+pub const MIN_SHARED_MEMORY_BYTES: u32 = 16_384;
+
+/// The SPIR-V words of `kernel`'s compute module, with no float-control mode, for a device with
+/// [`MIN_SHARED_MEMORY_BYTES`] of workgroup memory.
 pub fn emit(kernel: &Kernel) -> Result<Vec<u32>, EmitError> {
-    Ok(build(kernel, Variant::Plan, false)?.assemble())
+    Ok(build(kernel, Variant::Plan, false, MIN_SHARED_MEMORY_BYTES)?.assemble())
 }
 
 /// The module of `kernel` for a device with `profile`.
@@ -166,7 +174,18 @@ fn module_for(
 ) -> Result<KernelModule, EmitError> {
     let float_controls = matches!(kernel.kind, KernelKind::LossSum | KernelKind::MatMul)
         && reports_float_controls(profile);
-    let spirv = build(kernel, variant, float_controls)?.assemble();
+    let body = body_of(kernel, variant, profile.max_shared_memory_bytes)?;
+    let chunk = match body {
+        Body::LossSum { chunk, .. } => format!(" chunk {chunk}"),
+        _ => String::new(),
+    };
+    let spirv = build(
+        kernel,
+        variant,
+        float_controls,
+        profile.max_shared_memory_bytes,
+    )?
+    .assemble();
     let mut shapes = Vec::new();
     for operand in &kernel.operands {
         if let Operand::Buffer(ty) = operand {
@@ -188,7 +207,11 @@ fn module_for(
     };
     let ir_hash = ContentHash(
         blake3::hash(
-            format!("modelspec-kernel-module/1\n{}\n{tag}", kernel.signature()).as_bytes(),
+            format!(
+                "modelspec-kernel-module/1\n{}\n{tag}{chunk}",
+                kernel.signature()
+            )
+            .as_bytes(),
         )
         .to_hex()
         .to_string(),
@@ -254,13 +277,28 @@ fn buffer_shapes(kernel: &Kernel, arity: usize) -> Result<Vec<Vec<u64>>, EmitErr
 enum Body {
     Elementwise(Arith, Vec<Source>),
     Stage1,
-    Stage2 { divide_by: Option<u32> },
-    LossSum { divide_by: Option<u32> },
-    Transpose { rows: u32, cols: u32 },
-    MatMul { k: u32, n: u32 },
+    Stage2 {
+        divide_by: Option<u32>,
+    },
+    /// `terms` is the element count of the shape and `chunk` the number of terms staged in
+    /// workgroup memory at a time.
+    LossSum {
+        divide_by: Option<u32>,
+        terms: u32,
+        chunk: u32,
+    },
+    Transpose {
+        rows: u32,
+        cols: u32,
+    },
+    MatMul {
+        k: u32,
+        n: u32,
+    },
 }
 
-fn body_of(kernel: &Kernel, variant: Variant) -> Result<Body, EmitError> {
+/// What `kernel` computes, for a device with `shared_bytes` of workgroup memory.
+fn body_of(kernel: &Kernel, variant: Variant, shared_bytes: u32) -> Result<Body, EmitError> {
     let unsupported = || EmitError::Unsupported {
         kind: kernel.kind,
         op: kernel.op,
@@ -320,7 +358,24 @@ fn body_of(kernel: &Kernel, variant: Variant) -> Result<Body, EmitError> {
                 Variant::Plan => Some(n),
                 Variant::Undivided => None,
             };
-            Body::LossSum { divide_by }
+            if kernel.workgroup_size != TREE {
+                return Err(operands_error(
+                    kernel,
+                    format!("the loss sum runs a workgroup of {TREE}"),
+                ));
+            }
+            let fits = shared_bytes / 4;
+            if fits == 0 {
+                return Err(operands_error(
+                    kernel,
+                    format!("{shared_bytes} bytes of workgroup memory hold no f32 term"),
+                ));
+            }
+            Body::LossSum {
+                divide_by,
+                terms: n,
+                chunk: n.clamp(1, fits),
+            }
         }
         (KernelKind::Transpose, "Transpose") => {
             let shapes = buffer_shapes(kernel, 1)?;
@@ -449,6 +504,10 @@ fn elementwise(kernel: &Kernel) -> Result<Body, EmitError> {
 /// The workgroup size of both reduction stages and the width of their tree.
 const TREE: u32 = 64;
 
+/// The iterations of one loop pass of the loss sum's staging and adding loops
+/// ([`Shell::repeat`]), so the driver can issue their loads ahead of the adds.
+const UNROLL: u32 = 8;
+
 /// The strides of the pairwise tree over [`TREE`] values.
 const TREE_STRIDES: [u32; 6] = [32, 16, 8, 4, 2, 1];
 
@@ -458,21 +517,34 @@ const SCOPE_WORKGROUP: u32 = 2;
 /// `AcquireRelease | WorkgroupMemory`.
 const SEMANTICS_WORKGROUP: u32 = 0x8 | 0x100;
 
-fn build(kernel: &Kernel, variant: Variant, float_controls: bool) -> Result<dr::Module, EmitError> {
-    let body = body_of(kernel, variant)?;
+fn build(
+    kernel: &Kernel,
+    variant: Variant,
+    float_controls: bool,
+    shared_bytes: u32,
+) -> Result<dr::Module, EmitError> {
+    let body = body_of(kernel, variant, shared_bytes)?;
     let reads = kernel
         .operands
         .iter()
         .filter(|operand| matches!(operand, Operand::Buffer(_)))
         .count();
-    let shared = matches!(body, Body::Stage1 | Body::Stage2 { .. });
+    let shared = match body {
+        Body::Stage1 | Body::Stage2 { .. } => Some(TREE),
+        Body::LossSum { chunk, .. } => Some(chunk),
+        _ => None,
+    };
     let exact = !matches!(body, Body::Elementwise(..));
     let mut m = Shell::new(reads, kernel.workgroup_size, shared, float_controls, exact)?;
     match body {
         Body::Elementwise(arith, sources) => m.elementwise(arith, &sources)?,
         Body::Stage1 => m.stage1()?,
         Body::Stage2 { divide_by } => m.stage2(divide_by)?,
-        Body::LossSum { divide_by } => m.loss_sum(divide_by)?,
+        Body::LossSum {
+            divide_by,
+            terms,
+            chunk,
+        } => m.loss_sum(divide_by, terms, chunk)?,
         Body::Transpose { rows, cols } => m.transpose(rows, cols)?,
         Body::MatMul { k, n } => m.matmul(k, n)?,
     }
@@ -499,6 +571,8 @@ struct Shell {
     /// Two `u32` and one `f32` function variables, declared first in the entry block.
     u32_vars: [Word; 2],
     f32_var: Word,
+    /// The workgroup size, the `LocalSize` x of the entry point.
+    group: Word,
     exact: bool,
     u32_constants: BTreeMap<u32, Word>,
     f32_constants: BTreeMap<u32, Word>,
@@ -508,7 +582,7 @@ impl Shell {
     fn new(
         reads: usize,
         workgroup_size: u32,
-        shared: bool,
+        shared: Option<u32>,
         float_controls: bool,
         exact: bool,
     ) -> Result<Self, EmitError> {
@@ -575,7 +649,7 @@ impl Shell {
         };
         let gid = builtin(&mut b, BuiltIn::GlobalInvocationId);
         let nwg = builtin(&mut b, BuiltIn::NumWorkgroups);
-        let lid = shared.then(|| builtin(&mut b, BuiltIn::LocalInvocationId));
+        let lid = shared.map(|_| builtin(&mut b, BuiltIn::LocalInvocationId));
         let bind = |b: &mut Builder, ptr: Word, binding: u32| {
             let var = b.variable(ptr, None, StorageClass::StorageBuffer, None);
             b.decorate(
@@ -595,8 +669,15 @@ impl Shell {
             .collect();
         let out = bind(&mut b, write_ptr, reads as u32);
         let pc = b.variable(pc_ptr, None, StorageClass::PushConstant, None);
-        let shared_var = if shared {
-            let length = b.constant_bit32(u32_ty, TREE);
+        let shared_var = if let Some(length) = shared {
+            let length = match u32_constants.get(&length) {
+                Some(&id) => id,
+                None => {
+                    let id = b.constant_bit32(u32_ty, length);
+                    u32_constants.insert(length, id);
+                    id
+                }
+            };
             let array = b.type_array(f32_ty, length);
             let array_ptr = b.type_pointer(None, StorageClass::Workgroup, array);
             Some(b.variable(array_ptr, None, StorageClass::Workgroup, None))
@@ -662,6 +743,7 @@ impl Shell {
             count,
             u32_vars,
             f32_var,
+            group,
             exact,
             u32_constants,
             f32_constants: BTreeMap::new(),
@@ -810,6 +892,19 @@ impl Shell {
         step: Word,
         body: impl FnOnce(&mut Self, Word) -> Result<(), EmitError>,
     ) -> Result<(), EmitError> {
+        self.counted_with(LoopControl::NONE, var, start, end, step, body)
+    }
+
+    /// [`Shell::counted`] with the loop control `control`, a hint to the driver's compiler.
+    fn counted_with(
+        &mut self,
+        control: LoopControl,
+        var: Word,
+        start: Word,
+        end: Word,
+        step: Word,
+        body: impl FnOnce(&mut Self, Word) -> Result<(), EmitError>,
+    ) -> Result<(), EmitError> {
         self.b.store(var, start, None, [])?;
         let header = self.b.id();
         let check = self.b.id();
@@ -818,7 +913,7 @@ impl Shell {
         let merge = self.b.id();
         self.b.branch(header)?;
         self.b.begin_block(Some(header))?;
-        self.b.loop_merge(merge, next, LoopControl::NONE, [])?;
+        self.b.loop_merge(merge, next, control, [])?;
         self.b.branch(check)?;
         self.b.begin_block(Some(check))?;
         let i = self.b.load(self.u32_ty, None, var, None, [])?;
@@ -966,29 +1061,76 @@ impl Shell {
         })
     }
 
-    /// The `mse` loss sum in invocation 0: `(a - b) * (a - b)` of element 0, then each next
-    /// element's added in ascending order; `divide_by` divides it by the element count.
-    fn loss_sum(&mut self, divide_by: Option<u32>) -> Result<(), EmitError> {
-        let (index, count) = (self.index, self.count);
-        let zero = self.uint(0);
-        let first = self.equal(index, zero)?;
-        let any = self.less(zero, count)?;
-        let runs = self.and(first, any)?;
-        let var = self.u32_vars[0];
-        self.when(runs, |m| {
-            let square = |m: &mut Self, at: Word| -> Result<Word, EmitError> {
-                let a = m.read(0, at)?;
-                let b = m.read(1, at)?;
-                let d = m.f_sub(a, b)?;
-                m.f_mul(d, d)
-            };
-            let first = square(m, zero)?;
-            m.b.store(m.f32_var, first, None, [])?;
-            let one = m.uint(1);
-            m.counted(var, one, count, one, |m, i| {
-                let term = square(m, i)?;
-                m.accumulate(term)
+    /// `body(i)` for `i` in `0..times`: a loop whose every iteration runs `unroll` of them, then
+    /// the rest in straight-line code. The counter is function variable `var`.
+    fn repeat(
+        &mut self,
+        var: Word,
+        times: u32,
+        unroll: u32,
+        mut body: impl FnMut(&mut Self, Word) -> Result<(), EmitError>,
+    ) -> Result<(), EmitError> {
+        let groups = times / unroll;
+        if groups > 0 {
+            let (zero, one) = (self.uint(0), self.uint(1));
+            let (end, width) = (self.uint(groups), self.uint(unroll));
+            self.counted(var, zero, end, one, |m, g| {
+                let first = m.mul(g, width)?;
+                for k in 0..unroll {
+                    let i = match k {
+                        0 => first,
+                        _ => {
+                            let k = m.uint(k);
+                            m.add(first, k)?
+                        }
+                    };
+                    body(m, i)?;
+                }
+                Ok(())
             })?;
+        }
+        for i in groups * unroll..times {
+            let i = self.uint(i);
+            body(self, i)?;
+        }
+        Ok(())
+    }
+
+    /// The `mse` loss sum of one workgroup over the `terms` elements of the shape, `chunk` terms
+    /// at a time. For the chunk at element `base`, invocation `i` stores the term
+    /// `(a - b) * (a - b)` of elements `base + i`, `base + i + 64`, … at its offset in workgroup
+    /// memory; after a barrier invocation 0 adds the chunk's terms in ascending order, starting
+    /// from the term of element 0 in the first chunk; a second barrier frees the memory for the
+    /// next chunk. The order of additions is the one-invocation order: the first term, then each
+    /// next one. `divide_by` divides the sum by the element count. The counts are constants of
+    /// the shape, so the driver sees every trip count; no term is added for an empty shape.
+    fn loss_sum(
+        &mut self,
+        divide_by: Option<u32>,
+        terms: u32,
+        chunk: u32,
+    ) -> Result<(), EmitError> {
+        if terms == 0 {
+            return Ok(());
+        }
+        let chunk_var = self.u32_vars[0];
+        let (full, tail) = (terms / chunk, terms % chunk);
+        let zero = self.uint(0);
+        self.loss_chunk(zero, chunk, true, full == 1 && tail == 0)?;
+        if full > 1 {
+            let (one, end, size) = (self.uint(1), self.uint(full), self.uint(chunk));
+            self.counted(chunk_var, one, end, one, |m, c| {
+                let base = m.mul(c, size)?;
+                m.loss_chunk(base, chunk, false, false)
+            })?;
+        }
+        if tail > 0 {
+            let base = self.uint(full * chunk);
+            self.loss_chunk(base, tail, false, true)?;
+        }
+        let local = self.local.expect("a module with workgroup memory");
+        let first_invocation = self.equal(local, zero)?;
+        self.when(first_invocation, |m| {
             let mut sum = m.b.load(m.f32_ty, None, m.f32_var, None, [])?;
             if let Some(n) = divide_by {
                 let n = m.float(n as f32);
@@ -996,6 +1138,64 @@ impl Shell {
             }
             m.write(zero, sum)
         })
+    }
+
+    /// One chunk of [`Shell::loss_sum`]: the `len` terms from element `base`. The `opening` chunk
+    /// starts the sum with its first term; the `closing` one needs no barrier after it.
+    fn loss_chunk(
+        &mut self,
+        base: Word,
+        len: u32,
+        opening: bool,
+        closing: bool,
+    ) -> Result<(), EmitError> {
+        let local = self.local.expect("a module with workgroup memory");
+        let term_var = self.u32_vars[1];
+        let group = self.group;
+        let stage = |m: &mut Self, j: Word| -> Result<(), EmitError> {
+            let at = m.add(base, j)?;
+            let a = m.read(0, at)?;
+            let b = m.read(1, at)?;
+            let d = m.f_sub(a, b)?;
+            let term = m.f_mul(d, d)?;
+            m.store_shared(j, term)
+        };
+        let size = TREE;
+        let (rounds, partial) = (len / size, len % size);
+        self.repeat(term_var, rounds, UNROLL, |m, r| {
+            let offset = m.mul(r, group)?;
+            let j = m.add(local, offset)?;
+            stage(m, j)
+        })?;
+        if partial > 0 {
+            let partial = self.uint(partial);
+            let inside = self.less(local, partial)?;
+            let offset = self.uint(rounds * size);
+            self.when(inside, |m| {
+                let j = m.add(local, offset)?;
+                stage(m, j)
+            })?;
+        }
+        self.barrier()?;
+        let zero = self.uint(0);
+        let first_invocation = self.equal(local, zero)?;
+        let start = u32::from(opening);
+        self.when(first_invocation, |m| {
+            if opening {
+                let first = m.load_shared(zero)?;
+                m.b.store(m.f32_var, first, None, [])?;
+            }
+            let start = m.uint(start);
+            m.repeat(term_var, len - u32::from(opening), UNROLL, |m, t| {
+                let j = m.add(t, start)?;
+                let term = m.load_shared(j)?;
+                m.accumulate(term)
+            })
+        })?;
+        if !closing {
+            self.barrier()?;
+        }
+        Ok(())
     }
 
     /// Output element `o` of `[cols, rows]` is input element `(o % rows) * cols + o / rows`.
