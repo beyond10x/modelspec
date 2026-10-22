@@ -1,7 +1,7 @@
 # ModelSpec — Design Specification
 
 **Status:** M0 implemented (iteration 1); M1 onwards proposed  
-**Revision:** 0.8 (2026-10-21): the input adjoint, the gradient of a rank-0 target with respect to named inputs in its own program (§ 3.3 pass 4, § 4); 0.7: M3 adds a small BERT-like masked-language-model proof model beside the GPT-like one (§ 1, § 11 iteration 4); 0.6: derivation of parameter, teacher and synthetic-data draws defined (§ 2.3), M0 `train` output and codes (§ 8, § 8.1); 0.5: a train loss calls `model.forward` exactly once (§ 2.1)  
+**Revision:** 0.9 (2026-10-22): ADR-007 (proposed) gates 10× PyTorch eager throughput on the MNIST benchmark example on the RTX 3090, with the whole-run schedule that reaches it and the GPU results compared bit for bit (§ 1, § 4, § 5.2, § 5.4, § 6, § 6.1, § 6.3, § 9, § 12); 0.8: the input adjoint, the gradient of a rank-0 target with respect to named inputs in its own program (§ 3.3 pass 4, § 4); 0.7: M3 adds a small BERT-like masked-language-model proof model beside the GPT-like one (§ 1, § 11 iteration 4); 0.6: derivation of parameter, teacher and synthetic-data draws defined (§ 2.3), M0 `train` output and codes (§ 8, § 8.1); 0.5: a train loss calls `model.forward` exactly once (§ 2.1)  
 **Implementation language:** Rust  
 **Initial execution target:** NVIDIA RTX 3090 via Vulkan compute / SPIR-V  
 **Principle:** Specify *what* to compute; the compiler determines *how* to execute it.
@@ -32,7 +32,7 @@ We optimize for correctness and coherent architecture before raw speed. Near-opt
 | --- | --- | --- |
 | **M0: semantic core** | Parse, elaborate, type/shape check, typed SSA tensor IR, CPU reference interpreter, reverse-mode autodiff, SGD, simple linear/MLP training | GPU or performance |
 | **M1: native Vulkan execution** | Rust Vulkan device discovery/allocator/dispatch, SPIR-V elementwise + reduction + basic matmul kernels, compiled forward/backward/SGD, checkpoints | Tensor Core speed |
-| **M2: optimizing compiler** | Whole-step liveness, buffer reuse, elementwise fusion, tiling/shared-memory matmul, kernel scheduler, profiling + cache | All tensor ops |
+| **M2: optimizing compiler** | Whole-step liveness, buffer reuse, elementwise fusion, tiling/shared-memory matmul, kernel scheduler, profiling + cache, whole-run execution with data and weights resident on the device (§ 6.3), the throughput gate of ADR-007 | All tensor ops |
 | **M3: neural-network essentials** | f16 where supported, AdamW, softmax, layer norm, embeddings, attention, causal and bidirectional masks, GELU, small GPT-like training and small BERT-like masked-language-model pre-training | Large-scale distributed training |
 | **M4: device specialization** | Cooperative-matrix Tensor Core path where available, mixed precision with FP32 accumulation/master state when needed, checkpoint/recompute planning, autotuning | Universal peak performance |
 
@@ -247,7 +247,7 @@ For output adjoint `G = dL/dY`:
 
 Initial strategy: retain forward intermediates required by AD; introduce recomputation/checkpoint planning after correctness is proven. Training state writes happen only after all old-state reads are complete. Gradients accumulate in `f32` for M0/M1.
 
-**Gradient verification:** compare CPU reverse-mode gradients to central finite differences evaluated in `f64` reference math, away from non-differentiable points. Check selected tiny graphs under seeded inputs. GPU results use documented absolute/relative tolerances, not bit-for-bit equality.
+**Gradient verification:** compare CPU reverse-mode gradients to central finite differences evaluated in `f64` reference math, away from non-differentiable points. Check selected tiny graphs under seeded inputs. GPU results are checked within documented absolute/relative tolerances; § 5.4 names the results that must in addition equal the CPU oracle bit for bit.
 
 ---
 
@@ -273,8 +273,9 @@ Device discovery must record: vendor/device IDs, device UUID if available, drive
 
 **M2 optimized kernels**
 
-- Workgroup tiling and shared-memory staging for matmul; choose tile size to fit shared memory and register pressure.
-- Fuse elementwise chains and simple epilogues (e.g. `matmul + relu`) if compiler cost estimates permit.
+- Workgroup tiling and shared-memory staging for matmul; choose tile size to fit shared memory and register pressure. In `deterministic` mode one invocation accumulates each output element over the contracting index in ascending order, tile after tile, and the contracting index is not split across invocations (no split-K), so the order of § 2.2 holds.
+- Fuse elementwise chains and simple epilogues (e.g. `matmul + relu`) if compiler cost estimates permit. For a training step this includes `relu` into the loads of its consumers, the MSE gradient `(Y - T) * c` into the matmul that produces `Y`, `ReluGrad` into the matmul that produces its adjoint, and the SGD update `p - lr * g` into the matmul that produces `g`, so `g` is not written to device memory.
+- Gather operands in the matmul load: minibatch rows are read from the resident data set through the resident permutation (§ 6.3), with no separate minibatch copy.
 - Plan layouts and alignment, avoid unnecessary global writes, batch compatible kernels.
 - Tune with GPU timestamp queries; measure registers/occupancy via external profiling where practical.
 
@@ -290,6 +291,14 @@ Fusion is cost-driven, not automatic: fewer launches and intermediate writes may
 
 M1 uses a fixed safe schedule; M2 measures alternatives; M4 supports offline/autotuned specialization. Kernel configuration cache keys include IR hash, shapes, dtype, optimization settings, GPU/vendor/driver identifiers, and extension/capability set.
 
+### 5.4 GPU results compared bit for bit and within tolerance
+
+The CPU oracle is the reference for every GPU result (§ 9 gate 5). Which comparison applies is fixed by the instructions that produce a result and by the device's queried features:
+
+1. **Bit for bit.** In `deterministic` mode, on a device that reports `shaderRoundingModeRTEFloat32`, `shaderDenormPreserveFloat32` and `shaderSignedZeroInfNanPreserveFloat32`, kernels declare the execution modes `RoundingModeRTE`, `DenormPreserve` and `SignedZeroInfNanPreserve` and decorate every `OpFAdd`, `OpFSub` and `OpFMul` with `NoContraction`. Vulkan specifies these three instructions as correctly rounded and comparisons as exact (Reference 1); `NoContraction` forbids contracting them into a fused multiply-add and rearranging them. A result built only from these instructions, copies and selects, in the order of § 2.2, equals the CPU oracle bit for bit. For a training step these are: the gathered minibatch and its one-hot targets, every `matmul` output without split-K, `relu` and `ReluGrad` as compare and select, `sub`, `mul` by the gradient scale of `mse` (folded to a constant at compile time), the SGD update, the parameters after every step, and a loss sum accumulated by one invocation in row-major order.
+2. **Within tolerance.** Every other result is compared within the tolerances of § 9 gate 5: a result that passes through `OpFDiv` (Vulkan bounds it at 2.5 ULP; in a step only the `mse` and `mean` values, which no gradient reads), a transcendental function, any parallel or split reduction, any `fast_math` artifact, and every result on a device that lacks one of the three features. The run record names the class the run used.
+3. A bit-for-bit result also passes the tolerance check: this adds to gate 5 and replaces nothing in § 9. Cooperative-matrix kernels (§ 5.2, M4) are never in the bit-for-bit class, and the M2 schedule does not use them.
+
 ---
 
 ## 6. Rust runtime design
@@ -300,7 +309,7 @@ The runtime has four owned responsibilities:
 
 **Memory:** device-local tensor arena, staging buffers for host upload/download, allocations obeying Vulkan heap/buffer-range/alignment restrictions, liveness-based scratch-buffer reuse, bounds/overflow checks, and out-of-memory diagnostics. Keep checkpoint and optimizer state in separate logical arenas even if physically suballocated.
 
-**Execution:** execute compiled DAG nodes (uploads, dispatches, barriers, reads); construct descriptor resources, push constants, specialization constants, command buffers, and synchronization. Use appropriate transfer/compute barriers (e.g. synchronization2 when available). No hidden host synchronization between every operator; initial implementation may block only at train-step completion to simplify correctness.
+**Execution:** execute compiled DAG nodes (uploads, dispatches, barriers, reads); construct descriptor resources, push constants, specialization constants, command buffers, and synchronization. Use appropriate transfer/compute barriers (e.g. synchronization2 when available). No hidden host synchronization between every operator; initial implementation may block only at train-step completion to simplify correctness. From M2 the runtime does not block per step either (§ 6.3).
 
 **Training host:** data batching interface, seed/state initialization, step counter, loss telemetry, checkpoint save/reload, and inference entry point. Host is Rust; model does not invoke arbitrary host callbacks in M1.
 
@@ -327,7 +336,7 @@ pub trait DeviceRuntime {
 
 ### 6.1 Reproducibility
 
-Record source/compiler version, tensor shapes, optimizer hyperparameters, RNG algorithm/seed/state, model/parameter identifiers, step number, backend/device/driver, and compile flags. A seeded training run should be reproducible **under a documented fixed configuration**, not promised bit-identical across CPU and GPU or different drivers. `deterministic` mode (a compile flag, § 3.3) disables nondeterministic algorithms where controllable, but driver-dependent floating-point behavior still applies.
+Record source/compiler version, tensor shapes, optimizer hyperparameters, RNG algorithm/seed/state, model/parameter identifiers, step number, backend/device/driver, and compile flags. A seeded training run should be reproducible **under a documented fixed configuration**, not promised bit-identical across CPU and GPU or different drivers, except for the results § 5.4 compares bit for bit on a device that reports the features it names. `deterministic` mode (a compile flag, § 3.3) disables nondeterministic algorithms where controllable, but driver-dependent floating-point behavior still applies.
 
 ### 6.2 Checkpoint format
 
@@ -339,6 +348,42 @@ Versioned binary package `.msckpt`:
 - optional verification hash of payload.
 
 Tensor offsets are absolute file offsets. Validate offset and size ranges against file size before mapping/allocating. Load into CPU backend even if checkpoint was made on GPU. Parameter-path migration between incompatible model definitions requires an explicit adapter; never silently reinterpret tensor bytes.
+
+### 6.3 Whole-run execution (M2)
+
+M2 executes a training run, or a requested number of its steps, with no host round-trip per operator or per step. It changes the schedule only: every kernel computes the ops of the verified training IR (§ 0 invariants 1 and 5), and § 5.4 says which results equal the CPU oracle bit for bit.
+
+1. **Resident state.** The data set, its labels, the permutation of every epoch the run covers, two versions of each parameter and one loss slot per reported step are uploaded once before the first step and stay in device-local memory; the allocator checks them against the heap budget (§ 6, Memory). For the MNIST benchmark example that is 188,160,000 bytes of images and 720,000 bytes of permutation. The upload is loading, outside the timed region of ADR-007.
+2. **Gather on the device.** Step `s` reads its minibatch rows through `permutation[s * B + r]` in the operand load of its first matmul (§ 5.2), and builds its one-hot targets from the labels the same way. The permutation is the shuffle order of the data binding, computed on the host. The gather is a runtime data binding, not a Tensor IR op (§ 2.3: a model does no I/O).
+3. **Parameter versions.** Step `s` reads version `s mod 2` of each parameter and writes version `(s + 1) mod 2` (§ 3.1). Two buffers replace an in-place update because the kernel that updates `W2` runs beside the kernel that still reads the old `W2`.
+4. **Recording.** The host records the steps in chunks, one command buffer per chunk, with a compute-to-compute memory barrier between dependent dispatches and the step index in a push constant. It records chunk `n + 1` while the device executes chunk `n` and submits it to the same queue. The host waits only at the end of the run, at a checkpoint (§ 6.2) and at a requested read-back; a checkpoint ends a chunk. Steps are not merged into one dispatch behind a device-wide barrier, because Vulkan does not guarantee that the workgroups of one dispatch run at the same time.
+5. **Read-back.** Parameters are read back at the end and at each checkpoint. On a reported step (§ 8) the loss is written to its slot and read back with the parameters; the `step <k> loss <v>` lines keep their content and order and are printed after that read-back. Per-kernel timing uses timestamp queries on sampled steps (§ 0 invariant 7).
+6. **Schedule of the benchmark example.** Four dispatches per step, each a tiled shared-memory kernel (§ 5.2) with its elementwise ops fused. `X_b` and `T_b` are gathered as in item 2; `c` is the compile-time gradient scale of `mse`.
+
+   | kernel | computes | writes |
+   | --- | --- | --- |
+   | K1 | `A = X_b @ W1` | `A` |
+   | K2 | `dY = (relu(A) @ W2 - T_b) * c`; on a reported step also the loss sum | `dY`, loss slot |
+   | K3 | `dA = ReluGrad(A, dY @ transpose(W2))` and, in other workgroups, `W2' = W2 - lr * (transpose(relu(A)) @ dY)` | `dA`, `W2'` |
+   | K4 | `W1' = W1 - lr * (transpose(X_b) @ dA)` | `W1'` |
+
+   If the four dispatch boundaries cost more than their budget, every K4 workgroup recomputes `Y`, `dY` and its columns of `dA` itself (at most 0.256 MFLOP per workgroup, from the shapes), one workgroup also writes `W2'`, and a step has two dispatches. The same ops in the same order keep § 5.4's class; § 5.3 decides between the two schedules by measurement.
+7. **Budget.** ADR-007's gate is 51.9 µs per step. The work column is arithmetic from the shapes; every µs figure other than the gate is an estimate, not a measurement, and the first M2 benchmark replaces it.
+
+   | part of a step | work per step | budget, µs |
+   | --- | --- | --- |
+   | K1 | 10.04 MFLOP; reads 313,600 B of `X_b` and 200,704 B of `W1` | 12 (estimate) |
+   | K2 | 0.13 MFLOP | 3 (estimate) |
+   | K3 | 0.26 MFLOP | 3 (estimate) |
+   | K4 | 10.04 MFLOP; reads 313,600 B of `X_b`, writes 200,704 B of `W1'` | 12 (estimate) |
+   | four dependent dispatch boundaries | barrier, drain and launch | 12, 3 each (estimate) |
+   | host recording, submission and waits not hidden behind device work | | 2 (estimate) |
+   | loss sum on reported steps | 1,000 terms on about 37 of 1,800 steps | 0.5 amortized (estimate) |
+   | read-back at the end | 203,264 B of parameters and the loss slots | 0.5 amortized (estimate) |
+   | reserve | | 6.9 |
+   | total | 20.45 MFLOP | 51.9 (gate) |
+
+   Derived from the table: the gate needs 394 GFLOP/s over a whole step, and K1 and K4 at 12 µs each run at about 0.84 TFLOP/s. Without fused multiply-add (§ 5.4) a multiply and an add are two instructions, so the usable `f32` peak is about half of the device's fused figure, about 17.8 TFLOP/s (estimate: half the vendor's 35.6 TFLOP/s, not read from a file). Without split-K each of K1's 6,400 output elements is one chain of 784 dependent additions, about 1.8 µs at 4 cycles per addition and 1.7 GHz (estimate). The dispatch boundaries are the largest unmeasured item; M2 measures a chain of empty dependent dispatches in one command buffer before it writes the kernels.
 
 ---
 
@@ -464,7 +509,7 @@ Diagnostics distinguish user specification errors, compiler verification failure
 
 **Performance metrics:** steady-state examples/sec and tokens/sec (where relevant), step latency, per-kernel GPU time, number of dispatches, peak allocated VRAM, host↔device transferred bytes, optimizer overhead, and compile time. Distinguish warm-up/shader-pipeline creation from steady-state training. Use fair baselines with the same shapes, dtype, batch, model semantics, and data transfer accounting.
 
-Initial performance goals are **measured correctness and transparent baselines**, not a blanket speedup target. First get within a useful multiple of comparable GPU libraries for large matmul; then compete by specializing common whole-graph patterns, reducing launch overhead and intermediate memory traffic.
+Initial performance goals are **measured correctness and transparent baselines**, not a blanket speedup target. First get within a useful multiple of comparable GPU libraries for large matmul; then compete by specializing common whole-graph patterns, reducing launch overhead and intermediate memory traffic. One target is gated: ADR-007 sets 10× PyTorch eager throughput on the MNIST benchmark example on the RTX 3090, under its timing rule.
 
 ### M1 acceptance criteria (unambiguous)
 
@@ -529,6 +574,10 @@ If the architecture meets its tests, aggressive per-model specialization and aut
 - **ADR-004 — CPU oracle before GPU performance:** accepted. Preserve independent correctness reference.
 - **ADR-005 — Whole training-step compilation:** accepted. Optimizer updates and side-effect ordering are part of compilable IR.
 - **ADR-006 — No direct SASS:** accepted for v1. Native instruction compilation remains the vendor driver's responsibility.
+- **ADR-007 — 10× PyTorch eager throughput on the MNIST benchmark example:** proposed. On the MNIST benchmark example (784 → 64 ReLU → 10, no bias, `f32`, MSE, SGD lr 0.1, batch 100, 3 epochs, 1,800 steps), ModelSpec on the RTX 3090 trains at least 10× as many images per second as PyTorch eager on the same host and device, with the same test accuracy and final weights within the tolerance of § 9 gate 5, and bit for bit where § 5.4 says so.
+  - Baseline: PyTorch `2.14.1+cu130`, eager, on an NVIDIA GeForce RTX 3090 with driver 610.57.04, with `torch.use_deterministic_algorithms(True)`, TF32 off, `set_float32_matmul_precision("highest")`, the host thread pinned to one CPU, and the same data, initialization and shuffle order. Measured on 2026-10-21 (planning store, `verification-report:mnist-benchmark-cuda-baseline`): 519 µs per step, 192,741 images/s, test accuracy 0.9088. The gate is 1,927,410 images/s, 51.9 µs per step. `torch.compile` (933 µs per step) is reported beside it, not gated.
+  - Timing rule: the training loop including minibatch gather and one-hot creation, and for ModelSpec command recording, submission and the wait for the last step; excluding loading (the data set upload of § 6.3 included), compilation and pipeline creation, a 20-step warmup, evaluation and IO. Three repeats, the median. ModelSpec runs with `deterministic` on and `fast_math` off (§ 3.3).
+  - Relation to ADR-002: the independence from CUDA APIs stays, and the PyTorch side of the benchmark runs outside the repository. ADR-002's priority of independence over throughput stays for every other model; for this example throughput is a gated target. The design is § 6.3, its per-step budget the table there.
 
 ---
 
