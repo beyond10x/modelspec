@@ -47,10 +47,22 @@ of 1951 MHz, mean µs per site over the 3 runs:
 
 | # | story | branch | tree id | build dir | stage |
 |---|---|---|---|---|---|
-| 1 | m1-f-forward-matmul-tiled | impl/m1-f-forward-matmul-tiled | modelspec-impl-m1f-forward | `<tree>/target` | planned |
+| 1 | m1-f-forward-matmul-tiled | impl/m1-f-forward-matmul-tiled | modelspec-impl-m1f-forward | `<tree>/target` | adversary pass 1 NEEDS-CHANGE; fix round 1 not started |
 | 2 | m1-f-weight-grad-matmul-tiled | impl/m1-f-weight-grad-matmul-tiled | modelspec-impl-m1f-wgrad | `<tree>/target` | planned |
 
 Integration: `wave/m1-f`, tree `modelspec-wave-m1f`, from `main` `e77066f`.
 Scratch: `~/.cache/modelspec-wave-m1-f/<story>/scratch/`.
 
 Dispatch: `aep:implementor`, then `aep:adversary`.
+
+## Held, 2026-10-22
+
+- Builds paused for disk at the orchestrator's request; both trees finished, both branches pushed.
+- Unit 1: `a7d7903` on `impl/m1-f-forward-matmul-tiled` gives `k0` median 8.732 µs and 28.378 µs per
+  step at a mean P0 of 1953 MHz, sha256 `b9bb028a…6904` in 5 of 5 runs.
+- `review-result:m1-f-forward-adversary-1`: two blockers in `emit.rs:1538`. The unrolled tile loop
+  passes the SPIR-V id bound near `k = 290,000`, and pipeline creation takes 188.7 s at
+  `k = 60,000`. The adversary's two test files are the second commit on the unit branch and are red
+  until the fix.
+- Resume: recreate both trees from the pushed branches, then dispatch fix round 1 with
+  `~/.cache/modelspec-wave-m1-f/brief-forward-fix1.md`. Unit 2 follows the merged unit 1.
