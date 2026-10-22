@@ -2,13 +2,31 @@
 format: aep.planning-md/3
 id: story:train-refuses-non-finite-loss
 kind: story
-status: draft
+status: active
 title: train refuses a run whose loss or parameters stop being finite
 relations:
 - serves: vision:modelspec
 - depends_on: epic:m0-semantic-core
 - depends_on: story:observatory-live-event-stream
-revision: 2
+scope:
+- confidence: cited
+  path: CHANGELOG.md
+- confidence: cited
+  path: DESIGN.md
+- confidence: cited
+  path: crates/modelspec-cli/src/train.rs
+- confidence: inferred
+  path: crates/modelspec-cli/tests/train_non_finite.rs
+- confidence: cited
+  path: crates/modelspec-docs/src/diagnostics.rs
+- confidence: cited
+  path: crates/modelspec-runtime/src/train/runner.rs
+- confidence: cited
+  path: website/docs/reference/diagnostics.md
+revision: 6
+transitions:
+- {from: "draft", to: "proposed", at: "2026-10-22T23:58:00Z", actor: "human:timo", revision: 5}
+- {from: "proposed", to: "active", at: "2026-10-22T23:58:00Z", actor: "human:timo", revision: 6}
 ---
 # `train` refuses a run whose loss or parameters stop being finite
 

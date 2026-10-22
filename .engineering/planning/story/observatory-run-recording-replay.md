@@ -2,14 +2,50 @@
 format: aep.planning-md/3
 id: story:observatory-run-recording-replay
 kind: story
-status: draft
+status: active
 title: Record a run file and replay it over the same event stream
 summary: modelspec train writes a recorded run file and a replay serves its RunEvents identically to the live stream; settles the recorded-file half of the transport marker.
 relations:
 - decomposes: epic:training-observatory
 - serves: vision:modelspec
 - depends_on: story:observatory-live-event-stream
-revision: 2
+scope:
+- confidence: inferred
+  path: .gitignore
+- confidence: cited
+  path: CHANGELOG.md
+- confidence: cited
+  path: crates/modelspec-cli/src/lib.rs
+- confidence: inferred
+  path: crates/modelspec-cli/src/observe.rs
+- confidence: cited
+  path: crates/modelspec-cli/src/train.rs
+- confidence: inferred
+  path: crates/modelspec-cli/tests/fixtures
+- confidence: inferred
+  path: crates/modelspec-cli/tests/observatory_record.rs
+- confidence: cited
+  path: crates/modelspec-observatory
+- confidence: cited
+  path: crates/modelspec-observatory/.ess-output/state.json
+- confidence: cited
+  path: crates/modelspec-observatory/schema
+- confidence: inferred
+  path: crates/modelspec-observatory/src/event.rs
+- confidence: inferred
+  path: crates/modelspec-observatory/src/lib.rs
+- confidence: inferred
+  path: crates/modelspec-observatory/src/record.rs
+- confidence: cited
+  path: crates/modelspec-observatory/src/server.rs
+- confidence: cited
+  path: spec/domains/observatory.yaml
+- confidence: cited
+  path: website/docs/reference/cli.md
+revision: 6
+transitions:
+- {from: "draft", to: "proposed", at: "2026-10-22T23:58:01Z", actor: "human:timo", revision: 5, decided_on: {"recorded":{"review_outcome":1}}}
+- {from: "proposed", to: "active", at: "2026-10-22T23:58:01Z", actor: "human:timo", revision: 6, decided_on: {"recorded":{"review_outcome":1}}}
 ---
 # Record a run file and replay it over the same event stream
 

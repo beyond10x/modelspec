@@ -2,32 +2,44 @@
 format: aep.planning-md/3
 id: story:m1-vulkan-checkpoint-infer
 kind: story
-status: draft
+status: active
 title: Checkpoints of a GPU run, resume on the GPU, and modelspec infer --backend vulkan
 summary: One host wait per requested checkpoint, GPU resume within tolerance of an uninterrupted run, GPU checkpoints loaded by CPU and GPU infer
 relations:
 - serves: vision:modelspec
-- depends_on: epic:m1-vulkan-execution
 - depends_on: story:m1-vulkan-train
 - depends_on: story:m1-checkpoint-cpu
 - depends_on: story:m1-vulkan-profile
+- decomposes: epic:m1-vulkan-execution
 scope:
 - confidence: cited
   path: AGENTS.md
 - confidence: cited
   path: CHANGELOG.md
+- confidence: cited
+  path: DESIGN.md
+- confidence: inferred
+  path: Taskfile.yml
 - confidence: inferred
   path: crates/modelspec-cli/src/infer.rs
 - confidence: cited
   path: crates/modelspec-cli/src/train.rs
+- confidence: cited
+  path: crates/modelspec-cli/tests/checkpoint_cpu.rs
 - confidence: inferred
   path: crates/modelspec-cli/tests/checkpoint_vulkan.rs
+- confidence: cited
+  path: crates/modelspec-cli/tests/train_vulkan.rs
+- confidence: inferred
+  path: crates/modelspec-docs/src/diagnostics.rs
 - confidence: cited
   path: crates/modelspec-docs/src/status.rs
 - confidence: inferred
   path: crates/modelspec-runtime/src/train/checkpoint.rs
+- confidence: cited
+  path: crates/modelspec-runtime/src/vulkan/runner.rs
 - confidence: inferred
-  path: crates/modelspec-runtime/src/vulkan
+  path: crates/modelspec-runtime/src/vulkan/sync.rs
 - confidence: inferred
   path: crates/modelspec-runtime/tests/vulkan_checkpoint.rs
 - confidence: cited
@@ -36,7 +48,10 @@ scope:
   path: website/docs/reference/cli.md
 - confidence: cited
   path: website/docs/roadmap.md
-revision: 5
+revision: 10
+transitions:
+- {from: "draft", to: "proposed", at: "2026-10-22T23:58:00Z", actor: "human:timo", revision: 9}
+- {from: "proposed", to: "active", at: "2026-10-22T23:58:01Z", actor: "human:timo", revision: 10}
 ---
 # Checkpoints of a GPU run, resume on the GPU, and `modelspec infer --backend vulkan`
 

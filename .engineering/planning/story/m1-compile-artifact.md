@@ -2,7 +2,7 @@
 format: aep.planning-md/3
 id: story:m1-compile-artifact
 kind: story
-status: draft
+status: active
 title: 'modelspec compile: the CompiledArtifact on disk, with its SPIR-V modules, and a validating reader'
 summary: artifact.json and kernels/<id>.spv, deterministic byte-equal compiles, all five kernel kinds valid under spirv-val, and a reader that refuses tampered artifacts with E-ARTIFACT-001 to 004
 relations:
@@ -37,7 +37,10 @@ scope:
   path: website/docs/reference/cli.md
 - confidence: cited
   path: website/docs/reference/diagnostics.md
-revision: 7
+revision: 9
+transitions:
+- {from: "draft", to: "proposed", at: "2026-10-22T23:58:00Z", actor: "human:timo", revision: 8, decided_on: {"recorded":{"review_outcome":6}}}
+- {from: "proposed", to: "active", at: "2026-10-22T23:58:00Z", actor: "human:timo", revision: 9, decided_on: {"recorded":{"review_outcome":6}}}
 ---
 # `modelspec compile`: the CompiledArtifact on disk, with its SPIR-V modules, and a validating reader
 
