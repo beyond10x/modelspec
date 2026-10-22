@@ -21,6 +21,10 @@ Serves `epic:m1-vulkan-execution` and, through it, `epic:pytorch-10x-mnist` (GPU
   depends on `bert-tokenizer` and `bert-adamw-warmup`, none of them implemented.
 - Scope: every unit carries a typed scope and a `## Scope` section from planning; no new scoper
   pass. Implementors confirm each inferred line.
+- Added 2026-10-22, after opening: `story:train-data-dense-tensors`, drafted on the coordinating
+  session's instruction so the MNIST lane does not wait on the BERT chain (the split is recorded
+  in the story's Context). It shares no source file with units 1-3 except `DESIGN.md` and
+  `CHANGELOG.md`.
 
 ## Approval
 
@@ -42,6 +46,7 @@ MNIST benchmark, the unit and merge commits, and landing on `main` through PRs.
 | 1 | m1-kernel-plan | impl/m1-kernel-plan | modelspec-impl-kplan | dispatched |
 | 2 | m1-mlp-example | impl/m1-mlp-example | modelspec-impl-mlp | dispatched |
 | 3 | m1-inspect-device | impl/m1-inspect-device | modelspec-impl-inspect | dispatched |
+| 4 | train-data-dense-tensors | impl/train-data-dense-tensors | modelspec-impl-dense | dispatched |
 
 Integration: `wave/m1-a`, tree `modelspec-wave-m1a`, from `main` `a5f2b06` (release 0.3.0).
 Scratch per unit: `~/.cache/modelspec-wave-m1-a/<story>/scratch/`.
