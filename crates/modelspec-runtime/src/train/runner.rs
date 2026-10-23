@@ -83,14 +83,15 @@ pub struct Diverged {
     pub run: Run,
 }
 
-/// The [`E_TRAIN_001`] diagnostic for step `step` with loss `loss` and the parameters of `state`,
-/// or `None` when the loss and every parameter are finite. A non-finite loss is named before a
-/// parameter; parameters are named by canonical path, in path order.
-fn non_finite(
+/// The [`E_TRAIN_001`] diagnostic for step `step` with loss `loss` and the parameter values
+/// `values`, or `None` when the loss and every parameter are finite. A non-finite loss is named
+/// before a parameter; parameters are named by canonical path, in path order. The Vulkan runner
+/// calls it on what it reads back ([`crate::vulkan::runner`]).
+pub(crate) fn non_finite(
     compiled: &CompiledTraining,
     step: u64,
     loss: f32,
-    state: &ParamState,
+    values: &BTreeMap<ParamId, HostTensor<f32>>,
 ) -> Option<Diagnostic> {
     if !loss.is_finite() {
         return Some(
@@ -102,8 +103,7 @@ fn non_finite(
             .with("loss", loss.to_string()),
         );
     }
-    let mut paths: Vec<&str> = state
-        .values
+    let mut paths: Vec<&str> = values
         .iter()
         .filter(|(_, value)| value.data().iter().any(|v| !v.is_finite()))
         .filter_map(|(id, _)| compiled.forward.program.params.get(id))
@@ -200,7 +200,7 @@ pub fn run_from(
         };
         observe(step, loss);
         losses.push(loss);
-        if let Some(diagnostic) = non_finite(compiled, step, loss, &state) {
+        if let Some(diagnostic) = non_finite(compiled, step, loss, &state.values) {
             return Err(RunError::NonFinite(Box::new(Diverged {
                 diagnostic,
                 run: Run {

@@ -345,11 +345,20 @@ impl TimestampPool<'_> {
     /// The timestamps of the pool's queries, in query order. The recordings that wrote them
     /// must have been waited on: this does not wait, and a query without its result fails.
     pub fn read(&self) -> Result<Vec<u64>, ExecError> {
-        let mut stamps = vec![0u64; self.count as usize];
-        if self.count == 0 {
+        self.read_first(self.count)
+    }
+
+    /// The timestamps of the pool's first `count` queries (at most the pool's), in query order:
+    /// those of a run that stopped before it wrote the rest. As [`TimestampPool::read`], it does
+    /// not wait.
+    pub fn read_first(&self, count: u32) -> Result<Vec<u64>, ExecError> {
+        let count = count.min(self.count);
+        let mut stamps = vec![0u64; count as usize];
+        if count == 0 {
             return Ok(stamps);
         }
-        // SAFETY: the pool belongs to this device and `stamps` holds one u64 per query.
+        // SAFETY: the pool belongs to this device and `stamps` holds one u64 per query read, at
+        // most the pool's.
         unsafe {
             self.device.device.get_query_pool_results(
                 self.pool,
