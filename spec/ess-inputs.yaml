@@ -3,6 +3,7 @@ requires: ess 0.68.0
 specification:
   - system.yaml
   - domains/artifact.yaml
+  - domains/benchmark.yaml
   - domains/checkpoint.yaml
   - domains/data.yaml
   - domains/device.yaml

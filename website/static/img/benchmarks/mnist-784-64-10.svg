@@ -1,0 +1,99 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="580" viewBox="0 0 880 580" font-family="system-ui, -apple-system, Segoe UI, Roboto, sans-serif" font-size="12" role="img" aria-label="MNIST 784-64-10: µs per step over date">
+<title>MNIST 784-64-10: µs per step over date</title>
+<rect width="880" height="580" fill="#ffffff"/>
+<text x="78" y="28" font-size="15" font-weight="600" fill="#111827">MNIST 784-64-10: µs per step over date</text>
+<line x1="78" y1="388.0" x2="856.0" y2="388.0" stroke="#d1d5db"/>
+<text x="70.0" y="392.0" text-anchor="end" fill="#374151">10</text>
+<line x1="78" y1="362.4" x2="856.0" y2="362.4" stroke="#f3f4f6"/>
+<line x1="78" y1="328.6" x2="856.0" y2="328.6" stroke="#f3f4f6"/>
+<line x1="78" y1="303.0" x2="856.0" y2="303.0" stroke="#d1d5db"/>
+<text x="70.0" y="307.0" text-anchor="end" fill="#374151">100</text>
+<line x1="78" y1="277.4" x2="856.0" y2="277.4" stroke="#f3f4f6"/>
+<line x1="78" y1="243.6" x2="856.0" y2="243.6" stroke="#f3f4f6"/>
+<line x1="78" y1="218.0" x2="856.0" y2="218.0" stroke="#d1d5db"/>
+<text x="70.0" y="222.0" text-anchor="end" fill="#374151">1,000</text>
+<line x1="78" y1="192.4" x2="856.0" y2="192.4" stroke="#f3f4f6"/>
+<line x1="78" y1="158.6" x2="856.0" y2="158.6" stroke="#f3f4f6"/>
+<line x1="78" y1="133.0" x2="856.0" y2="133.0" stroke="#d1d5db"/>
+<text x="70.0" y="137.0" text-anchor="end" fill="#374151">10,000</text>
+<line x1="78" y1="107.4" x2="856.0" y2="107.4" stroke="#f3f4f6"/>
+<line x1="78" y1="73.6" x2="856.0" y2="73.6" stroke="#f3f4f6"/>
+<line x1="78" y1="48.0" x2="856.0" y2="48.0" stroke="#d1d5db"/>
+<text x="70.0" y="52.0" text-anchor="end" fill="#374151">100,000</text>
+<rect x="78" y="48" width="778.0" height="340" fill="none" stroke="#9ca3af"/>
+<line x1="207.7" y1="388.0" x2="207.7" y2="393.0" stroke="#9ca3af"/>
+<text x="207.7" y="407.0" text-anchor="middle" fill="#374151">2026-10-21</text>
+<line x1="467.0" y1="388.0" x2="467.0" y2="393.0" stroke="#9ca3af"/>
+<text x="467.0" y="407.0" text-anchor="middle" fill="#374151">2026-10-22</text>
+<line x1="726.3" y1="388.0" x2="726.3" y2="393.0" stroke="#9ca3af"/>
+<text x="726.3" y="407.0" text-anchor="middle" fill="#374151">2026-10-23</text>
+<text x="467.0" y="428.0" text-anchor="middle" fill="#111827">date of the run</text>
+<text transform="translate(18 218.0) rotate(-90)" text-anchor="middle" fill="#111827">µs per step, log scale</text>
+<polyline points="438.5,336.6 620.0,351.0 775.6,351.1" fill="none" stroke="#1d4ed8" stroke-width="2.5"/>
+<circle cx="438.5" cy="336.6" r="4.5" fill="#1d4ed8"/>
+<text x="445.5" y="329.6" fill="#1d4ed8" font-size="11">0.4.0</text>
+<circle cx="620.0" cy="351.0" r="4.5" fill="#1d4ed8"/>
+<text x="627.0" y="344.0" fill="#1d4ed8" font-size="11">0.5.0</text>
+<circle cx="775.6" cy="351.1" r="4.5" fill="#1d4ed8"/>
+<text x="782.6" y="344.1" fill="#1d4ed8" font-size="11">0.6.0</text>
+<circle cx="703.0" cy="331.7" r="4.5" fill="#059669"/>
+<text x="710.0" y="324.7" fill="#059669" font-size="11">0.6.0</text>
+<circle cx="189.5" cy="107.6" r="4.5" fill="#7c3aed"/>
+<text x="196.5" y="100.6" fill="#7c3aed" font-size="11">0.1.1</text>
+<line x1="194.7" y1="242.2" x2="856.0" y2="242.2" stroke="#dc2626" stroke-width="1.6" stroke-dasharray="2 3"/>
+<rect x="190.7" y="238.2" width="8" height="8" fill="#ffffff" stroke="#dc2626" stroke-width="2"/>
+<line x1="199.9" y1="220.6" x2="856.0" y2="220.6" stroke="#ea580c" stroke-width="1.6" stroke-dasharray="2 3"/>
+<rect x="195.9" y="216.6" width="8" height="8" fill="#ffffff" stroke="#ea580c" stroke-width="2"/>
+<polyline points="205.1,241.7 464.4,247.4" fill="none" stroke="#a16207" stroke-width="1.8" stroke-dasharray="6 4"/>
+<line x1="464.4" y1="247.4" x2="856.0" y2="247.4" stroke="#a16207" stroke-width="1.6" stroke-dasharray="2 3"/>
+<rect x="201.1" y="237.7" width="8" height="8" fill="#ffffff" stroke="#a16207" stroke-width="2"/>
+<rect x="460.4" y="243.4" width="8" height="8" fill="#ffffff" stroke="#a16207" stroke-width="2"/>
+<line x1="469.6" y1="253.8" x2="856.0" y2="253.8" stroke="#db2777" stroke-width="1.6" stroke-dasharray="2 3"/>
+<rect x="465.6" y="249.8" width="8" height="8" fill="#ffffff" stroke="#db2777" stroke-width="2"/>
+<line x1="474.8" y1="260.3" x2="856.0" y2="260.3" stroke="#4b5563" stroke-width="1.6" stroke-dasharray="2 3"/>
+<rect x="470.8" y="256.3" width="8" height="8" fill="#ffffff" stroke="#4b5563" stroke-width="2"/>
+<line x1="480.0" y1="260.8" x2="856.0" y2="260.8" stroke="#92400e" stroke-width="1.6" stroke-dasharray="2 3"/>
+<rect x="476.0" y="256.8" width="8" height="8" fill="#ffffff" stroke="#92400e" stroke-width="2"/>
+<line x1="485.2" y1="101.7" x2="856.0" y2="101.7" stroke="#be123c" stroke-width="1.6" stroke-dasharray="2 3"/>
+<rect x="481.2" y="97.7" width="8" height="8" fill="#ffffff" stroke="#be123c" stroke-width="2"/>
+<line x1="231.0" y1="240.8" x2="856.0" y2="240.8" stroke="#ca8a04" stroke-width="1.6" stroke-dasharray="2 3"/>
+<rect x="227.0" y="236.8" width="8" height="8" fill="#ffffff" stroke="#ca8a04" stroke-width="2"/>
+<line x1="495.5" y1="249.2" x2="856.0" y2="249.2" stroke="#9ca3af" stroke-width="1.6" stroke-dasharray="2 3"/>
+<rect x="491.5" y="245.2" width="8" height="8" fill="#ffffff" stroke="#9ca3af" stroke-width="2"/>
+<line x1="78.0" y1="448.0" x2="106.0" y2="448.0" stroke="#1d4ed8" stroke-width="2"/>
+<circle cx="92.0" cy="448.0" r="4.5" fill="#1d4ed8"/>
+<text x="114.0" y="452.0" fill="#111827">ModelSpec Vulkan</text>
+<line x1="467.0" y1="448.0" x2="495.0" y2="448.0" stroke="#059669" stroke-width="2"/>
+<circle cx="481.0" cy="448.0" r="4.5" fill="#059669"/>
+<text x="503.0" y="452.0" fill="#111827">ModelSpec Vulkan, profiled</text>
+<line x1="78.0" y1="468.0" x2="106.0" y2="468.0" stroke="#7c3aed" stroke-width="2"/>
+<circle cx="92.0" cy="468.0" r="4.5" fill="#7c3aed"/>
+<text x="114.0" y="472.0" fill="#111827">ModelSpec CPU, 1 thread</text>
+<line x1="467.0" y1="468.0" x2="495.0" y2="468.0" stroke="#dc2626" stroke-width="2" stroke-dasharray="6 4"/>
+<rect x="477.0" y="464.0" width="8" height="8" fill="#ffffff" stroke="#dc2626" stroke-width="2"/>
+<text x="503.0" y="472.0" fill="#111827">PyTorch CUDA eager</text>
+<line x1="78.0" y1="488.0" x2="106.0" y2="488.0" stroke="#ea580c" stroke-width="2" stroke-dasharray="6 4"/>
+<rect x="88.0" y="484.0" width="8" height="8" fill="#ffffff" stroke="#ea580c" stroke-width="2"/>
+<text x="114.0" y="492.0" fill="#111827">PyTorch CUDA torch.compile</text>
+<line x1="467.0" y1="488.0" x2="495.0" y2="488.0" stroke="#a16207" stroke-width="2" stroke-dasharray="6 4"/>
+<rect x="477.0" y="484.0" width="8" height="8" fill="#ffffff" stroke="#a16207" stroke-width="2"/>
+<text x="503.0" y="492.0" fill="#111827">PyTorch CPU eager, 1 thread</text>
+<line x1="78.0" y1="508.0" x2="106.0" y2="508.0" stroke="#db2777" stroke-width="2" stroke-dasharray="6 4"/>
+<rect x="88.0" y="504.0" width="8" height="8" fill="#ffffff" stroke="#db2777" stroke-width="2"/>
+<text x="114.0" y="512.0" fill="#111827">PyTorch CPU eager, 2 threads</text>
+<line x1="467.0" y1="508.0" x2="495.0" y2="508.0" stroke="#4b5563" stroke-width="2" stroke-dasharray="6 4"/>
+<rect x="477.0" y="504.0" width="8" height="8" fill="#ffffff" stroke="#4b5563" stroke-width="2"/>
+<text x="503.0" y="512.0" fill="#111827">PyTorch CPU eager, 4 threads</text>
+<line x1="78.0" y1="528.0" x2="106.0" y2="528.0" stroke="#92400e" stroke-width="2" stroke-dasharray="6 4"/>
+<rect x="88.0" y="524.0" width="8" height="8" fill="#ffffff" stroke="#92400e" stroke-width="2"/>
+<text x="114.0" y="532.0" fill="#111827">PyTorch CPU eager, 8 threads</text>
+<line x1="467.0" y1="528.0" x2="495.0" y2="528.0" stroke="#be123c" stroke-width="2" stroke-dasharray="6 4"/>
+<rect x="477.0" y="524.0" width="8" height="8" fill="#ffffff" stroke="#be123c" stroke-width="2"/>
+<text x="503.0" y="532.0" fill="#111827">PyTorch CPU eager, 20 threads</text>
+<line x1="78.0" y1="548.0" x2="106.0" y2="548.0" stroke="#ca8a04" stroke-width="2" stroke-dasharray="6 4"/>
+<rect x="88.0" y="544.0" width="8" height="8" fill="#ffffff" stroke="#ca8a04" stroke-width="2"/>
+<text x="114.0" y="552.0" fill="#111827">PyTorch CPU torch.compile, 1 thread</text>
+<line x1="467.0" y1="548.0" x2="495.0" y2="548.0" stroke="#9ca3af" stroke-width="2" stroke-dasharray="6 4"/>
+<rect x="477.0" y="544.0" width="8" height="8" fill="#ffffff" stroke="#9ca3af" stroke-width="2"/>
+<text x="503.0" y="552.0" fill="#111827">PyTorch CPU torch.compile, 8 threads</text>
+</svg>

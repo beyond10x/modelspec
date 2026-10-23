@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="500" viewBox="0 0 880 500" font-family="system-ui, -apple-system, Segoe UI, Roboto, sans-serif" font-size="12" role="img" aria-label="MLP 784-H-10 sweep, batch 8192: µs per step against hidden width">
+<title>MLP 784-H-10 sweep, batch 8192: µs per step against hidden width</title>
+<rect width="880" height="500" fill="#ffffff"/>
+<text x="78" y="28" font-size="15" font-weight="600" fill="#111827">MLP 784-H-10 sweep, batch 8192: µs per step against hidden width</text>
+<line x1="78" y1="388.0" x2="856.0" y2="388.0" stroke="#d1d5db"/>
+<text x="70.0" y="392.0" text-anchor="end" fill="#374151">100</text>
+<line x1="78" y1="353.9" x2="856.0" y2="353.9" stroke="#f3f4f6"/>
+<line x1="78" y1="308.8" x2="856.0" y2="308.8" stroke="#f3f4f6"/>
+<line x1="78" y1="274.7" x2="856.0" y2="274.7" stroke="#d1d5db"/>
+<text x="70.0" y="278.7" text-anchor="end" fill="#374151">1,000</text>
+<line x1="78" y1="240.5" x2="856.0" y2="240.5" stroke="#f3f4f6"/>
+<line x1="78" y1="195.5" x2="856.0" y2="195.5" stroke="#f3f4f6"/>
+<line x1="78" y1="161.3" x2="856.0" y2="161.3" stroke="#d1d5db"/>
+<text x="70.0" y="165.3" text-anchor="end" fill="#374151">10,000</text>
+<line x1="78" y1="127.2" x2="856.0" y2="127.2" stroke="#f3f4f6"/>
+<line x1="78" y1="82.1" x2="856.0" y2="82.1" stroke="#f3f4f6"/>
+<line x1="78" y1="48.0" x2="856.0" y2="48.0" stroke="#d1d5db"/>
+<text x="70.0" y="52.0" text-anchor="end" fill="#374151">100,000</text>
+<rect x="78" y="48" width="778.0" height="340" fill="none" stroke="#9ca3af"/>
+<line x1="175.2" y1="388.0" x2="175.2" y2="393.0" stroke="#9ca3af"/>
+<text x="175.2" y="407.0" text-anchor="middle" fill="#374151">64</text>
+<line x1="369.8" y1="388.0" x2="369.8" y2="393.0" stroke="#9ca3af"/>
+<text x="369.8" y="407.0" text-anchor="middle" fill="#374151">256</text>
+<line x1="564.2" y1="388.0" x2="564.2" y2="393.0" stroke="#9ca3af"/>
+<text x="564.2" y="407.0" text-anchor="middle" fill="#374151">1024</text>
+<line x1="758.8" y1="388.0" x2="758.8" y2="393.0" stroke="#9ca3af"/>
+<text x="758.8" y="407.0" text-anchor="middle" fill="#374151">4096</text>
+<text x="467.0" y="428.0" text-anchor="middle" fill="#111827">hidden width H</text>
+<text transform="translate(18 218.0) rotate(-90)" text-anchor="middle" fill="#111827">µs per step, log scale</text>
+<polyline points="175.2,286.3 369.8,246.0 564.2,185.3 758.8,105.5" fill="none" stroke="#1d4ed8" stroke-width="2.5"/>
+<circle cx="175.2" cy="286.3" r="4.5" fill="#1d4ed8"/>
+<circle cx="369.8" cy="246.0" r="4.5" fill="#1d4ed8"/>
+<circle cx="564.2" cy="185.3" r="4.5" fill="#1d4ed8"/>
+<circle cx="758.8" cy="105.5" r="4.5" fill="#1d4ed8"/>
+<polyline points="175.2,308.1 369.8,297.8 564.2,242.2 758.8,176.9" fill="none" stroke="#dc2626" stroke-width="1.8" stroke-dasharray="6 4"/>
+<rect x="171.2" y="304.1" width="8" height="8" fill="#ffffff" stroke="#dc2626" stroke-width="2"/>
+<rect x="365.8" y="293.8" width="8" height="8" fill="#ffffff" stroke="#dc2626" stroke-width="2"/>
+<rect x="560.2" y="238.2" width="8" height="8" fill="#ffffff" stroke="#dc2626" stroke-width="2"/>
+<rect x="754.8" y="172.9" width="8" height="8" fill="#ffffff" stroke="#dc2626" stroke-width="2"/>
+<polyline points="175.2,297.5 369.8,290.1 564.2,242.3 758.8,177.1" fill="none" stroke="#ea580c" stroke-width="1.8" stroke-dasharray="6 4"/>
+<rect x="171.2" y="293.5" width="8" height="8" fill="#ffffff" stroke="#ea580c" stroke-width="2"/>
+<rect x="365.8" y="286.1" width="8" height="8" fill="#ffffff" stroke="#ea580c" stroke-width="2"/>
+<rect x="560.2" y="238.3" width="8" height="8" fill="#ffffff" stroke="#ea580c" stroke-width="2"/>
+<rect x="754.8" y="173.1" width="8" height="8" fill="#ffffff" stroke="#ea580c" stroke-width="2"/>
+<line x1="78.0" y1="448.0" x2="106.0" y2="448.0" stroke="#1d4ed8" stroke-width="2"/>
+<circle cx="92.0" cy="448.0" r="4.5" fill="#1d4ed8"/>
+<text x="114.0" y="452.0" fill="#111827">ModelSpec Vulkan</text>
+<line x1="467.0" y1="448.0" x2="495.0" y2="448.0" stroke="#dc2626" stroke-width="2" stroke-dasharray="6 4"/>
+<rect x="477.0" y="444.0" width="8" height="8" fill="#ffffff" stroke="#dc2626" stroke-width="2"/>
+<text x="503.0" y="452.0" fill="#111827">PyTorch CUDA eager</text>
+<line x1="78.0" y1="468.0" x2="106.0" y2="468.0" stroke="#ea580c" stroke-width="2" stroke-dasharray="6 4"/>
+<rect x="88.0" y="464.0" width="8" height="8" fill="#ffffff" stroke="#ea580c" stroke-width="2"/>
+<text x="114.0" y="472.0" fill="#111827">PyTorch CUDA torch.compile</text>
+</svg>

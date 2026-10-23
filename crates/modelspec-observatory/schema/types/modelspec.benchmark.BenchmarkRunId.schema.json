@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/modelspec.benchmark.BenchmarkRunId",
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "164665e925ba9a7bb5fbe1764f9ee0f8a2339c58f0c3fd86f01294b3de8c4cb2",
+    "contract_digest": "slice-sha256/2:c1317e6e07aa76be0bc3459731922aa2356749994fb0cd8e05ccad27077b8af9",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.benchmark.BenchmarkRunId": {
+      "title": "BenchmarkRunId",
+      "description": "The name of one run in `benchmarks/runs.yaml`, unique in the file, such as `mnist-0.6.0-modelspec-vulkan`.",
+      "x-ess-name": "modelspec.benchmark.BenchmarkRunId",
+      "x-ess-kind": "newtype",
+      "type": "string"
+    }
+  }
+}
