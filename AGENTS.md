@@ -135,7 +135,9 @@ workspace version and nothing is on a registry.
   checkpoint, device profile, training-run record) is typed in `spec/` as ESS before code or stories
   use it. Run `ess specify validate --path .` from inside `spec/` after each edit.
   `spec/ess-inputs.yaml` pins the `ess` release; an older installed `ess` delegates to the pin only
-  when started inside `spec/`, and refuses `--path spec` from the repository root.
+  when started inside `spec/`, and refuses `--path spec` from the repository root. A move of that
+  pin moves `ESS_PINNED` and `ESS_SHA256` in `.github/workflows/check.yml` in the same commit;
+  local `task ci` does not read them, and CI refuses the mismatch (wave m1-h, 2026-10-23).
 - The `.mspec` language (grammar, types, shapes, gradient rules) is not an ESS domain; DESIGN.md
   § 2–4 and the tests of DESIGN.md § 9 hold it.
 - Generated output (`ess generate`) goes outside `spec/`, beside it, never inside it.
