@@ -1,0 +1,13 @@
+{
+  "at": "2026-10-23T22:00:17Z",
+  "actor": "human:timo",
+  "artifact": "story:benchmark-history",
+  "kind": "story",
+  "revision": 5,
+  "change": {
+    "change": "evidence",
+    "kind": "test_result",
+    "source": "task ci (PR 28, merged to main 821cf2e), corrected time",
+    "reference": "https://github.com/beyond10x/modelspec/actions/runs/40029840129/job/120675078640"
+  }
+}

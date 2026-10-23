@@ -2,7 +2,7 @@
 format: aep.planning-md/3
 id: story:benchmark-history
 kind: story
-status: active
+status: implemented
 title: Every benchmark run in one YAML file, and its history against the opponents
 relations:
 - decomposes: epic:transformer-vs-pytorch-cuda
@@ -16,10 +16,11 @@ scope:
   path: spec/domains/benchmark.yaml
 - confidence: cited
   path: website/docs/benchmarks.md
-revision: 4
+revision: 5
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-23T19:51:50Z", actor: "human:timo", revision: 2}
 - {from: "proposed", to: "active", at: "2026-10-23T19:51:50Z", actor: "human:timo", revision: 3}
+- {from: "active", to: "implemented", at: "2026-10-23T22:01:28Z", actor: "human:timo", revision: 5, decided_on: {"recorded":{"test_result":1}}}
 ---
 # Every benchmark run in one YAML file, and its history against the opponents
 
