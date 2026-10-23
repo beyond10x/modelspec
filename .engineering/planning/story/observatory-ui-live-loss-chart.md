@@ -2,7 +2,7 @@
 format: aep.planning-md/3
 id: story:observatory-ui-live-loss-chart
 kind: story
-status: active
+status: implemented
 title: 'Observatory UI: live loss and metric charts in Vue, types generated from Rust'
 summary: A Vue 3 + TypeScript + Vite + pnpm UI served by the Rust server draws loss and metric curves live and from a replay; its server types are generated from Rust and drift-checked.
 relations:
@@ -55,10 +55,11 @@ scope:
   path: website/docs/reference/cli.md
 - confidence: inferred
   path: website/docs/reference/crates.md
-revision: 27
+revision: 28
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-23T08:16:30Z", actor: "human:timo", revision: 4, decided_on: {"recorded":{"review_outcome":3}}}
 - {from: "proposed", to: "active", at: "2026-10-23T08:16:30Z", actor: "human:timo", revision: 5, decided_on: {"recorded":{"review_outcome":3}}}
+- {from: "active", to: "implemented", at: "2026-10-23T15:00:53Z", actor: "human:timo", revision: 28, decided_on: {"recorded":{"test_result":1,"review_outcome":4}}}
 ---
 # Observatory UI: live loss and metric charts in Vue, types generated from Rust
 

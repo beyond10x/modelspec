@@ -1,0 +1,13 @@
+{
+  "at": "2026-10-23T15:00:53Z",
+  "actor": "human:timo",
+  "artifact": "story:observatory-ui-live-loss-chart",
+  "kind": "story",
+  "revision": 27,
+  "change": {
+    "change": "evidence",
+    "kind": "test_result",
+    "source": "task ci on impl/observatory-ui-live-loss-chart at e08664e: 1361 passed, 0 failed, 117 ignored, exit 0; pnpm test 16 pass 0 fail",
+    "reference": "e08664e"
+  }
+}

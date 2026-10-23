@@ -1,0 +1,15 @@
+{
+  "at": "2026-10-23T15:00:53Z",
+  "actor": "human:timo",
+  "artifact": "story:observatory-ui-live-loss-chart",
+  "kind": "story",
+  "revision": 27,
+  "change": {
+    "change": "evidence",
+    "kind": "review_outcome",
+    "source": "round 2 fix e08664e: bounded Ui::read, fresh EventSource after a drop, percent-decoding, chart NaN, metric named loss, live scenarios at 50000 steps",
+    "reference": "e08664e",
+    "review": "review-result:adversary-observatory-ui-live-loss-chart-pass-1",
+    "outcome": "fixed"
+  }
+}
