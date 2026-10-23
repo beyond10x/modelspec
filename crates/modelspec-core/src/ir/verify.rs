@@ -1170,20 +1170,21 @@ fn first_outside(set: &[u64], outside: &[u64]) -> Option<usize> {
 }
 
 /// The view of `step` that conflicts with `earlier`: the first read of a buffer `earlier`
-/// writes, or else the first write of a buffer `earlier` reads or writes.
+/// writes, or else the first write of a buffer `earlier` reads or writes. The buffers of
+/// `earlier` are collected into sets first, so the work grows with the views of the two steps
+/// and not with their product.
 fn conflict<'a>(step: &'a PlanStep, earlier: &PlanStep) -> Option<&'a BufferView> {
-    step.reads
+    let written: BTreeSet<u32> = earlier.writes.iter().map(|w| w.buffer).collect();
+    if let Some(read) = step.reads.iter().find(|r| written.contains(&r.buffer)) {
+        return Some(read);
+    }
+    let used: BTreeSet<u32> = earlier
+        .reads
         .iter()
-        .find(|r| earlier.writes.iter().any(|w| w.buffer == r.buffer))
-        .or_else(|| {
-            step.writes.iter().find(|w| {
-                earlier
-                    .reads
-                    .iter()
-                    .chain(&earlier.writes)
-                    .any(|v| v.buffer == w.buffer)
-            })
-        })
+        .map(|r| r.buffer)
+        .chain(written)
+        .collect();
+    step.writes.iter().find(|w| used.contains(&w.buffer))
 }
 
 /// The passes of [`verify_plan`] over one plan's steps. Each pass keeps what it needs of the

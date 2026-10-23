@@ -409,6 +409,115 @@ fn a_plan_one_view_past_the_limit_is_refused_before_the_verifier() {
     );
 }
 
+/// The reader counts each plan as it parses the manifest, before it checks the module files and
+/// the hashes, because it cannot hash a plan it does not hold: a plan past the limits in a
+/// manifest changed after it was sealed is refused with E-ARTIFACT-003, not E-ARTIFACT-002.
+#[test]
+fn an_unsealed_plan_past_the_limits_is_refused_before_the_hashes() {
+    let _serial = serial();
+    let dir = scratch("unsealed-steps");
+    cpu_artifact_with(&dir, "plan", |_| wire_chain(MAX_PLAN_STEPS + 1));
+    let path = dir.join(artifact::MANIFEST_FILE);
+    let mut manifest: Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    manifest["compiler_version"] = Value::from("changed after sealing");
+    std::fs::write(&path, serde_json::to_string(&manifest).unwrap()).unwrap();
+    assert_eq!(
+        read_outcome(&dir),
+        format!(
+            "E-ARTIFACT-003 plan has at most {MAX_PLAN_STEPS} steps (it has {})",
+            MAX_PLAN_STEPS + 1
+        )
+    );
+}
+
+/// The reader parses the manifest into its types with its plans counted, not into a JSON value,
+/// and keeps the E-ARTIFACT-001 refusals of a manifest that is not of format version 1: text
+/// that is not JSON, even after a field no manifest has; a `format_version` that is missing, not
+/// an integer or not 1, the last one counting where it repeats; a top level that is not an
+/// object, even one that lists a manifest's fields in order; and JSON of version 1 that is not a
+/// manifest.
+#[test]
+fn a_manifest_not_of_format_version_1_is_refused_with_001() {
+    const NOT_JSON: &str = "the artifact manifest is not JSON";
+    const UNKNOWN: &str = "the artifact has an unknown format version";
+    const NOT_1: &str = "the artifact manifest is not of format version 1";
+    const FIELDS: [&str; 18] = [
+        "format_version",
+        "artifact_id",
+        "backend",
+        "artifact_hash",
+        "source_hash",
+        "ir_hash",
+        "fast_math",
+        "deterministic",
+        "compiler_version",
+        "schema_hash",
+        "parameters",
+        "data",
+        "kernels",
+        "plan",
+        "forward_plan",
+        "buffers",
+        "loss_view",
+        "prediction_view",
+    ];
+    let _serial = serial();
+    let dir = scratch("format-version");
+    cpu_artifact_with(&dir, "plan", |_| wire_chain(3));
+    let path = dir.join(artifact::MANIFEST_FILE);
+    let manifest: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let in_order = Value::Array(FIELDS.iter().map(|f| manifest[*f].clone()).collect());
+    let cases = [
+        ("not json".to_owned(), NOT_JSON, "-"),
+        (
+            r#"{"format_version": 1, "plan": ["#.to_owned(),
+            NOT_JSON,
+            "-",
+        ),
+        (
+            r#"{"format_version": 1, "stray": 0, "plan": ["#.to_owned(),
+            NOT_JSON,
+            "-",
+        ),
+        ("{}".to_owned(), UNKNOWN, "none"),
+        (r#"{"format_version": 2}"#.to_owned(), UNKNOWN, "2"),
+        (r#"{"format_version": "1"}"#.to_owned(), UNKNOWN, r#""1""#),
+        (r#"{"format_version": 1.0}"#.to_owned(), UNKNOWN, "1.0"),
+        (
+            r#"{"format_version": 1, "format_version": 2}"#.to_owned(),
+            UNKNOWN,
+            "2",
+        ),
+        ("[1, 2]".to_owned(), UNKNOWN, "none"),
+        (in_order.to_string(), UNKNOWN, "none"),
+        (r#"{"format_version": 1}"#.to_owned(), NOT_1, "-"),
+    ];
+    let mut wrong = Vec::new();
+    for (text, message, version) in cases {
+        std::fs::write(&path, &text).unwrap();
+        let found = match artifact::read(&dir) {
+            Ok(_) => "read".to_owned(),
+            Err(d) => {
+                let version = d
+                    .details
+                    .iter()
+                    .find(|detail| detail.label.as_deref() == Some("format_version"))
+                    .map_or("-", |detail| detail.text.as_str());
+                format!("{} {} {version}", d.code.as_str(), d.message)
+            }
+        };
+        let expected = format!("E-ARTIFACT-001 {message} {version}");
+        if found != expected {
+            wrong.push(format!(
+                "{}: {found}, not {expected}",
+                text.chars().take(60).collect::<String>()
+            ));
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
 /// The execution plan of the MNIST example compiled for Vulkan: its forward plan and kernels
 /// stay, and each case below replaces its step plan.
 fn mnist() -> ExecutionPlan {
