@@ -2,7 +2,7 @@
 format: aep.planning-md/3
 id: story:mlp-size-sweep-vs-pytorch-cuda
 kind: story
-status: active
+status: implemented
 title: MLP size sweep against PyTorch CUDA on the RTX 3090
 relations:
 - decomposes: epic:transformer-vs-pytorch-cuda
@@ -14,10 +14,11 @@ scope:
   path: crates/modelspec-runtime/src/train/runner.rs
 - confidence: cited
   path: opponents/mlp_sweep/
-revision: 6
+revision: 7
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-23T17:50:00Z", actor: "human:timo", revision: 4}
 - {from: "proposed", to: "active", at: "2026-10-23T17:50:00Z", actor: "human:timo", revision: 5}
+- {from: "active", to: "implemented", at: "2026-10-23T19:47:09Z", actor: "human:timo", revision: 7, decided_on: {"recorded":{"test_result":1}}}
 ---
 # MLP size sweep against PyTorch CUDA on the RTX 3090
 

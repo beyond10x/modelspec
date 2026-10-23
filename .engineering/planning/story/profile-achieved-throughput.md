@@ -2,7 +2,7 @@
 format: aep.planning-md/3
 id: story:profile-achieved-throughput
 kind: story
-status: active
+status: implemented
 title: Achieved GFLOP/s and GB/s in train --profile
 relations:
 - decomposes: epic:transformer-vs-pytorch-cuda
@@ -14,10 +14,11 @@ scope:
   path: crates/modelspec-core/src/ir/kernel.rs
 - confidence: cited
   path: crates/modelspec-runtime/src/vulkan/profile.rs
-revision: 5
+revision: 6
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-23T17:49:59Z", actor: "human:timo", revision: 3}
 - {from: "proposed", to: "active", at: "2026-10-23T17:49:59Z", actor: "human:timo", revision: 4}
+- {from: "active", to: "implemented", at: "2026-10-23T19:28:18Z", actor: "human:timo", revision: 6, decided_on: {"recorded":{"test_result":1}}}
 ---
 # Achieved GFLOP/s and GB/s in train --profile
 

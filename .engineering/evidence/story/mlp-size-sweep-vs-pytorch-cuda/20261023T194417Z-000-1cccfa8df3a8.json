@@ -1,0 +1,12 @@
+{
+  "at": "2026-10-23T19:44:17Z",
+  "actor": "human:timo",
+  "artifact": "story:mlp-size-sweep-vs-pytorch-cuda",
+  "kind": "story",
+  "revision": 6,
+  "change": {
+    "change": "evidence",
+    "kind": "test_result",
+    "source": "mlp_sweep bench, PyTorch opponent and --crossover at b2f9553 on the RTX 3090, each exit 0, 36 of 36 points measured; output in verification-report:mlp-size-sweep-2026-10-23"
+  }
+}

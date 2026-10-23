@@ -1,0 +1,12 @@
+{
+  "at": "2026-10-23T19:27:43Z",
+  "actor": "human:timo",
+  "artifact": "story:vulkan-descriptor-pool-counts-writes",
+  "kind": "story",
+  "revision": 5,
+  "change": {
+    "change": "evidence",
+    "kind": "test_result",
+    "source": "task ci (wave/benchmark 36aae8c, exit 0, 173 suites ok) and MODELSPEC_VK_VALIDATION=1 cargo test --release -p modelspec-runtime --features vulkan --test vulkan_profile --test vulkan_train -- --ignored (b2f9553, 4 passed)"
+  }
+}

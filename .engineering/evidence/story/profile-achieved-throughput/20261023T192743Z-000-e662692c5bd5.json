@@ -1,0 +1,12 @@
+{
+  "at": "2026-10-23T19:27:43Z",
+  "actor": "human:timo",
+  "artifact": "story:profile-achieved-throughput",
+  "kind": "story",
+  "revision": 5,
+  "change": {
+    "change": "evidence",
+    "kind": "test_result",
+    "source": "task ci (wave/benchmark 36aae8c, exit 0) and the ignored vulkan_profile device test (b2f9553, passed); output in verification-report:mnist-profile-throughput-2026-10-23"
+  }
+}
