@@ -16,11 +16,12 @@
 //! the order of `spec/domains/artifact.yaml`, so two compiles of one file give equal bytes.
 //!
 //! [`read`] validates an untrusted directory before anything is dispatched, in this order: the
-//! manifest is readable and of a known format version ([`E_ARTIFACT_001`]); every module file
-//! exists and is no longer than its entry says ([`E_ARTIFACT_004`]); each module's hash and then
-//! `artifact_hash` and `artifact_id` ([`E_ARTIFACT_002`]); then every byte size computed from a
-//! shape or element count fits in 64 bits, the invariants of `spec/domains/artifact.yaml`, every
-//! Dispatch names a module the artifact owns, and the plan verifier ([`verify_plan`])
+//! manifest is a regular file, readable and of a known format version ([`E_ARTIFACT_001`]);
+//! every module file is a regular file no longer than its entry says and `kernels/` holds no
+//! other entry ([`E_ARTIFACT_004`]); each module's hash and then `artifact_hash` and
+//! `artifact_id` ([`E_ARTIFACT_002`]); then every byte size computed from a shape or element
+//! count fits in 64 bits, the invariants of `spec/domains/artifact.yaml`, every Dispatch names a
+//! module the artifact owns, every module is SPIR-V, and the plan verifier ([`verify_plan`])
 //! ([`E_ARTIFACT_003`]).
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -40,6 +41,7 @@ use crate::ir::print::print_step;
 use crate::ir::tensor::{DType, Dim, ParamDecl, ParamId, TensorType, ValueId};
 use crate::ir::training::TrainingStep;
 use crate::ir::verify::verify_plan;
+use crate::schedule::MAX_BUFFER_BYTES;
 
 /// The backend an artifact is compiled for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -176,9 +178,9 @@ pub fn canonical_parameter_id(path: &str) -> u64 {
     u64::from_le_bytes(first)
 }
 
-/// The artifact directory cannot be read as an artifact: `artifact.json` is missing,
-/// unreadable, larger than [`MAX_MANIFEST_BYTES`] or not a manifest, or its `format_version` is
-/// not one this build reads ([`FORMAT_VERSION`]).
+/// The artifact directory cannot be read as an artifact: `artifact.json` is missing, not a
+/// regular file, unreadable, larger than [`MAX_MANIFEST_BYTES`] or not a manifest, or its
+/// `format_version` is not one this build reads ([`FORMAT_VERSION`]).
 pub const E_ARTIFACT_001: Code = Code::new("E-ARTIFACT-001");
 
 /// A kernel module's bytes differ from the blake3 its manifest entry records, or the
@@ -187,13 +189,16 @@ pub const E_ARTIFACT_001: Code = Code::new("E-ARTIFACT-001");
 pub const E_ARTIFACT_002: Code = Code::new("E-ARTIFACT-002");
 
 /// The artifact is sealed but breaks an invariant of `spec/domains/artifact.yaml` or the plan
-/// verifier: a byte size that does not fit in 64 bits, a Dispatch naming a module the artifact
-/// does not own, a dependency on a step that is not before it, a view outside its buffer, or any
-/// other execution-plan rule.
+/// verifier: a byte size that does not fit in 64 bits, a buffer larger than 4294967295 bytes, a
+/// kernel module that is not SPIR-V (whole little-endian words, a 5-word header, the magic number
+/// 0x07230203), a Dispatch naming a module the artifact does not own, a dependency on a step that
+/// is not before it, a view outside its buffer, or any other execution-plan rule.
 pub const E_ARTIFACT_003: Code = Code::new("E-ARTIFACT-003");
 
-/// A kernel module file the manifest names is missing, cannot be read, or is longer than the
-/// byte length its entry records; the length is checked before the module is hashed.
+/// A kernel module file the manifest names is missing, not a regular file (a link, a device or a
+/// FIFO), cannot be read, or is longer than the byte length its entry records, or `kernels/`
+/// holds an entry no kernel of the manifest names; every file is checked before any module is
+/// hashed, and no read goes past the entry's byte length.
 pub const E_ARTIFACT_004: Code = Code::new("E-ARTIFACT-004");
 
 /// The manifest format this build writes and reads.
@@ -264,9 +269,10 @@ fn io_error(path: &Path) -> impl FnOnce(std::io::Error) -> WriteError + '_ {
 }
 
 /// Writes `artifact` and its `modules` to `dir` (created with its parents) as format
-/// [`FORMAT_VERSION`]: the modules first, then the sealed `artifact.json`. A Vulkan artifact
-/// needs one module per kernel; a Cpu artifact takes none and gets no `kernels/`. Returns the
-/// artifact hash.
+/// [`FORMAT_VERSION`]: it removes the `artifact.json` and `kernels/` of an earlier artifact in
+/// `dir`, writes the modules, then the sealed `artifact.json`, so `dir` holds exactly the new
+/// artifact and an interrupted write leaves no manifest. A Vulkan artifact needs one module per
+/// kernel; a Cpu artifact takes none and gets no `kernels/`. Returns the artifact hash.
 pub fn write(
     dir: &Path,
     artifact: &CompiledArtifact,
@@ -280,17 +286,31 @@ pub fn write(
     bytes.sort_by_key(|(id, _)| *id);
     manifest.seal(&bytes);
     std::fs::create_dir_all(dir).map_err(io_error(dir))?;
+    let path = dir.join(MANIFEST_FILE);
+    remove_if_present(&path)?;
+    let kernels = dir.join(KERNELS_DIR);
+    remove_if_present(&kernels)?;
     if !modules.is_empty() {
-        let kernels = dir.join(KERNELS_DIR);
-        std::fs::create_dir_all(&kernels).map_err(io_error(&kernels))?;
+        std::fs::create_dir(&kernels).map_err(io_error(&kernels))?;
         for module in modules {
             let path = module_path(dir, module.kernel_module_id);
             std::fs::write(&path, &module.spirv).map_err(io_error(&path))?;
         }
     }
-    let path = dir.join(MANIFEST_FILE);
     std::fs::write(&path, manifest.to_json()).map_err(io_error(&path))?;
     Ok(ContentHash(manifest.artifact_hash))
+}
+
+/// Removes `path` and, when it is a directory and not a link to one, everything in it; a path
+/// that does not exist is left as it is.
+fn remove_if_present(path: &Path) -> Result<(), WriteError> {
+    let removed = match std::fs::symlink_metadata(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => Err(error),
+        Ok(metadata) if metadata.is_dir() => std::fs::remove_dir_all(path),
+        Ok(_) => std::fs::remove_file(path),
+    };
+    removed.map_err(io_error(path))
 }
 
 /// Recomputes `artifact_hash` and `artifact_id` of the manifest in `dir` from its content and
@@ -324,40 +344,29 @@ pub fn module_path(dir: &Path, id: KernelModuleId) -> PathBuf {
 /// and returns the artifact or the diagnostic of the first check it fails.
 pub fn read(dir: &Path) -> Result<LoadedArtifact, Diagnostic> {
     let manifest = read_manifest(dir)?;
-    for kernel in &manifest.kernels {
+    let files = open_modules(dir, &manifest)?;
+    let mut modules = Vec::new();
+    for (kernel, file) in manifest.kernels.iter().zip(files) {
         let path = module_path(dir, kernel.kernel_module_id);
         let refused = |message: &str| {
             Diagnostic::new(E_ARTIFACT_004, message.to_owned())
                 .with("module", path.display().to_string())
         };
-        let length = std::fs::metadata(&path)
-            .map_err(|e| refused("a kernel module file is missing").with("error", e.to_string()))?
-            .len();
-        if length > kernel.byte_length {
+        let mut spirv = Vec::new();
+        file.take(kernel.byte_length.saturating_add(1))
+            .read_to_end(&mut spirv)
+            .map_err(|e| {
+                refused("a kernel module file cannot be read").with("error", e.to_string())
+            })?;
+        if spirv.len() as u64 > kernel.byte_length {
             return Err(
                 refused("a kernel module file is longer than its manifest entry")
                     .with("entry", kernel.byte_length.to_string())
-                    .with("file", length.to_string()),
-            );
-        }
-    }
-    let mut modules = Vec::new();
-    for kernel in &manifest.kernels {
-        let path = module_path(dir, kernel.kernel_module_id);
-        let mut spirv = Vec::new();
-        let read = std::fs::File::open(&path).and_then(|file| {
-            file.take(kernel.byte_length.saturating_add(1))
-                .read_to_end(&mut spirv)
-        });
-        if let Err(error) = read {
-            return Err(
-                Diagnostic::new(E_ARTIFACT_004, "a kernel module file cannot be read")
-                    .with("module", path.display().to_string())
-                    .with("error", error.to_string()),
+                    .with("read", format!("more than {} bytes", kernel.byte_length)),
             );
         }
         let hash = blake3::hash(&spirv).to_hex().to_string();
-        if spirv.len() as u64 > kernel.byte_length || hash != kernel.blake3 {
+        if hash != kernel.blake3 {
             return Err(Diagnostic::new(
                 E_ARTIFACT_002,
                 "a kernel module differs from the hash its manifest entry records",
@@ -395,6 +404,14 @@ pub fn read(dir: &Path) -> Result<LoadedArtifact, Diagnostic> {
             .with("invariant", message)
     };
     let artifact = manifest.check().map_err(invalid)?;
+    for (kernel, (_, spirv)) in manifest.kernels.iter().zip(&modules) {
+        if let Err(why) = check_spirv(spirv) {
+            return Err(invalid(format!(
+                "the module of kernel {} is SPIR-V: {why}",
+                kernel.kernel_module_id
+            )));
+        }
+    }
     verify_plan(&artifact.execution).map_err(|e| invalid(e.to_string()))?;
     let modules = manifest
         .kernels
@@ -418,6 +435,106 @@ pub fn read(dir: &Path) -> Result<LoadedArtifact, Diagnostic> {
     })
 }
 
+/// The magic number, the first word of a SPIR-V module.
+const SPIRV_MAGIC: u32 = 0x0723_0203;
+
+/// The bytes of a SPIR-V module's header: magic, version, generator, bound and schema words.
+const SPIRV_HEADER_BYTES: usize = 20;
+
+/// `Ok` when `bytes` are little-endian SPIR-V words that start with a header and the magic
+/// number; otherwise what they lack.
+fn check_spirv(bytes: &[u8]) -> Result<(), String> {
+    if !bytes.len().is_multiple_of(4) {
+        return Err(format!(
+            "{} bytes is not a whole number of words",
+            bytes.len()
+        ));
+    }
+    if bytes.len() < SPIRV_HEADER_BYTES {
+        return Err(format!(
+            "{} bytes is shorter than the {SPIRV_HEADER_BYTES}-byte header",
+            bytes.len()
+        ));
+    }
+    let magic = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+    if magic != SPIRV_MAGIC {
+        return Err(format!(
+            "the first word is {magic:#010x}, not the magic number {SPIRV_MAGIC:#010x}"
+        ));
+    }
+    Ok(())
+}
+
+/// Opens every module file the manifest of `dir` names, in manifest order, after the checks of
+/// [`E_ARTIFACT_004`]: each is a regular file, not a link, a device or a FIFO, and no longer than
+/// its entry, and `kernels/` holds nothing else (a manifest without kernels has no `kernels/`).
+/// No file is read here, so none is hashed before every one has passed.
+fn open_modules(dir: &Path, manifest: &Manifest) -> Result<Vec<std::fs::File>, Diagnostic> {
+    let mut files = Vec::new();
+    for kernel in &manifest.kernels {
+        let path = module_path(dir, kernel.kernel_module_id);
+        let refused = |message: &str| {
+            Diagnostic::new(E_ARTIFACT_004, message.to_owned())
+                .with("module", path.display().to_string())
+        };
+        let regular = |metadata: &std::fs::Metadata| -> Result<(), Diagnostic> {
+            if !metadata.is_file() {
+                return Err(refused("a kernel module file is not a regular file"));
+            }
+            if metadata.len() > kernel.byte_length {
+                return Err(
+                    refused("a kernel module file is longer than its manifest entry")
+                        .with("entry", kernel.byte_length.to_string())
+                        .with("file", metadata.len().to_string()),
+                );
+            }
+            Ok(())
+        };
+        let metadata = std::fs::symlink_metadata(&path)
+            .map_err(|e| refused("a kernel module file is missing").with("error", e.to_string()))?;
+        regular(&metadata)?;
+        let file = std::fs::File::open(&path).map_err(|e| {
+            refused("a kernel module file cannot be read").with("error", e.to_string())
+        })?;
+        regular(&file.metadata().map_err(|e| {
+            refused("a kernel module file cannot be read").with("error", e.to_string())
+        })?)?;
+        files.push(file);
+    }
+    let kernels = dir.join(KERNELS_DIR);
+    let stray = |message: &str| {
+        Diagnostic::new(E_ARTIFACT_004, message.to_owned())
+            .with("kernels", kernels.display().to_string())
+    };
+    if manifest.kernels.is_empty() {
+        return match std::fs::symlink_metadata(&kernels) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(files),
+            _ => Err(stray(
+                "the artifact has no kernel modules but has a kernels/ entry",
+            )),
+        };
+    }
+    let named: BTreeSet<String> = manifest
+        .kernels
+        .iter()
+        .map(|kernel| format!("{}.spv", kernel.kernel_module_id))
+        .collect();
+    let entries = std::fs::read_dir(&kernels)
+        .map_err(|e| stray("kernels/ cannot be listed").with("error", e.to_string()))?;
+    for entry in entries {
+        let entry =
+            entry.map_err(|e| stray("kernels/ cannot be listed").with("error", e.to_string()))?;
+        let name = entry.file_name();
+        if !name.to_str().is_some_and(|name| named.contains(name)) {
+            return Err(
+                stray("kernels/ holds a file that no kernel entry of the manifest names")
+                    .with("file", name.to_string_lossy().into_owned()),
+            );
+        }
+    }
+    Ok(files)
+}
+
 /// `artifact.json` of `dir`, of a known format version.
 fn read_manifest(dir: &Path) -> Result<Manifest, Diagnostic> {
     let path = dir.join(MANIFEST_FILE);
@@ -425,6 +542,12 @@ fn read_manifest(dir: &Path) -> Result<Manifest, Diagnostic> {
         Diagnostic::new(E_ARTIFACT_001, message.to_owned())
             .with("artifact", path.display().to_string())
     };
+    let metadata = std::fs::symlink_metadata(&path).map_err(|e| {
+        unreadable("the artifact manifest cannot be read").with("error", e.to_string())
+    })?;
+    if !metadata.is_file() {
+        return Err(unreadable("the artifact manifest is not a regular file"));
+    }
     let file = std::fs::File::open(&path).map_err(|e| {
         unreadable("the artifact manifest cannot be read").with("error", e.to_string())
     })?;
@@ -1180,6 +1303,13 @@ impl Manifest {
         }
         if let Some(position) = self.buffers.iter().position(|&size| size == 0) {
             return Err(format!("buffers[{position}] > 0"));
+        }
+        if let Some(position) = self
+            .buffers
+            .iter()
+            .position(|&size| size > MAX_BUFFER_BYTES)
+        {
+            return Err(format!("buffers[{position}] <= {MAX_BUFFER_BYTES}"));
         }
         let mut paths = BTreeSet::new();
         let mut canonical = BTreeSet::new();

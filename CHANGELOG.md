@@ -11,7 +11,7 @@ history.
 
 ### Added
 
-- `modelspec compile <file> --backend cpu|vulkan --output <dir> [--device-profile <json>]` writes an artifact directory, `artifact.json` and for Vulkan one `kernels/<kernel_module_id>.spv` per kernel, sealed by a blake3 `artifact_hash`, byte-equal across two compiles; `modelspec_core::artifact::read` reads one back and refuses an altered one with `E-ARTIFACT-001` (format version), `E-ARTIFACT-004` (module file missing or too long), `E-ARTIFACT-002` (hash mismatch) or `E-ARTIFACT-003` (broken invariant or plan), in that order (DESIGN.md § 7.1, § 8) (story:m1-compile-artifact)
+- `modelspec compile <file> --backend cpu|vulkan --output <dir> [--device-profile <json>]` writes an artifact directory, `artifact.json` and for Vulkan one `kernels/<kernel_module_id>.spv` per kernel, sealed by a blake3 `artifact_hash`, byte-equal across two compiles, replacing the `artifact.json` and `kernels/` of an earlier artifact in that directory; `modelspec_core::artifact::read` reads one back and refuses an altered one with `E-ARTIFACT-001` (format version), `E-ARTIFACT-004` (module file missing, not a regular file or too long, or a stray file in `kernels/`), `E-ARTIFACT-002` (hash mismatch) or `E-ARTIFACT-003` (broken invariant or plan, a buffer over 4294967295 bytes, a module that is not SPIR-V), in that order (DESIGN.md § 7.1, § 8) (story:m1-compile-artifact)
 
 ### Changed
 
