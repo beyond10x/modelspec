@@ -9,6 +9,10 @@ history.
 
 ## [Unreleased]
 
+### Added
+
+- `modelspec compile <file> --backend cpu|vulkan --output <dir> [--device-profile <json>]` writes an artifact directory, `artifact.json` and for Vulkan one `kernels/<kernel_module_id>.spv` per kernel, sealed by a blake3 `artifact_hash`, byte-equal across two compiles; `modelspec_core::artifact::read` reads one back and refuses an altered one with `E-ARTIFACT-001` (format version), `E-ARTIFACT-004` (module file missing or too long), `E-ARTIFACT-002` (hash mismatch) or `E-ARTIFACT-003` (broken invariant or plan), in that order (DESIGN.md § 7.1, § 8) (story:m1-compile-artifact)
+
 ### Changed
 
 - A two-row `MatMulTile` reads tiles of up to 16 values of `k` 2 tiles ahead (`modelspec_core::ir::kernel::MATMUL_TWO_ROW_TILE`) instead of 32 read 6 ahead, with the same bits; the weight-gradient matmul of the MNIST example falls from 4.91 to 4.58 µs and the MNIST step from 27.50 to 27.14 µs on an RTX 3090 (medians of 3 profiled and 5 timed runs of 144,000 steps) (DESIGN.md § 5.2) (story:m1-f-weight-grad-matmul-tiled)

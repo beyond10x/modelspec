@@ -179,6 +179,8 @@ mod tests {
         assert!(page.contains("| [`modelspec check`](#modelspec-check) |"));
         assert!(page.contains("## `modelspec train`"));
         assert!(page.contains("| [`modelspec infer`](#modelspec-infer) |"));
+        assert!(page.contains("| [`modelspec compile`](#modelspec-compile) |"));
+        assert!(page.contains("| `--device-profile <PATH>` | no | none |"));
         assert!(
             page.contains("Usage: modelspec infer --backend <BACKEND> --checkpoint <PATH> <PATH>")
         );
@@ -188,7 +190,8 @@ mod tests {
             "Every argument is required and has no default.\n\n| Argument | Meaning |\n|---|---|\n\
              | `<PATH>` | The .mspec file to check. |"
         ));
-        let (check, _) = page.split_once("## `modelspec inspect-device`").unwrap();
+        let (check, _) = page.split_once("## `modelspec compile`").unwrap();
+        let (_, check) = check.split_once("## `modelspec check`").unwrap();
         assert!(!check.contains("| Required |"));
         let (_, train) = page.split_once("## `modelspec train`").unwrap();
         assert!(train.contains("| Argument | Required | Default | Meaning |"));
