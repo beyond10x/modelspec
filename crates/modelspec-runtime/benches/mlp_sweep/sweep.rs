@@ -144,6 +144,31 @@ pub enum Outcome {
     Refused { refusal: String },
 }
 
+/// The source a side ran from: the package version, the git commit and whether tracked files
+/// differed from it. A field that could not be read is left out of the line.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Build {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dirty: Option<bool>,
+}
+
+impl Build {
+    /// The build from the output of `git rev-parse HEAD` and of
+    /// `git status --porcelain --untracked-files=no`, `None` where git did not answer.
+    pub fn from_git(version: Option<&str>, head: Option<&str>, status: Option<&str>) -> Self {
+        let commit = head.map(str::trim).filter(|head| !head.is_empty());
+        Build {
+            version: version.map(str::to_owned),
+            commit: commit.map(str::to_owned),
+            dirty: status.map(|status| !status.trim().is_empty()),
+        }
+    }
+}
+
 /// One result line: a point of one side.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PointResult {
@@ -156,6 +181,9 @@ pub struct PointResult {
     /// The device and software the side ran on, as it names them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device: Option<String>,
+    /// The source the side ran from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build: Option<Build>,
     #[serde(flatten)]
     pub outcome: Outcome,
 }
@@ -179,6 +207,7 @@ impl PointResult {
             flop_per_step,
             flop_rule: FLOP_RULE.to_owned(),
             device,
+            build: None,
             outcome: Outcome::Measured {
                 steps,
                 runs,
@@ -197,7 +226,16 @@ impl PointResult {
             flop_per_step: point.flop_per_step(),
             flop_rule: FLOP_RULE.to_owned(),
             device,
+            build: None,
             outcome: Outcome::Refused { refusal },
+        }
+    }
+
+    /// The result, naming the source it ran from.
+    pub fn with_build(self, build: Build) -> Self {
+        PointResult {
+            build: Some(build),
+            ..self
         }
     }
 

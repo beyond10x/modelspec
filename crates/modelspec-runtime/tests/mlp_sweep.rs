@@ -12,8 +12,8 @@
 mod sweep;
 
 use sweep::{
-    BATCHES, Crossover, HIDDEN, Outcome, PointResult, TimedRun, crossover, crossover_lines, median,
-    points,
+    BATCHES, Build, Crossover, HIDDEN, Outcome, PointResult, TimedRun, crossover, crossover_lines,
+    median, points,
 };
 
 fn measured(side: &str, batch: u64, hidden: u64, median_us: f64) -> PointResult {
@@ -345,14 +345,67 @@ fn steps_for_a_timed_run_reach_the_minimum_duration() {
     assert_eq!(sweep::steps_for(100.0, 20, 6.0), sweep::WARMUP_STEPS);
 }
 
+#[test]
+fn the_build_names_the_commit_and_whether_the_tree_was_dirty() {
+    let head = "30862e5aa1b2c3d4e5f60718293a4b5c6d7e8f90\n";
+    let clean = Build::from_git(Some("0.6.0"), Some(head), Some(""));
+    assert_eq!(
+        clean,
+        Build {
+            version: Some("0.6.0".into()),
+            commit: Some("30862e5aa1b2c3d4e5f60718293a4b5c6d7e8f90".into()),
+            dirty: Some(false),
+        }
+    );
+    let dirty = Build::from_git(Some("0.6.0"), Some(head), Some(" M crates/x.rs\n"));
+    assert_eq!(dirty.dirty, Some(true));
+    // Without git, neither is known; the line says so by leaving them out.
+    let unknown = Build::from_git(Some("0.6.0"), None, None);
+    assert_eq!((unknown.commit, unknown.dirty), (None, None));
+    assert_eq!(Build::from_git(None, Some("\n"), None).commit, None);
+}
+
+#[test]
+fn every_result_line_carries_its_build() {
+    let build = Build::from_git(Some("0.6.0"), Some("30862e5\n"), Some(" M a\n"));
+    let point = sweep::Point {
+        batch: 100,
+        hidden: 64,
+    };
+    for result in [
+        measured("modelspec-vulkan", 100, 64, 50.0).with_build(build.clone()),
+        PointResult::refused("modelspec-vulkan", point, "E".into(), None).with_build(build.clone()),
+    ] {
+        let line = result.to_line();
+        let value: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(value["build"]["version"], "0.6.0", "{line}");
+        assert_eq!(value["build"]["commit"], "30862e5", "{line}");
+        assert_eq!(value["build"]["dirty"], true, "{line}");
+        assert_eq!(PointResult::from_line(&line).unwrap(), result);
+    }
+    // The opponent writes no version: only the commit and the dirty flag.
+    let line = r#"{"side": "pytorch-eager", "batch": 100, "hidden": 64, "flop_per_step": 20454400, "flop_rule": "matmul-only", "build": {"commit": "30862e5", "dirty": false}, "status": "refused", "refusal": "RuntimeError: x"}"#;
+    let result = PointResult::from_line(line).unwrap();
+    assert_eq!(
+        result.build,
+        Some(Build {
+            version: None,
+            commit: Some("30862e5".into()),
+            dirty: Some(false),
+        })
+    );
+}
+
 #[cfg(feature = "vulkan")]
 mod rtx3090 {
     use modelspec_core::artifact::Backend;
-    use modelspec_core::compile::compile_artifact;
+    use modelspec_core::compile::{compile_artifact, compile_training};
     use modelspec_core::device::DeviceProfile;
     use modelspec_core::ir::kernel::{Kernel, KernelKind, PlanOp};
     use modelspec_runtime::spirv::emit::emit_kernels;
+    use modelspec_runtime::train::data::synthetic;
     use modelspec_runtime::vulkan::negotiate::negotiate;
+    use modelspec_runtime::vulkan::runner::RunOptions;
 
     use super::sweep::points;
 
@@ -412,5 +465,33 @@ mod rtx3090 {
             assert_eq!(matmul_flop, point.flop_per_step(), "{name}");
         }
         assert!(refused.is_empty(), "{refused:#?}");
+    }
+
+    /// The bench makes a point's teacher-student batch once and hands it to every run of the
+    /// point, whatever its step count: the batch does not depend on the steps, and a run given
+    /// it trains on what it would have drawn itself. Two small points; the CPU teacher forward
+    /// of the wide ones is slow in a debug build.
+    #[test]
+    fn a_point_s_batch_is_made_once_for_every_run_of_the_point() {
+        for point in points()
+            .into_iter()
+            .filter(|point| point.batch == 100)
+            .take(2)
+        {
+            let name = point.file_name();
+            let warm = compile_training(&name, &point.source(20)).expect("compiles");
+            let timed = compile_training(&name, &point.source(5000)).expect("compiles");
+            let data = synthetic(&warm.config, &warm.forward).expect("a batch");
+            assert_eq!(
+                synthetic(&timed.config, &timed.forward).expect("a batch"),
+                data,
+                "{name}"
+            );
+            let options = RunOptions {
+                data: Some(data.clone()),
+                ..RunOptions::default()
+            };
+            assert_eq!(options.data.as_ref(), Some(&data), "{name}");
+        }
     }
 }

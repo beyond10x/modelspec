@@ -12,11 +12,12 @@ Each point runs eager and torch.compile (dynamic=False, after a dynamo reset),
 on CUDA with TF32 off. Per point and mode: a 20-step warm-up (which also
 compiles), calibration runs until one lasts at least --min-seconds, then 3
 timed runs of that many steps. The timed span is host wall time from a CUDA
-synchronize before the first step to a CUDA synchronize after the last: it
-holds the steps alone, no setup, data generation or warm-up. Each point and
-mode prints one JSON line on stdout, in the shape the bench writes and
-`--crossover` reads; a point that fails prints its refusal and the sweep goes
-on. Progress goes to stderr.
+synchronize of --device before the first step to one after the last: it holds
+the steps alone, no setup, data generation or warm-up. Each point and mode
+prints one JSON line on stdout, in the shape the bench writes and `--crossover`
+reads, naming the git commit of this checkout and whether its tracked files
+differ from it; a point that fails prints its refusal and the sweep goes on.
+Progress goes to stderr.
 
 ModelSpec never runs this file (AGENTS.md, Rules: Python is for opponents only).
 """
@@ -24,7 +25,9 @@ ModelSpec never runs this file (AGENTS.md, Rules: Python is for opponents only).
 import argparse
 import json
 import math
+import os
 import statistics
+import subprocess
 import sys
 import time
 
@@ -85,14 +88,37 @@ def point_data(batch, hidden, device):
     return x, y.detach()
 
 
-def run(step, steps):
-    """`steps` steps between two CUDA synchronizes: seconds and the Unix-ms span."""
-    torch.cuda.synchronize()
+def build():
+    """The git commit of this checkout and whether its tracked files differ from it, as the
+    bench records them; a field git does not answer is left out."""
+    here = os.path.dirname(os.path.abspath(__file__))
+
+    def git(*args):
+        try:
+            done = subprocess.run(["git", "-C", here, *args], capture_output=True, text=True,
+                                  check=True)
+        except (OSError, subprocess.CalledProcessError):
+            return None
+        return done.stdout
+
+    result = {}
+    head = git("rev-parse", "HEAD")
+    if head and head.strip():
+        result["commit"] = head.strip()
+    status = git("status", "--porcelain", "--untracked-files=no")
+    if status is not None:
+        result["dirty"] = bool(status.strip())
+    return result
+
+
+def run(step, steps, device):
+    """`steps` steps between two CUDA synchronizes of `device`: seconds and the Unix-ms span."""
+    torch.cuda.synchronize(device)
     start_ms = int(time.time() * 1000)
     started = time.perf_counter()
     for _ in range(steps):
         step()
-    torch.cuda.synchronize()
+    torch.cuda.synchronize(device)
     seconds = time.perf_counter() - started
     end_ms = int(time.time() * 1000)
     return seconds, [start_ms, end_ms]
@@ -115,17 +141,17 @@ def measure(batch, hidden, mode, compile_mode, device, min_seconds):
         optimizer.step()
 
     target = min_seconds * 1.2
-    seconds, _ = run(step, WARMUP_STEPS)
+    seconds, _ = run(step, WARMUP_STEPS, device)
     steps = steps_for(seconds, WARMUP_STEPS, target)
     for _ in range(CALIBRATIONS):
-        seconds, _ = run(step, steps)
+        seconds, _ = run(step, steps, device)
         print(f"mlp_sweep:   calibration: {steps} steps in {seconds:.3f} s", file=sys.stderr)
         if seconds >= min_seconds:
             break
         steps = max(steps_for(seconds, steps, target), steps + 1)
     runs = []
     for _ in range(RUNS):
-        seconds, span = run(step, steps)
+        seconds, span = run(step, steps, device)
         us = seconds * 1e6 / steps
         print(
             f"mlp_sweep:   timed: {steps} steps in {seconds:.3f} s, {us:.3f} us per step",
@@ -159,6 +185,10 @@ def main():
     torch.backends.cudnn.allow_tf32 = False
     torch.set_float32_matmul_precision("highest")
     device = torch.device(args.device)
+    torch.cuda.set_device(device)
+    built = build()
+    if built.get("dirty") is not False:
+        print(f"mlp_sweep: warning: not a clean checkout: {built}", file=sys.stderr)
     named = (
         f"{torch.cuda.get_device_name(device)}; torch {torch.__version__}; "
         f"cuda {torch.version.cuda}; tf32 off; torch.compile mode {args.compile_mode}"
@@ -176,6 +206,7 @@ def main():
                 "flop_per_step": flop_per_step(batch, hidden),
                 "flop_rule": FLOP_RULE,
                 "device": named,
+                "build": built,
             }
             try:
                 if mode not in ("eager", "compile"):
@@ -193,7 +224,8 @@ def main():
             except Exception as error:  # a refused point is a result, not the end of the sweep
                 print(f"mlp_sweep: refused: {error}", file=sys.stderr)
                 line.update({"status": "refused", "refusal": f"{type(error).__name__}: {error}"})
-            torch.cuda.empty_cache()
+            with torch.cuda.device(device):
+                torch.cuda.empty_cache()
             print(json.dumps(line), flush=True)
 
 

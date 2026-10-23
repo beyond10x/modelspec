@@ -637,6 +637,7 @@ fn train(
                     every,
                     write: &mut write,
                 }),
+                data: None,
             };
             // The post-loop step; the runner refuses a run whose end is past `u64::MAX`.
             let last = files.start().saturating_add(compiled.config.steps);

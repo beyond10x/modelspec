@@ -6,13 +6,30 @@
 //! Per point: a [`sweep::WARMUP_STEPS`]-step warm-up run, calibration runs until one lasts at
 //! least `--min-seconds`, then [`sweep::RUNS`] timed runs of that many steps. A run's time is
 //! [`RunStats::elapsed`], host wall time from the first submit to the end of the one host wait:
-//! compilation, SPIR-V emission, pipeline creation, buffer allocation, the parameter draws and
-//! the CPU teacher forward that makes the batch all run before it. The span holds the one upload
-//! of the parameters and the batch, the final loss evaluation and the read-back of the
-//! parameters and losses, once per run. Each point prints one JSON line on stdout
-//! ([`sweep::PointResult`]): FLOP per step (matmul-only, `3196·B·H`), µs per step of each timed
-//! run, their median and GFLOP/s; a point that does not compile or run prints its refusal and
-//! the sweep goes on. Progress goes to stderr.
+//! compilation, SPIR-V emission, pipeline creation, buffer allocation and the parameter draws
+//! run before it. The span holds the one upload of the parameters and the batch, the final loss
+//! evaluation and the read-back of the parameters and losses, once per run.
+//!
+//! The GPU between runs: the batch and its CPU teacher forward, the slowest part of a run's
+//! setup at the wide points, are made once per point, before the warm-up, and handed to every
+//! run ([`RunOptions::data`]). This setup is hoisted out of the per-run loop; no extra GPU
+//! warm-up runs before a timed run. What still runs on the CPU between two timed runs, with the
+//! GPU idle, is what follows one run's last wait (below) and what precedes the next run's first
+//! submit: the parameter draws, SPIR-V emission, pipeline creation, buffer allocation and the
+//! staging writes. The PyTorch side runs its timed runs back to back, a synchronize between them.
+//!
+//! `span_unix_ms` is not read from the span itself: [`RunStats`] has its length but not its
+//! start. A run's span is written as `[return − elapsed, return]`, `return` being the wall
+//! clock when `train_with` returned, so both ends sit later than the span by what follows the
+//! last wait: the host read of the downloaded values, the divergence check and the release of
+//! the run's buffers and pipelines.
+//!
+//! Each point prints one JSON line on stdout ([`sweep::PointResult`]): FLOP per step
+//! (matmul-only, `3196·B·H`), µs per step of each timed run, their median and GFLOP/s, and the
+//! build it ran from: the package version, the git commit of the checkout and whether its
+//! tracked files differed from that commit (`git status --porcelain --untracked-files=no`,
+//! read when the sweep starts; left out where git does not answer). A point that does not
+//! compile or run prints its refusal and the sweep goes on. Progress goes to stderr.
 //!
 //! `--crossover <file>...` reads result lines of any side (this bench's and those of
 //! `opponents/mlp_sweep/mlp_sweep.py`) and prints, per side and batch, the first width whose
@@ -28,19 +45,20 @@ mod sweep;
 
 use std::io::Write;
 use std::path::PathBuf;
-use std::process::ExitCode;
+use std::process::{Command, ExitCode};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use clap::Parser;
 use modelspec_core::artifact::{Backend, CompiledArtifact};
 use modelspec_core::compile::{CompiledTraining, compile_artifact, compile_training};
 use modelspec_core::device::DeviceProfile;
+use modelspec_runtime::train::data::{SyntheticData, synthetic};
 use modelspec_runtime::vulkan::Device;
 use modelspec_runtime::vulkan::Vulkan;
 use modelspec_runtime::vulkan::negotiate::{Negotiated, negotiate};
 use modelspec_runtime::vulkan::runner::{RunOptions, RunStats, train_with};
 use modelspec_runtime::vulkan::select::select_device;
-use sweep::{Point, PointResult, TimedRun};
+use sweep::{Build, Point, PointResult, TimedRun};
 
 /// The side this bench writes.
 const SIDE: &str = "modelspec-vulkan";
@@ -151,12 +169,13 @@ fn sweep_on_device(index: usize, min_seconds: f64, points: &[Point]) -> ExitCode
         }
     };
     let named = format!(
-        "vulkan {:04x}:{:04x} driver_version {}; modelspec {}",
-        profile.vendor_id,
-        profile.device_id,
-        profile.driver_version,
-        env!("CARGO_PKG_VERSION")
+        "vulkan {:04x}:{:04x} driver_version {}",
+        profile.vendor_id, profile.device_id, profile.driver_version
     );
+    let build = build();
+    if build.dirty != Some(false) {
+        eprintln!("mlp_sweep: warning: not a clean checkout: {build:?}");
+    }
     let on = On {
         device: &device,
         profile: &profile,
@@ -178,7 +197,8 @@ fn sweep_on_device(index: usize, min_seconds: f64, points: &[Point]) -> ExitCode
                 eprintln!("mlp_sweep: refused: {refusal}");
                 PointResult::refused(SIDE, point, refusal, Some(named.clone()))
             }
-        };
+        }
+        .with_build(build.clone());
         if writeln!(stdout, "{}", result.to_line())
             .and_then(|()| stdout.flush())
             .is_err()
@@ -187,6 +207,27 @@ fn sweep_on_device(index: usize, min_seconds: f64, points: &[Point]) -> ExitCode
         }
     }
     ExitCode::SUCCESS
+}
+
+/// The package version and the git commit and state of the checkout this bench was built from,
+/// read when the sweep starts. `cargo bench` rebuilds a changed tree before it runs the bench, so
+/// there the checkout's state is the build's.
+fn build() -> Build {
+    let git = |args: &[&str]| {
+        Command::new("git")
+            .arg("-C")
+            .arg(env!("CARGO_MANIFEST_DIR"))
+            .args(args)
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .and_then(|output| String::from_utf8(output.stdout).ok())
+    };
+    Build::from_git(
+        Some(env!("CARGO_PKG_VERSION")),
+        git(&["rev-parse", "HEAD"]).as_deref(),
+        git(&["status", "--porcelain", "--untracked-files=no"]).as_deref(),
+    )
 }
 
 /// The opened device a point runs on.
@@ -212,10 +253,11 @@ fn compile(point: Point, steps: u64) -> Result<(CompiledTraining, CompiledArtifa
     Ok((compiled, artifact))
 }
 
-/// One run of `compiled` on the device.
+/// One run of `compiled` on the device, on the point's batch `data`.
 fn run(
     on: &On<'_>,
     (compiled, artifact): &(CompiledTraining, CompiledArtifact),
+    data: &SyntheticData,
 ) -> Result<RunStats, String> {
     train_with(
         on.device,
@@ -223,7 +265,10 @@ fn run(
         on.negotiated,
         compiled,
         artifact,
-        RunOptions::default(),
+        RunOptions {
+            data: Some(data.clone()),
+            ..RunOptions::default()
+        },
     )
     .map(|(_, stats)| stats)
     .map_err(|error| error.to_string())
@@ -233,10 +278,12 @@ fn run(
 /// the runs.
 fn measure(on: &On<'_>, point: Point, min_seconds: f64) -> Result<(u64, Vec<TimedRun>), String> {
     let target = min_seconds * 1.2;
-    let warm = run(on, &compile(point, sweep::WARMUP_STEPS)?)?;
+    let warm = compile(point, sweep::WARMUP_STEPS)?;
+    let data = synthetic(&warm.0.config, &warm.0.forward).map_err(|error| error.to_string())?;
+    let warm = run(on, &warm, &data)?;
     let mut steps = sweep::steps_for(warm.elapsed.as_secs_f64(), warm.steps, target);
     for _ in 0..CALIBRATIONS {
-        let stats = run(on, &compile(point, steps)?)?;
+        let stats = run(on, &compile(point, steps)?, &data)?;
         let seconds = stats.elapsed.as_secs_f64();
         eprintln!("mlp_sweep:   calibration: {steps} steps in {seconds:.3} s");
         if seconds >= min_seconds {
@@ -247,7 +294,7 @@ fn measure(on: &On<'_>, point: Point, min_seconds: f64) -> Result<(u64, Vec<Time
     let timed = compile(point, steps)?;
     let mut runs = Vec::with_capacity(sweep::RUNS);
     for _ in 0..sweep::RUNS {
-        let stats = run(on, &timed)?;
+        let stats = run(on, &timed, &data)?;
         let end = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |since| since.as_millis() as u64);
