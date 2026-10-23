@@ -26,6 +26,7 @@ Generated from the clap definition of the `modelspec` command line in [`crates/m
 | Command | What it does |
 |---|---|
 | [`modelspec check`](#modelspec-check) | Parse and type-check a `.mspec` file |
+| [`modelspec compile`](#modelspec-compile) | Compile a `.mspec` file into an artifact directory: artifact.json and, for Vulkan, its SPIR-V kernel modules |
 | [`modelspec infer`](#modelspec-infer) | Run the forward program of a `.mspec` model with the parameters of a checkpoint |
 | [`modelspec inspect-device`](#modelspec-inspect-device) | Print the profile and negotiation verdict of each Vulkan physical device |
 | [`modelspec ir`](#modelspec-ir) | Print the IR of a `.mspec` file at a stage |
@@ -44,6 +45,21 @@ Every argument is required and has no default.
 | Argument | Meaning |
 |---|---|
 | `<PATH>` | The .mspec file to check. |
+
+## `modelspec compile`
+
+Compile a `.mspec` file into an artifact directory: artifact.json and, for Vulkan, its SPIR-V kernel modules
+
+```text
+Usage: modelspec compile [OPTIONS] --backend <BACKEND> --output <DIR> <PATH>
+```
+
+| Argument | Required | Default | Meaning |
+|---|---|---|---|
+| `<PATH>` | yes | none | The .mspec file to compile. |
+| `--backend <BACKEND>` | yes | none | The backend the artifact is for. One of:<br/>`cpu`: The CPU interpreter: an artifact without kernel modules<br/>`vulkan`: Vulkan compute: an artifact with one SPIR-V module per kernel, in a build with the vulkan feature |
+| `--output <DIR>` | yes | none | The artifact directory to write, created with its parents; files of an earlier artifact in it are overwritten. |
+| `--device-profile <PATH>` | no | none | With --backend vulkan, build the kernel modules for the DeviceProfile JSON file PATH (the form `inspect-device --format json` prints) instead of probing device 0. |
 
 ## `modelspec infer`
 

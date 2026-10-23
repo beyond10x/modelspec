@@ -1,13 +1,14 @@
 ---
 title: Inspect a run
-description: Print the IR, the kernels and plans of a training step, and the time of every GPU dispatch of a run, on the MNIST example.
+description: Print the IR, the kernels and plans of a training step, the compiled artifact and its SPIR-V, and the time of every GPU dispatch of a run, on the MNIST example.
 ---
 
 # Inspect a run
 
 This guide follows `examples/mnist_mlp.mspec` from its IR to the time each GPU dispatch takes. The
-first three commands need only the `modelspec` binary. The last needs a binary built with the
-`vulkan` feature and a Vulkan 1.2 device.
+first three commands need only the `modelspec` binary. The fourth needs a binary built with the
+`vulkan` feature and, with a device profile file, no GPU. The last needs that binary and a
+Vulkan 1.2 device.
 
 ## 1. The Tensor IR
 
@@ -59,7 +60,39 @@ kernel k2 d588cbc2-b3eb-8bf1-93a1-29d8680aba58 loss_sum Mse f32 (Tensor<f32, [10
 them. `plan forward` is the forward program alone; `train` does not run it. The profile below
 names a dispatch by its position in `plan step`.
 
-## 4. The time of every dispatch
+## 4. The compiled artifact
+
+```shell
+modelspec compile examples/mnist_mlp.mspec --backend vulkan --output build/mnist --device-profile crates/modelspec-runtime/tests/fixtures/rtx3090.device.json
+```
+
+writes the artifact directory `build/mnist`: `artifact.json`, the manifest with the parameters,
+kernels and plans, and `kernels/<kernel_module_id>.spv`, one SPIR-V module per `kernel` line of
+`--stage kernel`. `--device-profile` builds the modules for a device profile file, here the RTX
+3090 profile the tests use, so no GPU or Vulkan loader is needed; without it `compile` builds for
+device 0. Before it prints `artifact <artifact_id> <artifact_hash> kernels=14 build/mnist`, it
+reads the directory back through the same reader that refuses an altered artifact with
+`E-ARTIFACT-001` to `E-ARTIFACT-004`. Compiling the same file twice gives byte-equal directories.
+
+`spirv-dis`, from SPIRV-Tools, shows one module, here `k2`, the `mse` loss sum:
+
+```shell
+spirv-dis build/mnist/kernels/d588cbc2-b3eb-8bf1-93a1-29d8680aba58.spv
+```
+
+```text
+; SPIR-V
+; Version: 1.5
+; Generator: Google rspirv; 0
+; Bound: 363
+; Schema: 0
+               OpCapability Shader
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint GLCompute %33 "main" %gl_GlobalInvocationID %gl_NumWorkGroups %gl_LocalInvocationID %25 %26 %27 %28 %32
+               OpExecutionMode %33 LocalSize 64 1 1
+```
+
+## 5. The time of every dispatch
 
 ```shell
 modelspec train examples/mnist_mlp.mspec --backend vulkan --steps 72000 --profile
