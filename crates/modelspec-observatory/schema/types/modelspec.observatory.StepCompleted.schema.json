@@ -4,8 +4,8 @@
   "x-ess-provenance": {
     "system": "modelspec",
     "specification_version": "v1",
-    "source_digest": "4451cd69e4d8118413abaed302b87bed7fd18a98ea1fd923abe64974c9a4dd74",
-    "contract_digest": "slice-sha256/2:b0a4b3b15c3ff55e174881fdfe22f514e10fa9f686735bf11e841f66c664de80",
+    "source_digest": "a0e2e395e5187553a4e564c880a15276d8d6627d23e19fde8d6acec37cb80d25",
+    "contract_digest": "slice-sha256/2:240298e2c3f2be8c07d856ace8d68abd723361485ce31fad3ce3762d34f406e1",
     "regenerate": "ess generate"
   },
   "$defs": {
@@ -185,7 +185,7 @@
           }
         },
         "parameters": {
-          "description": "Value and gradient statistics per parameter at a sampled step, empty at every other step (approval-record:parameter-statistics-settlements, question 3); the pair (path, subject) is unique, which ESS does not state here. `modelspec train --backend cpu --statistics-every N`, N at least 1 and 100 without the flag, samples step k when k is the run's start_step, a multiple of N, or start_step + steps. A sampled step lists each declared parameter in path order, its Value entry for its values after k updates, then, for k < start_step + steps, its Gradient entry for the gradient of step k's loss with respect to it, the gradient step k's update applies. Step start_step + steps, the loss of the final parameters, makes no update and so has Value entries only. A parameter the loss does not read has no gradient and so no Gradient entry (DESIGN.md § 3.3 step 4). A Vulkan run keeps parameters and gradients on the device between its host waits, so every one of its steps has the list empty, and `--statistics-every` with `--backend vulkan` is a usage error (story:observatory-parameter-statistics).",
+          "description": "Value and gradient statistics per parameter at a sampled step, empty at every other step (approval-record:parameter-statistics-settlements, question 3); the pair (path, subject) is unique, which ESS does not state here. `modelspec train --backend cpu --statistics-every N`, N at least 1 and 100 without the flag, samples step k when k is the run's start_step, a multiple of N, or start_step + steps. A sampled step lists each declared parameter in path order, its Value entry for its values after k updates, the values step k reads, then, for k < start_step + steps, its Gradient entry for the gradient of step k's loss with respect to it, the gradient step k's update applies. Step start_step + steps, the loss of the final parameters, makes no update and so has Value entries only. A parameter the loss does not read has no gradient and so no Gradient entry (DESIGN.md § 3.3 step 4). A Vulkan run keeps parameters and gradients on the device between its host waits, so `modelspec train --backend vulkan` samples only step start_step, from the values it uploads, and step start_step + steps, from the values it reads back after the last step, each with one Value entry per declared parameter in path order, the values the step reads as on the CPU, and no Gradient entry; every other step has the list empty, the statistics add no read-back and no host wait, and `--statistics-every` with `--backend vulkan` is a usage error (approval-record:parameter-statistics-settlements, question 3, \"the first step also carries values\" and \"the final post-loop event always carries values\"; story:observatory-parameter-statistics).",
           "type": "array",
           "items": {
             "$ref": "#/$defs/modelspec.observatory.ParameterStatistics"

@@ -445,7 +445,8 @@ fn served_bodies(file: &str, backend: &str, extra: &[String]) -> Vec<Value> {
 }
 
 /// Under `--serve`, a divergence the device names at a checkpoint stop, past the first chunk,
-/// and in a resumed-style numbering ends the stream as the CPU's does, event for event.
+/// and in a resumed-style numbering ends the stream as the CPU's does, event for event, each
+/// `parameters` list the CPU's as a device run carries it ([`as_on_device`]).
 #[test]
 #[ignore = "needs a Vulkan device"]
 fn a_divergent_stream_with_checkpoint_stops_is_the_cpu_stream() {
@@ -470,7 +471,7 @@ fn a_divergent_stream_with_checkpoint_stops_is_the_cpu_stream() {
             extra.push("--checkpoint".into());
             extra.push(dir.join("run.msckpt").display().to_string());
         }
-        let cpu = served_bodies(&file, "cpu", &extra);
+        let cpu = as_on_device(&served_bodies(&file, "cpu", &extra));
         let gpu = served_bodies(&file, "vulkan", &extra);
         if gpu != cpu {
             let first = cpu
@@ -538,4 +539,35 @@ fn a_diverged_run_with_stats_still_prints_its_counters() {
         "no `host waits: 1` line after the diagnostic:\n{}",
         out.stderr
     );
+}
+
+/// The event bodies `cpu` of a CPU run as a device run sends them (`spec/domains/observatory.yaml`,
+/// `StepCompleted.parameters`): its first step and its post-loop step `start_step + steps` keep
+/// their `Value` entries only, and every other step's list is empty.
+fn as_on_device(cpu: &[Value]) -> Vec<Value> {
+    let started = cpu
+        .iter()
+        .find(|body| body["kind"] == "RunStarted")
+        .expect("a RunStarted");
+    let start = started["value"]["start_step"]
+        .as_u64()
+        .expect("a start_step");
+    let end = start + started["value"]["steps"].as_u64().expect("a steps");
+    cpu.iter()
+        .map(|body| {
+            let mut body = body.clone();
+            if body["kind"] == "StepCompleted" {
+                let step = body["value"]["step"].as_u64().expect("a step");
+                let parameters = body["value"]["parameters"]
+                    .as_array_mut()
+                    .expect("a parameters list");
+                if step == start || step == end {
+                    parameters.retain(|entry| entry["subject"] == "Value");
+                } else {
+                    parameters.clear();
+                }
+            }
+            body
+        })
+        .collect()
 }

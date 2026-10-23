@@ -384,7 +384,7 @@ fn a_resumed_run_samples_from_its_start_step() {
 }
 
 /// `--statistics-every` takes a positive number of steps, and only with `--backend cpu`: a Vulkan
-/// run keeps every step's list empty.
+/// run samples its first and its last step only, and `--help` says so.
 #[test]
 fn statistics_every_is_a_positive_cpu_only_flag() {
     let zero = modelspec(&[
@@ -421,7 +421,90 @@ fn statistics_every_is_a_positive_cpu_only_flag() {
     let help = String::from_utf8_lossy(&help.stdout);
     assert!(help.contains("--statistics-every <N>"), "{help}");
     assert!(
-        help.contains("a Vulkan run sends every step's parameters list empty"),
+        help.contains(
+            "a Vulkan run sends the Value entries of its first and last step and every other \
+             step's list empty"
+        ),
         "{help}"
     );
+}
+
+/// The values of every `<label> @<path>: <type> = [v, ...]` line of `stdout`, by path, each
+/// parsed from its shortest round-trip form, which gives back its bits.
+#[cfg(feature = "vulkan")]
+fn printed(stdout: &str, label: &str) -> BTreeMap<String, Vec<f32>> {
+    stdout
+        .lines()
+        .filter_map(|line| line.strip_prefix(&format!("{label} @")))
+        .map(|rest| {
+            let (path, _) = rest.split_once(": ").expect("a path");
+            let (_, list) = rest.split_once(" = [").expect("a value list");
+            let values = list
+                .trim_end_matches(']')
+                .split(", ")
+                .map(|v| v.parse::<f32>().expect("an f32"))
+                .collect();
+            (path.to_owned(), values)
+        })
+        .collect()
+}
+
+/// A Vulkan run streams at its first step the `Value` entries of the values it uploads, which
+/// its `init` lines print, and at its post-loop step those of the values it reads back after the
+/// last step, which its `param` lines print; every other step's list is empty, no step has a
+/// `Gradient` entry, and the run still waits for the device once
+/// (approval-record:parameter-statistics-settlements, question 3). Ignored by default because it
+/// creates a Vulkan instance; run it with
+/// `cargo test -p modelspec-cli --test observatory_parameter_stats -- --ignored`.
+#[cfg(feature = "vulkan")]
+#[test]
+#[ignore = "needs a Vulkan device"]
+fn a_vulkan_run_streams_values_at_its_first_and_post_loop_steps() {
+    let path = scratch("vulkan.run.jsonl");
+    let recording = path_arg(&path);
+    let run = modelspec(&[
+        "train",
+        EXAMPLE,
+        "--backend",
+        "vulkan",
+        "--steps",
+        "7",
+        "--stats",
+        "--record",
+        &recording,
+    ]);
+    assert_eq!(run.status.code(), Some(0), "{}", stderr(&run));
+    assert!(
+        stderr(&run).contains("host waits: 1\n"),
+        "one host wait: {}",
+        stderr(&run)
+    );
+    let stdout = String::from_utf8_lossy(&run.stdout).into_owned();
+    let entries = |label: &str| -> Vec<String> {
+        printed(&stdout, label)
+            .iter()
+            .map(|(path, values)| entry(path, "Value", values))
+            .collect()
+    };
+    let (first, last) = (entries("init"), entries("param"));
+    assert!(!first.is_empty() && first != last, "{stdout}");
+    let content = std::fs::read_to_string(&path).expect("the recording is readable");
+    let lines: Vec<String> = content.lines().map(str::to_owned).collect();
+    let steps = step_lines(&lines);
+    assert_eq!(
+        steps.keys().copied().collect::<Vec<_>>(),
+        (0..=7).collect::<Vec<_>>()
+    );
+    for (&k, line) in &steps {
+        let expected = match k {
+            0 => first.join(","),
+            7 => last.join(","),
+            _ => String::new(),
+        };
+        let tail = format!(r#""parameters":[{expected}]}}}},"state":"Emitted"}}"#);
+        assert!(
+            line.ends_with(&tail),
+            "step {k}:\n{line}\nends with\n{tail}"
+        );
+    }
 }

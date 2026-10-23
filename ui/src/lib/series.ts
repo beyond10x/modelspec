@@ -55,14 +55,20 @@ export interface Sample {
 
 export const LOSS = 'loss';
 
-/** The names that `chartName` gives one more ` (metric)`: `loss`, `loss (metric)`, ... */
-const RESERVED = /^loss( \(metric\))*$/;
+/**
+ * The names that `chartName` gives one more ` (metric)`: the name of the loss chart, `loss`, and
+ * of a parameter's norm charts, `<path> value norm` and `<path> gradient norm` (`parameter`), each
+ * followed by any number of ` (metric)`.
+ */
+const RESERVED = /^(loss|.* value norm|.* gradient norm)( \(metric\))*$/s;
 
 /**
  * The chart name of the metric `name`: the name itself, except that a name of the form `loss`,
- * `loss (metric)`, ... gets one more ` (metric)`. Metric names are distinct within a step
- * (`StepCompleted`), and the map is one-to-one and never gives `loss`, so the loss chart and every
- * metric chart have distinct names, and so distinct Vue keys and `svg[data-metric]` values.
+ * `<anything> value norm` or `<anything> gradient norm`, followed by any number of ` (metric)`,
+ * gets one more ` (metric)`. Metric names are distinct within a step (`StepCompleted`), and the
+ * map is one-to-one and never gives `loss` or a name ending in ` value norm` or ` gradient norm`,
+ * so the loss chart, every metric chart and every parameter norm chart have distinct names, and
+ * so distinct Vue keys and `svg[data-metric]` values.
  */
 export function chartName(name: string): string {
   return RESERVED.test(name) ? `${name} (metric)` : name;

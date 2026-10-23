@@ -219,3 +219,33 @@ test('a RunStarted of another run clears the parameter series and the samples', 
   assert.deepEqual(run.parameters, []);
   assert.deepEqual(run.samples, []);
 });
+
+test('every chart of a run has its own name, metrics named like a norm chart included', () => {
+  const paths = ['M.w', 'M', 'M.w value', 'M.w gradient', ''];
+  const metrics = [
+    'loss',
+    'loss (metric)',
+    'M.w value norm',
+    'M.w gradient norm',
+    'M.w value norm (metric)',
+    'M value norm',
+    ' gradient norm',
+    'M.w value norm value norm',
+    'value norm',
+    'M.w value norms',
+    'accuracy',
+  ];
+  const run = emptyRun();
+  apply(run, event(0, started));
+  apply(run, event(1, sampled(0, paths.flatMap((p) => [stats(p, 'Value', 1), stats(p, 'Gradient', 1)]))));
+  apply(run, event(2, step(1, 1, metrics.map((name) => ({ name, value: 1 })))));
+  const names = [
+    ...charts(run).map((s) => s.name),
+    ...run.parameters.flatMap((p) => [p.value.name, p.gradient.name]),
+  ];
+  assert.equal(names.length, 1 + metrics.length + 2 * paths.length);
+  assert.equal(new Set(names).size, names.length, `chart names: ${JSON.stringify(names)}`);
+  assert.equal(chartName('value norm'), 'value norm', 'a name without the leading space is no norm chart name');
+  assert.equal(chartName('M.w value norms'), 'M.w value norms');
+  assert.equal(chartName('accuracy'), 'accuracy');
+});

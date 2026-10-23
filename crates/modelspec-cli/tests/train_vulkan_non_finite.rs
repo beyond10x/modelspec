@@ -260,7 +260,7 @@ fn served_events(path: &str, backend: &str) -> Vec<Value> {
 /// Acceptance 2: under `--serve` the device run's stream validates against the run event schema
 /// and carries the CPU run's event bodies in the CPU run's order: `RunStarted`, one
 /// `StepCompleted` per step through the failing one, whose loss is `null`, then `RunFailed` with
-/// E-TRAIN-001.
+/// E-TRAIN-001; each `parameters` list is the CPU's as a device run carries it ([`as_on_device`]).
 #[test]
 #[ignore = "needs a Vulkan device"]
 fn a_divergent_vulkan_run_ends_its_stream_as_the_cpu_run_does() {
@@ -283,11 +283,49 @@ fn a_divergent_vulkan_run_ends_its_stream_as_the_cpu_run_does() {
         events.iter().map(|event| event["body"].clone()).collect()
     };
     let gpu_bodies = bodies(&gpu);
-    assert_eq!(gpu_bodies, bodies(&cpu));
+    assert_eq!(gpu_bodies, as_on_device(&bodies(&cpu)));
+    let first = gpu_bodies[1]["value"]["parameters"]
+        .as_array()
+        .expect("a parameters list");
+    assert!(
+        !first.is_empty() && first.iter().all(|entry| entry["subject"] == "Value"),
+        "the first step carries the uploaded values: {first:?}"
+    );
     let last = &gpu_bodies[gpu_bodies.len() - 1];
     assert_eq!(last["kind"], "RunFailed", "{last}");
     assert_eq!(last["value"]["code"], "E-TRAIN-001", "{last}");
     let failing = &gpu_bodies[gpu_bodies.len() - 2];
     assert_eq!(failing["kind"], "StepCompleted", "{failing}");
     assert_eq!(failing["value"]["loss"], Value::Null, "{failing}");
+}
+
+/// The event bodies `cpu` of a CPU run as a device run sends them (`spec/domains/observatory.yaml`,
+/// `StepCompleted.parameters`): its first step and its post-loop step `start_step + steps` keep
+/// their `Value` entries only, and every other step's list is empty.
+fn as_on_device(cpu: &[Value]) -> Vec<Value> {
+    let started = cpu
+        .iter()
+        .find(|body| body["kind"] == "RunStarted")
+        .expect("a RunStarted");
+    let start = started["value"]["start_step"]
+        .as_u64()
+        .expect("a start_step");
+    let end = start + started["value"]["steps"].as_u64().expect("a steps");
+    cpu.iter()
+        .map(|body| {
+            let mut body = body.clone();
+            if body["kind"] == "StepCompleted" {
+                let step = body["value"]["step"].as_u64().expect("a step");
+                let parameters = body["value"]["parameters"]
+                    .as_array_mut()
+                    .expect("a parameters list");
+                if step == start || step == end {
+                    parameters.retain(|entry| entry["subject"] == "Value");
+                } else {
+                    parameters.clear();
+                }
+            }
+            body
+        })
+        .collect()
 }
