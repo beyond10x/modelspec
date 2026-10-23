@@ -6,7 +6,7 @@ status: draft
 title: 'Benchmark wave: units and scope decisions'
 relations:
 - serves: vision:modelspec
-revision: 1
+revision: 2
 ---
 # Benchmark wave: scope decisions
 
@@ -53,3 +53,5 @@ story:profile-achieved-throughput and story:mlp-size-sweep-vs-pytorch-cuda at ma
   `opponents/`, AGENTS.md); it runs eager and `torch.compile`, CUDA, TF32 off.
 - D10 Device runs are not run by this session. Each unit ends with the exact command and what it
   measures, sent to the orchestrator for Timo's queue.
+- D11 The sweep trains at lr 0.001, not the MNIST example's 0.1: the implementor estimated 0.1 diverges at hidden 1024 and 4096, which would turn those points into refusals, and step time does not depend on the learning rate (adversary pass 1, 2026-10-23). Not measured.
+- D12 A crossover verdict "undetermined" is added beside a width and "not reached": a width with no figure before any crossover leaves the answer open instead of deciding it.
