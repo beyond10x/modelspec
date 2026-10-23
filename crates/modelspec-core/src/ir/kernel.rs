@@ -159,7 +159,7 @@ pub const MATMUL_TWO_ROWS_FROM_WORKGROUPS: u64 = 256;
 
 /// The most values of the contracting index per tile of a two-row [`MatMulTile`], and the
 /// tiles it reads ahead: on the RTX 3090 tiles of 16 values read 2 ahead take the
-/// `[784, 100] x [100, 64]` matmul from 4.93 to 4.67 µs against 32 values read 6 ahead
+/// `[784, 100] x [100, 64]` matmul from 4.91 to 4.58 µs against 32 values read 6 ahead
 /// (DESIGN.md § 5.2).
 pub const MATMUL_TWO_ROW_TILE: (u32, u32) = (16, 2);
 
