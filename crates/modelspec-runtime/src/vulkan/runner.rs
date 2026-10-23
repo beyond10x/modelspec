@@ -20,6 +20,16 @@
 //! new command buffer. Each checkpoint therefore costs one host wait and one parameter read-back,
 //! and no other step does.
 //!
+//! A training run checks what it reads back as the CPU run checks each step (E-TRAIN-001,
+//! [`crate::train::runner::E_TRAIN_001`]), without a read-back or host wait of its own: after the
+//! last wait every loss and the final parameters, and at each checkpoint the losses since the
+//! last stop, copied into the checkpoint's read-back, and its parameters, before the checkpoint is
+//! written. The first non-finite value stops the run with [`RunError::NonFinite`] and the CPU
+//! run's diagnostic, the losses kept through the failing step's. A parameter that goes non-finite
+//! between two read-backs while its step's loss is finite is named at the first later loss it
+//! makes non-finite, or at the read-back, not at its own step ([`diverged`]). [`infer`] does not
+//! check.
+//!
 //! [`infer`] runs the steps of the step plan up to the loss once on a checkpoint's parameters and
 //! the synthetic batch, with one host wait, and reads the prediction and the loss back.
 //!
@@ -29,6 +39,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::ops::Range;
 use std::time::{Duration, Instant};
 
 use modelspec_core::artifact::CompiledArtifact;
@@ -53,7 +64,7 @@ use crate::train::checkpoint::CheckpointError;
 use crate::train::data::synthetic;
 use crate::train::init::{Stream, initialize};
 use crate::train::optimizer::ParamState;
-use crate::train::runner::{Run, RunError};
+use crate::train::runner::{Diverged, Run, RunError, non_finite};
 
 /// The most training steps one command buffer records.
 pub const CHUNK_STEPS: u64 = 256;
@@ -577,6 +588,9 @@ fn execute(
     let mut chunk = 0;
     let mut next_query = 0;
     let mut from = 0;
+    // The first step of the last stop's window, which the check after the last wait reads.
+    let mut last_from = 0;
+    let param_floats = (param_bytes / 4) as usize;
     for &stop in &stops {
         let last = stop == steps;
         {
@@ -656,6 +670,17 @@ fn execute(
                 }
                 recording.barrier(Barrier::TransferToTransfer);
                 recording.copy_region(&losses, 0, &download, at, 4 * loss_slots)?;
+            } else if stop > from {
+                // A checkpoint's read-back also carries the losses of the steps since the last
+                // stop, so the check before the checkpoint is written sees them.
+                recording.barrier(Barrier::TransferToTransfer);
+                recording.copy_region(
+                    &losses,
+                    4 * from,
+                    &download,
+                    at + 4 * from,
+                    4 * (stop - from),
+                )?;
             }
             recording.barrier(Barrier::TransferToHost);
             let recorded = recording.finish()?;
@@ -664,9 +689,27 @@ fn execute(
             next_query = stamps.map_or(0, |stamps| stamps.next);
         }
         if !last && let Some(write) = write.as_mut() {
-            let values = parameters(plan, &initial, &download.read_f32()?)?;
+            let read = download.read_f32()?;
+            let values = parameters(plan, &initial, &read)?;
+            let read_losses = &read[param_floats..param_floats + stop as usize];
+            if let Some((kept, diagnostic)) =
+                diverged(compiled, start, from..stop, false, read_losses, &values)
+            {
+                let run = Run {
+                    start_step: start,
+                    initial,
+                    losses: read_losses[..kept as usize].to_vec(),
+                    state: state_of(compiled, values, start + stop),
+                    teacher: data.teacher,
+                };
+                return Err(refused(RunError::NonFinite(Box::new(Diverged {
+                    diagnostic,
+                    run,
+                }))));
+            }
             write(start + stop, &values).map_err(|error| refused(error.into()))?;
         }
+        last_from = from;
         from = stop;
     }
     let started = first_submit.expect("a run submits at least one command buffer");
@@ -708,8 +751,24 @@ fn execute(
 
     let read = download.read_f32()?;
     let values = parameters(plan, &initial, &read)?;
-    let at = (param_bytes / 4) as usize;
+    let at = param_floats;
     let losses = read[at..at + loss_slots as usize].to_vec();
+    if !predict
+        && let Some((kept, diagnostic)) =
+            diverged(compiled, start, last_from..steps, true, &losses, &values)
+    {
+        let run = Run {
+            start_step: start,
+            initial,
+            losses: losses[..kept as usize].to_vec(),
+            state: state_of(compiled, values, end),
+            teacher: data.teacher,
+        };
+        return Err(refused(RunError::NonFinite(Box::new(Diverged {
+            diagnostic,
+            run,
+        }))));
+    }
     let prediction = if predict {
         let at = at + loss_slots as usize;
         let count = plan.prediction_view.element_count as usize;
@@ -735,17 +794,11 @@ fn execute(
     } else {
         None
     };
-    let mut state = ParamState::new(&compiled.training, values);
-    for param in compiled.training.optimizer.updates.keys() {
-        if let Some(version) = state.versions.get_mut(param) {
-            version.0 = version.0.saturating_add(end);
-        }
-    }
     let run = Run {
         start_step: start,
         initial,
         losses,
-        state,
+        state: state_of(compiled, values, end),
         teacher: data.teacher,
     };
     Ok(Done {
@@ -754,6 +807,57 @@ fn execute(
         profile: profiled,
         prediction,
     })
+}
+
+/// The state of `values` after `version` updates of each parameter the optimizer updates.
+fn state_of(
+    compiled: &CompiledTraining,
+    values: BTreeMap<ParamId, HostTensor<f32>>,
+    version: u64,
+) -> ParamState {
+    let mut state = ParamState::new(&compiled.training, values);
+    for param in compiled.training.optimizer.updates.keys() {
+        if let Some(at) = state.versions.get_mut(param) {
+            at.0 = at.0.saturating_add(version);
+        }
+    }
+    state
+}
+
+/// What the CPU run refuses with E-TRAIN-001 among the values one read-back of the device holds
+/// ([`crate::train::runner::run_from`]), with the CPU run's diagnostic, or `None`. `losses[i]` is
+/// the loss after `i` updates from `start`, and is read for every `i` in `window`, the steps since
+/// the last read-back; `values` are the parameters after `window.end` updates, the only ones the
+/// device reads back. The check runs in the CPU run's order as far as the read-back shows it:
+/// each loss of the window, then the parameters as the update of the window's last step, then,
+/// when `last`, the loss of the final parameters `losses[window.end]`. A parameter that went
+/// non-finite at an update before the window's last is not seen there; with plain SGD it stays
+/// non-finite (`p - lr * g` of a NaN or ±inf `p` is NaN or ±inf), so the first loss it makes
+/// non-finite, or the read-back of the parameters, names it at a later step than the CPU run.
+/// Returns how many losses the refused run keeps, through the failing step's.
+fn diverged(
+    compiled: &CompiledTraining,
+    start: u64,
+    window: Range<u64>,
+    last: bool,
+    losses: &[f32],
+    values: &BTreeMap<ParamId, HostTensor<f32>>,
+) -> Option<(u64, Diagnostic)> {
+    let unread = BTreeMap::new();
+    for i in window.clone() {
+        let loss = losses[i as usize];
+        if !loss.is_finite() {
+            return non_finite(compiled, start + i, loss, &unread).map(|found| (i + 1, found));
+        }
+    }
+    let checks = window.end.checked_sub(1).filter(|_| !window.is_empty());
+    let checks = checks.into_iter().chain(last.then_some(window.end));
+    for i in checks {
+        if let Some(found) = non_finite(compiled, start + i, losses[i as usize], values) {
+            return Some((i + 1, found));
+        }
+    }
+    None
 }
 
 /// Each parameter's value by id from the first floats of a read-back, in plan order, shaped as
@@ -932,5 +1036,103 @@ fn numerics_class(negotiated: &Negotiated, plan: &ExecutionPlan) -> NumericsClas
     match negotiated.numerics {
         NumericsClass::BitForBit if in_set && !plan.kernels.is_empty() => NumericsClass::BitForBit,
         _ => NumericsClass::Tolerance,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use modelspec_core::compile::compile_training;
+
+    const EXAMPLE: &str = include_str!("../../../../examples/linear_regression.mspec");
+    const W: ParamId = ParamId(0);
+
+    fn compiled() -> CompiledTraining {
+        compile_training("fit.mspec", EXAMPLE).expect("the example compiles")
+    }
+
+    fn w(values: [f32; 4]) -> BTreeMap<ParamId, HostTensor<f32>> {
+        BTreeMap::from([(W, HostTensor::new(vec![4, 1], values.to_vec()).unwrap())])
+    }
+
+    const FINITE: [f32; 4] = [1.0, 2.0, 3.0, 4.0];
+
+    /// The step, the losses kept and the diagnostic's text of a refused read-back.
+    fn refused(found: Option<(u64, Diagnostic)>) -> (u64, String) {
+        let (kept, diagnostic) = found.expect("the read-back is refused");
+        (kept, diagnostic.to_string())
+    }
+
+    #[test]
+    fn a_finite_read_back_passes() {
+        let losses = [3.0, 2.0, 1.0, 0.5, 0.25];
+        let c = compiled();
+        assert!(diverged(&c, 0, 0..4, true, &losses, &w(FINITE)).is_none());
+        assert!(diverged(&c, 0, 1..3, false, &losses, &w(FINITE)).is_none());
+    }
+
+    #[test]
+    fn the_first_non_finite_loss_of_the_window_is_named_with_the_cpu_text() {
+        let losses = [3.0, f32::INFINITY, f32::NAN, 0.5, 0.25];
+        let c = compiled();
+        assert_eq!(
+            refused(diverged(&c, 0, 0..4, true, &losses, &w([f32::NAN; 4]))),
+            (
+                2,
+                "E-TRAIN-001: the loss of step 1 is not finite\n  step: 1\n  loss: inf".into()
+            )
+        );
+    }
+
+    #[test]
+    fn a_non_finite_parameter_read_back_is_the_update_of_the_windows_last_step() {
+        let losses = [3.0, 2.0, 1.0, 0.5, 0.25];
+        let c = compiled();
+        let values = w([1.0, 2.0, f32::NEG_INFINITY, 4.0]);
+        let expected = (
+            4,
+            "E-TRAIN-001: the update of step 13 leaves a parameter not finite\n  step: 13\n  \
+             loss: 0.5\n  parameter: @LinearReg.w"
+                .to_owned(),
+        );
+        assert_eq!(
+            refused(diverged(&c, 10, 2..4, false, &losses, &values)),
+            expected
+        );
+        assert_eq!(
+            refused(diverged(&c, 10, 0..4, true, &losses, &values)),
+            expected
+        );
+    }
+
+    #[test]
+    fn the_final_loss_is_checked_after_the_last_update() {
+        let losses = [3.0, 2.0, 1.0, 0.5, f32::NAN];
+        let c = compiled();
+        assert_eq!(
+            refused(diverged(&c, 0, 0..4, true, &losses, &w(FINITE))),
+            (
+                5,
+                "E-TRAIN-001: the loss of step 4 is not finite\n  step: 4\n  loss: NaN".into()
+            )
+        );
+        assert!(diverged(&c, 0, 0..4, false, &losses, &w(FINITE)).is_none());
+    }
+
+    #[test]
+    fn a_run_of_no_steps_checks_its_one_loss_then_its_parameters() {
+        let c = compiled();
+        assert_eq!(
+            refused(diverged(&c, 7, 0..0, true, &[f32::NAN], &w([f32::NAN; 4]))),
+            (
+                1,
+                "E-TRAIN-001: the loss of step 7 is not finite\n  step: 7\n  loss: NaN".into()
+            )
+        );
+        assert_eq!(
+            refused(diverged(&c, 7, 0..0, true, &[1.5], &w([f32::NAN; 4]))).1,
+            "E-TRAIN-001: the update of step 7 leaves a parameter not finite\n  step: 7\n  \
+             loss: 1.5\n  parameter: @LinearReg.w"
+        );
     }
 }
