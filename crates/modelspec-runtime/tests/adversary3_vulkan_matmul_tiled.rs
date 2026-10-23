@@ -204,7 +204,6 @@ fn bits(shapes: &[(u64, u64, u64)], seed: u64) -> (usize, Vec<String>) {
     (elements, wrong)
 }
 
-
 #[test]
 #[ignore = "needs a Vulkan device"]
 fn two_row_tiles_of_16_8_and_4_give_the_cpu_bits_at_0_to_10_full_tiles() {
