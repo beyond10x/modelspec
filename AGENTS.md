@@ -171,3 +171,7 @@ workspace version and nothing is on a registry.
 - A copy of the tree built outside the worktree (an adversary's mutant or base copy) has its
   `target/` removed with `cargo clean --target-dir <dir>` when its unit merges. Twelve such
   targets of merged waves held 9.6 GB on 2026-10-23.
+- An agent may run `task ci` and the Vulkan tests it runs on the local GPU. Any other device run
+  (a bench, a timed run, an `--ignored` device test, a throwaway probe on the GPU) is the
+  operator's: write the exact command and what it measures in the report instead. An implementor
+  ran a 2-step validation probe on the GPU on 2026-10-23 because no brief said so.
