@@ -59,26 +59,6 @@ const fn shipped(
     }
 }
 
-const fn planned(
-    area: &'static str,
-    label: &'static str,
-    detail: &'static str,
-    artifact: &'static str,
-    href: &'static str,
-) -> Capability {
-    Capability {
-        area,
-        label,
-        detail,
-        status: "planned",
-        evidence: None,
-        artifact: Some(artifact),
-        href,
-    }
-}
-
-const M1: &str = "epic:m1-vulkan-execution";
-
 /// Every capability the site claims, in the order the status table lists them.
 pub const CAPABILITIES: &[Capability] = &[
     shipped(
@@ -219,12 +199,14 @@ pub const CAPABILITIES: &[Capability] = &[
         ),
         "/docs/reference/cli",
     ),
-    planned(
+    shipped(
         "Command line",
         "Checkpoints and the compile and infer commands",
-        ".msckpt save and load. Not built.",
-        M1,
-        "/docs/roadmap",
+        "modelspec train writes and resumes .msckpt checkpoints on cpu and vulkan, the device run waiting once per requested checkpoint and once at the end; modelspec infer runs a checkpoint on either backend; a resumed device run lies within the GPU tolerance of the run that never stopped.",
+        Evidence::Test(
+            "crates/modelspec-runtime/tests/vulkan_checkpoint.rs::a_resumed_device_run_passes_against_the_run_that_never_stopped",
+        ),
+        "/docs/reference/cli",
     ),
 ];
 

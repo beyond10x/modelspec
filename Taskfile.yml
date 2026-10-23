@@ -23,7 +23,7 @@ tasks:
   cli-without-vulkan:
     cmds:
       - cargo test -p modelspec-cli --no-default-features --test inspect_device
-      - cargo test -p modelspec-cli --no-default-features --test train_linear --test train_linear_adversary
+      - cargo test -p modelspec-cli --no-default-features --test train_linear --test train_linear_adversary --test checkpoint_vulkan
 
   check-examples:
     cmds:

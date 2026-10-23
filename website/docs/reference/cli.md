@@ -67,16 +67,15 @@ Usage: modelspec compile [OPTIONS] --backend <BACKEND> --output <DIR> <PATH>
 Run the forward program of a `.mspec` model with the parameters of a checkpoint
 
 ```text
-Usage: modelspec infer --backend <BACKEND> --checkpoint <PATH> <PATH>
+Usage: modelspec infer [OPTIONS] --backend <BACKEND> --checkpoint <PATH> <PATH>
 ```
 
-Every argument is required and has no default.
-
-| Argument | Meaning |
-|---|---|
-| `<PATH>` | The .mspec file whose forward program runs. |
-| `--backend <BACKEND>` | The backend that runs the forward program. One of:<br/>`cpu`: The CPU interpreter<br/>`vulkan`: Vulkan compute on one device: `train` only, in a build with the vulkan feature |
-| `--checkpoint <PATH>` | The .msckpt file whose parameters the forward program reads. |
+| Argument | Required | Default | Meaning |
+|---|---|---|---|
+| `<PATH>` | yes | none | The .mspec file whose forward program runs. |
+| `--backend <BACKEND>` | yes | none | The backend that runs the forward program. One of:<br/>`cpu`: The CPU interpreter<br/>`vulkan`: Vulkan compute on one device, in a build with the vulkan feature |
+| `--checkpoint <PATH>` | yes | none | The .msckpt file whose parameters the forward program reads. |
+| `--device <INDEX>` | no | none | With --backend vulkan, run on the physical device INDEX, in the order the Vulkan loader lists them, instead of device 0. |
 
 ## `modelspec inspect-device`
 
@@ -131,7 +130,7 @@ Usage: modelspec train [OPTIONS] --backend <BACKEND> <PATH>
 | Argument | Required | Default | Meaning |
 |---|---|---|---|
 | `<PATH>` | yes | none | The .mspec file to train. |
-| `--backend <BACKEND>` | yes | none | The backend that runs the training step. One of:<br/>`cpu`: The CPU interpreter<br/>`vulkan`: Vulkan compute on one device: `train` only, in a build with the vulkan feature |
+| `--backend <BACKEND>` | yes | none | The backend that runs the training step. One of:<br/>`cpu`: The CPU interpreter<br/>`vulkan`: Vulkan compute on one device, in a build with the vulkan feature |
 | `--serve <ADDR>` | no | none | Stream the run's events as text/event-stream at path /events of ADDR, a loopback address such as 127.0.0.1:8080 or localhost:8080 (port 0 picks a free one); the process keeps serving after the run until SIGINT, SIGTERM or SIGHUP, then exits with the run's status. |
 | `--record <PATH>` | no | none | Record the run's events to the file PATH, one JSON RunEvent per line in sequence order, the events --serve streams; `modelspec observe PATH` replays it. |
 | `--data <DIR>` | no | none | Train on the dense f32 files of DIR instead of synthetic data: NAME.f32 for the input and the target declaration NAME, row-major little-endian, and an optional order.u32 of sample indices. |

@@ -102,8 +102,9 @@ fn stages() -> Vec<Stage> {
             title: "Target",
             file: "crates/modelspec-cli/src/train.rs",
             about: "Backend selection of `modelspec train` and `modelspec infer`, before the file is \
-                    read, Vulkan device discovery and negotiation of `modelspec inspect-device` and \
-                    `modelspec train --backend vulkan`, and the limits of the Vulkan target the \
+                    read, Vulkan device discovery and negotiation of `modelspec inspect-device`, \
+                    `modelspec train --backend vulkan` and `modelspec infer --backend vulkan`, and \
+                    the limits of the Vulkan target the \
                     schedule checks.",
             codes: vec![modelspec_cli::train::E_TARGET_001],
         },

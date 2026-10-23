@@ -181,9 +181,9 @@ mod tests {
         assert!(page.contains("| [`modelspec infer`](#modelspec-infer) |"));
         assert!(page.contains("| [`modelspec compile`](#modelspec-compile) |"));
         assert!(page.contains("| `--device-profile <PATH>` | no | none |"));
-        assert!(
-            page.contains("Usage: modelspec infer --backend <BACKEND> --checkpoint <PATH> <PATH>")
-        );
+        assert!(page.contains(
+            "Usage: modelspec infer [OPTIONS] --backend <BACKEND> --checkpoint <PATH> <PATH>"
+        ));
         assert!(page.contains("| `--resume <PATH>` | no | none |"));
         assert!(page.contains("Usage: modelspec train [OPTIONS] --backend <BACKEND> <PATH>"));
         assert!(page.contains(
