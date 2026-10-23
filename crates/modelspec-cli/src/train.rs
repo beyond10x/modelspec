@@ -70,10 +70,12 @@
 //! one JSON `RunEvent` per line in `sequence` order, each line the `data:` of its frame and
 //! written before a client of `--serve` reads it (`spec/domains/observatory.yaml`,
 //! `RecordedRunFile`; [`modelspec_observatory::Recorder`]); `modelspec observe <path>` replays it
-//! ([`crate::observe`]). The file is created once the file compiles, before anything is served
-//! or run; one that cannot be created is reported on one line and exits 1. A run whose events
-//! cannot all be written reports that on one line on stderr and exits 1; a run that finished
-//! then ends its stream with `RunFailed` instead of `RunFinished`.
+//! ([`crate::observe`]). The file is created once the file compiles and the `--serve` address
+//! is bound, before anything is served or run, so a refused address leaves a file already at
+//! `<path>` as it was; one that cannot be created is reported on one line and exits 1. A run
+//! whose events cannot all be written reports that on one line on stderr and exits 1, and no
+//! event is written to the file after the first failed write; a run that finished then ends its
+//! stream with `RunFailed` instead of `RunFinished`.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -377,6 +379,22 @@ pub fn run(args: Args, stdout: &mut dyn Write, stderr: &mut dyn Write) -> u8 {
             }
         }
     };
+    let training_run_id = TrainingRunId::new();
+    // The address is bound before the record file is created, so a refused `--serve` leaves a
+    // file already at the `--record` path as it was.
+    let server = match args.serve {
+        None => None,
+        Some(address) => match Server::bind(address, training_run_id) {
+            Ok(server) => Some(server),
+            Err(error) => {
+                let _ = writeln!(
+                    stderr,
+                    "modelspec train {file}: cannot serve on {address}: {error}"
+                );
+                return crate::EXIT_FAILURE;
+            }
+        },
+    };
     let recorder = match &args.record {
         None => None,
         Some(path) => match Recorder::create(path) {
@@ -391,30 +409,13 @@ pub fn run(args: Args, stdout: &mut dyn Write, stderr: &mut dyn Write) -> u8 {
             }
         },
     };
-    let training_run_id = TrainingRunId::new();
-    let server = match args.serve {
-        None => None,
-        Some(address) => match Server::bind(address, training_run_id) {
-            Ok(server) => {
-                let _ = writeln!(
-                    stderr,
-                    "serving http://{}{EVENTS_PATH}",
-                    server.local_addr()
-                );
-                Some(server)
-            }
-            Err(error) => {
-                let _ = writeln!(
-                    stderr,
-                    "modelspec train {file}: cannot serve on {address}: {error}"
-                );
-                if let Some(path) = &args.record {
-                    let _ = std::fs::remove_file(path);
-                }
-                return crate::EXIT_FAILURE;
-            }
-        },
-    };
+    if let Some(server) = &server {
+        let _ = writeln!(
+            stderr,
+            "serving http://{}{EVENTS_PATH}",
+            server.local_addr()
+        );
+    }
     let _ = stderr.flush();
     let events = RefCell::new(Events {
         sequence: EventSequence::new(training_run_id),
@@ -424,8 +425,13 @@ pub fn run(args: Args, stdout: &mut dyn Write, stderr: &mut dyn Write) -> u8 {
     let emit = |body: RunEventBody| {
         let events = &mut *events.borrow_mut();
         let event = events.sequence.event(body);
-        if let (Some(recorder), None) = (&mut events.recorder, &events.record_error) {
-            events.record_error = recorder.write(&event).err();
+        if let Some(recorder) = &mut events.recorder
+            && let Err(error) = recorder.write(&event)
+        {
+            // Sticky: the recorder is dropped at the first failed write, so no later event is
+            // written and the failure is reported once.
+            events.recorder = None;
+            events.record_error = Some(error);
         }
         if let Some(server) = &server {
             server.publish(&event);

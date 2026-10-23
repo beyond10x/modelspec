@@ -75,6 +75,12 @@ fn every_damaged_recording_is_refused_on_one_line() {
     extra.sequence = 2;
     extra.body = step(0);
     after_end.push(extra);
+    let started_again = run(vec![
+        started(),
+        step(0),
+        started(),
+        RunEventBody::RunFinished,
+    ]);
     let mut repeated = whole.clone();
     repeated[2].sequence = 1;
     let mut mixed = whole.clone();
@@ -100,6 +106,9 @@ fn every_damaged_recording_is_refused_on_one_line() {
         }),
         ("after end", text(&after_end), |e| {
             matches!(e, RecordingError::AfterEnd { line: 3 })
+        }),
+        ("started again", text(&started_again), |e| {
+            matches!(e, RecordingError::StartedAgain { line: 3 })
         }),
         ("repeated", text(&repeated), |e| {
             matches!(

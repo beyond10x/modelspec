@@ -64,6 +64,8 @@ pub enum RecordingError {
     },
     /// The first event is not `RunStarted`.
     NotStarted { kind: &'static str },
+    /// A `RunStarted` that is not the first event: a run starts once.
+    StartedAgain { line: usize },
     /// An event follows the `RunFinished` or `RunFailed` that ends the stream.
     AfterEnd { line: usize },
     /// The last event is not `RunFinished` or `RunFailed`: the run's end is missing.
@@ -95,6 +97,9 @@ impl fmt::Display for RecordingError {
             Self::NotStarted { kind } => {
                 write!(f, "the first event is {kind}, not RunStarted")
             }
+            Self::StartedAgain { line } => {
+                write!(f, "line {line} is a second RunStarted; a run starts once")
+            }
             Self::AfterEnd { line } => {
                 write!(f, "line {line} follows the event that ends the stream")
             }
@@ -116,7 +121,8 @@ pub fn read_recording(path: &Path) -> Result<Vec<RunEvent>, RecordingError> {
 }
 
 /// The events of a recorded run file's content: whole lines of `RunEvent`s, sequences 0, 1, 2,
-/// ..., one `training_run_id`, `RunStarted` first and `RunFinished` or `RunFailed` last.
+/// ..., one `training_run_id`, `RunStarted` first and only there, and `RunFinished` or `RunFailed`
+/// last, with nothing after it: every order `RunEventBody` forbids is refused.
 pub fn parse_recording(text: &str) -> Result<Vec<RunEvent>, RecordingError> {
     if text.is_empty() {
         return Err(RecordingError::Empty);
@@ -151,6 +157,9 @@ pub fn parse_recording(text: &str) -> Result<Vec<RunEvent>, RecordingError> {
             }
             if events.last().is_some_and(|last| last.body.is_last()) {
                 return Err(RecordingError::AfterEnd { line });
+            }
+            if matches!(event.body, crate::RunEventBody::RunStarted(_)) {
+                return Err(RecordingError::StartedAgain { line });
             }
         } else if !matches!(event.body, crate::RunEventBody::RunStarted(_)) {
             return Err(RecordingError::NotStarted {
