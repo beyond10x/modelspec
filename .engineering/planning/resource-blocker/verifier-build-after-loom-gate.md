@@ -2,12 +2,14 @@
 format: aep.planning-md/3
 id: resource-blocker:verifier-build-after-loom-gate
 kind: resource-blocker
-status: open
+status: cleared
 title: The verifier review's build waits for the loom w3 gate to start
 relations:
 - blocks: story:plan-verifier-bounded-on-untrusted-artifact
 withholds: review_outcome
-revision: 1
+revision: 2
+transitions:
+- {from: "open", to: "cleared", at: "2026-10-23T10:08:30Z", actor: "human:timo", revision: 2}
 ---
 # The verifier review's build waits for the loom w3 gate
 
