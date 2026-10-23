@@ -34,8 +34,8 @@ Dispatch: `aep:implementor` per unit, then `aep:adversary`.
 
 | # | story | branch | tree | state |
 |---|---|---|---|---|
-| 1 | train-vulkan-refuses-non-finite-loss | impl/train-vulkan-refuses-non-finite-loss | modelspec-impl-m1h-nonfinite-vk | implementing |
-| 2 | plan-verifier-bounded-on-untrusted-artifact | impl/plan-verifier-bounded-on-untrusted-artifact | modelspec-impl-m1h-verifier | implementing |
-| 3 | m1-f-weight-grad-matmul-columns | impl/m1-f-weight-grad-matmul-columns | modelspec-impl-m1h-wgrad-cols | implementing |
-| 4 | observatory-ui-live-loss-chart | impl/observatory-ui-live-loss-chart | modelspec-impl-m1h-ui-chart | implementing |
-| 5 | observatory-parameter-statistics | impl/observatory-parameter-statistics | | waits on unit 4 |
+| 1 | train-vulkan-refuses-non-finite-loss | impl/train-vulkan-refuses-non-finite-loss | modelspec-impl-m1h-nonfinite-vk | merged, implemented |
+| 2 | plan-verifier-bounded-on-untrusted-artifact | impl/plan-verifier-bounded-on-untrusted-artifact | modelspec-impl-m1h-verifier | merged, implemented |
+| 3 | kernel-signature-covers-matmul-tile (re-scoped from m1-f-weight-grad-matmul-columns) | impl/kernel-signature-covers-matmul-tile | modelspec-impl-m1h-wgrad-cols | merged, implemented |
+| 4 | observatory-ui-live-loss-chart | impl/observatory-ui-live-loss-chart | modelspec-impl-m1h-ui-chart | merged at c7daf8b, implemented |
+| 5 | observatory-parameter-statistics | impl/observatory-parameter-statistics | modelspec-impl-m1h-param-stats | 6272b74, adversary pass 1 |

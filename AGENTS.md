@@ -166,3 +166,6 @@ workspace version and nothing is on a registry.
   pages under `website/docs/` are hand-written; update them in the change that alters what they
   describe. The pitch deck is `docs/pitch/index.html`, which the site build serves at
   `/modelspec/pitch/`; never copy it into `website/`.
+- A copy of the tree built outside the worktree (an adversary's mutant or base copy) has its
+  `target/` removed with `cargo clean --target-dir <dir>` when its unit merges. Twelve such
+  targets of merged waves held 9.6 GB on 2026-10-23.
