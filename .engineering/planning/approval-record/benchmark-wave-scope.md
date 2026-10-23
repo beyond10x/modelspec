@@ -6,7 +6,7 @@ status: draft
 title: 'Benchmark wave: units and scope decisions'
 relations:
 - serves: vision:modelspec
-revision: 3
+revision: 4
 ---
 # Benchmark wave: scope decisions
 
@@ -51,8 +51,9 @@ story:profile-achieved-throughput and story:mlp-size-sweep-vs-pytorch-cuda at ma
   at both ends. Each side's figure is the median of 3 runs (the epic's rule).
 - D9 The PyTorch opponent lives in `opponents/mlp_sweep/` (Python is allowed only under
   `opponents/`, AGENTS.md); it runs eager and `torch.compile`, CUDA, TF32 off.
-- D10 Device runs are not run by this session. Each unit ends with the exact command and what it
+- D10 (superseded by D14) Device runs are not run by this session. Each unit ends with the exact command and what it
   measures, sent to the orchestrator for Timo's queue.
 - D11 The sweep trains at lr 0.001, not the MNIST example's 0.1: the implementor estimated 0.1 diverges at hidden 1024 and 4096, which would turn those points into refusals, and step time does not depend on the learning rate (adversary pass 1, 2026-10-23). Not measured.
 - D12 A crossover verdict "undetermined" is added beside a width and "not reached": a width with no figure before any crossover leaves the answer open instead of deciding it.
 - D13 story:vulkan-descriptor-pool-counts-writes: the device-validation acceptance line is replaced by a host-side refusal in the descriptor arena, because standard validation on the RTX 3090 stayed silent on the undersized pool (evidence 20261022T102152Z-002 under story m1-vulkan-train); best-practices validation stays off, since its small-allocation warnings would fail every validated test.
+- D14 Agents run GPU tests and benchmarks on the local RTX 3090 themselves, with no warm-up step; D10 is withdrawn. Timo, 2026-10-23, relayed by the orchestrator and confirmed by Timo in this session: "i have no idea where the rule comes from that it must ask to use GPU, it shall use it itself, whenever it likes" and "why warm up, its a PC with a physical GPU, no warmup, just use it". Read as: no separate warm-up run before a GPU run; the 20 warm-up steps inside a bench, outside its timed span (D8), are part of the measurement and stay.

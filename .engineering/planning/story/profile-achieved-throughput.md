@@ -7,7 +7,14 @@ title: Achieved GFLOP/s and GB/s in train --profile
 relations:
 - decomposes: epic:transformer-vs-pytorch-cuda
 - serves: vision:modelspec
-revision: 4
+scope:
+- confidence: cited
+  path: DESIGN.md
+- confidence: cited
+  path: crates/modelspec-core/src/ir/kernel.rs
+- confidence: cited
+  path: crates/modelspec-runtime/src/vulkan/profile.rs
+revision: 5
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-23T17:49:59Z", actor: "human:timo", revision: 3}
 - {from: "proposed", to: "active", at: "2026-10-23T17:49:59Z", actor: "human:timo", revision: 4}

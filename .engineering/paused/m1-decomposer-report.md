@@ -83,7 +83,7 @@ Left as they are:
    - SPIR-V generation sits behind the `vulkan` feature.
    - `task test` and `task lint` add `--features vulkan`.
    - CI installs `spirv-tools`, and the test fails rather than skips without `spirv-val`.
-   - GPU tests are `#[ignore]` and run by the operator.
+   - GPU tests are `#[ignore]` and agents run them on the local GPU.
    - Nothing in `task ci` creates a Vulkan instance, and there is no software Vulkan driver.
 7. **Needs a reviewer:** DESIGN § 3.3 forbids reassociating sums in deterministic mode, but § 5.2 asks for a two-stage reduction, which does exactly that. I settled it as a fixed reduction tree chosen from the shape alone. Matmul keeps the CPU's order (ascending k, no fused multiply-add). This is a design change.
 8. Artifact files: `artifact.json` plus `kernels/<id>.spv`. Ids come from content hashes, `deterministic=true` and `fast_math=false`.
