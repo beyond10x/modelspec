@@ -9,6 +9,10 @@ history.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-23
+
+The observatory UI, and Vulkan runs and artifacts that refuse what they cannot trust: `--ui <dir>` on `train --serve` and `observe` serves a Vue app that draws the loss and every metric per step, a CPU run's events carry per-parameter norms and histograms of values and gradients, `train --backend vulkan` stops a diverged run with the CPU run's `E-TRAIN-001`, `artifact::read` refuses a plan past 4,096 steps, 65,536 dependencies or 65,536 views with `E-ARTIFACT-003` and verifies the rest in bounded time, and a matmul's kernel module id covers its `MatMulTile`. No new device benchmark was measured for this release; the latest measurement is 0.6.0's 27.14 µs per step on an RTX 3090.
+
 ### Added
 
 - The observatory UI in `ui/` (Vue 3, TypeScript, Vite, pnpm; `task ui` builds `ui/dist`) draws the loss and every `MetricSample` per step from the event stream, and `--ui <dir>` on `modelspec train --serve` and `modelspec observe` serves it at `/` beside `/events` (`modelspec_observatory::Ui`; `spec/domains/observatory.yaml`, `UiDirectory`), refusing a directory over 4096 files or 64 MiB without reading more than 64 MiB of it; a page left open after the server is stopped mid-run connects again every second and shows the run of whatever server then answers at that address; its TypeScript types are generated from the Rust `RunEvent` types by `modelspec-ui-types` and drift-checked in `task ci` (story:observatory-ui-live-loss-chart)
@@ -148,7 +152,8 @@ with `E-TARGET-001`.
 - `examples/linear_regression.mspec` checks and trains; `task check-examples` runs `modelspec check` on it
 - ESS contracts for the compiled artifact, checkpoint, device profile and training run in `spec/`
 
-[Unreleased]: https://github.com/beyond10x/modelspec/compare/0.6.0...HEAD
+[Unreleased]: https://github.com/beyond10x/modelspec/compare/0.7.0...HEAD
+[0.7.0]: https://github.com/beyond10x/modelspec/compare/0.6.0...0.7.0
 [0.6.0]: https://github.com/beyond10x/modelspec/compare/0.5.0...0.6.0
 [0.5.0]: https://github.com/beyond10x/modelspec/compare/0.4.0...0.5.0
 [0.4.0]: https://github.com/beyond10x/modelspec/compare/0.3.0...0.4.0
