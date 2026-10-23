@@ -9,6 +9,10 @@ history.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-23
+
+Checkpoints, inference and artifacts on Vulkan: `train --backend vulkan` writes and resumes checkpoints, `infer --backend vulkan` runs a checkpoint on the device, `compile` writes a sealed artifact directory, and `train --record` with `observe` records and replays a run. The MNIST benchmark example measured 27.14 µs per step on an RTX 3090 (median of 5 timed runs of 144,000 steps), down from 27.282 µs in 0.5.0. ADR-007's accuracy and final-weight conditions were not measured for this release.
+
 ### Added
 
 - `modelspec train --backend vulkan` takes `--checkpoint`, `--checkpoint-every` and `--resume`: each requested checkpoint ends a segment of the run with one host wait and a parameter read-back, so 1800 MNIST steps with `--checkpoint-every 600` wait 3 times and write 2 extra files, and a run resumed at step 900 passes against the uninterrupted one within the GPU tolerance; `modelspec infer --backend vulkan [--device <index>]` runs a checkpoint's forward program and loss on the device with one host wait, refusing an unusable checkpoint with the CPU reader's `E-CKPT` code before the loader opens (DESIGN.md § 6.2, § 8) (story:m1-vulkan-checkpoint-infer)
@@ -133,7 +137,8 @@ with `E-TARGET-001`.
 - `examples/linear_regression.mspec` checks and trains; `task check-examples` runs `modelspec check` on it
 - ESS contracts for the compiled artifact, checkpoint, device profile and training run in `spec/`
 
-[Unreleased]: https://github.com/beyond10x/modelspec/compare/0.5.0...HEAD
+[Unreleased]: https://github.com/beyond10x/modelspec/compare/0.6.0...HEAD
+[0.6.0]: https://github.com/beyond10x/modelspec/compare/0.5.0...0.6.0
 [0.5.0]: https://github.com/beyond10x/modelspec/compare/0.4.0...0.5.0
 [0.4.0]: https://github.com/beyond10x/modelspec/compare/0.3.0...0.4.0
 [0.3.0]: https://github.com/beyond10x/modelspec/compare/0.2.0...0.3.0

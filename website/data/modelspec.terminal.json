@@ -12,7 +12,7 @@
     }
   ],
   "format": "b10x-terminal/1",
-  "recordedWith": "modelspec 0.5.0, recorded by modelspec-docs",
+  "recordedWith": "modelspec 0.6.0, recorded by modelspec-docs",
   "title": "examples/linear_regression.mspec",
   "tones": {}
 }
