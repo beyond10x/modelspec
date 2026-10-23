@@ -12,6 +12,10 @@
 //! [`run_from`] resumes at a checkpoint's step and reports the state after each update, for
 //! `--checkpoint-every`. A run depends on nothing but the compiled program, its seed, its start
 //! step, and the files of `--data`, `--init` and `--resume`.
+//!
+//! [`run_with`] and [`run_from`] show each step to their observer as an [`Observed`]: its loss,
+//! the parameter values that loss is of and, for a step that makes an update, the gradients the
+//! update applies (story:observatory-parameter-statistics).
 
 use std::borrow::Cow;
 use std::collections::BTreeMap;
@@ -24,7 +28,7 @@ use thiserror::Error;
 use super::checkpoint::CheckpointError;
 use super::data::{DataError, DenseData, SyntheticData, synthetic};
 use super::init::{InitError, Stream, initialize};
-use super::optimizer::{ParamState, StepError, sgd_step};
+use super::optimizer::{ParamState, StepError, evaluate_step};
 use crate::cpu::{HostTensor, RuntimeError, evaluate, evaluate_all};
 
 /// The loss of a training step, or a parameter after the update of a step, is NaN or ±inf: the
@@ -137,20 +141,37 @@ pub fn run(compiled: &CompiledTraining) -> Result<Run, RunError> {
 /// first step observes none.
 pub fn run_observed(
     compiled: &CompiledTraining,
-    observe: impl FnMut(u64, f32),
+    mut observe: impl FnMut(u64, f32),
 ) -> Result<Run, RunError> {
-    run_with(compiled, None, &BTreeMap::new(), observe)
+    run_with(compiled, None, &BTreeMap::new(), |o| {
+        observe(o.step, o.loss)
+    })
+}
+
+/// One step as the observer of [`run_with`] and [`run_from`] sees it, before its update.
+#[derive(Clone, Copy, Debug)]
+pub struct Observed<'a> {
+    /// The step, `k` of `Run::losses[k - start]`.
+    pub step: u64,
+    /// The loss of [`Self::values`].
+    pub loss: f32,
+    /// Every declared parameter's value after `step` updates, before this step's own.
+    pub values: &'a BTreeMap<ParamId, HostTensor<f32>>,
+    /// The gradient of the loss at [`Self::values`] for each parameter the loss reads, the one
+    /// this step's update applies; `None` for the last step, which makes no update.
+    pub gradients: Option<&'a BTreeMap<ParamId, HostTensor<f32>>>,
 }
 
 /// Runs as [`run_observed`] does, on `data` when it is given instead of synthetic data, and with
-/// each parameter in `init` starting from that value instead of its draw. Step `k` feeds
-/// [`DenseData::step`]`(k)`; the loss after the last update is the forward program on
-/// `step(steps)`. A dense run has no teacher: [`Run::teacher`] is empty.
+/// each parameter in `init` starting from that value instead of its draw, and shows `observe`
+/// each step as an [`Observed`]. Step `k` feeds [`DenseData::step`]`(k)`; the loss after the
+/// last update is the forward program on `step(steps)`. A dense run has no teacher:
+/// [`Run::teacher`] is empty.
 pub fn run_with(
     compiled: &CompiledTraining,
     data: Option<&DenseData>,
     init: &BTreeMap<ParamId, HostTensor<f32>>,
-    observe: impl FnMut(u64, f32),
+    observe: impl FnMut(&Observed<'_>),
 ) -> Result<Run, RunError> {
     run_from(compiled, data, init, 0, observe, |_, _| Ok(()))
 }
@@ -165,7 +186,7 @@ pub fn run_from(
     data: Option<&DenseData>,
     init: &BTreeMap<ParamId, HostTensor<f32>>,
     start: u64,
-    mut observe: impl FnMut(u64, f32),
+    mut observe: impl FnMut(&Observed<'_>),
     mut after: impl FnMut(u64, &ParamState) -> Result<(), CheckpointError>,
 ) -> Result<Run, RunError> {
     let config = &compiled.config;
@@ -193,12 +214,25 @@ pub fn run_from(
     let mut losses = Vec::new();
     for step in start..=end {
         let loss = if step < end {
-            sgd_step(&compiled.training, &inputs(step), &mut state)
-                .map_err(|source| RunError::Step { step, source })?
+            let evaluated = evaluate_step(&compiled.training, &inputs(step), &state)
+                .map_err(|source| RunError::Step { step, source })?;
+            observe(&Observed {
+                step,
+                loss: evaluated.loss,
+                values: &state.values,
+                gradients: Some(&evaluated.gradients),
+            });
+            evaluated.apply(&mut state).loss
         } else {
-            evaluate(forward, &inputs(end), &state.values)?[0].data()[0]
+            let loss = evaluate(forward, &inputs(end), &state.values)?[0].data()[0];
+            observe(&Observed {
+                step,
+                loss,
+                values: &state.values,
+                gradients: None,
+            });
+            loss
         };
-        observe(step, loss);
         losses.push(loss);
         if let Some(diagnostic) = non_finite(compiled, step, loss, &state.values) {
             return Err(RunError::NonFinite(Box::new(Diverged {
@@ -405,6 +439,70 @@ mod tests {
     fn an_observed_run_is_the_run() {
         let c = compiled(EXAMPLE, 5);
         assert_eq!(run_observed(&c, |_, _| {}).unwrap(), run(&c).unwrap());
+    }
+
+    /// The observer of step `k` sees the values after `k` updates, the values step `k`'s loss is
+    /// of, and for `k < steps` the gradient step `k`'s update applies to them; the last step
+    /// makes no update and has no gradient.
+    #[test]
+    fn the_observer_sees_the_values_of_each_step_and_the_gradient_its_update_applies() {
+        let c = compiled(EXAMPLE, 3);
+        let data = synthetic(&c.config, &c.forward).unwrap();
+        let training = &c.training.training;
+        let position = training
+            .program
+            .outputs
+            .iter()
+            .position(|&o| o == training.gradients[&W])
+            .unwrap();
+        let mut seen = Vec::new();
+        let whole = run_with(&c, None, &BTreeMap::new(), |o| {
+            seen.push((o.step, o.loss, o.values.clone(), o.gradients.cloned()))
+        })
+        .unwrap();
+        assert_eq!(seen.len(), 4);
+        for (k, (step, loss, values, gradients)) in seen.iter().enumerate() {
+            assert_eq!(*step, k as u64);
+            assert_eq!(*loss, whole.losses[k], "step {k}");
+            let after_k = run(&compiled(EXAMPLE, k as u64)).unwrap();
+            assert_eq!(values, &after_k.state.values, "step {k}");
+            if k < 3 {
+                let outputs = evaluate(&training.program, &data.inputs, values).unwrap();
+                let gradients = gradients.as_ref().expect("a step with an update");
+                assert_eq!(gradients[&W], outputs[position], "step {k}");
+            } else {
+                assert_eq!(*gradients, None, "the last step makes no update");
+            }
+        }
+        assert_eq!(seen[3].2, whole.state.values);
+    }
+
+    /// A parameter the loss does not read has values at every step and a gradient at none.
+    #[test]
+    fn a_parameter_the_loss_does_not_read_is_observed_without_a_gradient() {
+        let source = EXAMPLE.replace(
+            "    fn forward",
+            "    param u: Tensor<f32, [2, 2]> = xavier_uniform();\n\n    fn forward",
+        );
+        let c = compiled(&source, 2);
+        let mut seen = Vec::new();
+        run_with(&c, None, &BTreeMap::new(), |o| {
+            seen.push((
+                o.values.keys().copied().collect::<Vec<_>>(),
+                o.gradients.map(|g| g.keys().copied().collect::<Vec<_>>()),
+            ))
+        })
+        .unwrap();
+        let declared: Vec<ParamId> = c.forward.program.params.keys().copied().collect();
+        assert_eq!(declared.len(), 2);
+        assert_eq!(
+            seen,
+            vec![
+                (declared.clone(), Some(vec![W])),
+                (declared.clone(), Some(vec![W])),
+                (declared, None),
+            ]
+        );
     }
 
     #[test]

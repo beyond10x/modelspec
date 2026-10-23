@@ -42,8 +42,8 @@
   "x-ess-provenance": {
     "system": "modelspec",
     "specification_version": "v1",
-    "source_digest": "6ef7da18d5f014a4f006ad6ef17be88a7eabcb145bb9d31594ce5b3a089b4e23",
-    "contract_digest": "slice-sha256/2:09c4fd6ae60612ea055e98eadb909fefe807dca59b9993debed3c2ad0a0891c2",
+    "source_digest": "a0e2e395e5187553a4e564c880a15276d8d6627d23e19fde8d6acec37cb80d25",
+    "contract_digest": "slice-sha256/2:063e972f6dc6d410a33c8d9f680c68d55894d78091e80f9954eddceb7b71334c",
     "regenerate": "ess generate"
   },
   "$defs": {
@@ -56,13 +56,13 @@
     },
     "modelspec.observatory.Histogram": {
       "title": "Histogram",
-      "description": "The distribution of one tensor's elements in bins; bin i counts the elements in [bin_edges[i], bin_edges[i+1]), so there is one more edge than counts, which ESS does not state here.",
+      "description": "The distribution of one tensor's elements in bins, the edges taken anew from that tensor each time statistics are taken (approval-record:parameter-statistics-settlements, question 1). With min and max the tensor's smallest and largest finite element widened to Binary64, a tensor with min < max has 32 bins and the 33 edges min + (max − min) · i / 32 for i from 0 through 32, the last edge max itself; bin i counts the finite elements x with bin_edges[i] <= x < bin_edges[i+1], and the last bin also counts x = max. A tensor with min = max has one bin, edges [min, max], counting every finite element. A tensor with no finite element has no min or max, so no edge and no bin. NaN, +inf and −inf are in no bin; nan_count, positive_infinity_count and negative_infinity_count count them, so the counts and those three sum to the tensor's element count, which ESS does not state here.",
       "x-ess-name": "modelspec.observatory.Histogram",
       "x-ess-kind": "struct",
       "type": "object",
       "properties": {
         "bin_edges": {
-          "description": "The bin edges in ascending order; an edge is null when it is NaN or ±inf, which Binary64 does not hold (wave observatory-1 coordinator, 2026-10-21).",
+          "description": "The bin edges in ascending order. Edges taken between finite min and max are finite; the type keeps null for an edge that is NaN or ±inf, which Binary64 does not hold (wave observatory-1 coordinator, 2026-10-21).",
           "type": "array",
           "items": {
             "anyOf": [
@@ -76,19 +76,42 @@
           }
         },
         "counts": {
+          "description": "The finite elements in each bin, in edge order.",
           "type": "array",
           "items": {
             "type": "integer"
           }
+        },
+        "nan_count": {
+          "description": "The tensor's NaN elements, counted in no bin (approval-record:parameter-statistics-settlements, question 1).",
+          "type": "integer",
+          "minimum": 0
+        },
+        "positive_infinity_count": {
+          "description": "The tensor's +inf elements, counted in no bin (approval-record:parameter-statistics-settlements, question 1).",
+          "type": "integer",
+          "minimum": 0
+        },
+        "negative_infinity_count": {
+          "description": "The tensor's −inf elements, counted in no bin (approval-record:parameter-statistics-settlements, question 1).",
+          "type": "integer",
+          "minimum": 0
         }
       },
       "required": [
         "bin_edges",
-        "counts"
+        "counts",
+        "nan_count",
+        "positive_infinity_count",
+        "negative_infinity_count"
       ],
       "additionalProperties": false,
       "x-ess-invariants": [
-        "forall count in counts: (count >= 0)"
+        "forall count in counts: (count >= 0)",
+        "nan_count >= 0",
+        "positive_infinity_count >= 0",
+        "negative_infinity_count >= 0",
+        "((counts.count == 0 and bin_edges.count == 0) or (counts.count == 1 and bin_edges.count == 2) or (counts.count == 32 and bin_edges.count == 33))"
       ]
     },
     "modelspec.observatory.MetricSample": {
@@ -133,7 +156,7 @@
           "$ref": "#/$defs/modelspec.observatory.StatisticsSubject"
         },
         "norm": {
-          "description": "The norm; null when it is NaN or ±inf, which Binary64 does not hold (wave observatory-1 coordinator, 2026-10-21).",
+          "description": "The L2 norm of the tensor, the square root of the sum of its elements' squares, each element widened to Binary64 and summed in row-major order (approval-record:parameter-statistics-settlements, question 2); null when it is NaN or ±inf, which Binary64 does not hold, as it is when an element is NaN or ±inf (wave observatory-1 coordinator, 2026-10-21).",
           "anyOf": [
             {
               "type": "number"
@@ -343,7 +366,7 @@
           }
         },
         "parameters": {
-          "description": "Value and gradient statistics per parameter; the pair (path, subject) is unique, which ESS does not state here. A parameter the loss does not read has no gradient (DESIGN.md § 3.3 step 4).",
+          "description": "Value and gradient statistics per parameter at a sampled step, empty at every other step (approval-record:parameter-statistics-settlements, question 3); the pair (path, subject) is unique, which ESS does not state here. `modelspec train --backend cpu --statistics-every N`, N at least 1 and 100 without the flag, samples step k when k is the run's start_step, a multiple of N, or start_step + steps. A sampled step lists each declared parameter in path order, its Value entry for its values after k updates, the values step k reads, then, for k < start_step + steps, its Gradient entry for the gradient of step k's loss with respect to it, the gradient step k's update applies. Step start_step + steps, the loss of the final parameters, makes no update and so has Value entries only. A parameter the loss does not read has no gradient and so no Gradient entry (DESIGN.md § 3.3 step 4). A Vulkan run keeps parameters and gradients on the device between its host waits, so `modelspec train --backend vulkan` samples only step start_step, from the values it uploads, and step start_step + steps, from the values it reads back after the last step, each with one Value entry per declared parameter in path order, the values the step reads as on the CPU, and no Gradient entry; every other step has the list empty, the statistics add no read-back and no host wait, and `--statistics-every` with `--backend vulkan` is a usage error (approval-record:parameter-statistics-settlements, question 3, \"the first step also carries values\" and \"the final post-loop event always carries values\"; story:observatory-parameter-statistics).",
           "type": "array",
           "items": {
             "$ref": "#/$defs/modelspec.observatory.ParameterStatistics"

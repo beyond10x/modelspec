@@ -56,7 +56,9 @@ ModelSpec is in milestone M1 (GPU execution); the latest release is [0.6.0](http
 | `modelspec train --record <path>` and `modelspec observe <path>`: record a run and replay it | |
 
 On `main`, not released yet: `--ui ui/dist` on `train --serve` or `observe` serves the
-observatory UI, which draws the loss and every metric per step in the browser.
+observatory UI, which draws the loss and every metric per step in the browser, and for a CPU run
+the norm and histogram of each parameter's values and gradient on sampled steps
+(`--statistics-every`), for a Vulkan run those of its values at the first and the last step.
 
 On the MNIST benchmark example, `train --backend vulkan` measured 27.14 µs per step on an RTX
 3090 (median of 5 timed runs of 144,000 steps); ADR-007's accuracy and final-weight conditions

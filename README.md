@@ -35,8 +35,10 @@ train Fit {
 ## Watch a run in the browser
 
 On `main`, not released yet: the observatory UI in [ui/](ui/) draws the loss, and every metric a
-run reports, per step, live or from a recording. Build it once with Node 22.18 or later and pnpm
-([go-task](https://taskfile.dev) runs `pnpm install` and `pnpm build` in `ui/`):
+run reports, per step, live or from a recording. It also draws, per parameter, the norm of its
+values and of its gradient and their histograms at the first step, every `--statistics-every`
+steps (default 100) and the last step of a CPU run, and those of its values at the first and the
+last step of a Vulkan run. Build it once with Node 22.18 or later and pnpm ([go-task](https://taskfile.dev) runs `pnpm install` and `pnpm build` in `ui/`):
 
 ```console
 task ui

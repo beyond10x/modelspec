@@ -344,6 +344,9 @@ fn step_with_every_float(value: f64) -> RunEventBody {
             histogram: Histogram {
                 bin_edges: vec![value, 1.0],
                 counts: vec![4],
+                nan_count: 0,
+                positive_infinity_count: 0,
+                negative_infinity_count: 0,
             },
         }],
     })

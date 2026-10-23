@@ -7,7 +7,9 @@
 //! `sequence` order, numbered by an [`EventSequence`]; a [`Server`] serves it as
 //! `text/event-stream` at `GET /events` on a loopback address ([`parse_serve_address`]), one
 //! [`frame`] per event. Nothing here knows about a backend: a CPU and a Vulkan run send the same
-//! events.
+//! kinds of event. [`statistics`] takes the norm and the histogram of a parameter tensor that a
+//! sampled `StepCompleted` carries ([`ParameterStatistics::of`]); the CLI decides which steps
+//! are sampled: a CPU run its first, every N-th and last step, a Vulkan run its first and last.
 //!
 //! A [`Recorder`] writes a run's events to a recorded run file, one [`line`] each, the `data:` of
 //! its frame; [`read_recording`] reads one back, refusing a damaged file, and
@@ -21,6 +23,7 @@
 mod event;
 mod record;
 mod server;
+pub mod statistics;
 mod typescript;
 mod ui;
 

@@ -7,7 +7,9 @@
 //! [`observatory_ui_live_two_layer_relu`], `observatory.ui.replay-linear-regression` is
 //! [`observatory_ui_replay_linear_regression`], `observatory.ui.replay-two-layer-relu` is
 //! [`observatory_ui_replay_two_layer_relu`] and `observatory.ui.metric-charts` is
-//! [`observatory_ui_metric_charts`]. Those five are `#[ignore]`d because they need the built app
+//! [`observatory_ui_metric_charts`]; `observatory.ui.parameter-stats-two-layer-relu`, of
+//! story:observatory-parameter-statistics, is [`observatory_ui_parameter_stats_two_layer_relu`].
+//! Those six are `#[ignore]`d because they need the built app
 //! (`ui/dist`, `task ui`, which needs Node and pnpm) and a Chrome or Chromium (the `CHROME`
 //! variable, else the first of `google-chrome-stable`, `chromium`, ... on `PATH`); `task
 //! ui-browser`, part of `task ci`, runs them with `--ignored`. Everything else here runs in `task
@@ -16,7 +18,10 @@
 //! The browser reads each chart from the attributes the app writes on its `svg[data-metric]`:
 //! `data-points` (one per `StepCompleted`), `data-last-step`, `data-last-value` (JavaScript's
 //! `String` of the value, which reads back as the same binary64, or `null`) and the `d` of its
-//! `path[data-line]` (one `M` or `L` command per finite point).
+//! `path[data-line]` (one `M` or `L` command per finite point). The norm charts of a parameter
+//! carry the same attributes on an `svg[data-norm=<path>][data-subject=<Value|Gradient>]`, and the
+//! histogram of the shown step an `svg[data-histogram=<path>][data-subject=...]` with `data-step`
+//! and `data-counts` (the bin counts joined by commas).
 //!
 //! The fixtures `tests/fixtures/two_layer_relu.run.jsonl` and `tests/fixtures/accuracy.run.jsonl`
 //! are rewritten by running [`observatory_ui_two_layer_relu_fixture_current`] and
@@ -758,4 +763,216 @@ fn observatory_ui_metric_charts() {
     let mut plain = Served::start(&["observe", LINEAR_FIXTURE, "--ui", &ui]);
     assert_eq!(plain.next_line(), format!("ui http://{}/", plain.address));
     assert_loss_only(&plain);
+}
+
+/// One streamed `ParameterStatistics` entry: its step, its norm as the server wrote it and its
+/// bin counts.
+#[derive(Debug)]
+struct Streamed {
+    step: u64,
+    norm: String,
+    counts: Vec<u64>,
+}
+
+/// Every entry of `path` and `subject` among the `StepCompleted` events of `data`, in step order.
+fn streamed_statistics(data: &[String], path: &str, subject: &str) -> Vec<Streamed> {
+    let marker = format!(r#"{{"path":"{path}","subject":"{subject}","norm":"#);
+    data.iter()
+        .filter(|line| json(line)["body"]["kind"] == "StepCompleted")
+        .filter_map(|line| {
+            let event = json(line);
+            let value = &event["body"]["value"];
+            let entry = value["parameters"]
+                .as_array()
+                .expect("a parameters list")
+                .iter()
+                .find(|e| e["path"] == path && e["subject"] == subject)?;
+            let at = line.find(&marker).expect("the entry's text") + marker.len();
+            let rest = &line[at..];
+            let norm = rest[..rest.find([',', '}']).expect("a norm")].to_owned();
+            let counts = entry["histogram"]["counts"]
+                .as_array()
+                .expect("counts")
+                .iter()
+                .map(|c| c.as_u64().expect("a count"))
+                .collect();
+            Some(Streamed {
+                step: value["step"].as_u64().expect("a step"),
+                norm,
+                counts,
+            })
+        })
+        .collect()
+}
+
+/// What the page shows of one parameter for `PATH` (replaced): per subject, the norm chart's
+/// points and last point and the histogram's step and counts, `null` where there is none; and the
+/// note that stands for a missing gradient histogram.
+const READ_PARAMETER: &str = "JSON.stringify({
+    subjects: ['Value', 'Gradient'].map((subject) => {
+        const norm = document.querySelector('svg[data-norm=\"PATH\"][data-subject=\"' + subject + '\"]');
+        const hist = document.querySelector('svg[data-histogram=\"PATH\"][data-subject=\"' + subject + '\"]');
+        return {
+            subject,
+            points: norm === null ? null : Number(norm.dataset.points),
+            lastStep: norm?.dataset.lastStep ?? null,
+            lastValue: norm?.dataset.lastValue ?? null,
+            step: hist?.dataset.step ?? null,
+            counts: hist?.dataset.counts ?? null,
+        };
+    }),
+    note: document.querySelector('section[data-parameter=\"PATH\"] .note')?.textContent ?? null,
+})";
+
+fn read_parameter(tab: &headless_chrome::Tab, path: &str) -> Value {
+    let read = tab
+        .evaluate(&READ_PARAMETER.replace("PATH", path), false)
+        .expect("the parameter charts are read")
+        .value
+        .and_then(|v| v.as_str().map(str::to_owned))
+        .expect("a JSON string");
+    json(&read)
+}
+
+/// The counts of a histogram as the page wrote them, `data-counts` split at commas.
+fn shown_counts(subject: &Value) -> Option<Vec<u64>> {
+    subject["counts"].as_str().map(|counts| {
+        counts
+            .split(',')
+            .filter(|c| !c.is_empty())
+            .map(|c| c.parse().expect("a count"))
+            .collect()
+    })
+}
+
+/// `observatory.ui.parameter-stats-two-layer-relu`: `modelspec observe` of the two-layer-relu
+/// fixture draws, for each parameter, a value-norm and a gradient-norm chart whose points are the
+/// streamed samples and whose last point is the last streamed norm, and the histograms of the
+/// latest sampled step; picking another sampled step draws that step's streamed bin counts.
+#[test]
+#[ignore = "needs ui/dist and a Chrome or Chromium; run by `task ui-browser`"]
+fn observatory_ui_parameter_stats_two_layer_relu() {
+    let ui = built_ui();
+    let mut served = Served::start(&["observe", TWO_LAYER_FIXTURE, "--ui", &ui]);
+    assert_eq!(served.next_line(), format!("ui http://{}/", served.address));
+    let data = streamed(&served.address);
+    let browser = browser();
+    let tab = browser.new_tab().expect("a tab opens");
+    tab.navigate_to(&format!("http://{}/", served.address))
+        .expect("the page is requested");
+    tab.wait_until_navigated().expect("the page loads");
+    let start = Instant::now();
+    loop {
+        let state = tab
+            .evaluate(
+                "document.querySelector('main')?.dataset.runState ?? 'none'",
+                false,
+            )
+            .expect("the page answers")
+            .value
+            .and_then(|v| v.as_str().map(str::to_owned))
+            .unwrap_or_default();
+        if state == "finished" {
+            break;
+        }
+        assert!(
+            start.elapsed() < WAIT,
+            "the page still says {state} after {WAIT:?}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    for path in ["TwoLayer.w1", "TwoLayer.w2"] {
+        let values = streamed_statistics(&data, path, "Value");
+        let gradients = streamed_statistics(&data, path, "Gradient");
+        assert!(
+            values.len() >= 2 && !gradients.is_empty(),
+            "{path} has samples"
+        );
+        let read = read_parameter(&tab, path);
+        for (shown, streamed) in read["subjects"]
+            .as_array()
+            .expect("subjects")
+            .iter()
+            .zip([&values, &gradients])
+        {
+            let last = streamed.last().expect("a last sample");
+            assert_eq!(
+                shown["points"].as_u64(),
+                Some(streamed.len() as u64),
+                "{shown}"
+            );
+            assert_eq!(
+                shown["lastStep"].as_str(),
+                Some(last.step.to_string().as_str())
+            );
+            let value = shown["lastValue"].as_str().expect("a last norm");
+            assert_eq!(
+                value_bits(value),
+                value_bits(&last.norm),
+                "{path} {}: the chart's last norm {value} is the stream's {}",
+                shown["subject"],
+                last.norm
+            );
+        }
+        let latest = values.last().expect("a latest sample");
+        let [value, gradient] = read["subjects"].as_array().expect("subjects").as_slice() else {
+            panic!("two subjects: {read}");
+        };
+        assert_eq!(
+            value["step"].as_str(),
+            Some(latest.step.to_string().as_str())
+        );
+        assert_eq!(shown_counts(value).as_ref(), Some(&latest.counts));
+        assert!(
+            gradients.iter().all(|g| g.step != latest.step),
+            "the last step has no gradient"
+        );
+        assert_eq!(gradient["step"], Value::Null, "{read}");
+        assert_eq!(
+            read["note"].as_str(),
+            Some(format!("no gradient at step {}", latest.step).as_str())
+        );
+    }
+
+    let picked = streamed_statistics(&data, "TwoLayer.w1", "Gradient")
+        .last()
+        .expect("a sample with a gradient")
+        .step;
+    tab.evaluate(
+        &format!(
+            "(() => {{
+                const select = document.querySelector('select[data-step-select]');
+                select.value = '{picked}';
+                select.dispatchEvent(new Event('change'));
+                return select.value;
+            }})()"
+        ),
+        false,
+    )
+    .expect("a step is picked");
+    let start = Instant::now();
+    let read = loop {
+        let read = read_parameter(&tab, "TwoLayer.w1");
+        if read["subjects"][0]["step"].as_str() == Some(picked.to_string().as_str()) {
+            break read;
+        }
+        assert!(start.elapsed() < WAIT, "the page still shows {read}");
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    for (shown, subject) in read["subjects"]
+        .as_array()
+        .expect("subjects")
+        .iter()
+        .zip(["Value", "Gradient"])
+    {
+        let streamed = streamed_statistics(&data, "TwoLayer.w1", subject);
+        let at = streamed
+            .iter()
+            .find(|s| s.step == picked)
+            .expect("the picked step was sampled");
+        assert_eq!(shown["step"].as_str(), Some(picked.to_string().as_str()));
+        assert_eq!(shown_counts(shown).as_ref(), Some(&at.counts), "{subject}");
+    }
+    assert_eq!(read["note"], Value::Null, "{read}");
 }

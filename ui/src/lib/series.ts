@@ -1,4 +1,4 @@
-import type { RunEvent } from '../generated/observatory.ts';
+import type { ParameterStatistics, RunEvent } from '../generated/observatory.ts';
 
 /** Where the stream of a run is: before its first event, between its first and last, or ended. */
 export type RunState = 'connecting' | 'streaming' | 'finished' | 'failed';
@@ -26,22 +26,49 @@ export interface Run {
   loss: Series;
   /** One series per metric name, in the order the names first appear. */
   metrics: Series[];
+  /** The norms of each parameter, in the order the paths first appear. */
+  parameters: ParameterSeries[];
+  /** Every `StepCompleted` that carried statistics, in step order. */
+  samples: Sample[];
   /** The `RunFailed` message, with its code when it has one. */
   failure: string | null;
   /** The `sequence` the next event must carry. */
   next: number;
 }
 
+/**
+ * The norms of one parameter over the sampled steps: of its values at every sample, and of its
+ * gradient at every sample that has one. The last step of a run makes no update and so has no
+ * gradient, and a parameter the loss does not read never has one.
+ */
+export interface ParameterSeries {
+  path: string;
+  value: Series;
+  gradient: Series;
+}
+
+/** The statistics of one sampled step, as the stream sent them. */
+export interface Sample {
+  step: number;
+  statistics: ParameterStatistics[];
+}
+
 export const LOSS = 'loss';
 
-/** The names that `chartName` gives one more ` (metric)`: `loss`, `loss (metric)`, ... */
-const RESERVED = /^loss( \(metric\))*$/;
+/**
+ * The names that `chartName` gives one more ` (metric)`: the name of the loss chart, `loss`, and
+ * of a parameter's norm charts, `<path> value norm` and `<path> gradient norm` (`parameter`), each
+ * followed by any number of ` (metric)`.
+ */
+const RESERVED = /^(loss|.* value norm|.* gradient norm)( \(metric\))*$/s;
 
 /**
  * The chart name of the metric `name`: the name itself, except that a name of the form `loss`,
- * `loss (metric)`, ... gets one more ` (metric)`. Metric names are distinct within a step
- * (`StepCompleted`), and the map is one-to-one and never gives `loss`, so the loss chart and every
- * metric chart have distinct names, and so distinct Vue keys and `svg[data-metric]` values.
+ * `<anything> value norm` or `<anything> gradient norm`, followed by any number of ` (metric)`,
+ * gets one more ` (metric)`. Metric names are distinct within a step (`StepCompleted`), and the
+ * map is one-to-one and never gives `loss` or a name ending in ` value norm` or ` gradient norm`,
+ * so the loss chart, every metric chart and every parameter norm chart have distinct names, and
+ * so distinct Vue keys and `svg[data-metric]` values.
  */
 export function chartName(name: string): string {
   return RESERVED.test(name) ? `${name} (metric)` : name;
@@ -55,9 +82,25 @@ export function emptyRun(): Run {
     startStep: null,
     loss: { name: LOSS, points: [] },
     metrics: [],
+    parameters: [],
+    samples: [],
     failure: null,
     next: 0,
   };
+}
+
+/** The series of the parameter `path`, added after the others the first time it is seen. */
+function parameter(run: Run, path: string): ParameterSeries {
+  let series = run.parameters.find((p) => p.path === path);
+  if (series === undefined) {
+    series = {
+      path,
+      value: { name: `${path} value norm`, points: [] },
+      gradient: { name: `${path} gradient norm`, points: [] },
+    };
+    run.parameters.push(series);
+  }
+  return series;
 }
 
 /**
@@ -102,6 +145,15 @@ export function apply(run: Run, event: RunEvent): boolean {
         }
         series.points.push({ step, value: sample.value });
       }
+      const statistics = body.value.parameters;
+      if (statistics.length > 0) {
+        run.samples.push({ step, statistics });
+        for (const entry of statistics) {
+          const series = parameter(run, entry.path);
+          const norms = entry.subject === 'Value' ? series.value : series.gradient;
+          norms.points.push({ step, value: entry.norm });
+        }
+      }
       break;
     }
     case 'RunFinished':
@@ -119,6 +171,15 @@ export function apply(run: Run, event: RunEvent): boolean {
 /** The series the page draws: the loss first, then every metric. */
 export function charts(run: Run): Series[] {
   return [run.loss, ...run.metrics];
+}
+
+/**
+ * The sample the histograms show: the one of `step` when that step was sampled, else the latest,
+ * or `null` before the first.
+ */
+export function sampleAt(run: Run, step: number | null): Sample | null {
+  const chosen = step === null ? undefined : run.samples.find((s) => s.step === step);
+  return chosen ?? run.samples.at(-1) ?? null;
 }
 
 /** Whether `event` ends its run's stream. */
