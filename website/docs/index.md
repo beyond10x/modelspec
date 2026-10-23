@@ -47,11 +47,15 @@ ModelSpec is in milestone M1 (GPU execution); the latest release is [0.5.0](http
 |---|---|
 | `modelspec check`: parse and check names, types and shapes | `compile`, `bench` |
 | `modelspec ir --stage tensor`, `--stage training` and `--stage kernel`: print the verified IR and the kernel plan | GPU inference, more than one device |
-| `modelspec train --backend cpu`: train on the CPU reference with seeded synthetic data or dense `f32` tensor files (`--data`) | the observatory UI, run recording and replay |
+| `modelspec train --backend cpu`: train on the CPU reference with seeded synthetic data or dense `f32` tensor files (`--data`) | |
 | `modelspec train --backend vulkan [--stats] [--profile]`: train on one Vulkan device with one host wait per run | modules, layers, generics, other dtypes and optimizers |
 | `modelspec train --checkpoint`, `--resume` and `modelspec infer --backend cpu`: checkpoints and CPU inference | |
 | `modelspec inspect-device --backend vulkan`: each device's profile and negotiation verdict | |
 | `modelspec train --serve <addr>`: stream the run as typed events over Server-Sent Events | |
+
+On `main`, not released yet: `train --record <path>` writes a run's events to a file,
+`modelspec observe <path>` replays it, and `--ui ui/dist` on either serves the observatory UI,
+which draws the loss and every metric per step in the browser.
 
 On the MNIST benchmark example, `train --backend vulkan` measured 27.282 µs per step on an RTX
 3090 (median of 5 runs of 144,000 steps, mean P0 clock 1957 to 1965 MHz); ADR-007's accuracy and

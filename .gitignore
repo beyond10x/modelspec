@@ -2,3 +2,5 @@ target/
 build/
 *.msckpt
 .engineering/drafts/
+ui/node_modules/
+ui/dist/

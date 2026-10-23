@@ -10,13 +10,18 @@
 //! `GET /events` sends every frame of the run at once, the same frames with the same `id:` lines
 //! as the live stream sent, and ends the response. The process serves until SIGINT, SIGTERM or
 //! SIGHUP and then exits 0; stdout is empty.
+//!
+//! `--ui <dir>` also serves the built observatory UI at `http://<addr>/` (`UiDirectory`;
+//! [`modelspec_observatory::Ui`]): the directory is read whole after the file and before the
+//! address is bound, one that cannot be served is refused on one line with exit 1, and
+//! `ui http://<bound address>/` follows the `serving` line on stderr.
 
 use std::io::Write;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::mpsc;
 
-use modelspec_observatory::{EVENTS_PATH, Server, read_recording};
+use modelspec_observatory::{EVENTS_PATH, Server, Ui, read_recording};
 
 /// Arguments of `modelspec observe`.
 #[derive(clap::Args)]
@@ -33,6 +38,10 @@ pub struct Args {
         value_parser = modelspec_observatory::parse_serve_address
     )]
     pub serve: SocketAddr,
+    /// Also serve the built observatory UI in DIR (ui/dist after `task ui`) at http://ADDR/; the
+    /// directory is read whole before ADDR is bound.
+    #[arg(long, value_name = "DIR")]
+    pub ui: Option<PathBuf>,
 }
 
 /// Runs `modelspec observe` and returns the process exit code.
@@ -45,12 +54,26 @@ pub fn run(args: Args, _stdout: &mut dyn Write, stderr: &mut dyn Write) -> u8 {
             return crate::EXIT_FAILURE;
         }
     };
+    let ui = match &args.ui {
+        None => None,
+        Some(dir) => match Ui::read(dir) {
+            Ok(ui) => Some(ui),
+            Err(error) => {
+                let _ = writeln!(
+                    stderr,
+                    "modelspec observe {file}: cannot serve the UI from {}: {error}",
+                    dir.display()
+                );
+                return crate::EXIT_FAILURE;
+            }
+        },
+    };
     let (send, interrupted) = mpsc::channel();
     let handled = ctrlc::set_handler(move || {
         let _ = send.send(());
     })
     .is_ok();
-    let server = match Server::replay(args.serve, &events) {
+    let server = match Server::replay_with_ui(args.serve, &events, ui) {
         Ok(server) => server,
         Err(error) => {
             let _ = writeln!(
@@ -66,6 +89,9 @@ pub fn run(args: Args, _stdout: &mut dyn Write, stderr: &mut dyn Write) -> u8 {
         "serving http://{}{EVENTS_PATH}",
         server.local_addr()
     );
+    if args.ui.is_some() {
+        let _ = writeln!(stderr, "ui http://{}/", server.local_addr());
+    }
     let _ = stderr.flush();
     if handled {
         let _ = interrupted.recv();

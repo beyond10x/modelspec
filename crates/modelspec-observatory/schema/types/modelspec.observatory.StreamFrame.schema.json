@@ -4,8 +4,8 @@
   "x-ess-provenance": {
     "system": "modelspec",
     "specification_version": "v1",
-    "source_digest": "928a8f16f6be23790b7548e59ca5270d32c3bc3ecbf0524e1b099b483eea8d30",
-    "contract_digest": "slice-sha256/2:197c62e6a0e3743df7ac8de7d4661d223c28d9825e01ea91eecfb1faad47c2d7",
+    "source_digest": "6ef7da18d5f014a4f006ad6ef17be88a7eabcb145bb9d31594ce5b3a089b4e23",
+    "contract_digest": "slice-sha256/2:cf0f4ae4c0d3e550af7648b0dff68c7593c45f6eb0a2ff2d6c3f6b4e9ca70410",
     "regenerate": "ess generate"
   },
   "$defs": {
@@ -24,7 +24,7 @@
     },
     "modelspec.observatory.StreamFrame": {
       "title": "StreamFrame",
-      "description": "One Server-Sent Events frame of the live stream (epic:training-observatory, In scope, first bullet; wave observatory-1 coordinator, 2026-10-21), the lines `event:`, `id:` and `data:` and a blank line. `GET /events` at the ServeAddress answers 200 with `Content-Type text/event-stream` and sends the run's events in sequence order from sequence 0, or from the one after a `Last-Event-ID` request header, then each new event as the run emits it, and closes the response after RunFinished or RunFailed; any other path answers 404. The process keeps serving after the run ends, so a client that connects late reads the whole stream; on SIGINT, SIGTERM or SIGHUP after the run ends it stops serving and exits with the run's own status, 0 for a run that finished and 1 for a run that failed, the code `modelspec train` gives without the flag (wave observatory-1 coordinator, 2026-10-21); a signal before the run ends stops the process as it stops a run without the flag. The run has ended once it has printed its last stdout line, or for a run that fails its failure on stderr, which come before RunFinished and RunFailed, so a signal sent after any of them gets the run's status (wave observatory-1 coordinator, 2026-10-22).",
+      "description": "One Server-Sent Events frame of the live stream (epic:training-observatory, In scope, first bullet; wave observatory-1 coordinator, 2026-10-21), the lines `event:`, `id:` and `data:` and a blank line. `GET /events` at the ServeAddress answers 200 with `Content-Type text/event-stream` and sends the run's events in sequence order from sequence 0, or from the one after a `Last-Event-ID` request header, then each new event as the run emits it, and closes the response after RunFinished or RunFailed; any other path answers 404, except the paths of the UiDirectory files when `--ui` is given. The process keeps serving after the run ends, so a client that connects late reads the whole stream; on SIGINT, SIGTERM or SIGHUP after the run ends it stops serving and exits with the run's own status, 0 for a run that finished and 1 for a run that failed, the code `modelspec train` gives without the flag (wave observatory-1 coordinator, 2026-10-21); a signal before the run ends stops the process as it stops a run without the flag. The run has ended once it has printed its last stdout line, or for a run that fails its failure on stderr, which come before RunFinished and RunFailed, so a signal sent after any of them gets the run's status (wave observatory-1 coordinator, 2026-10-22).",
       "x-ess-name": "modelspec.observatory.StreamFrame",
       "x-ess-kind": "struct",
       "type": "object",

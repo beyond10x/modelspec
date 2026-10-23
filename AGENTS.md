@@ -28,7 +28,10 @@ backends, and `infer <file> --backend cpu|vulkan --checkpoint <path>` runs a che
 program and loss, on Vulkan with one host wait; a CLI built without the `vulkan` feature refuses
 `--backend vulkan` with E-TARGET-001. `inspect-device --backend vulkan`
 prints each device's profile and negotiation verdict; the device tests run on a GPU only with
-`--ignored`. CI: `check.yml` runs `task ci`; `shared-gates.yml` runs the
+`--ignored`. `train --serve <addr>` streams a run's `RunEvent`s, `--record <path>` writes them to a
+file and `observe <path>` replays one; with `--ui ui/dist` either also serves the observatory UI at
+`/`, the Vue 3 + TypeScript app in `ui/` (Vite, pnpm) that draws the loss and every metric per step.
+CI: `check.yml` runs `task ci`; `shared-gates.yml` runs the
 common source gates; `pages.yml` and `b10x-docs-site.yml` build and publish the documentation site.
 
 ## Commands
@@ -64,12 +67,42 @@ Entry points are the `Taskfile.yml` tasks (go-task):
   a file the specification generates under `crates/modelspec-observatory/schema/` differs from it
   or is missing; an extra file there passes. `task schema-generate` rewrites them. A change to any file under `spec/` changes the schema's
   provenance digest, so run `task schema-generate` in the same change.
-- `task ci`: all of the above; the gate.
-- `task website`: `npm ci` and `npm run build` in `website/` (Node 22; nothing else uses Node).
+- `task ui-types-check`: `modelspec-ui-types --check`, which fails when
+  `ui/src/generated/observatory.ts` differs from the TypeScript the Rust types of
+  `crates/modelspec-observatory/src/event.rs` generate (`ts-rs`); `task ui-types` rewrites it.
+  Never edit `ui/src/generated/` by hand. The test `observatory_ui_types_in_sync` (in `task test`)
+  makes the same comparison.
+- `task ui`: in `ui/`, `pnpm install --frozen-lockfile`, `pnpm typecheck`, `pnpm test` (the
+  `node --test` cases of `src/lib/`) and `pnpm build` into `ui/dist/` (Node 22.18 or later, pnpm
+  11; `ui/node_modules/` and `ui/dist/` are never committed).
+- `task ui-browser`: `task ui`, then the `#[ignore]`d browser tests of
+  `crates/modelspec-cli/tests/observatory_ui.rs` with `--ignored`. They start Chrome or Chromium
+  headless through `headless_chrome`: the executable named by `CHROME`, else the first of
+  `google-chrome-stable`, `chromium`, `chromium-browser`, `chrome`, ... on `PATH`; `check.yml` sets
+  `CHROME`.
+- `task ci`: all of the above; the gate. `task ci` needs Node and pnpm for
+  `task ui` and a Chrome for `task ui-browser`; `task build` and `task test` need neither, and
+  `sh ui/scripts/build-without-node.sh` checks that with a `PATH` that holds no `node` or `pnpm`
+  (`task ci` does not run it).
+- `task website`: `npm ci` and `npm run build` in `website/` (Node 22). Node is used only here and
+  by `task ui`.
 - `task release-check TAG=<version>`: refuses unless the tag is a bare version, equals
   `[workspace.package] version` in `Cargo.toml`, and `CHANGELOG.md` has `## [<version>] - <date>`.
 
 CLI exit codes: 0 success, 1 diagnostics or runtime error, 2 usage error.
+
+## Observatory UI
+
+Two build decisions of story:observatory-ui-live-loss-chart:
+
+- The app lives in `ui/` at the repository root (Vue 3, TypeScript, Vite, pnpm; the workspace
+  precedent is uilab's `widget/`). `ui/src/generated/` is `modelspec-ui-types` output.
+- The server finds the built app at run time, not at compile time: `--ui <dir>` on
+  `train --serve` and on `observe` names the directory (`ui/dist` after `task ui`), which is read
+  whole into memory before the address is bound and served at `/` beside `/events`
+  (`spec/domains/observatory.yaml`, `UiDirectory`). Nothing embeds the app in the binary, so no
+  `build.rs` or cargo step calls Node or pnpm, and `task build` and `task test` keep working on a
+  machine without them. Without `--ui` only `/events` is served.
 
 ## Releases
 

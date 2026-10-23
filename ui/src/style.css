@@ -1,0 +1,127 @@
+:root {
+  color-scheme: light dark;
+  --fg: #1d2330;
+  --muted: #5b6475;
+  --bg: #f7f8fa;
+  --panel: #ffffff;
+  --rule: #d5d9e0;
+  --line: #2f6fdb;
+  --bad: #b3261e;
+  font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+  font-size: 15px;
+  color: var(--fg);
+  background: var(--bg);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --fg: #e4e7ec;
+    --muted: #9aa3b2;
+    --bg: #14171c;
+    --panel: #1c2027;
+    --rule: #343a45;
+    --line: #6aa0ff;
+    --bad: #ff8a80;
+  }
+}
+
+body {
+  margin: 0;
+}
+
+main {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 24px 16px 48px;
+}
+
+h1 {
+  font-size: 1.25rem;
+  margin: 0 0 4px;
+}
+
+.status {
+  display: flex;
+  gap: 12px;
+  margin: 0;
+  color: var(--muted);
+}
+
+.state {
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.state.failed,
+.interrupted,
+.failure {
+  color: var(--bad);
+}
+
+.run {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-family: ui-monospace, monospace;
+  font-size: 0.8rem;
+}
+
+.charts {
+  display: grid;
+  gap: 16px;
+  margin-top: 20px;
+}
+
+.chart {
+  margin: 0;
+  padding: 12px 12px 4px;
+  background: var(--panel);
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+}
+
+.chart figcaption {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.9rem;
+}
+
+.chart .name {
+  font-weight: 600;
+}
+
+.chart .last {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.chart svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.chart .axes line {
+  stroke: var(--rule);
+}
+
+.chart .axes text {
+  fill: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.chart .axes text.value {
+  text-anchor: end;
+  dominant-baseline: middle;
+}
+
+.chart .axes text.step.end {
+  text-anchor: end;
+}
+
+.chart path[data-line] {
+  fill: none;
+  stroke: var(--line);
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+}

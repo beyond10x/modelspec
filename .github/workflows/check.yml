@@ -68,6 +68,25 @@ jobs:
           toolchain: stable
           components: rustfmt, clippy
 
+      - name: Install Node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: "22"
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413
+        with:
+          version: 11.9.0
+          cache: true
+          cache_dependency_path: ui/pnpm-lock.yaml
+
+      - name: Find Chrome for the browser tests
+        run: |
+          set -euo pipefail
+          chrome=$(command -v google-chrome)
+          "$chrome" --version
+          echo "CHROME=$chrome" >> "$GITHUB_ENV"
+
       - name: Cache cargo
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
 

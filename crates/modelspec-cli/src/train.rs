@@ -66,6 +66,10 @@
 //! signal sent after that line or after `RunFinished` or `RunFailed` gets the run's status
 //! (coordinator, 2026-10-22). A signal before the run ends stops the process as it stops a run
 //! without the flag; a file that does not compile is reported and exits 1 without serving.
+//! `--ui <dir>` beside `--serve` also serves the built observatory UI at `http://<addr>/`
+//! (`UiDirectory`; [`modelspec_observatory::Ui`]): the directory is read whole before the address
+//! is bound, one that cannot be served is reported on one line and exits 1, and
+//! `ui http://<bound address>/` follows the `serving` line on stderr.
 //!
 //! `--record <path>`, with or without `--serve`, writes the same events to the file `<path>`,
 //! one JSON `RunEvent` per line in `sequence` order, each line the `data:` of its frame and
@@ -91,7 +95,7 @@ use modelspec_core::diag::{Code, Diagnostic};
 use modelspec_core::ir::tensor::ParamId;
 use modelspec_observatory::{
     EVENTS_PATH, EventSequence, Recorder, RunEventBody, RunFailed, RunStarted, Server,
-    StepCompleted, TrainingRunId,
+    StepCompleted, TrainingRunId, Ui,
 };
 use modelspec_runtime::cpu::HostTensor;
 use modelspec_runtime::train::checkpoint::{self, Checkpoint, CheckpointError};
@@ -124,6 +128,10 @@ pub struct Args {
     /// the events --serve streams; `modelspec observe PATH` replays it.
     #[arg(long, value_name = "PATH")]
     pub record: Option<PathBuf>,
+    /// With --serve, also serve the built observatory UI in DIR (ui/dist after `task ui`) at
+    /// http://ADDR/; the directory is read whole before ADDR is bound.
+    #[arg(long, value_name = "DIR", requires = "serve")]
+    pub ui: Option<PathBuf>,
     /// Train on the dense f32 files of DIR instead of synthetic data: NAME.f32 for the input and
     /// the target declaration NAME, row-major little-endian, and an optional order.u32 of sample
     /// indices.
@@ -378,12 +386,26 @@ pub fn run(args: Args, stdout: &mut dyn Write, stderr: &mut dyn Write) -> u8 {
             }
         }
     };
+    let ui = match &args.ui {
+        None => None,
+        Some(dir) => match Ui::read(dir) {
+            Ok(ui) => Some(ui),
+            Err(error) => {
+                let _ = writeln!(
+                    stderr,
+                    "modelspec train {file}: cannot serve the UI from {}: {error}",
+                    dir.display()
+                );
+                return crate::EXIT_FAILURE;
+            }
+        },
+    };
     let training_run_id = TrainingRunId::new();
     // The address is bound before the record file is created, so a refused `--serve` leaves a
     // file already at the `--record` path as it was.
     let server = match args.serve {
         None => None,
-        Some(address) => match Server::bind(address, training_run_id) {
+        Some(address) => match Server::bind_with_ui(address, training_run_id, ui) {
             Ok(server) => Some(server),
             Err(error) => {
                 let _ = writeln!(
@@ -414,6 +436,9 @@ pub fn run(args: Args, stdout: &mut dyn Write, stderr: &mut dyn Write) -> u8 {
             "serving http://{}{EVENTS_PATH}",
             server.local_addr()
         );
+        if args.ui.is_some() {
+            let _ = writeln!(stderr, "ui http://{}/", server.local_addr());
+        }
     }
     let _ = stderr.flush();
     let events = RefCell::new(Events {

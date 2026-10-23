@@ -53,6 +53,27 @@ tasks:
     cmds:
       - ess generate --kind schema --path . --out ../crates/modelspec-observatory --check
 
+  ui-types:
+    cmds:
+      - cargo run -q -p modelspec-observatory --bin modelspec-ui-types
+
+  ui-types-check:
+    cmds:
+      - cargo run -q -p modelspec-observatory --bin modelspec-ui-types -- --check
+
+  ui:
+    dir: ui
+    cmds:
+      - pnpm install --frozen-lockfile
+      - pnpm typecheck
+      - pnpm test
+      - pnpm build
+
+  ui-browser:
+    cmds:
+      - task: ui
+      - cargo test -p modelspec-cli --test observatory_ui -- --ignored
+
   website:
     dir: website
     cmds:
@@ -94,3 +115,5 @@ tasks:
       - task: docs-check
       - task: spec-validate
       - task: schema-check
+      - task: ui-types-check
+      - task: ui-browser

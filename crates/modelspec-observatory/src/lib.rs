@@ -12,10 +12,17 @@
 //! A [`Recorder`] writes a run's events to a recorded run file, one [`line`] each, the `data:` of
 //! its frame; [`read_recording`] reads one back, refusing a damaged file, and
 //! [`Server::replay`] serves it as the live stream was served.
+//!
+//! The observatory UI in `ui/` reads that stream in a browser. [`Ui::read`] reads its built
+//! directory, which [`Server::bind_with_ui`] and [`Server::replay_with_ui`] serve at `/` beside
+//! the stream; [`typescript`] is the TypeScript of the event types it parses the stream with,
+//! the file [`UI_TYPES_PATH`] that the `modelspec-ui-types` binary writes and checks.
 
 mod event;
 mod record;
 mod server;
+mod typescript;
+mod ui;
 
 pub use event::{
     EventSequence, Histogram, MetricSample, ParameterStatistics, RunEvent, RunEventBody,
@@ -24,3 +31,5 @@ pub use event::{
 };
 pub use record::{Recorder, RecordingError, line, parse_recording, read_recording};
 pub use server::{EVENTS_PATH, Server, frame, parse_serve_address};
+pub use typescript::{UI_TYPES_PATH, typescript};
+pub use ui::Ui;
