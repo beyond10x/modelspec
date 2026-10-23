@@ -1124,17 +1124,48 @@ mod tests {
         assert_eq!(descriptors(&plan), 39);
     }
 
-    /// A second write on one dispatch takes one more descriptor; barriers and copies take none.
+    /// The sets of the MNIST plan's dispatches, taken in plan order from a pool's room as the
+    /// arena binds them: the pool of 38 the runner made before refuses the last set by name,
+    /// the pool of [`descriptors`] holds them all.
     #[test]
-    fn a_two_write_step_takes_a_descriptor_per_write() {
-        let mut plan = vulkan_plan("fit.mspec", EXAMPLE);
-        let bound: usize = plan
+    fn a_pool_short_of_the_mnist_plan_refuses_its_last_set() {
+        use crate::vulkan::ExecError;
+        use crate::vulkan::dispatch::PoolRoom;
+
+        let plan = vulkan_plan(
+            "mnist_mlp.mspec",
+            include_str!("../../../../examples/mnist_mlp.mspec"),
+        );
+        let sets: Vec<usize> = plan
             .step
             .iter()
             .filter(|step| step.op == PlanOp::Dispatch)
             .map(|step| step.reads.len() + step.writes.len())
-            .sum();
-        assert_eq!(descriptors(&plan), bound);
+            .collect();
+        assert_eq!(sets.len(), 14);
+        let take_all = |room: &PoolRoom| sets.iter().try_for_each(|&needed| room.take(needed));
+
+        let short = PoolRoom::new(14, 38);
+        match take_all(&short) {
+            Err(ExecError::DescriptorPoolFull {
+                sets: 14,
+                descriptors: 38,
+                bound_sets: 13,
+                bound: 36,
+                needed: 3,
+            }) => {}
+            other => panic!("the pool of 38 refuses the 14th set of 3, got {other:?}"),
+        }
+        let sized = PoolRoom::new(14, count_u32(descriptors(&plan)).unwrap());
+        take_all(&sized).expect("the pool of 39 holds every set");
+    }
+
+    /// The 7 dispatches of `linear_regression` bind 19 views, each writing one; a second write on
+    /// one dispatch takes one more descriptor, and a copy takes none.
+    #[test]
+    fn a_two_write_step_takes_a_descriptor_per_write() {
+        let mut plan = vulkan_plan("fit.mspec", EXAMPLE);
+        assert_eq!(descriptors(&plan), 19);
         let at = plan
             .step
             .iter()
@@ -1142,7 +1173,7 @@ mod tests {
             .expect("a dispatch writes one view");
         let written = plan.step[at].writes[0];
         plan.step[at].writes.push(written);
-        assert_eq!(descriptors(&plan), bound + 1);
+        assert_eq!(descriptors(&plan), 20);
         let copy = PlanStep {
             op: PlanOp::Copy,
             kernel_module_id: None,
@@ -1153,7 +1184,7 @@ mod tests {
             value: None,
         };
         plan.step.push(copy);
-        assert_eq!(descriptors(&plan), bound + 1);
+        assert_eq!(descriptors(&plan), 20);
     }
 
     #[test]

@@ -10,9 +10,10 @@
 //! fences only the last ([`Chain::finish`]): a fence signals once every earlier submission to the
 //! queue has finished, so the one wait covers the whole chain. A [`DescriptorArena`] binds a
 //! dispatch's buffers once ([`DescriptorArena::bind`]) for a [`Bound`] dispatch that many
-//! recordings record ([`Recording::dispatch_bound`]). Each submission adds what it recorded to
-//! the device's counters: one submit, its dispatches, and the bytes of its copies from a staging
-//! buffer to a device-local one (uploaded) and back (downloaded).
+//! recordings record ([`Recording::dispatch_bound`]), and refuses a set past the sets or
+//! descriptors of its pool ([`ExecError::DescriptorPoolFull`]). Each submission adds what it
+//! recorded to the device's counters: one submit, its dispatches, and the bytes of its copies
+//! from a staging buffer to a device-local one (uploaded) and back (downloaded).
 
 use std::cell::Cell;
 use std::marker::PhantomData;
@@ -149,6 +150,52 @@ impl Drop for Chain<'_> {
 pub struct DescriptorArena<'d> {
     device: &'d Device<'d>,
     pool: vk::DescriptorPool,
+    room: PoolRoom,
+}
+
+/// The sets and storage-buffer descriptors a descriptor pool was made with, and how many of
+/// each its sets have taken. A set that does not fit is refused before the pool is asked, so an
+/// undersized pool fails on every driver, not only on one that accounts the pool exactly.
+#[derive(Debug)]
+pub(crate) struct PoolRoom {
+    sets: u32,
+    descriptors: u32,
+    bound_sets: Cell<u32>,
+    bound: Cell<u32>,
+}
+
+impl PoolRoom {
+    /// The room of a pool of `sets` sets and `descriptors` descriptors.
+    pub(crate) fn new(sets: u32, descriptors: u32) -> Self {
+        Self {
+            sets,
+            descriptors,
+            bound_sets: Cell::new(0),
+            bound: Cell::new(0),
+        }
+    }
+
+    /// Takes one set of `needed` descriptors, or refuses with [`ExecError::DescriptorPoolFull`]
+    /// and takes nothing.
+    pub(crate) fn take(&self, needed: usize) -> Result<(), ExecError> {
+        let (bound_sets, bound) = (self.bound_sets.get(), self.bound.get());
+        let fits = u32::try_from(needed)
+            .ok()
+            .and_then(|needed| bound.checked_add(needed))
+            .filter(|&taken| taken <= self.descriptors && bound_sets < self.sets);
+        let Some(taken) = fits else {
+            return Err(ExecError::DescriptorPoolFull {
+                sets: self.sets,
+                descriptors: self.descriptors,
+                bound_sets,
+                bound,
+                needed,
+            });
+        };
+        self.bound_sets.set(bound_sets + 1);
+        self.bound.set(taken);
+        Ok(())
+    }
 }
 
 impl Drop for DescriptorArena<'_> {
@@ -176,16 +223,21 @@ impl Device<'_> {
         sets: u32,
         descriptors: u32,
     ) -> Result<DescriptorArena<'d>, ExecError> {
+        let room = PoolRoom::new(sets.max(1), descriptors.max(1));
         let sizes = [vk::DescriptorPoolSize::default()
             .ty(vk::DescriptorType::STORAGE_BUFFER)
-            .descriptor_count(descriptors.max(1))];
+            .descriptor_count(room.descriptors)];
         let info = vk::DescriptorPoolCreateInfo::default()
-            .max_sets(sets.max(1))
+            .max_sets(room.sets)
             .pool_sizes(&sizes);
         // SAFETY: `info` outlives the call; the pool is destroyed by the arena's drop.
         let pool = unsafe { self.device.create_descriptor_pool(&info, None) }
             .map_err(ExecError::call("vkCreateDescriptorPool"))?;
-        Ok(DescriptorArena { device: self, pool })
+        Ok(DescriptorArena {
+            device: self,
+            pool,
+            room,
+        })
     }
 }
 
@@ -210,6 +262,7 @@ impl<'d> DescriptorArena<'d> {
             bindings.invocations,
             kernel.workgroups,
         )?;
+        self.room.take(buffers.len())?;
         let set = allocate_set(&self.device.device, self.pool, pipeline, buffers)?;
         Ok(Bound {
             pipeline,
@@ -780,5 +833,48 @@ impl Drop for Submitted<'_> {
         }
         // SAFETY: the fence is signalled or the device idle, so nothing waits on it.
         unsafe { self.commands.device.device.destroy_fence(self.fence, None) };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The refusal of `room` taking one more set of `needed`, its fields as one tuple.
+    fn refusal(room: &PoolRoom, needed: usize) -> (u32, u32, u32, u32, usize) {
+        match room.take(needed) {
+            Err(ExecError::DescriptorPoolFull {
+                sets,
+                descriptors,
+                bound_sets,
+                bound,
+                needed,
+            }) => (sets, descriptors, bound_sets, bound, needed),
+            other => panic!("a set of {needed} is refused, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_set_past_the_pools_descriptors_is_refused_by_name() {
+        let room = PoolRoom::new(4, 5);
+        room.take(2).expect("2 of 5 fit");
+        room.take(2).expect("4 of 5 fit");
+        assert_eq!(refusal(&room, 2), (4, 5, 2, 4, 2));
+        assert_eq!(
+            room.take(2).unwrap_err().to_string(),
+            "the descriptor pool holds 4 sets and 5 storage-buffer descriptors; 2 sets of 4 are \
+             bound, and one more set of 2 does not fit"
+        );
+        room.take(1)
+            .expect("the refused sets took nothing, so 5 of 5 fit");
+        assert_eq!(refusal(&room, 1), (4, 5, 3, 5, 1));
+    }
+
+    #[test]
+    fn a_set_past_the_pools_sets_is_refused_by_name() {
+        let room = PoolRoom::new(2, 100);
+        room.take(3).expect("the first set fits");
+        room.take(3).expect("the second set fits");
+        assert_eq!(refusal(&room, 0), (2, 100, 2, 6, 0));
     }
 }
