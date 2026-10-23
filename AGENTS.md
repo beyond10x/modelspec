@@ -115,6 +115,11 @@ workspace version and nothing is on a registry.
   any feature or target. Vulkan code sits behind the `vulkan` Cargo feature of `modelspec-runtime`
   (DESIGN.md § 7).
 - No Python, PyTorch, CUDA API or CUDA toolkit dependency, in code, tests or tooling.
+  Python is allowed only for opponents (the operator, 2026-10-23: "we never want to have any
+  1st-level python code in our repo, python is only allowed for opponents"). An opponent is a
+  competing implementation, such as a PyTorch CUDA baseline, that a benchmark runs ModelSpec
+  against. It lives under `opponents/`, and no build, test, gate or `task` target of ModelSpec
+  runs it or depends on it.
 - Correctness before speed: the CPU oracle and finite-difference gradient checks (DESIGN.md § 9,
   gates 1–3) exist before any GPU kernel is optimized.
 - The files in `examples/` are target syntax. Keep them in step with DESIGN.md § 2 until a parser

@@ -10,7 +10,7 @@ relations:
 - depends_on: epic:m1-vulkan-execution
 - depends_on: epic:bert-from-scratch
 - informed_by: epic:pytorch-10x-mnist
-revision: 2
+revision: 3
 ---
 # A transformer benchmark against PyTorch on CUDA
 
@@ -64,9 +64,10 @@ no second transformer.
 
 ## Out of scope
 
-- Any Python, PyTorch or CUDA in the repository (AGENTS.md:117). The PyTorch side, its data
-  export and its plots stay outside the repository, as for `verification-report:mnist-benchmark-cuda-baseline`;
-  the repository holds the ModelSpec side and the figures as verification reports.
+- Python, PyTorch or CUDA anywhere in ModelSpec itself (AGENTS.md § Rules). The PyTorch
+  opponent may live under `opponents/` (operator, 2026-10-23: "python is only allowed for
+  opponents"). No ModelSpec build, test, gate or `task` target runs it. The figures arrive as
+  verification reports.
 - A speed gate. This epic measures and publishes; a gate like ADR-007 is a later decision.
 - Mixed precision, `f16` and tensor cores (DESIGN.md § 1 row M4). PyTorch runs `f32` with TF32 off,
   as in the MNIST baseline.

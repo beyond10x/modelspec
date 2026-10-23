@@ -10,7 +10,7 @@ relations:
 - depends_on: epic:m1-vulkan-execution
 - informed_by: verification-report:mnist-benchmark-0-1-1
 - informed_by: verification-report:mnist-benchmark-cuda-baseline
-revision: 2
+revision: 3
 ---
 # 10× PyTorch on the MNIST benchmark example
 
@@ -52,9 +52,10 @@ elementwise operators into the matmul kernels (DESIGN.md § 0 invariant 2, § 1 
 ## Measurement
 
 - Baseline: PyTorch eager on the RTX 3090 (CUDA), same initialization and shuffle order, with
-  `torch.compile` reported beside it. The PyTorch side, the data preparation and the plots stay
-  outside the repository (AGENTS.md: no Python or PyTorch in code, tests or tooling); the
-  repository holds a Rust benchmark target and the figures as verification reports.
+  `torch.compile` reported beside it. The PyTorch opponent may live under `opponents/`; no
+  ModelSpec build, test, gate or `task` target runs it (AGENTS.md § Rules; operator, 2026-10-23:
+  "python is only allowed for opponents"). ModelSpec's side is a Rust benchmark target, and the
+  figures arrive as verification reports.
 - Timing as in the 0.1.1 benchmark: the training loop including minibatch assembly, excluding
   setup, compilation, a 20-step warmup, evaluation and IO; 3 repeats, median.
 - The gate is the median ratio against PyTorch eager, CUDA, on the RTX 3090 at ≥ 10. The ratio
@@ -81,5 +82,5 @@ the baseline above, with its revision bumped.
 ## Out of scope
 
 - Comparing different devices (ModelSpec on the GPU against PyTorch on the CPU) as the 10× claim.
-- Python, PyTorch or CUDA inside the repository.
+- Python, PyTorch or CUDA in ModelSpec itself; an opponent under `opponents/` is the only exception.
 - A claim about other models before this example passes.
