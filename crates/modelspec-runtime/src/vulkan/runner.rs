@@ -62,7 +62,7 @@ use super::{Device, ExecError, Vulkan};
 use crate::cpu::HostTensor;
 use crate::spirv::emit::{EmitError, emit_kernels};
 use crate::train::checkpoint::CheckpointError;
-use crate::train::data::synthetic;
+use crate::train::data::{SyntheticData, synthetic};
 use crate::train::init::{Stream, initialize};
 use crate::train::optimizer::ParamState;
 use crate::train::runner::{Diverged, Run, RunError, non_finite};
@@ -188,6 +188,10 @@ pub struct RunOptions<'c> {
     pub init: BTreeMap<ParamId, HostTensor<f32>>,
     /// The checkpoints to write on the way.
     pub checkpoints: Option<Checkpoints<'c>>,
+    /// The batch and teacher to train on instead of the synthetic data the run makes itself:
+    /// what [`synthetic`] made for the same training block, kept by a caller that runs it more
+    /// than once. A batch the plan does not match is refused with [`VulkanRunError::Plan`].
+    pub data: Option<SyntheticData>,
 }
 
 /// The forward program on the device ([`infer`]).
@@ -437,6 +441,7 @@ fn execute(
         start,
         init,
         checkpoints,
+        data,
     } = options;
     let end = start
         .checked_add(steps)
@@ -444,7 +449,10 @@ fn execute(
     let mut initial = initialize(&forward.program, config.seed, Stream::Init)
         .map_err(|error| refused(error.into()))?;
     initial.extend(init);
-    let data = synthetic(config, forward).map_err(|error| refused(error.into()))?;
+    let data = match data {
+        Some(data) => data,
+        None => synthetic(config, forward).map_err(|error| refused(error.into()))?,
+    };
     let (every, mut write) = match checkpoints {
         Some(Checkpoints { every, write }) if every > 0 => (every, Some(write)),
         _ => (0, None),
