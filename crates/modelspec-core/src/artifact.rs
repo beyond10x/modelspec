@@ -19,8 +19,10 @@
 //! manifest is a regular file, readable and of a known format version ([`E_ARTIFACT_001`]);
 //! every module file is a regular file no longer than its entry says and `kernels/` holds no
 //! other entry ([`E_ARTIFACT_004`]); each module's hash and then `artifact_hash` and
-//! `artifact_id` ([`E_ARTIFACT_002`]); then every byte size computed from a shape or element
-//! count fits in 64 bits, the invariants of `spec/domains/artifact.yaml`, every Dispatch names a
+//! `artifact_id` ([`E_ARTIFACT_002`]); then each plan has at most [`MAX_PLAN_STEPS`] steps,
+//! [`MAX_PLAN_DEPENDENCIES`] dependencies and [`MAX_PLAN_VIEWS`] step views, every byte size
+//! computed from a shape or element count fits in 64 bits, the invariants of
+//! `spec/domains/artifact.yaml`, every Dispatch names a
 //! module the artifact owns, every module is SPIR-V, and the plan verifier ([`verify_plan`])
 //! ([`E_ARTIFACT_003`]).
 
@@ -189,8 +191,10 @@ pub const E_ARTIFACT_001: Code = Code::new("E-ARTIFACT-001");
 pub const E_ARTIFACT_002: Code = Code::new("E-ARTIFACT-002");
 
 /// The artifact is sealed but breaks an invariant of `spec/domains/artifact.yaml` or the plan
-/// verifier: a byte size that does not fit in 64 bits, a buffer larger than 4294967295 bytes, a
-/// kernel module that is not SPIR-V (whole little-endian words, a 5-word header, the magic number
+/// verifier: a plan of more than 4096 steps ([`MAX_PLAN_STEPS`]), 65536 dependencies
+/// ([`MAX_PLAN_DEPENDENCIES`]) or 65536 step views ([`MAX_PLAN_VIEWS`]), refused before any other
+/// check of this code, a byte size that does not fit in 64 bits, a buffer larger than 4294967295 bytes, a kernel
+/// module that is not SPIR-V (whole little-endian words, a 5-word header, the magic number
 /// 0x07230203), a Dispatch naming a module the artifact does not own, a dependency on a step that
 /// is not before it, a view outside its buffer, or any other execution-plan rule.
 pub const E_ARTIFACT_003: Code = Code::new("E-ARTIFACT-003");
@@ -212,6 +216,20 @@ pub const KERNELS_DIR: &str = "kernels";
 
 /// The largest `artifact.json` [`read`] parses.
 pub const MAX_MANIFEST_BYTES: u64 = 64 << 20;
+
+/// The most steps [`read`] accepts in the step plan, and in the forward plan. The plan verifier
+/// ([`verify_plan`]) keeps, for each step, the steps it is ordered after as a bit set, so its
+/// memory grows with the square of the steps; at this limit two such sets take 4 MiB. The
+/// largest plan an example compiles to, the MNIST step plan, has 22 steps.
+pub const MAX_PLAN_STEPS: usize = 4096;
+
+/// The most dependencies, summed over its steps, [`read`] accepts in each plan. The verifier
+/// merges one bit set per dependency.
+pub const MAX_PLAN_DEPENDENCIES: usize = 65_536;
+
+/// The most step views, the reads and writes summed over its steps, [`read`] accepts in each
+/// plan. The verifier merges one bit set per view.
+pub const MAX_PLAN_VIEWS: usize = 65_536;
 
 /// `modelspec.artifact.KernelCacheKey`: what a module was built under (DESIGN.md § 5.3).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1147,9 +1165,10 @@ impl Manifest {
         self.artifact_hash = hash.0;
     }
 
-    /// The artifact, after the byte-size, invariant and module-ownership checks of
+    /// The artifact, after the plan-size, byte-size, invariant and module-ownership checks of
     /// [`E_ARTIFACT_003`] that come before the plan verifier.
     fn check(&self) -> Result<CompiledArtifact, String> {
+        self.check_plan_sizes()?;
         self.check_byte_sizes()?;
         self.check_invariants()?;
         let kernels = self
@@ -1221,6 +1240,28 @@ impl Manifest {
                 prediction_view: BufferView::from(&self.prediction_view),
             },
         })
+    }
+
+    /// Each plan has at most [`MAX_PLAN_STEPS`] steps, [`MAX_PLAN_DEPENDENCIES`] dependencies
+    /// and [`MAX_PLAN_VIEWS`] step views, so that the plan verifier's work is bounded.
+    fn check_plan_sizes(&self) -> Result<(), String> {
+        for (name, steps) in [("plan", &self.plan), ("forward_plan", &self.forward_plan)] {
+            let dependencies = steps.iter().map(|s| s.depends_on.len()).sum();
+            let views = steps.iter().map(|s| s.reads.len() + s.writes.len()).sum();
+            let sizes = [
+                ("steps", steps.len(), MAX_PLAN_STEPS),
+                ("dependencies", dependencies, MAX_PLAN_DEPENDENCIES),
+                ("views", views, MAX_PLAN_VIEWS),
+            ];
+            for (what, count, limit) in sizes {
+                if count > limit {
+                    return Err(format!(
+                        "{name} has at most {limit} {what} (it has {count})"
+                    ));
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Every byte size computed from a shape or an element count fits in 64 bits.
