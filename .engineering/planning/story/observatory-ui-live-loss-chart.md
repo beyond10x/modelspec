@@ -2,7 +2,7 @@
 format: aep.planning-md/3
 id: story:observatory-ui-live-loss-chart
 kind: story
-status: draft
+status: active
 title: 'Observatory UI: live loss and metric charts in Vue, types generated from Rust'
 summary: A Vue 3 + TypeScript + Vite + pnpm UI served by the Rust server draws loss and metric curves live and from a replay; its server types are generated from Rust and drift-checked.
 relations:
@@ -10,7 +10,55 @@ relations:
 - serves: vision:modelspec
 - depends_on: story:observatory-live-event-stream
 - depends_on: story:observatory-run-recording-replay
-revision: 3
+scope:
+- confidence: cited
+  path: .github/workflows/check.yml
+- confidence: inferred
+  path: .gitignore
+- confidence: cited
+  path: AGENTS.md
+- confidence: cited
+  path: CHANGELOG.md
+- confidence: inferred
+  path: Cargo.lock
+- confidence: inferred
+  path: Cargo.toml
+- confidence: cited
+  path: README.md
+- confidence: cited
+  path: Taskfile.yml
+- confidence: inferred
+  path: crates/modelspec-cli/Cargo.toml
+- confidence: cited
+  path: crates/modelspec-cli/src/train.rs
+- confidence: inferred
+  path: crates/modelspec-cli/tests/
+- confidence: cited
+  path: crates/modelspec-cli/tests/fixtures
+- confidence: cited
+  path: crates/modelspec-observatory/
+- confidence: inferred
+  path: crates/modelspec-observatory/.ess-output/state.json
+- confidence: inferred
+  path: crates/modelspec-observatory/schema/
+- confidence: inferred
+  path: crates/modelspec-observatory/src/event.rs
+- confidence: cited
+  path: crates/modelspec-observatory/src/server.rs
+- confidence: cited
+  path: spec/domains/observatory.yaml
+- confidence: cited
+  path: ui/
+- confidence: cited
+  path: website/docs/index.md
+- confidence: inferred
+  path: website/docs/reference/cli.md
+- confidence: inferred
+  path: website/docs/reference/crates.md
+revision: 27
+transitions:
+- {from: "draft", to: "proposed", at: "2026-10-23T08:16:30Z", actor: "human:timo", revision: 4, decided_on: {"recorded":{"review_outcome":3}}}
+- {from: "proposed", to: "active", at: "2026-10-23T08:16:30Z", actor: "human:timo", revision: 5, decided_on: {"recorded":{"review_outcome":3}}}
 ---
 # Observatory UI: live loss and metric charts in Vue, types generated from Rust
 

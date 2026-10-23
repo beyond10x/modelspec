@@ -2,12 +2,34 @@
 format: aep.planning-md/3
 id: story:plan-verifier-bounded-on-untrusted-artifact
 kind: story
-status: draft
+status: active
 title: The plan verifier stays bounded on an untrusted artifact
 relations:
 - decomposes: epic:m1-vulkan-execution
 - serves: vision:modelspec
-revision: 1
+scope:
+- confidence: cited
+  path: CHANGELOG.md
+- confidence: cited
+  path: DESIGN.md
+- confidence: inferred
+  path: crates/modelspec-cli/tests/compile_adversary.rs
+- confidence: cited
+  path: crates/modelspec-core/src/artifact.rs
+- confidence: cited
+  path: crates/modelspec-core/src/ir/verify.rs
+- confidence: inferred
+  path: crates/modelspec-core/tests/adversary_artifact_reader.rs
+- confidence: inferred
+  path: crates/modelspec-core/tests/adversary_kplan_verifier.rs
+- confidence: inferred
+  path: crates/modelspec-core/tests/kernel_plan_adversary.rs
+- confidence: inferred
+  path: spec/domains/artifact.yaml
+revision: 12
+transitions:
+- {from: "draft", to: "proposed", at: "2026-10-23T08:16:29Z", actor: "human:timo", revision: 2}
+- {from: "proposed", to: "active", at: "2026-10-23T08:16:29Z", actor: "human:timo", revision: 3}
 ---
 # The plan verifier stays bounded on an untrusted artifact
 

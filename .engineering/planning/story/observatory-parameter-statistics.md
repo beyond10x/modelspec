@@ -2,14 +2,48 @@
 format: aep.planning-md/3
 id: story:observatory-parameter-statistics
 kind: story
-status: draft
+status: active
 title: 'Parameter and gradient statistics per step: norms and histograms'
 summary: StepCompleted carries per-parameter value and gradient norms and histograms from the CPU step, drawn in the UI; settles the histogram, norm and sampling markers.
 relations:
 - decomposes: epic:training-observatory
 - serves: vision:modelspec
 - depends_on: story:observatory-ui-live-loss-chart
-revision: 4
+scope:
+- confidence: cited
+  path: CHANGELOG.md
+- confidence: inferred
+  path: crates/modelspec-cli/src/train.rs
+- confidence: inferred
+  path: crates/modelspec-cli/tests/fixtures/linear_regression.run.jsonl
+- confidence: inferred
+  path: crates/modelspec-cli/tests/observatory_record.rs
+- confidence: inferred
+  path: crates/modelspec-cli/tests/observatory_stream.rs
+- confidence: cited
+  path: crates/modelspec-observatory/
+- confidence: inferred
+  path: crates/modelspec-observatory/.ess-output/state.json
+- confidence: cited
+  path: crates/modelspec-observatory/schema/
+- confidence: inferred
+  path: crates/modelspec-runtime/benches/mnist_shape.rs
+- confidence: cited
+  path: crates/modelspec-runtime/src/train/optimizer.rs
+- confidence: cited
+  path: crates/modelspec-runtime/src/train/runner.rs
+- confidence: inferred
+  path: crates/modelspec-runtime/tests/checkpoint.rs
+- confidence: cited
+  path: spec/domains/observatory.yaml
+- confidence: cited
+  path: ui/
+- confidence: cited
+  path: ui/src/generated/
+revision: 21
+transitions:
+- {from: "draft", to: "proposed", at: "2026-10-23T08:16:30Z", actor: "human:timo", revision: 5, decided_on: {"recorded":{"review_outcome":2}}}
+- {from: "proposed", to: "active", at: "2026-10-23T08:16:31Z", actor: "human:timo", revision: 6, decided_on: {"recorded":{"review_outcome":2}}}
 ---
 # Parameter and gradient statistics per step: norms and histograms
 

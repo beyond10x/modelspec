@@ -2,12 +2,40 @@
 format: aep.planning-md/3
 id: story:m1-f-weight-grad-matmul-columns
 kind: story
-status: draft
+status: active
 title: 'Weight-gradient matmul at most 4.0 µs: several output columns per invocation'
 relations:
 - decomposes: epic:pytorch-10x-mnist
 - serves: vision:modelspec
-revision: 1
+scope:
+- confidence: cited
+  path: CHANGELOG.md
+- confidence: cited
+  path: DESIGN.md
+- confidence: inferred
+  path: crates/modelspec-cli/tests/golden/mnist_mlp.kernel.ir
+- confidence: inferred
+  path: crates/modelspec-core/src/artifact.rs
+- confidence: cited
+  path: crates/modelspec-core/src/ir/kernel.rs
+- confidence: inferred
+  path: crates/modelspec-core/tests/adversary_kernel_two_row.rs
+- confidence: inferred
+  path: crates/modelspec-core/tests/kernel_plan.rs
+- confidence: cited
+  path: crates/modelspec-runtime/src/spirv/emit.rs
+- confidence: inferred
+  path: crates/modelspec-runtime/src/vulkan/dispatch.rs
+- confidence: inferred
+  path: crates/modelspec-runtime/tests/adversary3_vulkan_matmul_tiled.rs
+- confidence: inferred
+  path: crates/modelspec-runtime/tests/vulkan_matmul_tiled.rs
+- confidence: inferred
+  path: website/docs/guides/inspect-a-run.md
+revision: 15
+transitions:
+- {from: "draft", to: "proposed", at: "2026-10-23T08:16:30Z", actor: "human:timo", revision: 2}
+- {from: "proposed", to: "active", at: "2026-10-23T08:16:30Z", actor: "human:timo", revision: 3}
 ---
 # Weight-gradient matmul at most 4.0 µs: several output columns per invocation
 
