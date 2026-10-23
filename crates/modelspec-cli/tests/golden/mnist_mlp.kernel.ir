@@ -21,18 +21,18 @@ param @MnistMlp.w1: Tensor<f32, [784, 64]> views b2[f32 x 50176, bytes 0..200704
 param @MnistMlp.w2: Tensor<f32, [64, 10]> views b3[f32 x 640, bytes 0..2560, align 4]
 loss b7[f32 x 1, bytes 0..4, align 4]
 prediction b6[f32 x 1000, bytes 0..4000, align 4]
-kernel k0 5666286c-c7a4-86c5-ba60-e9812c8b6812 matmul MatMul f32 (Tensor<f32, [100, 784]>, Tensor<f32, [784, 64]>) -> Tensor<f32, [100, 64]> epilogue Relu writes pre-activation workgroup_size 128 workgroups [52, 1, 1]
-kernel k1 4695d3c9-f7bc-8553-ad4b-8bda5f9af8bf matmul MatMul f32 (Tensor<f32, [100, 64]>, Tensor<f32, [64, 10]>) -> Tensor<f32, [100, 10]> workgroup_size 128 workgroups [13, 1, 1]
+kernel k0 ecca4089-63a1-8ae9-868c-1a08decd036d matmul MatMul f32 (Tensor<f32, [100, 784]>, Tensor<f32, [784, 64]>) -> Tensor<f32, [100, 64]> epilogue Relu writes pre-activation workgroup_size 128 workgroups [52, 1, 1] tile workgroup_size 128 cols 16 rows 1 depth 64 ahead 6 buffers 2
+kernel k1 00a652b2-efba-84ba-99a0-ab965096b910 matmul MatMul f32 (Tensor<f32, [100, 64]>, Tensor<f32, [64, 10]>) -> Tensor<f32, [100, 10]> workgroup_size 128 workgroups [13, 1, 1] tile workgroup_size 128 cols 16 rows 1 depth 64 ahead 6 buffers 1
 kernel k2 d588cbc2-b3eb-8bf1-93a1-29d8680aba58 loss_sum Mse f32 (Tensor<f32, [100, 10]>, Tensor<f32, [100, 10]>) -> Tensor<f32, []> workgroup_size 64 workgroups [1, 1, 1]
 kernel k3 2e1ec459-43bd-81d2-b9db-fa0f7fe3ae74 elementwise Sub f32 (Tensor<f32, [100, 10]>, Tensor<f32, [100, 10]>) -> Tensor<f32, [100, 10]> workgroup_size 64 workgroups [16, 1, 1]
 kernel k4 3e9bd9e4-7689-8b30-9582-05282d19167c elementwise Mul f32 (Tensor<f32, [100, 10]>, 0.002) -> Tensor<f32, [100, 10]> workgroup_size 64 workgroups [16, 1, 1]
 kernel k5 00cb6768-fb04-8fde-a136-7b324efe8fbc transpose Transpose f32 (Tensor<f32, [64, 10]>) -> Tensor<f32, [10, 64]> workgroup_size 64 workgroups [10, 1, 1]
-kernel k6 b9c2711f-8443-864a-86ef-f7493dde3311 matmul MatMul f32 (Tensor<f32, [100, 10]>, Tensor<f32, [10, 64]>) -> Tensor<f32, [100, 64]> workgroup_size 128 workgroups [52, 1, 1]
+kernel k6 781f88a2-e90a-8494-8ebd-b46bede8b3ea matmul MatMul f32 (Tensor<f32, [100, 10]>, Tensor<f32, [10, 64]>) -> Tensor<f32, [100, 64]> workgroup_size 128 workgroups [52, 1, 1] tile workgroup_size 128 cols 16 rows 1 depth 10 ahead 6 buffers 1
 kernel k7 4ab19294-379e-8a14-b7ee-a9d23e2520e2 transpose Transpose f32 (Tensor<f32, [100, 64]>) -> Tensor<f32, [64, 100]> workgroup_size 64 workgroups [100, 1, 1]
-kernel k8 f3113772-7e08-8d28-87c3-ca25c60a15d4 matmul MatMul f32 (Tensor<f32, [64, 100]>, Tensor<f32, [100, 10]>) -> Tensor<f32, [64, 10]> workgroup_size 128 workgroups [8, 1, 1]
+kernel k8 88914743-2fe6-8086-8432-75c855f4ac12 matmul MatMul f32 (Tensor<f32, [64, 100]>, Tensor<f32, [100, 10]>) -> Tensor<f32, [64, 10]> workgroup_size 128 workgroups [8, 1, 1] tile workgroup_size 128 cols 16 rows 1 depth 64 ahead 6 buffers 2
 kernel k9 ae896a79-8d47-8bca-807a-453bc394ae43 elementwise ReluGrad f32 (Tensor<f32, [100, 64]>, Tensor<f32, [100, 64]>) -> Tensor<f32, [100, 64]> workgroup_size 64 workgroups [100, 1, 1]
 kernel k10 cbd56b2b-4530-8c59-8969-a9eed9bc2f0c transpose Transpose f32 (Tensor<f32, [100, 784]>) -> Tensor<f32, [784, 100]> workgroup_size 64 workgroups [1225, 1, 1]
-kernel k11 d7d3124e-f2f6-83d4-a63c-166b318a5713 matmul MatMul f32 (Tensor<f32, [784, 100]>, Tensor<f32, [100, 64]>) -> Tensor<f32, [784, 64]> workgroup_size 128 workgroups [196, 1, 1]
+kernel k11 73027c05-b462-8722-968d-e4181ae7e1f1 matmul MatMul f32 (Tensor<f32, [784, 100]>, Tensor<f32, [100, 64]>) -> Tensor<f32, [784, 64]> workgroup_size 128 workgroups [196, 1, 1] tile workgroup_size 128 cols 16 rows 2 depth 16 ahead 2 buffers 2
 kernel k12 88daaa23-8dc9-8bc4-ab05-dc5ecc946d99 sgd_update Sub f32 (Tensor<f32, [784, 64]>, 0.1, Tensor<f32, [784, 64]>) -> Tensor<f32, [784, 64]> workgroup_size 64 workgroups [784, 1, 1]
 kernel k13 f509ed52-1817-8bb7-91f5-a998f93b9005 sgd_update Sub f32 (Tensor<f32, [64, 10]>, 0.1, Tensor<f32, [64, 10]>) -> Tensor<f32, [64, 10]> workgroup_size 64 workgroups [10, 1, 1]
 plan step

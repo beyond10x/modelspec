@@ -252,6 +252,27 @@ impl MatMulTile {
     }
 }
 
+/// Every parameter of the tile, so that a matmul's [`Kernel::signature`] and module id change
+/// with the module its tile emits. The destructuring is exhaustive: a new field does not compile
+/// until it is printed.
+impl fmt::Display for MatMulTile {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let MatMulTile {
+            workgroup_size,
+            cols,
+            rows,
+            depth,
+            ahead,
+            buffers,
+        } = *self;
+        write!(
+            f,
+            "tile workgroup_size {workgroup_size} cols {cols} rows {rows} depth {depth} \
+             ahead {ahead} buffers {buffers}"
+        )
+    }
+}
+
 impl fmt::Display for KernelKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
@@ -355,8 +376,19 @@ impl Kernel {
         (k == k2).then_some((m, k, n))
     }
 
-    /// The text the module id is derived from: every field but the id.
+    /// The text the module id is derived from: every field but the id, and a matmul's
+    /// [`MatMulTile`], so that a module the tile changes gets a new id.
     pub fn signature(&self) -> String {
+        let tile = match self.kind {
+            KernelKind::MatMul => {
+                Kernel::matmul_shape(&self.operands).map(|(m, k, n)| MatMulTile::of(m, k, n))
+            }
+            _ => None,
+        };
+        self.signature_with(tile)
+    }
+
+    fn signature_with(&self, tile: Option<MatMulTile>) -> String {
         let mut text = format!("{} {} {} (", self.kind, self.op, self.dtype);
         for (i, operand) in self.operands.iter().enumerate() {
             if i > 0 {
@@ -376,6 +408,9 @@ impl Kernel {
             " workgroup_size {} workgroups [{x}, {y}, {z}]",
             self.workgroup_size
         ));
+        if let Some(tile) = tile {
+            text.push_str(&format!(" {tile}"));
+        }
         text
     }
 
@@ -417,5 +452,144 @@ impl ExecutionPlan {
     /// The kernel with module id `id`.
     pub fn kernel(&self, id: KernelModuleId) -> Option<&Kernel> {
         self.kernels.iter().find(|k| k.id == id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The `[100, 784] x [784, 64]` matmul of the MNIST example, with the tile it runs.
+    fn mnist_matmul() -> (Kernel, MatMulTile) {
+        let tile = MatMulTile::of(100, 784, 64);
+        let kernel = Kernel {
+            id: KernelModuleId([0; 16]),
+            kind: KernelKind::MatMul,
+            op: "MatMul",
+            dtype: DType::F32,
+            operands: vec![
+                Operand::Buffer(TensorType::f32(&[100, 784])),
+                Operand::Buffer(TensorType::f32(&[784, 64])),
+            ],
+            result: TensorType::f32(&[100, 64]),
+            reduces: None,
+            epilogue: None,
+            workgroup_size: tile.workgroup_size,
+            workgroups: [tile.workgroups(100, 64) as u32, 1, 1],
+        };
+        (kernel, tile)
+    }
+
+    #[test]
+    fn a_matmul_signature_is_that_of_the_tile_its_shape_runs() {
+        let (kernel, tile) = mnist_matmul();
+        assert_eq!(kernel.signature(), kernel.signature_with(Some(tile)));
+        assert!(
+            kernel.signature().ends_with(&format!(" {tile}")),
+            "{}",
+            kernel.signature()
+        );
+    }
+
+    #[test]
+    fn two_matmuls_differing_only_in_tile_depth_or_ahead_have_different_signatures() {
+        let (kernel, tile) = mnist_matmul();
+        let deeper = MatMulTile {
+            depth: tile.depth * 2,
+            ..tile
+        };
+        let further = MatMulTile {
+            ahead: tile.ahead + 1,
+            ..tile
+        };
+        let base = kernel.signature_with(Some(tile));
+        assert_ne!(base, kernel.signature_with(Some(deeper)), "depth: {base}");
+        assert_ne!(base, kernel.signature_with(Some(further)), "ahead: {base}");
+        assert_ne!(
+            Kernel::module_id(&base),
+            Kernel::module_id(&kernel.signature_with(Some(deeper)))
+        );
+        assert_ne!(
+            Kernel::module_id(&base),
+            Kernel::module_id(&kernel.signature_with(Some(further)))
+        );
+    }
+
+    /// Exhaustive: a field added to [`MatMulTile`] does not compile here until it has a variant
+    /// below, and the variant fails until the field is in the signature.
+    #[test]
+    fn every_matmul_tile_field_changes_the_signature() {
+        let (kernel, tile) = mnist_matmul();
+        let MatMulTile {
+            workgroup_size,
+            cols,
+            rows,
+            depth,
+            ahead,
+            buffers,
+        } = tile;
+        let variants = [
+            (
+                "workgroup_size",
+                MatMulTile {
+                    workgroup_size: workgroup_size * 2,
+                    ..tile
+                },
+            ),
+            (
+                "cols",
+                MatMulTile {
+                    cols: cols * 2,
+                    ..tile
+                },
+            ),
+            (
+                "rows",
+                MatMulTile {
+                    rows: rows + 1,
+                    ..tile
+                },
+            ),
+            (
+                "depth",
+                MatMulTile {
+                    depth: depth + 1,
+                    ..tile
+                },
+            ),
+            (
+                "ahead",
+                MatMulTile {
+                    ahead: ahead + 1,
+                    ..tile
+                },
+            ),
+            (
+                "buffers",
+                MatMulTile {
+                    buffers: buffers + 1,
+                    ..tile
+                },
+            ),
+        ];
+        let base = kernel.signature_with(Some(tile));
+        for (field, variant) in variants {
+            assert_ne!(
+                base,
+                kernel.signature_with(Some(variant)),
+                "{field}: {base}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_kernel_other_than_a_matmul_has_no_tile_in_its_signature() {
+        let (mut kernel, _) = mnist_matmul();
+        kernel.kind = KernelKind::Transpose;
+        assert!(
+            !kernel.signature().contains(" tile "),
+            "{}",
+            kernel.signature()
+        );
     }
 }

@@ -23,6 +23,7 @@ history.
 
 - `modelspec train --backend cpu` stops at the first step whose loss or updated parameter is NaN or ±inf and exits 1 with `E-TRAIN-001` naming the step and the loss or parameter, instead of printing a diverged run and exiting 0; stdout ends with that step's `step <k> loss <v>` line and has no `param` lines, and `--serve` ends with that step's event (its loss `null` when the loss is the non-finite value), then `RunFailed` (DESIGN.md § 8) (story:train-refuses-non-finite-loss)
 - A checkpoint is written to `<path>.tmp`, synced and renamed over `<path>`, so a write that fails part-way (a full disk, a file-size limit, a kill) keeps the checkpoint it would replace, including the `--resume` source when `--checkpoint` names the same file.
+- A matmul kernel's `Kernel::signature`, and so its module id, ends with its `MatMulTile` (`tile workgroup_size … cols … rows … depth … ahead … buffers …`), so two matmuls that differ only in tile depth or ahead no longer print the same id in `modelspec ir --stage kernel` and `train --profile`; every matmul id changes, the SPIR-V and the bits do not (story:kernel-signature-covers-matmul-tile)
 
 ## [0.5.0] - 2026-10-23
 
