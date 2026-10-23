@@ -29,6 +29,7 @@ Generated from the clap definition of the `modelspec` command line in [`crates/m
 | [`modelspec infer`](#modelspec-infer) | Run the forward program of a `.mspec` model with the parameters of a checkpoint |
 | [`modelspec inspect-device`](#modelspec-inspect-device) | Print the profile and negotiation verdict of each Vulkan physical device |
 | [`modelspec ir`](#modelspec-ir) | Print the IR of a `.mspec` file at a stage |
+| [`modelspec observe`](#modelspec-observe) | Replay a recorded run file over the event stream of `train --serve` |
 | [`modelspec train`](#modelspec-train) | Train a `.mspec` model |
 
 ## `modelspec check`
@@ -90,6 +91,19 @@ Every argument is required and has no default.
 | `<PATH>` | The .mspec file to lower. |
 | `--stage <STAGE>` | The IR level to print. One of:<br/>`tensor`: Tensor IR after lowering and dead-code elimination<br/>`training`: Training IR: the Tensor IR with its reverse pass and SGD step attached<br/>`kernel`: Kernel IR: the kernels of the training step, its step plan and its forward plan |
 
+## `modelspec observe`
+
+Replay a recorded run file over the event stream of `train --serve`
+
+```text
+Usage: modelspec observe [OPTIONS] <PATH>
+```
+
+| Argument | Required | Default | Meaning |
+|---|---|---|---|
+| `<PATH>` | yes | none | The recorded run file to replay, as `modelspec train --record` writes it. |
+| `--serve <ADDR>` | no | `127.0.0.1:0` | Serve the replay as text/event-stream at path /events of ADDR, a loopback address such as 127.0.0.1:8080 or localhost:8080 (port 0 picks a free one); the process serves until SIGINT, SIGTERM or SIGHUP, then exits 0. |
+
 ## `modelspec train`
 
 Train a `.mspec` model
@@ -103,6 +117,7 @@ Usage: modelspec train [OPTIONS] --backend <BACKEND> <PATH>
 | `<PATH>` | yes | none | The .mspec file to train. |
 | `--backend <BACKEND>` | yes | none | The backend that runs the training step. One of:<br/>`cpu`: The CPU interpreter<br/>`vulkan`: Vulkan compute on one device: `train` only, in a build with the vulkan feature |
 | `--serve <ADDR>` | no | none | Stream the run's events as text/event-stream at path /events of ADDR, a loopback address such as 127.0.0.1:8080 or localhost:8080 (port 0 picks a free one); the process keeps serving after the run until SIGINT, SIGTERM or SIGHUP, then exits with the run's status. |
+| `--record <PATH>` | no | none | Record the run's events to the file PATH, one JSON RunEvent per line in sequence order, the events --serve streams; `modelspec observe PATH` replays it. |
 | `--data <DIR>` | no | none | Train on the dense f32 files of DIR instead of synthetic data: NAME.f32 for the input and the target declaration NAME, row-major little-endian, and an optional order.u32 of sample indices. |
 | `--init <DIR>` | no | none | Start each parameter that has a file DIR/P.f32, P its path without the model name, from that file instead of its initializer. |
 | `--eval <DIR>` | no | none | After the last step, run the forward program over every sample of DIR, laid out as for --data, and print `eval loss=<mean loss> accuracy=<fraction>`. |

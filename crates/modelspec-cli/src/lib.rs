@@ -8,6 +8,7 @@ pub mod check;
 pub mod infer;
 pub mod inspect_device;
 pub mod ir;
+pub mod observe;
 pub mod train;
 
 use std::io::Write;
@@ -45,6 +46,8 @@ pub enum Command {
     InspectDevice(inspect_device::Args),
     /// Print the IR of a `.mspec` file at a stage.
     Ir(ir::Args),
+    /// Replay a recorded run file over the event stream of `train --serve`.
+    Observe(observe::Args),
     /// Train a `.mspec` model.
     Train(train::Args),
 }
@@ -77,6 +80,7 @@ pub fn dispatch(command: Command, stdout: &mut dyn Write, stderr: &mut dyn Write
         Command::Infer(args) => infer::run(args, stdout, stderr),
         Command::InspectDevice(args) => inspect_device::run(args, stdout, stderr),
         Command::Ir(args) => ir::run(args, stdout, stderr),
+        Command::Observe(args) => observe::run(args, stdout, stderr),
         Command::Train(args) => train::run(args, stdout, stderr),
     }
 }

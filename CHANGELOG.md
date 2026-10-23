@@ -9,6 +9,10 @@ history.
 
 ## [Unreleased]
 
+### Added
+
+- `modelspec train --record <path>` writes the run's events to a recorded run file, one JSON `RunEvent` per line in `sequence` order (`modelspec_observatory::Recorder`), and `modelspec observe <path> [--serve <addr>]` replays it as the `text/event-stream` of `--serve`, the same frames and `id:` lines, refusing a truncated file, a `sequence` gap or two `training_run_id` values on one line with exit 1 before serving (`spec/domains/observatory.yaml`, `RecordedRunFile`) (story:observatory-run-recording-replay)
+
 ### Changed
 
 - A two-row `MatMulTile` reads tiles of up to 16 values of `k` 2 tiles ahead (`modelspec_core::ir::kernel::MATMUL_TWO_ROW_TILE`) instead of 32 read 6 ahead, with the same bits; the weight-gradient matmul of the MNIST example falls from 4.91 to 4.58 µs and the MNIST step from 27.50 to 27.14 µs on an RTX 3090 (medians of 3 profiled and 5 timed runs of 144,000 steps) (DESIGN.md § 5.2) (story:m1-f-weight-grad-matmul-tiled)

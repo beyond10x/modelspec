@@ -65,19 +65,30 @@
 //! signal sent after that line or after `RunFinished` or `RunFailed` gets the run's status
 //! (coordinator, 2026-10-22). A signal before the run ends stops the process as it stops a run
 //! without the flag; a file that does not compile is reported and exits 1 without serving.
+//!
+//! `--record <path>`, with or without `--serve`, writes the same events to the file `<path>`,
+//! one JSON `RunEvent` per line in `sequence` order, each line the `data:` of its frame and
+//! written before a client of `--serve` reads it (`spec/domains/observatory.yaml`,
+//! `RecordedRunFile`; [`modelspec_observatory::Recorder`]); `modelspec observe <path>` replays it
+//! ([`crate::observe`]). The file is created once the file compiles, before anything is served
+//! or run; one that cannot be created is reported on one line and exits 1. A run whose events
+//! cannot all be written reports that on one line on stderr and exits 1; a run that finished
+//! then ends its stream with `RunFailed` instead of `RunFinished`.
 
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::io::Write;
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 
 use modelspec_core::compile::{self, CompiledTraining};
 use modelspec_core::diag::{Code, Diagnostic};
 use modelspec_core::ir::tensor::ParamId;
 use modelspec_observatory::{
-    EVENTS_PATH, RunEventBody, RunFailed, RunStarted, Server, StepCompleted, TrainingRunId,
+    EVENTS_PATH, EventSequence, Recorder, RunEventBody, RunFailed, RunStarted, Server,
+    StepCompleted, TrainingRunId,
 };
 use modelspec_runtime::cpu::HostTensor;
 use modelspec_runtime::train::checkpoint::{self, Checkpoint, CheckpointError};
@@ -106,6 +117,10 @@ pub struct Args {
     /// serving after the run until SIGINT, SIGTERM or SIGHUP, then exits with the run's status.
     #[arg(long, value_name = "ADDR", value_parser = modelspec_observatory::parse_serve_address)]
     pub serve: Option<SocketAddr>,
+    /// Record the run's events to the file PATH, one JSON RunEvent per line in sequence order,
+    /// the events --serve streams; `modelspec observe PATH` replays it.
+    #[arg(long, value_name = "PATH")]
+    pub record: Option<PathBuf>,
     /// Train on the dense f32 files of DIR instead of synthetic data: NAME.f32 for the input and
     /// the target declaration NAME, row-major little-endian, and an optional order.u32 of sample
     /// indices.
@@ -182,6 +197,15 @@ enum Engine {
         /// With `--profile`, the time the file and its artifact took to compile.
         profile: Option<std::time::Duration>,
     },
+}
+
+/// The events of a run: numbered once, then written to the `--record` file and sent to the
+/// `--serve` clients, in that order.
+struct Events {
+    sequence: EventSequence,
+    recorder: Option<Recorder>,
+    /// The first error writing the `--record` file; no event is written after it.
+    record_error: Option<std::io::Error>,
 }
 
 /// Why a run produced no stdout: a diagnostic printed as it is, or a failure on one line.
@@ -353,9 +377,24 @@ pub fn run(args: Args, stdout: &mut dyn Write, stderr: &mut dyn Write) -> u8 {
             }
         }
     };
+    let recorder = match &args.record {
+        None => None,
+        Some(path) => match Recorder::create(path) {
+            Ok(recorder) => Some(recorder),
+            Err(error) => {
+                let _ = writeln!(
+                    stderr,
+                    "modelspec train {file}: cannot record to {}: {error}",
+                    path.display()
+                );
+                return crate::EXIT_FAILURE;
+            }
+        },
+    };
+    let training_run_id = TrainingRunId::new();
     let server = match args.serve {
         None => None,
-        Some(address) => match Server::bind(address, TrainingRunId::new()) {
+        Some(address) => match Server::bind(address, training_run_id) {
             Ok(server) => {
                 let _ = writeln!(
                     stderr,
@@ -369,15 +408,35 @@ pub fn run(args: Args, stdout: &mut dyn Write, stderr: &mut dyn Write) -> u8 {
                     stderr,
                     "modelspec train {file}: cannot serve on {address}: {error}"
                 );
+                if let Some(path) = &args.record {
+                    let _ = std::fs::remove_file(path);
+                }
                 return crate::EXIT_FAILURE;
             }
         },
     };
     let _ = stderr.flush();
+    let events = RefCell::new(Events {
+        sequence: EventSequence::new(training_run_id),
+        recorder,
+        record_error: None,
+    });
     let emit = |body: RunEventBody| {
-        if let Some(server) = &server {
-            server.emit(body);
+        let events = &mut *events.borrow_mut();
+        let event = events.sequence.event(body);
+        if let (Some(recorder), None) = (&mut events.recorder, &events.record_error) {
+            events.record_error = recorder.write(&event).err();
         }
+        if let Some(server) = &server {
+            server.publish(&event);
+        }
+    };
+    let record_failure = |stderr: &mut dyn Write| {
+        let error = events.borrow_mut().record_error.take()?;
+        let path = args.record.as_deref().unwrap_or_else(|| Path::new(""));
+        let message = format!("cannot record to {}: {error}", path.display());
+        let _ = writeln!(stderr, "modelspec train {file}: {message}");
+        Some(message)
     };
     let files = Files {
         data: args.data,
@@ -407,12 +466,23 @@ pub fn run(args: Args, stdout: &mut dyn Write, stderr: &mut dyn Write) -> u8 {
         stderr,
     );
     let _ = stderr.flush();
-    let (code, last) = match outcome {
+    let outcome = match (outcome, record_failure(stderr)) {
+        (Ok(()), Some(message)) => Err(RunFailed {
+            code: None,
+            message,
+        }),
+        (outcome, _) => outcome,
+    };
+    let (mut code, last) = match outcome {
         Ok(()) => (crate::EXIT_SUCCESS, RunEventBody::RunFinished),
         Err(failed) => (crate::EXIT_FAILURE, RunEventBody::RunFailed(failed)),
     };
     let interrupted = handler.flatten();
     emit(last);
+    if record_failure(stderr).is_some() {
+        code = crate::EXIT_FAILURE;
+    }
+    let _ = stderr.flush();
     match (server, interrupted) {
         (Some(_server), Some(interrupted)) => {
             let _ = interrupted.recv();
