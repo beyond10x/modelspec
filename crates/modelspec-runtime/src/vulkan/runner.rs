@@ -24,8 +24,9 @@
 //! [`crate::train::runner::E_TRAIN_001`]), without a read-back or host wait of its own: after the
 //! last wait every loss and the final parameters, and at each checkpoint the losses since the
 //! last stop, copied into the checkpoint's read-back, and its parameters, before the checkpoint is
-//! written. The first non-finite value stops the run with [`RunError::NonFinite`] and the CPU
-//! run's diagnostic, the losses kept through the failing step's. A parameter that goes non-finite
+//! written. The first non-finite value stops the run with [`VulkanRunError::NonFinite`] and the
+//! CPU run's diagnostic, the losses kept through the failing step's, and the [`RunStats`] and
+//! [`Profile`] of the steps the device ran ([`DivergedOnDevice`]). A parameter that goes non-finite
 //! between two read-backs while its step's loss is finite is named at the first later loss it
 //! makes non-finite, or at the read-back, not at its own step ([`diverged`]). [`infer`] does not
 //! check.
@@ -124,6 +125,9 @@ pub enum VulkanRunError {
     /// the run would end past step `u64::MAX`, or a checkpoint could not be written.
     #[error(transparent)]
     Run(Box<RunError>),
+    /// A loss or a parameter the device read back is not finite (E-TRAIN-001).
+    #[error("{}", .0.diverged.diagnostic)]
+    NonFinite(Box<DivergedOnDevice>),
     /// A kernel of the plan has no SPIR-V module.
     #[error(transparent)]
     Emit(#[from] EmitError),
@@ -133,6 +137,20 @@ pub enum VulkanRunError {
     /// The plan is not one this runner executes.
     #[error("the execution plan cannot run on the device: {0}")]
     Plan(String),
+}
+
+/// A device run that E-TRAIN-001 stopped: the CPU run's diagnostic and the run through the
+/// failing step, with the counters of what the device ran up to the read-back that showed it and,
+/// when profiled, the profile of those steps, as a finished run returns them (DESIGN.md § 8).
+#[derive(Debug)]
+pub struct DivergedOnDevice {
+    /// The diagnostic and the run through the failing step.
+    pub diverged: Diverged,
+    /// What the device ran: the steps through the stop whose read-back showed the value.
+    pub stats: RunStats,
+    /// The profile of those steps; without a final loss evaluation when a checkpoint stop
+    /// showed the value.
+    pub profile: Option<Profile>,
 }
 
 /// Why `modelspec train --backend vulkan` or `infer --backend vulkan` did not run.
@@ -583,6 +601,54 @@ fn execute(
     let mut dispatches_per_step = 0;
     let mut first_submit: Option<Instant> = None;
     let loss = buffer(&buffers, &plan.loss_view)?;
+    // The counters of the first `ran` steps, from the first submit to the last wait.
+    let count = |ran: u64, dispatches_per_step: u64, first_submit: Option<Instant>| RunStats {
+        steps: ran,
+        host_waits: device.host_waits() - waits_before,
+        submits: device.submits() - submits_before,
+        dispatches: device.dispatches() - dispatches_before,
+        dispatches_per_step,
+        bytes_uploaded: device.bytes_uploaded() - uploaded_before,
+        bytes_downloaded: device.bytes_downloaded() - downloaded_before,
+        class,
+        elapsed: first_submit
+            .expect("a run submits at least one command buffer")
+            .elapsed(),
+    };
+    // The profile of the first `ran` steps, when `profiled`. `stopped` is `None` for the whole
+    // run, every pool written and the final loss evaluation last; for a run stopped at a
+    // checkpoint it is the chunk the last step recorded into and the queries written in its pool,
+    // the pools after it unwritten and no final loss evaluation recorded.
+    let profile_of = |ran: u64, stopped: Option<(usize, u32)>| {
+        if !profiled {
+            return Ok(None);
+        }
+        let timings = match clock {
+            Some(clock) => {
+                let mut stamps = Vec::new();
+                let full = stopped.map_or(pools.len(), |(chunk, _)| chunk);
+                for pool in &pools[..full] {
+                    stamps.extend(pool.read()?);
+                }
+                if let Some((chunk, written)) = stopped
+                    && let Some(pool) = pools.get(chunk)
+                {
+                    stamps.extend(pool.read_first(written)?);
+                }
+                let finals: &[Site] = if stopped.is_none() { &final_sites } else { &[] };
+                Some(
+                    timings(&step_sites, finals, ran, &stamps, clock)
+                        .map_err(VulkanRunError::Plan)?,
+                )
+            }
+            None => None,
+        };
+        Ok::<_, VulkanRunError>(Some(Profile {
+            timings,
+            pipeline_creation,
+            compile: emitted,
+        }))
+    };
     // The chunk the next step records into and its next timestamp query, across the command
     // buffers a checkpoint ends.
     let mut chunk = 0;
@@ -702,52 +768,19 @@ fn execute(
                     state: state_of(compiled, values, start + stop),
                     teacher: data.teacher,
                 };
-                return Err(refused(RunError::NonFinite(Box::new(Diverged {
-                    diagnostic,
-                    run,
-                }))));
+                return Err(VulkanRunError::NonFinite(Box::new(DivergedOnDevice {
+                    diverged: Diverged { diagnostic, run },
+                    stats: count(stop, dispatches_per_step, first_submit),
+                    profile: profile_of(stop, Some((chunk, next_query)))?,
+                })));
             }
             write(start + stop, &values).map_err(|error| refused(error.into()))?;
         }
         last_from = from;
         from = stop;
     }
-    let started = first_submit.expect("a run submits at least one command buffer");
-    let elapsed = started.elapsed();
-    let stats = RunStats {
-        steps,
-        host_waits: device.host_waits() - waits_before,
-        submits: device.submits() - submits_before,
-        dispatches: device.dispatches() - dispatches_before,
-        dispatches_per_step,
-        bytes_uploaded: device.bytes_uploaded() - uploaded_before,
-        bytes_downloaded: device.bytes_downloaded() - downloaded_before,
-        class,
-        elapsed,
-    };
-
-    let profiled = if profiled {
-        let timings = match clock {
-            Some(clock) => {
-                let mut stamps = Vec::new();
-                for pool in &pools {
-                    stamps.extend(pool.read()?);
-                }
-                Some(
-                    timings(&step_sites, &final_sites, steps, &stamps, clock)
-                        .map_err(VulkanRunError::Plan)?,
-                )
-            }
-            None => None,
-        };
-        Some(Profile {
-            timings,
-            pipeline_creation,
-            compile: emitted,
-        })
-    } else {
-        None
-    };
+    let stats = count(steps, dispatches_per_step, first_submit);
+    let profiled = profile_of(steps, None)?;
 
     let read = download.read_f32()?;
     let values = parameters(plan, &initial, &read)?;
@@ -764,10 +797,11 @@ fn execute(
             state: state_of(compiled, values, end),
             teacher: data.teacher,
         };
-        return Err(refused(RunError::NonFinite(Box::new(Diverged {
-            diagnostic,
-            run,
-        }))));
+        return Err(VulkanRunError::NonFinite(Box::new(DivergedOnDevice {
+            diverged: Diverged { diagnostic, run },
+            stats,
+            profile: profiled,
+        })));
     }
     let prediction = if predict {
         let at = at + loss_slots as usize;

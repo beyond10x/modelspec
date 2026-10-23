@@ -147,6 +147,59 @@ fn a_divergent_run_writes_the_checkpoints_the_cpu_writes() {
     );
 }
 
+/// DESIGN.md § 8: `--stats` and `--profile` print the run's counters on stderr after it, and a
+/// refused run is a run. The `lr = 100.0` fixture with `--checkpoint-every 4` stops after step 12
+/// (above): the counters follow the E-TRAIN-001 line and count what the device ran, 12 steps and
+/// 3 host waits, and the profile times the step plan's sites over those 12 steps, without the
+/// final loss evaluation the stopped run never recorded.
+#[test]
+#[ignore = "needs a Vulkan device"]
+fn a_run_refused_at_a_checkpoint_stop_prints_the_counters_of_what_it_ran() {
+    let path = with_lr("lr100-every-stats.mspec", "100.0");
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join("train_vulkan_non_finite")
+        .join("every-stats");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("the temp dir is writable");
+    let run = dir.join("run.msckpt").display().to_string();
+    let output = train(
+        &path,
+        "vulkan",
+        &[
+            "--checkpoint",
+            &run,
+            "--checkpoint-every",
+            "4",
+            "--stats",
+            "--profile",
+        ],
+    );
+    let stderr = text(&output.stderr);
+    assert_eq!(output.status.code(), Some(1), "{stderr}");
+    assert!(
+        stderr.starts_with("E-TRAIN-001: the loss of step 8 is not finite"),
+        "{stderr}"
+    );
+    let lines: Vec<&str> = stderr.lines().collect();
+    for expected in ["steps: 12", "host waits: 3", "profile host_waits 3"] {
+        assert!(lines.contains(&expected), "no `{expected}` line:\n{stderr}");
+    }
+    if !lines.contains(&"profile kernel timings unavailable: no timestamp queries") {
+        let sites: Vec<&str> = lines
+            .iter()
+            .copied()
+            .filter(|line| line.starts_with("profile dispatch "))
+            .collect();
+        assert!(!sites.is_empty(), "no `profile dispatch` line:\n{stderr}");
+        for site in sites {
+            assert!(
+                site.starts_with("profile dispatch step ") && site.contains(" calls 12 "),
+                "{site}:\n{stderr}"
+            );
+        }
+    }
+}
+
 /// Starts `modelspec train <path> --backend <backend> --serve 127.0.0.1:0`, reads the whole
 /// `/events` stream once the `serving` line names the address, then kills the process. Returns
 /// each event's JSON `data`.

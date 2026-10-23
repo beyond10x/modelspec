@@ -20,7 +20,9 @@
 //! failing step's, no `param` lines, stderr has one [`runner::E_TRAIN_001`] diagnostic, and it
 //! exits 1. A Vulkan run checks every loss and the parameters where it reads them back, after
 //! the last step and at each checkpoint, so a parameter that goes non-finite while the loss of
-//! its step is finite is named at the first later step whose loss or read-back shows it.
+//! its step is finite is named at the first later step whose loss or read-back shows it. Its
+//! `--stats` and `--profile` lines follow the diagnostic and count the steps the device ran,
+//! through the read-back that showed the value.
 //!
 //! `--backend vulkan` compiles the file's execution plan for Vulkan and trains on device 0, or
 //! on the device `--device <index>` names, in the loader's enumeration order
@@ -215,8 +217,10 @@ struct Events {
 enum Failure {
     Refused(Diagnostic),
     Failed(String),
-    /// E-TRAIN-001: the run up to its failing step goes to stdout, then the diagnostic.
-    Diverged(Box<Diverged>),
+    /// E-TRAIN-001: the run up to its failing step goes to stdout, then the diagnostic to
+    /// stderr, followed by what a device run prints after it: its `--stats` and `--profile`
+    /// lines, empty on the CPU.
+    Diverged(Box<Diverged>, String),
 }
 
 impl From<RunError> for Failure {
@@ -226,7 +230,7 @@ impl From<RunError> for Failure {
             | RunError::Checkpoint(CheckpointError::Refused(diagnostic)) => {
                 Failure::Refused(diagnostic)
             }
-            RunError::NonFinite(diverged) => Failure::Diverged(diverged),
+            RunError::NonFinite(diverged) => Failure::Diverged(diverged, String::new()),
             error => Failure::Failed(error.to_string()),
         }
     }
@@ -549,8 +553,22 @@ fn train(
             profile,
         } = engine
         {
+            use modelspec_runtime::vulkan::profile::Profile;
             use modelspec_runtime::vulkan::runner::{
-                Checkpoints, DeviceRunError, RunOptions, VulkanRunError, train_on_device_from,
+                Checkpoints, DeviceRunError, DivergedOnDevice, RunOptions, RunStats,
+                VulkanRunError, train_on_device_from,
+            };
+            // The `--stats` lines, then the `--profile` lines, of what the device ran.
+            let counters = |counted: &RunStats, profiled: Option<Profile>| {
+                let mut out = String::new();
+                if *stats {
+                    out.push_str(&counted.to_string());
+                }
+                if let (Some(mut profiled), Some(compiling)) = (profiled, *profile) {
+                    profiled.compile += compiling;
+                    out.push_str(&profiled.report(counted));
+                }
+                out
             };
             let mut write = |k: u64, values: &BTreeMap<ParamId, HostTensor<f32>>| match files
                 .every_path(k)
@@ -581,13 +599,7 @@ fn train(
                     for (k, &loss) in (run.start_step..).zip(&run.losses) {
                         observe(k, loss);
                     }
-                    if *stats {
-                        let _ = write!(stderr, "{counted}");
-                    }
-                    if let (Some(mut profiled), Some(compiling)) = (profiled, *profile) {
-                        profiled.compile += compiling;
-                        let _ = write!(stderr, "{}", profiled.report(&counted));
-                    }
+                    let _ = write!(stderr, "{}", counters(&counted, profiled));
                     let end = run.start_step + counted.steps;
                     match &files.checkpoint {
                         Some(path) => checkpoint::write(
@@ -600,17 +612,24 @@ fn train(
                     }
                 }
                 Err(DeviceRunError::Refused(diagnostic)) => Err(Failure::Refused(diagnostic)),
-                Err(DeviceRunError::Failed(VulkanRunError::Run(error))) => {
+                Err(DeviceRunError::Failed(VulkanRunError::NonFinite(stopped))) => {
                     // A diverged device run streams the losses it read back, through the
-                    // failing step's, as the CPU run streams them while it runs.
-                    if let RunError::NonFinite(diverged) = &*error {
-                        let run = &diverged.run;
-                        for (k, &loss) in (run.start_step..).zip(&run.losses) {
-                            observe(k, loss);
-                        }
+                    // failing step's, as the CPU run streams them while it runs, and prints
+                    // its counters after the diagnostic.
+                    let DivergedOnDevice {
+                        diverged,
+                        stats: counted,
+                        profile: profiled,
+                    } = *stopped;
+                    for (k, &loss) in (diverged.run.start_step..).zip(&diverged.run.losses) {
+                        observe(k, loss);
                     }
-                    Err((*error).into())
+                    Err(Failure::Diverged(
+                        Box::new(diverged),
+                        counters(&counted, profiled),
+                    ))
                 }
+                Err(DeviceRunError::Failed(VulkanRunError::Run(error))) => Err((*error).into()),
                 Err(DeviceRunError::Failed(error)) => Err(Failure::Failed(error.to_string())),
             };
         }
@@ -665,13 +684,14 @@ fn train(
                 message: diagnostic.message.clone(),
             });
         }
-        Err(Failure::Diverged(diverged)) => {
+        Err(Failure::Diverged(diverged, counters)) => {
             let Diverged { diagnostic, run } = *diverged;
             let _ = stdout
                 .write_all(report(compiled, &run, None, false).as_bytes())
                 .and_then(|()| stdout.flush());
             end();
             let _ = writeln!(stderr, "{diagnostic}");
+            let _ = write!(stderr, "{counters}");
             return Err(RunFailed {
                 code: Some(diagnostic.code.to_string()),
                 message: diagnostic.message.clone(),
