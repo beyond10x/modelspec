@@ -1130,7 +1130,7 @@ mod tests {
     #[test]
     fn a_pool_short_of_the_mnist_plan_refuses_its_last_set() {
         use crate::vulkan::ExecError;
-        use crate::vulkan::dispatch::PoolRoom;
+        use crate::vulkan::pool::{PoolRoom, admit};
 
         let plan = vulkan_plan(
             "mnist_mlp.mspec",
@@ -1143,7 +1143,10 @@ mod tests {
             .map(|step| step.reads.len() + step.writes.len())
             .collect();
         assert_eq!(sets.len(), 14);
-        let take_all = |room: &PoolRoom| sets.iter().try_for_each(|&needed| room.take(needed));
+        let take_all = |room: &PoolRoom| {
+            sets.iter()
+                .try_for_each(|&needed| admit(room, needed).map(drop))
+        };
 
         let short = PoolRoom::new(14, 38);
         match take_all(&short) {

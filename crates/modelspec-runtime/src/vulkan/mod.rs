@@ -25,6 +25,7 @@ mod enabled;
 pub mod memory;
 pub mod negotiate;
 pub mod pipeline;
+mod pool;
 mod probe;
 pub mod profile;
 pub mod runner;
