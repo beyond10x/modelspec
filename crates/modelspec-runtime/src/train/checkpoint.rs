@@ -22,7 +22,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::Path;
 
 use modelspec_core::artifact::{ContentHash, schema_hash};
@@ -586,7 +586,8 @@ fn uuid_of(hash: &[u8; 32]) -> String {
 }
 
 /// Writes `checkpoint` to `path`; a parameter of more than [`MAX_RANK`] dimensions, which
-/// [`read`] would refuse, is not written.
+/// [`read`] would refuse, is not written. The bytes go to `<path>.tmp` beside it, are synced and
+/// then renamed over `path`, so a write that fails part-way leaves the earlier file at `path`.
 pub fn write(path: &Path, checkpoint: &Checkpoint) -> Result<(), CheckpointError> {
     if let Some(p) = checkpoint
         .parameters
@@ -602,10 +603,24 @@ pub fn write(path: &Path, checkpoint: &Checkpoint) -> Result<(), CheckpointError
             ),
         });
     }
-    std::fs::write(path, checkpoint.encode()).map_err(|error| CheckpointError::Write {
+    let failed = |error: std::io::Error| CheckpointError::Write {
         path: path.display().to_string(),
         message: error.to_string(),
-    })
+    };
+    let mut staged = path.as_os_str().to_owned();
+    staged.push(".tmp");
+    let staged = std::path::PathBuf::from(staged);
+    let written = File::create(&staged)
+        .and_then(|mut file| {
+            file.write_all(&checkpoint.encode())?;
+            file.sync_all()
+        })
+        .and_then(|()| std::fs::rename(&staged, path));
+    if let Err(error) = written {
+        let _ = std::fs::remove_file(&staged);
+        return Err(failed(error));
+    }
+    Ok(())
 }
 
 /// Reads and validates the checkpoint at `path`, as the module documents.
