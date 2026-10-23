@@ -1,0 +1,15 @@
+{
+  "at": "2026-10-23T11:44:54Z",
+  "actor": "human:timo",
+  "artifact": "story:plan-verifier-bounded-on-untrusted-artifact",
+  "kind": "story",
+  "revision": 12,
+  "change": {
+    "change": "evidence",
+    "kind": "review_outcome",
+    "source": "round 2 fix 6887662: findings A and B fixed, note E left",
+    "reference": "6887662",
+    "review": "review-result:security-plan-verifier-bounded-on-untrusted-artifact-pass-1",
+    "outcome": "fixed"
+  }
+}

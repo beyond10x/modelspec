@@ -1,0 +1,13 @@
+{
+  "at": "2026-10-23T11:44:54Z",
+  "actor": "human:timo",
+  "artifact": "story:plan-verifier-bounded-on-untrusted-artifact",
+  "kind": "story",
+  "revision": 12,
+  "change": {
+    "change": "evidence",
+    "kind": "test_result",
+    "source": "task ci on impl/plan-verifier-bounded-on-untrusted-artifact: 1343 passed, 0 failed, 110 ignored, exit 0; reviewer differential tests 0 disagreements over 26,000+ plans",
+    "reference": "6887662"
+  }
+}
