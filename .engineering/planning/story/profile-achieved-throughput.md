@@ -2,11 +2,15 @@
 format: aep.planning-md/3
 id: story:profile-achieved-throughput
 kind: story
-status: draft
+status: active
 title: Achieved GFLOP/s and GB/s in train --profile
 relations:
 - decomposes: epic:transformer-vs-pytorch-cuda
-revision: 2
+- serves: vision:modelspec
+revision: 4
+transitions:
+- {from: "draft", to: "proposed", at: "2026-10-23T17:49:59Z", actor: "human:timo", revision: 3}
+- {from: "proposed", to: "active", at: "2026-10-23T17:49:59Z", actor: "human:timo", revision: 4}
 ---
 # Achieved GFLOP/s and GB/s in train --profile
 
