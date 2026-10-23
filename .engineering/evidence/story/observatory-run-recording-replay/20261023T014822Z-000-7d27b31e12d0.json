@@ -1,0 +1,15 @@
+{
+  "at": "2026-10-23T01:48:22Z",
+  "actor": "human:timo",
+  "artifact": "story:observatory-run-recording-replay",
+  "kind": "story",
+  "revision": 6,
+  "change": {
+    "change": "evidence",
+    "kind": "review_outcome",
+    "source": "aep:adversary",
+    "reference": "2449dda",
+    "review": "review-result:m1-g-replay-adversary-1",
+    "outcome": "fixed"
+  }
+}

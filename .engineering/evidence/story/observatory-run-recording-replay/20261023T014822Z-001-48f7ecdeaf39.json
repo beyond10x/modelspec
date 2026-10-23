@@ -1,0 +1,13 @@
+{
+  "at": "2026-10-23T01:48:22Z",
+  "actor": "human:timo",
+  "artifact": "story:observatory-run-recording-replay",
+  "kind": "story",
+  "revision": 6,
+  "change": {
+    "change": "evidence",
+    "kind": "test_result",
+    "source": "task ci on wave/m1-g: 1320 passed, 0 failed, 94 ignored, exit 0",
+    "reference": "b55deb1"
+  }
+}

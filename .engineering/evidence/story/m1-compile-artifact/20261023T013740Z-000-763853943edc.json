@@ -1,0 +1,15 @@
+{
+  "at": "2026-10-23T01:37:40Z",
+  "actor": "human:timo",
+  "artifact": "story:m1-compile-artifact",
+  "kind": "story",
+  "revision": 9,
+  "change": {
+    "change": "evidence",
+    "kind": "review_outcome",
+    "source": "aep:adversary",
+    "reference": "f0cd12e",
+    "review": "review-result:m1-g-compile-adversary-1",
+    "outcome": "fixed"
+  }
+}
