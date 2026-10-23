@@ -7,7 +7,16 @@ title: Every benchmark run in one YAML file, and its history against the opponen
 relations:
 - decomposes: epic:transformer-vs-pytorch-cuda
 - serves: vision:modelspec
-revision: 3
+scope:
+- confidence: cited
+  path: benchmarks/runs.yaml
+- confidence: cited
+  path: crates/modelspec-docs
+- confidence: cited
+  path: spec/domains/benchmark.yaml
+- confidence: cited
+  path: website/docs/benchmarks.md
+revision: 4
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-23T19:51:50Z", actor: "human:timo", revision: 2}
 - {from: "proposed", to: "active", at: "2026-10-23T19:51:50Z", actor: "human:timo", revision: 3}

@@ -9,6 +9,10 @@ history.
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-10-23
+
+Throughput you can measure, and a Vulkan descriptor pool sized right: the bench `mlp_sweep` trains 784 -> H ReLU -> 10 at 12 sizes on one Vulkan device beside a PyTorch CUDA opponent, every Dispatch step of a plan has a FLOP and a byte count that `ir --stage kernel` and `train --backend vulkan --profile` print, and the descriptor pool counts every view a dispatch reads and writes. On an RTX 3090, `train --backend vulkan --profile` on `examples/mnist_mlp.mspec` reached 447.8 GFLOP/s and 56.6 GB/s over 45.925 µs per profiled step, with 0 uncounted sites; the sweep measured 36 of 36 points, ModelSpec on Vulkan faster than PyTorch eager CUDA at every batch-100 point (28.1 µs against 537.5 µs at hidden 64) and PyTorch eager up to 4.26 times faster at batch 8192 (7290.5 µs against 31067.1 µs at hidden 4096). No new timed MNIST step time was measured for this release; the latest is 0.6.0's 27.14 µs per step, and ADR-007's accuracy and final-weight conditions were not measured.
+
 ### Added
 
 - The bench `mlp_sweep` (`cargo bench -p modelspec-runtime --features vulkan --bench mlp_sweep`) trains 784 -> H ReLU -> 10 at hidden 64, 256, 1024, 4096 and batch 100, 1000, 8192 on one Vulkan device, each source formatted and compiled in Rust, and prints one JSON line per point: the matmul-only FLOP per step `3196·B·H`, the µs per step of 3 timed runs of at least 5 s after a 20-step warm-up, their median and GFLOP/s, and the version, git commit and dirty state it was built from, or the refusal of a point that does not compile or run, the teacher-student batch made once per point and handed to every run through the new `RunOptions::data`; `--crossover <file>...` reads its lines and those of the PyTorch CUDA opponent `opponents/mlp_sweep/mlp_sweep.py` (eager and `torch.compile`, TF32 off) and names per side and batch the first width more than 10 % slower than the previous, and `tests/mlp_sweep.rs` checks that all 12 sources compile for the RTX 3090 profile and that their step plans' matmuls count `3196·B·H` (story:mlp-size-sweep-vs-pytorch-cuda)
@@ -158,7 +162,8 @@ with `E-TARGET-001`.
 - `examples/linear_regression.mspec` checks and trains; `task check-examples` runs `modelspec check` on it
 - ESS contracts for the compiled artifact, checkpoint, device profile and training run in `spec/`
 
-[Unreleased]: https://github.com/beyond10x/modelspec/compare/0.7.0...HEAD
+[Unreleased]: https://github.com/beyond10x/modelspec/compare/0.7.1...HEAD
+[0.7.1]: https://github.com/beyond10x/modelspec/compare/0.7.0...0.7.1
 [0.7.0]: https://github.com/beyond10x/modelspec/compare/0.6.0...0.7.0
 [0.6.0]: https://github.com/beyond10x/modelspec/compare/0.5.0...0.6.0
 [0.5.0]: https://github.com/beyond10x/modelspec/compare/0.4.0...0.5.0

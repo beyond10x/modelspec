@@ -976,7 +976,7 @@ dependencies = [
 
 [[package]]
 name = "modelspec-cli"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "clap",
  "ctrlc",
@@ -992,7 +992,7 @@ dependencies = [
 
 [[package]]
 name = "modelspec-core"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "blake3",
  "logos",
@@ -1004,7 +1004,7 @@ dependencies = [
 
 [[package]]
 name = "modelspec-docs"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "clap",
  "modelspec-cli",
@@ -1015,7 +1015,7 @@ dependencies = [
 
 [[package]]
 name = "modelspec-observatory"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "clap",
  "jsonschema",
@@ -1027,7 +1027,7 @@ dependencies = [
 
 [[package]]
 name = "modelspec-runtime"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "ash",
  "blake3",
