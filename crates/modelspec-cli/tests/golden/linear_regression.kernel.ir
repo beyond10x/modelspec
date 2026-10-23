@@ -12,12 +12,12 @@ target y: Tensor<f32, [8, 1]> view b1[f32 x 8, bytes 0..32, align 4]
 param @LinearReg.w: Tensor<f32, [4, 1]> views b2[f32 x 4, bytes 0..16, align 4]
 loss b4[f32 x 1, bytes 0..4, align 4]
 prediction b3[f32 x 8, bytes 0..32, align 4]
-kernel k0 73fb27e0-40f7-8ab6-93d0-f309cbac42b6 matmul MatMul f32 (Tensor<f32, [8, 4]>, Tensor<f32, [4, 1]>) -> Tensor<f32, [8, 1]> workgroup_size 128 workgroups [1, 1, 1]
+kernel k0 d45c08f1-7072-8fc1-be13-23801d6ded6e matmul MatMul f32 (Tensor<f32, [8, 4]>, Tensor<f32, [4, 1]>) -> Tensor<f32, [8, 1]> workgroup_size 128 workgroups [1, 1, 1] tile workgroup_size 128 cols 1 rows 1 depth 4 ahead 6 buffers 1
 kernel k1 7e1cc13b-1653-84b9-98f1-ae1d5736d4a9 loss_sum Mse f32 (Tensor<f32, [8, 1]>, Tensor<f32, [8, 1]>) -> Tensor<f32, []> workgroup_size 64 workgroups [1, 1, 1]
 kernel k2 b4a1988c-2bba-81d1-8468-6200fea8b1fc elementwise Sub f32 (Tensor<f32, [8, 1]>, Tensor<f32, [8, 1]>) -> Tensor<f32, [8, 1]> workgroup_size 64 workgroups [1, 1, 1]
 kernel k3 18b867e4-8cd4-8546-be4e-431348a565f6 elementwise Mul f32 (Tensor<f32, [8, 1]>, 0.25) -> Tensor<f32, [8, 1]> workgroup_size 64 workgroups [1, 1, 1]
 kernel k4 c0c09bbb-0a44-8001-8723-4b18ae5f2ad1 transpose Transpose f32 (Tensor<f32, [8, 4]>) -> Tensor<f32, [4, 8]> workgroup_size 64 workgroups [1, 1, 1]
-kernel k5 7015c25c-c185-8f18-be3e-3b47582afc81 matmul MatMul f32 (Tensor<f32, [4, 8]>, Tensor<f32, [8, 1]>) -> Tensor<f32, [4, 1]> workgroup_size 128 workgroups [1, 1, 1]
+kernel k5 3e7bd3c2-f002-8ac6-ad55-852d80f7fdf9 matmul MatMul f32 (Tensor<f32, [4, 8]>, Tensor<f32, [8, 1]>) -> Tensor<f32, [4, 1]> workgroup_size 128 workgroups [1, 1, 1] tile workgroup_size 128 cols 1 rows 1 depth 8 ahead 6 buffers 1
 kernel k6 9f6cbbcb-5d7b-8317-ad40-528c99bde2cc sgd_update Sub f32 (Tensor<f32, [4, 1]>, 0.1, Tensor<f32, [4, 1]>) -> Tensor<f32, [4, 1]> workgroup_size 64 workgroups [1, 1, 1]
 plan step
   0: dispatch k0 %3 reads b0[f32 x 32, bytes 0..128, align 4], b2[f32 x 4, bytes 0..16, align 4] writes b3[f32 x 8, bytes 0..32, align 4] workgroups [1, 1, 1]
