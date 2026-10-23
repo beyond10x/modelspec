@@ -1,0 +1,13 @@
+{
+  "at": "2026-10-23T09:58:14Z",
+  "actor": "human:timo",
+  "artifact": "story:train-vulkan-refuses-non-finite-loss",
+  "kind": "story",
+  "revision": 11,
+  "change": {
+    "change": "evidence",
+    "kind": "test_result",
+    "source": "task ci on impl/train-vulkan-refuses-non-finite-loss: 1338 passed, 0 failed, 122 ignored, exit 0; device lanes 7/7 adversary and 5/5 own",
+    "reference": "be5d918"
+  }
+}

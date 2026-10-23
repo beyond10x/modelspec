@@ -2,7 +2,7 @@
 format: aep.planning-md/3
 id: story:train-vulkan-refuses-non-finite-loss
 kind: story
-status: active
+status: implemented
 title: train --backend vulkan refuses a non-finite loss or parameter with E-TRAIN-001
 relations:
 - decomposes: epic:pytorch-10x-mnist
@@ -24,10 +24,11 @@ scope:
   path: crates/modelspec-runtime/tests/adversary_vulkan_train_chunks.rs
 - confidence: inferred
   path: crates/modelspec-runtime/tests/vulkan_train.rs
-revision: 11
+revision: 12
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-23T08:16:29Z", actor: "human:timo", revision: 2}
 - {from: "proposed", to: "active", at: "2026-10-23T08:16:29Z", actor: "human:timo", revision: 3}
+- {from: "active", to: "implemented", at: "2026-10-23T09:58:14Z", actor: "human:timo", revision: 12, decided_on: {"recorded":{"test_result":1,"review_outcome":1}}}
 ---
 # `train --backend vulkan` refuses a non-finite loss or parameter with E-TRAIN-001
 

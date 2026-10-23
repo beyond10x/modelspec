@@ -1,0 +1,15 @@
+{
+  "at": "2026-10-23T09:58:13Z",
+  "actor": "human:timo",
+  "artifact": "story:train-vulkan-refuses-non-finite-loss",
+  "kind": "story",
+  "revision": 11,
+  "change": {
+    "change": "evidence",
+    "kind": "review_outcome",
+    "source": "round 2 fix be5d918",
+    "reference": "be5d918",
+    "review": "review-result:adversary-train-vulkan-refuses-non-finite-loss-pass-1",
+    "outcome": "fixed"
+  }
+}
