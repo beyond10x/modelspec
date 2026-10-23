@@ -1,0 +1,15 @@
+{
+  "at": "2026-10-23T12:01:50Z",
+  "actor": "human:timo",
+  "artifact": "story:kernel-signature-covers-matmul-tile",
+  "kind": "story",
+  "revision": 5,
+  "change": {
+    "change": "evidence",
+    "kind": "review_outcome",
+    "source": "round 2 fix c89ea1b: profile block retaken, print_kernel doc",
+    "reference": "c89ea1b",
+    "review": "review-result:adversary-kernel-signature-covers-matmul-tile-pass-1",
+    "outcome": "fixed"
+  }
+}

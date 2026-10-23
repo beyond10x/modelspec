@@ -2,7 +2,7 @@
 format: aep.planning-md/3
 id: story:kernel-signature-covers-matmul-tile
 kind: story
-status: active
+status: implemented
 title: A matmul kernel's signature covers every tile parameter
 relations:
 - decomposes: epic:pytorch-10x-mnist
@@ -21,10 +21,11 @@ scope:
   path: crates/modelspec-core/tests/kernel_plan.rs
 - confidence: inferred
   path: website/docs/guides/inspect-a-run.md
-revision: 5
+revision: 6
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-23T09:09:50Z", actor: "human:timo", revision: 4}
 - {from: "proposed", to: "active", at: "2026-10-23T09:09:50Z", actor: "human:timo", revision: 5}
+- {from: "active", to: "implemented", at: "2026-10-23T12:01:50Z", actor: "human:timo", revision: 6, decided_on: {"recorded":{"test_result":1,"review_outcome":1}}}
 ---
 # A matmul kernel's signature covers every tile parameter
 

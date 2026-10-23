@@ -1,0 +1,13 @@
+{
+  "at": "2026-10-23T12:01:50Z",
+  "actor": "human:timo",
+  "artifact": "story:kernel-signature-covers-matmul-tile",
+  "kind": "story",
+  "revision": 5,
+  "change": {
+    "change": "evidence",
+    "kind": "test_result",
+    "source": "task ci on impl/kernel-signature-covers-matmul-tile at 336b901: 1332 passed, 0 failed, 110 ignored, exit 0; vulkan 1,800-step stdout sha256 b9bb028a...6904 unchanged",
+    "reference": "336b901"
+  }
+}
