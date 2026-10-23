@@ -1,0 +1,15 @@
+{
+  "at": "2026-10-23T02:32:16Z",
+  "actor": "human:timo",
+  "artifact": "story:m1-vulkan-checkpoint-infer",
+  "kind": "story",
+  "revision": 10,
+  "change": {
+    "change": "evidence",
+    "kind": "review_outcome",
+    "source": "aep:adversary",
+    "reference": "6dea124",
+    "review": "review-result:m1-g-ckpt-adversary-1",
+    "outcome": "fixed"
+  }
+}

@@ -2,7 +2,7 @@
 format: aep.planning-md/3
 id: story:m1-vulkan-checkpoint-infer
 kind: story
-status: active
+status: implemented
 title: Checkpoints of a GPU run, resume on the GPU, and modelspec infer --backend vulkan
 summary: One host wait per requested checkpoint, GPU resume within tolerance of an uninterrupted run, GPU checkpoints loaded by CPU and GPU infer
 relations:
@@ -48,10 +48,11 @@ scope:
   path: website/docs/reference/cli.md
 - confidence: cited
   path: website/docs/roadmap.md
-revision: 10
+revision: 11
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-22T23:58:00Z", actor: "human:timo", revision: 9}
 - {from: "proposed", to: "active", at: "2026-10-22T23:58:01Z", actor: "human:timo", revision: 10}
+- {from: "active", to: "implemented", at: "2026-10-23T02:32:16Z", actor: "human:timo", revision: 11, decided_on: {"recorded":{"test_result":1,"review_outcome":1}}}
 ---
 # Checkpoints of a GPU run, resume on the GPU, and `modelspec infer --backend vulkan`
 

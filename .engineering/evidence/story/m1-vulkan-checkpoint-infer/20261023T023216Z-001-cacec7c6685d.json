@@ -1,0 +1,13 @@
+{
+  "at": "2026-10-23T02:32:16Z",
+  "actor": "human:timo",
+  "artifact": "story:m1-vulkan-checkpoint-infer",
+  "kind": "story",
+  "revision": 10,
+  "change": {
+    "change": "evidence",
+    "kind": "test_result",
+    "source": "task ci on wave/m1-g: 1328 passed, 0 failed, 110 ignored, exit 0; RTX 3090 vulkan_checkpoint 3 passed, 0 validation messages",
+    "reference": "03e46dc"
+  }
+}

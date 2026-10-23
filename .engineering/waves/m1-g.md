@@ -61,7 +61,7 @@ steps (27.267 to 27.435), mean P0 1957 to 1965 MHz. 1,800-step stdout sha256 `b9
 | 1 | m1-f-weight-grad-matmul-tiled | impl/m1-f-weight-grad-matmul-tiled | modelspec-impl-m1g-wgrad | merged 72bcdef; k11 4.58 µs, miss rule, gap story m1-f-weight-grad-matmul-columns |
 | 2 | train-refuses-non-finite-loss | impl/train-refuses-non-finite-loss | modelspec-impl-m1g-nonfinite | merged 5c03d9a; doc contract fixed, Vulkan check filed as train-vulkan-refuses-non-finite-loss |
 | 3 | m1-compile-artifact | impl/m1-compile-artifact | modelspec-impl-m1g-compile | merged dc631b0; 4 reader fixes, verifier bound filed as plan-verifier-bounded-on-untrusted-artifact |
-| 4 | m1-vulkan-checkpoint-infer | impl/m1-vulkan-checkpoint-infer | modelspec-impl-m1g-ckpt | implementing |
+| 4 | m1-vulkan-checkpoint-infer | impl/m1-vulkan-checkpoint-infer | modelspec-impl-m1g-ckpt | merged 03e46dc; 3 host waits at --checkpoint-every 600, resume bit-equal, atomic checkpoint write fixed in 6dea124 |
 | 5 | observatory-run-recording-replay | impl/observatory-run-recording-replay | modelspec-impl-m1g-replay | merged b55deb1; 3 adversary findings fixed in 2449dda |
 
 Integration: `wave/m1-g`, tree `modelspec-wave-m1g`, from `main` `7c45c1a`.
