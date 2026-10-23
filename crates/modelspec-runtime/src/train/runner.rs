@@ -17,6 +17,7 @@ use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 use modelspec_core::compile::CompiledTraining;
+use modelspec_core::diag::{Code, Diagnostic};
 use modelspec_core::ir::tensor::ParamId;
 use thiserror::Error;
 
@@ -25,6 +26,10 @@ use super::data::{DataError, DenseData, SyntheticData, synthetic};
 use super::init::{InitError, Stream, initialize};
 use super::optimizer::{ParamState, StepError, sgd_step};
 use crate::cpu::{HostTensor, RuntimeError, evaluate, evaluate_all};
+
+/// The loss of a training step, or a parameter after the update of a step, is NaN or ±inf: the
+/// run stops at the first such step and prints no final parameters.
+pub const E_TRAIN_001: Code = Code::new("E-TRAIN-001");
 
 /// A finished run.
 #[derive(Clone, Debug, PartialEq)]
@@ -64,6 +69,60 @@ pub enum RunError {
         u64::MAX
     )]
     StepCount { start: u64, steps: u64 },
+    /// The loss or a parameter stopped being finite ([`E_TRAIN_001`]).
+    #[error("{}", .0.diagnostic)]
+    NonFinite(Box<Diverged>),
+}
+
+/// A run stopped by [`E_TRAIN_001`]: its diagnostic, and the run up to the step that failed.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Diverged {
+    pub diagnostic: Diagnostic,
+    /// The run so far: `losses` ends with the failing step's loss and `state` is the state that
+    /// step reached.
+    pub run: Run,
+}
+
+/// The [`E_TRAIN_001`] diagnostic for step `step` with loss `loss` and the parameters of `state`,
+/// or `None` when the loss and every parameter are finite. A non-finite loss is named before a
+/// parameter; parameters are named by canonical path, in path order.
+fn non_finite(
+    compiled: &CompiledTraining,
+    step: u64,
+    loss: f32,
+    state: &ParamState,
+) -> Option<Diagnostic> {
+    if !loss.is_finite() {
+        return Some(
+            Diagnostic::new(
+                E_TRAIN_001,
+                format!("the loss of step {step} is not finite"),
+            )
+            .with("step", step.to_string())
+            .with("loss", loss.to_string()),
+        );
+    }
+    let mut paths: Vec<&str> = state
+        .values
+        .iter()
+        .filter(|(_, value)| value.data().iter().any(|v| !v.is_finite()))
+        .filter_map(|(id, _)| compiled.forward.program.params.get(id))
+        .map(|decl| decl.path.as_str())
+        .collect();
+    if paths.is_empty() {
+        return None;
+    }
+    paths.sort_unstable();
+    let named: Vec<String> = paths.iter().map(|path| format!("@{path}")).collect();
+    Some(
+        Diagnostic::new(
+            E_TRAIN_001,
+            format!("the update of step {step} leaves a parameter not finite"),
+        )
+        .with("step", step.to_string())
+        .with("loss", loss.to_string())
+        .with("parameter", named.join(", ")),
+    )
 }
 
 /// Runs `compiled.config.steps` SGD steps of `compiled.training` on synthetic data from
@@ -132,25 +191,37 @@ pub fn run_from(
         }
     }
     let mut losses = Vec::new();
-    for step in start..end {
-        let loss = sgd_step(&compiled.training, &inputs(step), &mut state)
-            .map_err(|source| RunError::Step { step, source })?;
+    for step in start..=end {
+        let loss = if step < end {
+            sgd_step(&compiled.training, &inputs(step), &mut state)
+                .map_err(|source| RunError::Step { step, source })?
+        } else {
+            evaluate(forward, &inputs(end), &state.values)?[0].data()[0]
+        };
         observe(step, loss);
         losses.push(loss);
-        after(step + 1, &state)?;
+        if let Some(diagnostic) = non_finite(compiled, step, loss, &state) {
+            return Err(RunError::NonFinite(Box::new(Diverged {
+                diagnostic,
+                run: Run {
+                    start_step: start,
+                    initial,
+                    losses,
+                    state,
+                    teacher: feed.teacher(),
+                },
+            })));
+        }
+        if step < end {
+            after(step + 1, &state)?;
+        }
     }
-    let last = evaluate(forward, &inputs(end), &state.values)?[0].data()[0];
-    observe(end, last);
-    losses.push(last);
     Ok(Run {
         start_step: start,
         initial,
         losses,
         state,
-        teacher: match feed {
-            Feed::Synthetic(s) => s.teacher,
-            Feed::Dense(_) => BTreeMap::new(),
-        },
+        teacher: feed.teacher(),
     })
 }
 
@@ -158,6 +229,16 @@ pub fn run_from(
 enum Feed<'a> {
     Synthetic(SyntheticData),
     Dense(&'a DenseData),
+}
+
+impl Feed<'_> {
+    /// The teacher parameters of synthetic data; dense data has none.
+    fn teacher(self) -> BTreeMap<ParamId, HostTensor<f32>> {
+        match self {
+            Feed::Synthetic(s) => s.teacher,
+            Feed::Dense(_) => BTreeMap::new(),
+        }
+    }
 }
 
 /// The loss and accuracy of the forward program over every sample of an eval directory.
@@ -337,6 +418,26 @@ mod tests {
         let mut seen = 0;
         assert!(run_observed(&compiled(&source, 1), |_, _| seen += 1).is_err());
         assert_eq!(seen, 0);
+    }
+
+    #[test]
+    fn a_divergent_run_stops_at_its_first_non_finite_loss() {
+        let source = EXAMPLE.replace("sgd(lr = 0.1)", "sgd(lr = 100.0)");
+        let mut seen = Vec::new();
+        let error = run_observed(&compiled(&source, 500), |step, loss| {
+            seen.push((step, loss))
+        })
+        .unwrap_err();
+        let RunError::NonFinite(diverged) = error else {
+            panic!("not E-TRAIN-001: {error:?}");
+        };
+        assert_eq!(diverged.diagnostic.code, E_TRAIN_001);
+        let losses = &diverged.run.losses;
+        let (&last, before) = losses.split_last().unwrap();
+        assert!(!last.is_finite(), "{losses:?}");
+        assert!(before.iter().all(|l| l.is_finite()), "{losses:?}");
+        let expected: Vec<(u64, f32)> = (0..).zip(losses.iter().copied()).collect();
+        assert_eq!(format!("{seen:?}"), format!("{expected:?}"));
     }
 
     #[test]

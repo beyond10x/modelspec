@@ -91,6 +91,14 @@ The data loaders of `modelspec train`, synthetic data and the dense files of `--
 | <a id="e-data-008"></a>`E-DATA-008` | `order.u32` holds fewer than `steps · B` indices, or an index not below the sample count. | [`crates/modelspec-runtime/src/train/data.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-runtime/src/train/data.rs) |
 | <a id="e-data-009"></a>`E-DATA-009` | The `--eval` sample count is not a multiple of the batch dimension `B`. | [`crates/modelspec-runtime/src/train/data.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-runtime/src/train/data.rs) |
 
+## Training
+
+The CPU training loop of `modelspec train`, which checks the loss and every parameter after each step.
+
+| Code | Meaning | Declared in |
+|---|---|---|
+| <a id="e-train-001"></a>`E-TRAIN-001` | The loss of a training step, or a parameter after the update of a step, is NaN or ±inf: the run stops at the first such step and prints no final parameters. | [`crates/modelspec-runtime/src/train/runner.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-runtime/src/train/runner.rs) |
+
 ## Checkpoints
 
 The `.msckpt` reader of `modelspec train --resume` and `modelspec infer`, which checks the header, the checksum, every offset and length and the payload hash before it allocates a tensor, and matches the checkpoint against the compiled file.

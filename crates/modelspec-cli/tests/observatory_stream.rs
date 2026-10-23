@@ -364,6 +364,40 @@ fn a_data_refusal_ends_the_stream_with_run_failed() {
     );
 }
 
+/// story:train-refuses-non-finite-loss, scenario 5: a run whose loss overflows ends its stream
+/// with the failing step's `StepCompleted`, its loss `null`, then `RunFailed` with E-TRAIN-001.
+#[test]
+fn a_divergent_run_ends_its_stream_with_a_null_loss() {
+    let source = std::fs::read_to_string(repo_root().join(EXAMPLE))
+        .expect("the example exists")
+        .replace("sgd(lr = 0.1)", "sgd(lr = 100.0)");
+    let path = source_file("lr100.mspec", &source);
+    let mut served = Served::start(&path);
+    let frames = read_stream(&served);
+    let (stdout, stderr) = served.stop();
+    assert_conforms(&frames);
+    let kinds = kinds(&frames);
+    assert_eq!(kinds.first(), Some(&"RunStarted"));
+    let tail = &kinds[kinds.len().saturating_sub(2)..];
+    assert_eq!(tail, ["StepCompleted", "RunFailed"], "the last two events");
+    let failed = &frames[frames.len() - 1].data["body"]["value"];
+    assert_eq!(failed["code"], "E-TRAIN-001");
+    let steps = steps(&frames);
+    let last = steps.last().copied().expect("a StepCompleted");
+    assert_eq!(last["loss"], Value::Null, "{last}");
+    assert!(
+        steps[..steps.len() - 1].iter().all(|s| s["loss"].is_f64()),
+        "only the failing step's loss is null"
+    );
+    let stdout = text(&stdout);
+    assert_eq!(
+        stdout.lines().last(),
+        Some(format!("step {} loss inf", last["step"]).as_str()),
+        "{stdout}"
+    );
+    assert!(stderr.contains("E-TRAIN-001: "), "{stderr}");
+}
+
 /// Sends `signal` (`TERM`, `INT`) to the serving process and waits for it to exit.
 fn interrupt(served: &mut Served, signal: &str) -> std::process::ExitStatus {
     let pid = served.child.id().to_string();

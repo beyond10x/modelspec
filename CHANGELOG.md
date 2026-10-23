@@ -9,6 +9,10 @@ history.
 
 ## [Unreleased]
 
+### Fixed
+
+- `modelspec train --backend cpu` stops at the first step whose loss or updated parameter is NaN or ±inf and exits 1 with `E-TRAIN-001` naming the step and the loss or parameter, instead of printing a diverged run and exiting 0; stdout ends with that step's `step <k> loss <v>` line and has no `param` lines, and `--serve` ends with that step's event, its loss `null`, then `RunFailed` (DESIGN.md § 8) (story:train-refuses-non-finite-loss)
+
 ## [0.5.0] - 2026-10-23
 
 Faster Vulkan training: the `MatMul` kernel stages its operand tiles in workgroup memory, and the MNIST benchmark example measured 27.282 µs per step on an RTX 3090 (median of 5 runs of 144,000 steps, mean P0 clock 1957 to 1965 MHz), down from 40.225 µs in 0.4.0. ADR-007's accuracy and final-weight conditions were not measured for this release.
