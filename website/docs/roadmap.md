@@ -6,7 +6,7 @@ description: Milestones M0 to M4 from DESIGN.md § 1. M0 is built; M1, GPU execu
 # Roadmap
 
 The milestones are those of [DESIGN.md § 1](https://github.com/beyond10x/modelspec/blob/main/DESIGN.md#1-scope-and-milestones).
-M0 is built and released as 0.1.0. M1 is in progress; the latest release is 0.6.0. M2 to M4 are
+M0 is built and released as 0.1.0. M1 is in progress; the latest release is 0.7.0. M2 to M4 are
 design, apart from the M2 items M1 did early.
 
 ## M0: semantic core
@@ -29,7 +29,7 @@ device with one host wait per run, within the GPU tolerance of the CPU reference
 inspect-device --backend vulkan` reports each device; CPU checkpoints and `modelspec infer
 --backend cpu` are in 0.4.0 too. Released in 0.6.0: `modelspec compile` writes an artifact
 directory, `train --backend vulkan` writes and resumes checkpoints, waiting once more per
-requested checkpoint, and `infer --backend vulkan` runs a checkpoint on the device. On `main`, not in a release yet: `train --backend vulkan`
+requested checkpoint, and `infer --backend vulkan` runs a checkpoint on the device. Released in 0.7.0: `train --backend vulkan`
 refuses a diverged run with `E-TRAIN-001` as the CPU run does, and the artifact reader bounds the
 plan verifier's work on an untrusted artifact. The 9 acceptance boxes of DESIGN.md § 9 are not
 ticked. The work is planned as `epic:m1-vulkan-execution` in the repository's planning store.

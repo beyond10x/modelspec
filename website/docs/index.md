@@ -41,9 +41,9 @@ train Fit {
 
 ## What works today
 
-ModelSpec is in milestone M1 (GPU execution); the latest release is [0.6.0](https://github.com/beyond10x/modelspec/releases/tag/0.6.0).
+ModelSpec is in milestone M1 (GPU execution); the latest release is [0.7.0](https://github.com/beyond10x/modelspec/releases/tag/0.7.0).
 
-| Works in 0.6.0 | Not built yet |
+| Works in 0.7.0 | Not built yet |
 |---|---|
 | `modelspec check`: parse and check names, types and shapes | `bench` |
 | `modelspec ir --stage tensor`, `--stage training` and `--stage kernel`: print the verified IR and the kernel plan | more than one device |
@@ -54,15 +54,15 @@ ModelSpec is in milestone M1 (GPU execution); the latest release is [0.6.0](http
 | `modelspec inspect-device --backend vulkan`: each device's profile and negotiation verdict | |
 | `modelspec train --serve <addr>`: stream the run as typed events over Server-Sent Events | |
 | `modelspec train --record <path>` and `modelspec observe <path>`: record a run and replay it | |
+| `--ui ui/dist` on `train --serve` or `observe`: the observatory UI in the browser | |
 
-On `main`, not released yet: `--ui ui/dist` on `train --serve` or `observe` serves the
-observatory UI, which draws the loss and every metric per step in the browser, and for a CPU run
-the norm and histogram of each parameter's values and gradient on sampled steps
-(`--statistics-every`), for a Vulkan run those of its values at the first and the last step.
+The observatory UI draws the loss and every metric per step, and for a CPU run the norm and
+histogram of each parameter's values and gradient on sampled steps (`--statistics-every`), for a
+Vulkan run those of its values at the first and the last step.
 
 On the MNIST benchmark example, `train --backend vulkan` measured 27.14 µs per step on an RTX
-3090 (median of 5 timed runs of 144,000 steps); ADR-007's accuracy and final-weight conditions
-were not measured for 0.6.0. [Status](./status.mdx) lists every shipped
+3090 in 0.6.0 (median of 5 timed runs of 144,000 steps); no new device benchmark was measured for
+0.7.0, and ADR-007's accuracy and final-weight conditions were not measured. [Status](./status.mdx) lists every shipped
 capability with the test that holds it, and [Roadmap](./roadmap.md) says what M1 to M4 add.
 
 ## What it is for
@@ -79,7 +79,7 @@ capability with the test that holds it, and [Roadmap](./roadmap.md) says what M1
 
 ## Where to go next
 
-- [Getting started](./getting-started.md): download the 0.6.0 binary and train the examples on the CPU or a GPU.
+- [Getting started](./getting-started.md): download the 0.7.0 binary and train the examples on the CPU or a GPU.
 - [The language](./concepts/language.md): what an M0 file may contain.
 - [Write a model](./guides/write-a-model.md): build a two-layer model step by step.
 - [Pitch deck](pathname:///modelspec/pitch/): the case for ModelSpec in slides.

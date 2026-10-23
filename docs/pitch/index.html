@@ -164,7 +164,7 @@ body.all .hud, body.all .narrow { display: none; }
 <!-- 1 -->
 <section class="slide" data-n="1">
   <div class="title-wrap">
-    <div class="kicker">Vision · 2026-10-23 · release 0.6.0</div>
+    <div class="kicker">Vision · 2026-10-23 · release 0.7.0</div>
     <h1>ModelSpec</h1>
     <p class="promise">Specify <b>what</b> the model computes.<br>The compiler decides <b>how</b> it runs.</p>
     <p class="sub">A declarative language and a Rust compiler for differentiable tensor programs. One <code>.mspec</code> file is the whole training step.</p>
@@ -175,7 +175,7 @@ body.all .hud, body.all .narrow { display: none; }
       <span class="chip">no Python · PyTorch · CUDA</span>
     </div>
   </div>
-  <aside class="notes">Vision objective; DESIGN.md header principle and section 0. Date and version: the 0.6.0 tag, 2026-10-23 (git tag, CHANGELOG.md:24).</aside>
+  <aside class="notes">Vision objective; DESIGN.md header principle and section 0. Date and version: the 0.7.0 release, 2026-10-23 (CHANGELOG.md:12).</aside>
 </section>
 
 <!-- 2 -->
@@ -297,7 +297,7 @@ body.all .hud, body.all .narrow { display: none; }
       <text x="354" y="554">M1 · native Vulkan execution · training since 0.4.0</text>
     </g>
   </svg>
-  <aside class="notes">DESIGN.md section 3 and 3.1. Parse and name resolution happen before the checked HIR. The driver translates SPIR-V into native GPU code; ModelSpec does not emit SASS (section 0, 5.1). Legend: M0 released as 0.1.0 (CHANGELOG.md:114-118); train --backend vulkan first released in 0.4.0 (CHANGELOG.md:53, :64).</aside>
+  <aside class="notes">DESIGN.md section 3 and 3.1. Parse and name resolution happen before the checked HIR. The driver translates SPIR-V into native GPU code; ModelSpec does not emit SASS (section 0, 5.1). Legend: M0 released as 0.1.0 (CHANGELOG.md:118-122); train --backend vulkan first released in 0.4.0 (CHANGELOG.md:57, :68).</aside>
 </section>
 
 <!-- 5 -->
@@ -492,15 +492,15 @@ body.all .hud, body.all .narrow { display: none; }
       <div class="st" style="color:var(--mut)">not built</div></div>
   </div>
   <p class="mut" style="font-size:26px;margin-top:34px">End-to-end f32 training on the RTX 3090 shipped in 0.4.0. M1 stays open: its epic is a draft and the 9 acceptance boxes in DESIGN.md § 9 are not ticked.</p>
-  <aside class="notes">README milestones; DESIGN.md section 1. M0: CHANGELOG.md:114-118. M1: train --backend vulkan in CHANGELOG.md:64 under [0.4.0]; website/docs/status.mdx milestone table "in progress"; epic:m1-vulkan-execution status draft (aep plan artifact list); DESIGN.md:551-559 nine unticked boxes. M2 items done in M1: elementwise fusion CHANGELOG.md:70 [0.4.0], tiled matmul CHANGELOG.md:49 [0.5.0] and DESIGN.md:273 ("The M2 tiling below, done in M1"), --profile CHANGELOG.md:65 [0.4.0]. M3: 17 story:bert-* artifacts, all draft, under epic:bert-from-scratch (aep plan artifact list --kind story); DESIGN.md revision 0.7 adds the BERT-like proof model to M3. M4: no stories in the store. 2026-10-23.</aside>
+  <aside class="notes">README milestones; DESIGN.md section 1. M0: CHANGELOG.md:118-122. M1: train --backend vulkan in CHANGELOG.md:68 under [0.4.0]; website/docs/status.mdx milestone table "in progress"; epic:m1-vulkan-execution status draft (aep plan artifact list); DESIGN.md:551-559 nine unticked boxes. M2 items done in M1: elementwise fusion CHANGELOG.md:74 [0.4.0], tiled matmul CHANGELOG.md:53 [0.5.0] and DESIGN.md:273 ("The M2 tiling below, done in M1"), --profile CHANGELOG.md:69 [0.4.0]. M3: 17 story:bert-* artifacts, all draft, under epic:bert-from-scratch (aep plan artifact list --kind story); DESIGN.md revision 0.7 adds the BERT-like proof model to M3. M4: no stories in the store. 2026-10-23.</aside>
 </section>
 
 <!-- 13 -->
 <section class="slide" data-n="13">
   <div class="kicker">Status · 2026-10-23</div>
-  <h2>0.6.0 trains on the RTX 3090 through Vulkan</h2>
+  <h2>0.7.0 trains on the RTX 3090 through Vulkan</h2>
   <div class="stats">
-    <div class="stat"><div class="v">0.6.0</div><div class="l">latest of 7 releases, 2026-10-23, with a Linux x86_64 binary</div></div>
+    <div class="stat"><div class="v">0.7.0</div><div class="l">latest of 8 releases, 2026-10-23, with a Linux x86_64 binary</div></div>
     <div class="stat"><div class="v">22</div><div class="l">capabilities shipped, each held by a named test or task</div></div>
     <div class="stat"><div class="v">34</div><div class="l">stories implemented, none in progress</div></div>
     <div class="stat"><div class="v">1429</div><div class="l">tests passed in <code>task ci</code>, 0 failed, 131 ignored</div></div>
@@ -511,7 +511,7 @@ body.all .hud, body.all .narrow { display: none; }
       <p style="font-size:21px"><code>train --backend vulkan</code> with one host wait · checkpoints, resume and <code>infer</code> on CPU and Vulkan · <code>compile</code> to a sealed artifact · <code>train --serve</code>, <code>--record</code> and <code>observe</code> · <code>inspect-device</code> · <code>--profile</code> · tiled GPU matmul</p>
     </div>
     <div class="card" style="padding:22px 26px">
-      <h3 style="font-size:26px">On main, not released</h3>
+      <h3 style="font-size:26px">Released in 0.7.0</h3>
       <p style="font-size:21px">The observatory UI in Vue: live loss and metric charts (<code>--ui</code>) · parameter and gradient norms and histograms (<code style="white-space:nowrap">--statistics-every</code>) · <code style="white-space:nowrap">E-TRAIN-001</code> on Vulkan · a bounded plan verifier</p>
     </div>
     <div class="card" style="padding:22px 26px">
@@ -519,7 +519,7 @@ body.all .hud, body.all .narrow { display: none; }
       <p style="font-size:21px">Architecture graph and saliency in the UI · M3: f16, AdamW, attention · M4: the Tensor Core path</p>
     </div>
   </div>
-  <aside class="notes">Releases: git tag lists 0.1.0, 0.1.1, 0.2.0, 0.3.0, 0.4.0, 0.5.0, 0.6.0; 0.6.0 dated 2026-10-23 (CHANGELOG.md:24); binary per CHANGELOG.md:5-6. 22 shipped, 0 planned: website/data/status.json (asOf 2026-10-23, 22 items with "status": "shipped"). 34 implemented, 0 active stories: aep plan artifact list --kind story. 1429 / 0 / 131: the sum of the 168 cargo "test result" lines of task ci on wave/m1-h at 8f6b975 with this change, 2026-10-23, CHROME set to a local Chromium; the ignored tests include the device tests and the browser tests that task ui-browser then runs (AGENTS.md "Commands"); the 27 node --test cases of pnpm test are not counted. Released column: CHANGELOG.md:51-70 [0.4.0], :49 [0.5.0], :24-41 [0.6.0], :86 [0.2.0]. On main: CHANGELOG.md:10-22 [Unreleased]. Not built: story:observatory-architecture-graph and story:observatory-saliency-gradient-x-input are draft; DESIGN.md section 1 M3 and M4 rows; no M3 or M4 story implemented. Left out: the M0 loss figure 9.69 to 5.6e-11 (still true per website/docs/getting-started.md:48-51, moved off to make room).</aside>
+  <aside class="notes">Releases: git tag lists 0.1.0, 0.1.1, 0.2.0, 0.3.0, 0.4.0, 0.5.0, 0.6.0, and 0.7.0 is this release; 0.7.0 dated 2026-10-23 (CHANGELOG.md:12); binary per CHANGELOG.md:5-6. 22 shipped, 0 planned: website/data/status.json (asOf 2026-10-23, 22 items with "status": "shipped"). 34 implemented, 0 active stories: aep plan artifact list --kind story. 1429 / 0 / 131: the sum of the 168 cargo "test result" lines of task ci on wave/m1-h at 8f6b975 with this change, 2026-10-23, CHROME set to a local Chromium; the ignored tests include the device tests and the browser tests that task ui-browser then runs (AGENTS.md "Commands"); the 27 node --test cases of pnpm test are not counted. Released column: CHANGELOG.md:55-74 [0.4.0], :53 [0.5.0], :28-45 [0.6.0], :90 [0.2.0]. Released in 0.7.0: CHANGELOG.md:12-26 [0.7.0]. Not built: story:observatory-architecture-graph and story:observatory-saliency-gradient-x-input are draft; DESIGN.md section 1 M3 and M4 rows; no M3 or M4 story implemented. Left out: the M0 loss figure 9.69 to 5.6e-11 (still true per website/docs/getting-started.md:48-51, moved off to make room).</aside>
 </section>
 
 <!-- 14 -->
@@ -559,10 +559,10 @@ body.all .hud, body.all .narrow { display: none; }
       <p style="font-size:22px"><b style="color:#e6e8eb">ADR-007 (proposed):</b> gate 51.9 µs per step, 10× the PyTorch eager CUDA baseline; working target 31.4 µs, 10× the CPU figure.</p>
     </div>
     <div class="card" style="padding:20px 26px">
-      <p style="font-size:22px">0.6.0 is under both times. The gate's accuracy and final-weight conditions were not measured for this release.</p>
+      <p style="font-size:22px">0.6.0 is under both times; no new device benchmark was measured for 0.7.0. The gate's accuracy and final-weight conditions were not measured.</p>
     </div>
   </div>
-  <aside class="notes">Workload: CHANGELOG.md:57 and DESIGN.md:612. PyTorch eager CUDA 519 µs and torch.compile 933 µs: DESIGN.md:613 (PyTorch 2.14.1+cu130, measured 2026-10-21, verification-report:mnist-benchmark-cuda-baseline); torch.compile is reported there, not gated. PyTorch eager CPU 8 threads 314 µs: DESIGN.md:615, measured under load, an upper bound. Gate 51.9 µs and ADR-007 status proposed: DESIGN.md:612-613. Working target 31.4 µs: DESIGN.md:615. ModelSpec 0.4.0 40.225 µs: CHANGELOG.md:53; 0.6.0 27.14 µs: CHANGELOG.md:26 (median of 5 timed runs of 144,000 steps, down from 27.282 µs in 0.5.0, CHANGELOG.md:45); "accuracy and final-weight conditions were not measured": CHANGELOG.md:26. The 0.5.0 bar was replaced by 0.6.0; both are about 25 px long. The per-kernel times in DESIGN.md:273 are left out: kernel timings differ between CHANGELOG.md and DESIGN.md. CHANGELOG.md [Unreleased] (lines 10-22) has no new MNIST step time. Bar lengths are proportional to the values (860 px for 933 µs). No ModelSpec images/s figure is in the repository, so none is shown.</aside>
+  <aside class="notes">Workload: CHANGELOG.md:61 and DESIGN.md:612. PyTorch eager CUDA 519 µs and torch.compile 933 µs: DESIGN.md:613 (PyTorch 2.14.1+cu130, measured 2026-10-21, verification-report:mnist-benchmark-cuda-baseline); torch.compile is reported there, not gated. PyTorch eager CPU 8 threads 314 µs: DESIGN.md:615, measured under load, an upper bound. Gate 51.9 µs and ADR-007 status proposed: DESIGN.md:612-613. Working target 31.4 µs: DESIGN.md:615. ModelSpec 0.4.0 40.225 µs: CHANGELOG.md:57; 0.6.0 27.14 µs: CHANGELOG.md:30 (median of 5 timed runs of 144,000 steps, down from 27.282 µs in 0.5.0, CHANGELOG.md:49); "accuracy and final-weight conditions were not measured": CHANGELOG.md:30. The 0.5.0 bar was replaced by 0.6.0; both are about 25 px long. The per-kernel times in DESIGN.md:273 are left out: kernel timings differ between CHANGELOG.md and DESIGN.md. CHANGELOG.md [0.7.0] (lines 12-26) has no new MNIST step time: "No new device benchmark was measured for this release" (CHANGELOG.md:14). Bar lengths are proportional to the values (860 px for 933 µs). No ModelSpec images/s figure is in the repository, so none is shown.</aside>
 </section>
 
 <!-- 15 -->
@@ -582,7 +582,7 @@ body.all .hud, body.all .narrow { display: none; }
       <p style="font-size:22px">Live event stream and input adjoint (0.2.0) · run recording and replay (0.6.0) · event schema generated from the ESS spec</p>
     </div>
     <div class="card" style="padding:22px 26px">
-      <h3 style="font-size:26px">On main, not released</h3>
+      <h3 style="font-size:26px">Released in 0.7.0</h3>
       <p style="font-size:22px">Vue UI with live loss and metric charts · parameter and gradient norms and 32-bin histograms on sampled steps</p>
     </div>
     <div class="card" style="padding:22px 26px">
@@ -590,7 +590,7 @@ body.all .hud, body.all .narrow { display: none; }
       <p style="font-size:22px">Architecture graph from the IR · activation statistics · gradient × input saliency</p>
     </div>
   </div>
-  <aside class="notes">--serve: CHANGELOG.md:86 [0.2.0] and website/docs/reference/cli.md (train --serve, loopback address). Input adjoint: CHANGELOG.md:87 [0.2.0]. --record and observe: CHANGELOG.md:32 [0.6.0] and website/docs/reference/cli.md. --ui: CHANGELOG.md:14 [Unreleased] and website/docs/reference/cli.md:121, :137. Schema: AGENTS.md "State" (modelspec-observatory's JSON Schema under schema/ is ess generate output). On main: story:observatory-ui-live-loss-chart (merge c7daf8b) and story:observatory-parameter-statistics (merge 06dacc6, CHANGELOG.md:15: L2 norm and a 32-bin histogram per parameter, every --statistics-every N steps, default 100), both implemented in wave m1-h (.engineering/waves/m1-h.md). Drafted: story:observatory-architecture-graph, story:observatory-activation-statistics, story:observatory-saliency-gradient-x-input, status draft (aep plan artifact list). Epic intent: epic:training-observatory (draft).</aside>
+  <aside class="notes">--serve: CHANGELOG.md:90 [0.2.0] and website/docs/reference/cli.md (train --serve, loopback address). Input adjoint: CHANGELOG.md:91 [0.2.0]. --record and observe: CHANGELOG.md:36 [0.6.0] and website/docs/reference/cli.md. --ui: CHANGELOG.md:18 [0.7.0] and website/docs/reference/cli.md:121, :137. Schema: AGENTS.md "State" (modelspec-observatory's JSON Schema under schema/ is ess generate output). Released in 0.7.0: story:observatory-ui-live-loss-chart (merge c7daf8b) and story:observatory-parameter-statistics (merge 06dacc6, CHANGELOG.md:19: L2 norm and a 32-bin histogram per parameter, every --statistics-every N steps, default 100), both implemented in wave m1-h (.engineering/waves/m1-h.md). Drafted: story:observatory-architecture-graph, story:observatory-activation-statistics, story:observatory-saliency-gradient-x-input, status draft (aep plan artifact list). Epic intent: epic:training-observatory (draft).</aside>
 </section>
 
 <!-- 16 -->
@@ -632,7 +632,7 @@ body.all .hud, body.all .narrow { display: none; }
       </ul>
     </div>
     <div>
-      <div class="kicker" style="color:var(--m1)">2 · On main · wave m1-h</div>
+      <div class="kicker" style="color:var(--m1)">2 · Released in 0.7.0 · wave m1-h</div>
       <ul class="bul" style="font-size:0">
         <li style="font-size:24px;margin-bottom:12px"><code>train --backend vulkan</code> refuses a NaN or ±inf loss or parameter</li>
         <li style="font-size:24px;margin-bottom:12px">The plan verifier stays bounded on an untrusted artifact</li>
@@ -644,13 +644,12 @@ body.all .hud, body.all .narrow { display: none; }
     <div>
       <div class="kicker hum">3 · Open</div>
       <ul class="bul" style="font-size:0">
-        <li style="font-size:24px;margin-bottom:16px">6 changelog entries on main, not in a release yet</li>
         <li style="font-size:24px;margin-bottom:16px">M1 acceptance: the 9 boxes of DESIGN.md § 9 are not ticked</li>
         <li style="font-size:24px;margin-bottom:16px">ADR-007: accuracy and final weights not measured</li>
       </ul>
     </div>
   </div>
-  <aside class="notes">Done: CHANGELOG.md:114 (0.1.0, 2026-10-21), :51-53 and :64 (0.4.0, 2026-10-22, train --backend vulkan), :43-45 (0.5.0, 2026-10-23, 27.282 µs from 40.225 µs), :24-31 (0.6.0, 2026-10-23, Vulkan checkpoints, infer --backend vulkan, compile). On main: the five stories of wave m1-h, all implemented and merged (aep plan artifact list; .engineering/waves/m1-h.md; git log --merges bd1c0fd..HEAD): story:train-vulkan-refuses-non-finite-loss, story:plan-verifier-bounded-on-untrusted-artifact, story:kernel-signature-covers-matmul-tile (re-scoped from story:m1-f-weight-grad-matmul-columns, archived), story:observatory-ui-live-loss-chart, story:observatory-parameter-statistics. Open: CHANGELOG.md:10-22 [Unreleased] has 6 entries (2 Added, 4 Fixed); DESIGN.md:551-559 nine unticked boxes and epic:m1-vulkan-execution in draft; CHANGELOG.md:26 "ADR-007's accuracy and final-weight conditions were not measured for this release". The weight-gradient µs threshold now sits in story:weight-grad-matmul-structural (draft) and is left out. The M0 first-run loss (website/docs/getting-started.md:48-51) moved off this slide.</aside>
+  <aside class="notes">Done: CHANGELOG.md:118 (0.1.0, 2026-10-21), :55-57 and :68 (0.4.0, 2026-10-22, train --backend vulkan), :47-49 (0.5.0, 2026-10-23, 27.282 µs from 40.225 µs), :28-35 (0.6.0, 2026-10-23, Vulkan checkpoints, infer --backend vulkan, compile). Released in 0.7.0 (CHANGELOG.md:12-26): the five stories of wave m1-h, all implemented and merged (aep plan artifact list; .engineering/waves/m1-h.md; git log --merges bd1c0fd..HEAD): story:train-vulkan-refuses-non-finite-loss, story:plan-verifier-bounded-on-untrusted-artifact, story:kernel-signature-covers-matmul-tile (re-scoped from story:m1-f-weight-grad-matmul-columns, archived), story:observatory-ui-live-loss-chart, story:observatory-parameter-statistics. Open: CHANGELOG.md:10 [Unreleased] is empty; DESIGN.md:551-559 nine unticked boxes and epic:m1-vulkan-execution in draft; CHANGELOG.md:30 "ADR-007's accuracy and final-weight conditions were not measured for this release". The weight-gradient µs threshold now sits in story:weight-grad-matmul-structural (draft) and is left out. The M0 first-run loss (website/docs/getting-started.md:48-51) moved off this slide.</aside>
 </section>
 
 <div class="narrow">The slides are 16:9: turn the device sideways to read them. Tap the right or left half, or swipe, to change slides.</div>

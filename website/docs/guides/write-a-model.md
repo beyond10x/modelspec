@@ -108,7 +108,7 @@ model's own prediction under a second, hidden set of weights drawn from the seed
 run prints the same bytes.
 
 `--backend vulkan` trains the same model on a Vulkan device and prints the same lines within the
-GPU tolerance of the CPU run. It is M1, on `main` and not released yet; a release binary refuses
+GPU tolerance of the CPU run. It is M1, released since 0.4.0; a binary built without the `vulkan` feature refuses
 it with `E-TARGET-001` ([Roadmap](../roadmap.md)).
 
 ## Where to go from here

@@ -211,7 +211,7 @@ pub const CAPABILITIES: &[Capability] = &[
     shipped(
         "GPU",
         "A diverged device run is refused as the CPU run is",
-        "On main, not released: modelspec train --backend vulkan checks every loss and the parameters it reads back, after the last step and before each checkpoint, and stops a NaN or ±inf run with the CPU run's E-TRAIN-001, stdout and events.",
+        "Since 0.7.0: modelspec train --backend vulkan checks every loss and the parameters it reads back, after the last step and before each checkpoint, and stops a NaN or ±inf run with the CPU run's E-TRAIN-001, stdout and events.",
         Evidence::Test(
             "crates/modelspec-cli/tests/train_vulkan_non_finite.rs::a_divergent_loss_on_vulkan_prints_what_the_cpu_prints",
         ),
@@ -220,7 +220,7 @@ pub const CAPABILITIES: &[Capability] = &[
     shipped(
         "GPU",
         "A matmul kernel's module id covers its tile",
-        "On main, not released: Kernel::signature ends with the MatMulTile, so two matmuls that differ only in tile depth or ahead get different module ids; the SPIR-V and the bits do not change.",
+        "Since 0.7.0: Kernel::signature ends with the MatMulTile, so two matmuls that differ only in tile depth or ahead get different module ids; the SPIR-V and the bits do not change.",
         Evidence::Test(
             "crates/modelspec-core/src/ir/kernel.rs::two_matmuls_differing_only_in_tile_depth_or_ahead_have_different_signatures",
         ),
@@ -229,7 +229,7 @@ pub const CAPABILITIES: &[Capability] = &[
     shipped(
         "Compiler",
         "The plan verifier is bounded on an untrusted artifact",
-        "On main, not released: an artifact whose plan has more than 4,096 steps, 65,536 dependencies or 65,536 views is refused with E-ARTIFACT-003 before the verifier runs; a re-sealed 300,000-step chain is refused in under 10 s and 1 GiB.",
+        "Since 0.7.0: an artifact whose plan has more than 4,096 steps, 65,536 dependencies or 65,536 views is refused with E-ARTIFACT-003 before the verifier runs; a re-sealed 300,000-step chain is refused in under 10 s and 1 GiB.",
         Evidence::Test(
             "crates/modelspec-core/tests/plan_verifier_bounds.rs::a_re_sealed_300000_step_chain_is_refused_in_under_10_s_and_1_gib",
         ),
@@ -238,7 +238,7 @@ pub const CAPABILITIES: &[Capability] = &[
     shipped(
         "Observatory",
         "The observatory UI draws a run's loss in the browser",
-        "On main, not released: --ui ui/dist on modelspec train --serve and modelspec observe serves the Vue app at / beside /events; it draws the loss and every metric per step, live or from a recording.",
+        "Since 0.7.0: --ui ui/dist on modelspec train --serve and modelspec observe serves the Vue app at / beside /events; it draws the loss and every metric per step, live or from a recording.",
         Evidence::Test(
             "crates/modelspec-cli/tests/observatory_ui.rs::observatory_ui_live_linear_regression",
         ),
@@ -247,7 +247,7 @@ pub const CAPABILITIES: &[Capability] = &[
     shipped(
         "Observatory",
         "Parameter and gradient statistics on sampled steps",
-        "On main, not released: a CPU run's StepCompleted carries, per parameter, the L2 norm and a 32-bin histogram of its values and its gradient at the first step, every --statistics-every steps and the last; a Vulkan run carries its values at the first and the last step.",
+        "Since 0.7.0: a CPU run's StepCompleted carries, per parameter, the L2 norm and a 32-bin histogram of its values and its gradient at the first step, every --statistics-every steps and the last; a Vulkan run carries its values at the first and the last step.",
         Evidence::Test(
             "crates/modelspec-cli/tests/observatory_parameter_stats.rs::observatory_stats_gradient_at_step",
         ),
