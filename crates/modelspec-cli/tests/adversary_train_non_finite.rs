@@ -237,13 +237,21 @@ impl Served {
                 let _ = send.send(line);
             }
         });
-        loop {
-            let line = receive.recv_timeout(WAIT).expect("a `serving` line");
-            if let Some(rest) = line.strip_prefix("serving http://") {
-                let address = rest.strip_suffix("/events").unwrap().to_owned();
-                return Served { child, address };
+        let address = loop {
+            match receive.recv_timeout(WAIT) {
+                Ok(line) => {
+                    if let Some(rest) = line.strip_prefix("serving http://") {
+                        break rest.strip_suffix("/events").unwrap().to_owned();
+                    }
+                }
+                Err(error) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    panic!("no `serving` line: {error}");
+                }
             }
-        }
+        };
+        Served { child, address }
     }
 
     /// The `data:` JSON of every frame of `GET /events`, read to its end.
