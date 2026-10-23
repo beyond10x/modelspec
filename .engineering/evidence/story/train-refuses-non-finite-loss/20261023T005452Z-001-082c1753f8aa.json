@@ -1,0 +1,13 @@
+{
+  "at": "2026-10-23T00:54:52Z",
+  "actor": "human:timo",
+  "artifact": "story:train-refuses-non-finite-loss",
+  "kind": "story",
+  "revision": 7,
+  "change": {
+    "change": "evidence",
+    "kind": "test_result",
+    "source": "task ci on wave/m1-g: 1283 passed, 0 failed, 94 ignored, exit 0",
+    "reference": "5c03d9a"
+  }
+}

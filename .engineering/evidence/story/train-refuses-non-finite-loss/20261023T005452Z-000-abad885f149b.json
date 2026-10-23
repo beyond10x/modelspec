@@ -1,0 +1,15 @@
+{
+  "at": "2026-10-23T00:54:52Z",
+  "actor": "human:timo",
+  "artifact": "story:train-refuses-non-finite-loss",
+  "kind": "story",
+  "revision": 7,
+  "change": {
+    "change": "evidence",
+    "kind": "review_outcome",
+    "source": "aep:adversary",
+    "reference": "dee2bad",
+    "review": "review-result:m1-g-nonfinite-adversary-1",
+    "outcome": "fixed"
+  }
+}

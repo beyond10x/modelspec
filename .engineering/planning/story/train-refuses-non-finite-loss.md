@@ -2,7 +2,7 @@
 format: aep.planning-md/3
 id: story:train-refuses-non-finite-loss
 kind: story
-status: active
+status: implemented
 title: train refuses a run whose loss or parameters stop being finite
 relations:
 - serves: vision:modelspec
@@ -23,10 +23,11 @@ scope:
   path: crates/modelspec-runtime/src/train/runner.rs
 - confidence: cited
   path: website/docs/reference/diagnostics.md
-revision: 6
+revision: 8
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-22T23:58:00Z", actor: "human:timo", revision: 5}
 - {from: "proposed", to: "active", at: "2026-10-22T23:58:00Z", actor: "human:timo", revision: 6}
+- {from: "active", to: "implemented", at: "2026-10-23T00:54:53Z", actor: "human:timo", revision: 8, decided_on: {"recorded":{"test_result":1,"review_outcome":1}}}
 ---
 # `train` refuses a run whose loss or parameters stop being finite
 
@@ -66,7 +67,7 @@ prints an `E-TRAIN-001` diagnostic on stderr naming the first non-finite step, a
 `param` lines.
 
 1. Divergent run: the `lr = 100.0` fixture exits 1; stderr has exactly one line starting with
-   `error[E-TRAIN-001]` (in the existing diagnostic format) that names the step; stdout's last line
+   `E-TRAIN-001:` (the existing diagnostic format, DESIGN.md § 8.1; amended in wave m1-g from `error[E-TRAIN-001]`, which no diagnostic uses) that names the step; stdout's last line
    is the `step <k> loss NaN` or `inf` line of that step.
 2. Finite run unchanged: `examples/linear_regression.mspec` output is byte-identical to the golden
    `crates/modelspec-cli/tests/golden/` output and exits 0.
