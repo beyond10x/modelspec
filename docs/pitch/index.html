@@ -37,7 +37,7 @@ body { font-family: var(--sans); color: var(--fg); -webkit-font-smoothing: antia
 }
 .slide.active { display: block; }
 .slide::after {
-  content: attr(data-n) " / 15"; position: absolute; right: 100px; bottom: 34px;
+  content: attr(data-n) " / 17"; position: absolute; right: 100px; bottom: 34px;
   font: 500 20px var(--mono); color: var(--dim);
 }
 .slide::before {
@@ -164,7 +164,7 @@ body.all .hud, body.all .narrow { display: none; }
 <!-- 1 -->
 <section class="slide" data-n="1">
   <div class="title-wrap">
-    <div class="kicker">Vision · 2026-10-21</div>
+    <div class="kicker">Vision · 2026-10-23 · release 0.5.0</div>
     <h1>ModelSpec</h1>
     <p class="promise">Specify <b>what</b> the model computes.<br>The compiler decides <b>how</b> it runs.</p>
     <p class="sub">A declarative language and a Rust compiler for differentiable tensor programs. One <code>.mspec</code> file is the whole training step.</p>
@@ -175,7 +175,7 @@ body.all .hud, body.all .narrow { display: none; }
       <span class="chip">no Python · PyTorch · CUDA</span>
     </div>
   </div>
-  <aside class="notes">Vision objective; DESIGN.md header principle and section 0.</aside>
+  <aside class="notes">Vision objective; DESIGN.md header principle and section 0. Date and version: the 0.5.0 tag, 2026-10-23 (git tag, CHANGELOG.md:27).</aside>
 </section>
 
 <!-- 2 -->
@@ -292,12 +292,12 @@ body.all .hud, body.all .narrow { display: none; }
 
     <g font-size="21" fill="#9aa4ae">
       <rect x="0" y="536" width="22" height="22" rx="4" fill="none" stroke="#58c4b4" stroke-width="3"/>
-      <text x="34" y="554">M0 · semantic core</text>
-      <rect x="260" y="536" width="22" height="22" rx="4" fill="none" stroke="#7aa2f7" stroke-width="3"/>
-      <text x="294" y="554">M1 · native Vulkan execution</text>
+      <text x="34" y="554">M0 · semantic core · 0.1.0</text>
+      <rect x="320" y="536" width="22" height="22" rx="4" fill="none" stroke="#7aa2f7" stroke-width="3"/>
+      <text x="354" y="554">M1 · native Vulkan execution · training since 0.4.0</text>
     </g>
   </svg>
-  <aside class="notes">DESIGN.md section 3 and 3.1. Parse and name resolution happen before the checked HIR. The driver translates SPIR-V into native GPU code; ModelSpec does not emit SASS (section 0, 5.1).</aside>
+  <aside class="notes">DESIGN.md section 3 and 3.1. Parse and name resolution happen before the checked HIR. The driver translates SPIR-V into native GPU code; ModelSpec does not emit SASS (section 0, 5.1). Legend: M0 released as 0.1.0 (CHANGELOG.md:98-102); train --backend vulkan first released in 0.4.0 (CHANGELOG.md:37, :48).</aside>
 </section>
 
 <!-- 5 -->
@@ -477,52 +477,129 @@ body.all .hud, body.all .narrow { display: none; }
   <div class="road">
     <div class="ms now"><div class="id">M0</div><div class="nm">Semantic core</div>
       <ul><li>Parser, type + shape checker</li><li>Tensor SSA IR</li><li>CPU interpreter</li><li>Reverse-mode autodiff, SGD</li></ul>
-      <div class="st" style="color:var(--m0)">released as 0.1.0</div></div>
+      <div class="st" style="color:var(--m0)">done · released as 0.1.0</div></div>
     <div class="ms next"><div class="id">M1</div><div class="nm">Native Vulkan execution</div>
       <ul><li>Rust Vulkan runtime</li><li>Generated SPIR-V kernels</li><li>End-to-end f32 training on RTX 3090</li><li>Checkpoints</li></ul>
-      <div class="st" style="color:var(--m1)">not started</div></div>
+      <div class="st" style="color:var(--m1)">in progress · GPU training released in 0.4.0</div></div>
     <div class="ms"><div class="id">M2</div><div class="nm">Optimizing compiler</div>
-      <ul><li>Liveness, buffer reuse</li><li>Fusion</li><li>Tiled matmul</li><li>Profiling</li></ul></div>
+      <ul><li>Liveness, buffer reuse</li><li>Fusion</li><li>Tiled matmul</li><li>Profiling</li></ul>
+      <div class="st" style="color:var(--mut)">fusion, tiled matmul, profiling done early, in M1</div></div>
     <div class="ms"><div class="id">M3</div><div class="nm">Network essentials</div>
-      <ul><li>f16, AdamW</li><li>Softmax, layer norm</li><li>Attention</li><li>Small GPT-like training</li></ul></div>
+      <ul><li>f16, AdamW</li><li>Softmax, layer norm</li><li>Attention</li><li>Small GPT-like training</li></ul>
+      <div class="st" style="color:var(--mut)">not built · 16 BERT stories drafted</div></div>
     <div class="ms"><div class="id">M4</div><div class="nm">Device specialization</div>
-      <ul><li>Cooperative-matrix Tensor Core path</li><li>Mixed precision</li><li>Autotuning</li></ul></div>
+      <ul><li>Cooperative-matrix Tensor Core path</li><li>Mixed precision</li><li>Autotuning</li></ul>
+      <div class="st" style="color:var(--mut)">not built</div></div>
   </div>
-  <p class="mut" style="font-size:26px;margin-top:34px">M1 is the first milestone that meets the RTX 3090 training goal. Everything after M1 is incremental.</p>
-  <aside class="notes">README milestones; DESIGN.md section 1. Status labels from website/data/status.json and the planning store (epic:m1-vulkan-execution is a draft), 2026-10-21.</aside>
+  <p class="mut" style="font-size:26px;margin-top:34px">End-to-end f32 training on the RTX 3090 shipped in 0.4.0. M1 stays open: its epic is a draft and the 9 acceptance boxes in DESIGN.md § 9 are not ticked.</p>
+  <aside class="notes">README milestones; DESIGN.md section 1. M0: CHANGELOG.md:98-102. M1: train --backend vulkan in CHANGELOG.md:48 under [0.4.0]; website/docs/status.mdx:24 "in progress"; epic:m1-vulkan-execution status draft (aep plan artifact list); DESIGN.md:550-558 nine unticked boxes. M2 items done in M1: elementwise fusion CHANGELOG.md:54 [0.4.0], tiled matmul CHANGELOG.md:33 [0.5.0] and DESIGN.md:273 ("The M2 tiling below, done in M1"), --profile CHANGELOG.md:49 [0.4.0]. M3: 16 story:bert-* artifacts, all draft, under epic:bert-from-scratch (aep plan artifact list --kind story); DESIGN.md revision 0.7 adds the BERT-like proof model to M3. M4: no stories in the store. 2026-10-23.</aside>
 </section>
 
 <!-- 13 -->
 <section class="slide" data-n="13">
-  <div class="kicker">Status · 2026-10-21</div>
-  <h2>M0 is released as 0.1.0</h2>
+  <div class="kicker">Status · 2026-10-23</div>
+  <h2>0.5.0 trains on the RTX 3090 through Vulkan</h2>
   <div class="stats">
-    <div class="stat"><div class="v">0.1.0</div><div class="l">released 2026-10-21, with a Linux x86_64 binary</div></div>
-    <div class="stat"><div class="v">12</div><div class="l">capabilities shipped, each held by a named test or task</div></div>
-    <div class="stat"><div class="v">4</div><div class="l">capabilities planned for M1, not built</div></div>
-    <div class="stat"><div class="v">9.69 → 5.6e-11</div><div class="l">example loss, step 0 to step 500, seed 42, CPU</div></div>
+    <div class="stat"><div class="v">0.5.0</div><div class="l">latest of 6 releases, 2026-10-23, with a Linux x86_64 binary</div></div>
+    <div class="stat"><div class="v">17</div><div class="l">capabilities shipped, each held by a named test or task</div></div>
+    <div class="stat"><div class="v">29</div><div class="l">stories implemented, 5 in progress</div></div>
+    <div class="stat"><div class="v">1328</div><div class="l">tests passed in <code>task ci</code>, 0 failed, 110 ignored</div></div>
   </div>
-  <div class="grid2" style="gap:28px">
-    <div class="card" style="padding:24px 28px">
-      <h3 style="font-size:26px">Shipped in 0.1.0</h3>
-      <p style="font-size:23px">Parser · type and shape checker · verified tensor IR · reverse-mode autodiff · SGD step · CPU interpreter · <code>modelspec check</code>, <code>ir</code>, <code>train --backend cpu</code></p>
+  <div class="grid3" style="gap:24px">
+    <div class="card" style="padding:22px 26px">
+      <h3 style="font-size:26px">Released, 0.2.0 to 0.5.0</h3>
+      <p style="font-size:21px"><code>train --backend vulkan</code> with one host wait · <code>inspect-device</code> · <code>ir --stage kernel</code> · <code>--profile</code> · CPU checkpoints and <code>infer</code> · <code>--data</code> files · <code>train --serve</code> · tiled GPU matmul · AVX2 CPU matmul</p>
     </div>
-    <div class="card" style="padding:24px 28px">
+    <div class="card" style="padding:22px 26px">
+      <h3 style="font-size:26px">On main, not released</h3>
+      <p style="font-size:21px"><code>compile</code> to a sealed artifact · checkpoints, resume and <code>infer</code> on Vulkan · <code>train --record</code> and <code>observe</code> · <code style="white-space:nowrap">E-TRAIN-001</code> on a NaN or ±inf CPU loss</p>
+    </div>
+    <div class="card" style="padding:22px 26px">
       <h3 style="font-size:26px">Not built</h3>
-      <p style="font-size:23px">Any GPU execution: <code>--backend vulkan</code> is refused with <code style="white-space:nowrap">E-TARGET-001</code></p>
+      <p style="font-size:21px">The observatory UI · M3: f16, AdamW, attention · M4: the Tensor Core path</p>
     </div>
   </div>
-  <p class="mut" style="font-size:24px;margin-top:26px">M1 (Vulkan on the RTX 3090) has not started.</p>
-  <aside class="notes">Sources: CHANGELOG.md [0.1.0]; website/data/status.json (12 shipped, 4 planned); the recorded loss in website/docs/getting-started.md; epic:m1-vulkan-execution is a draft with no stories.</aside>
+  <aside class="notes">Releases: git tag lists 0.1.0, 0.1.1, 0.2.0, 0.3.0, 0.4.0, 0.5.0; 0.5.0 dated 2026-10-23 (CHANGELOG.md:27); binary per CHANGELOG.md:5-6. 17 shipped, 0 planned: website/data/status.json (asOf 2026-10-22, 17 items with "status": "shipped"). 29 implemented, 5 active stories: aep plan artifact list --kind story. 1328 / 0 / 110: commit 24e84d0 message, task ci on wave/m1-g at 03e46dc; the ignored tests include the device tests (AGENTS.md "Commands"). Released column: CHANGELOG.md:41-54 [0.4.0], :33 [0.5.0], :62 [0.3.0], :70 [0.2.0]. On main: CHANGELOG.md:14-25 [Unreleased]. Not built: story:observatory-ui-live-loss-chart is active, not implemented; DESIGN.md section 1 M3 and M4 rows; no M3 or M4 story implemented. Left out: the M0 loss figure 9.69 to 5.6e-11 (still true per website/docs/getting-started.md:48-51, moved off to make room).</aside>
 </section>
 
 <!-- 14 -->
 <section class="slide" data-n="14">
+  <div class="kicker">Benchmark · release 0.5.0</div>
+  <h2 style="margin-bottom:18px">MNIST on the RTX 3090 against PyTorch</h2>
+  <p class="mut" style="font-size:24px;margin-bottom:18px">784 → 64 ReLU → 10, f32, SGD, batch 100. Time per training step, lower is better.</p>
+  <svg viewBox="0 0 1400 400" width="1400" height="400" role="img" aria-label="Microseconds per MNIST training step: PyTorch and ModelSpec">
+    <g font-size="23" fill="#e6e8eb" text-anchor="end">
+      <text x="420" y="47">PyTorch torch.compile, CUDA</text>
+      <text x="420" y="117">PyTorch eager, CUDA</text>
+      <text x="420" y="187">PyTorch eager, CPU, 8 threads</text>
+      <text x="420" y="257">ModelSpec 0.4.0, Vulkan</text>
+      <text x="420" y="327">ModelSpec 0.5.0, Vulkan</text>
+    </g>
+    <line x1="440" y1="10" x2="440" y2="360" stroke="#2d353f" stroke-width="2"/>
+    <g fill="#6b7581">
+      <rect x="440" y="22" width="860" height="36" rx="4"><title>torch.compile: 933 µs per step</title></rect>
+      <rect x="440" y="92" width="478" height="36" rx="4"><title>PyTorch eager CUDA: 519 µs per step</title></rect>
+      <rect x="440" y="162" width="289" height="36" rx="4"><title>PyTorch eager CPU, 8 threads: 314 µs per step</title></rect>
+    </g>
+    <g fill="#58c4b4">
+      <rect x="440" y="232" width="37" height="36" rx="4"><title>ModelSpec 0.4.0: 40.225 µs per step</title></rect>
+      <rect x="440" y="302" width="25" height="36" rx="4"><title>ModelSpec 0.5.0: 27.282 µs per step</title></rect>
+    </g>
+    <g font-size="23" fill="#e6e8eb" font-family="ui-monospace, DejaVu Sans Mono, monospace">
+      <text x="1286" y="47" text-anchor="end" fill="#0e1116">933 µs</text>
+      <text x="930" y="117">519 µs</text>
+      <text x="741" y="187">314 µs</text>
+      <text x="489" y="257">40.225 µs</text>
+      <text x="477" y="327" font-weight="700">27.282 µs</text>
+    </g>
+    <text x="440" y="392" font-size="20" fill="#9aa4ae">linear scale from 0 µs</text>
+  </svg>
+  <div class="grid2" style="gap:28px;margin-top:6px">
+    <div class="card" style="padding:20px 26px">
+      <p style="font-size:22px"><b style="color:#e6e8eb">ADR-007 (proposed):</b> gate 51.9 µs per step, 10× the PyTorch eager CUDA baseline; working target 31.4 µs, 10× the CPU figure.</p>
+    </div>
+    <div class="card" style="padding:20px 26px">
+      <p style="font-size:22px">0.5.0 is under both times. The gate's accuracy and final-weight conditions were not measured for this release.</p>
+    </div>
+  </div>
+  <aside class="notes">Workload: CHANGELOG.md:41 and DESIGN.md:611. PyTorch eager CUDA 519 µs and torch.compile 933 µs: DESIGN.md:612 (PyTorch 2.14.1+cu130, measured 2026-10-21, verification-report:mnist-benchmark-cuda-baseline); torch.compile is reported there, not gated. PyTorch eager CPU 8 threads 314 µs: DESIGN.md:614, measured under load, an upper bound. Gate 51.9 µs and ADR-007 status proposed: DESIGN.md:611-612. Working target 31.4 µs: DESIGN.md:614. ModelSpec 0.4.0 40.225 µs: CHANGELOG.md:37; 0.5.0 27.282 µs: CHANGELOG.md:29 (median of 5 runs of 144,000 steps, mean P0 clock 1957 to 1965 MHz); "accuracy and final-weight conditions were not measured": CHANGELOG.md:29. The [Unreleased] figure of 27.14 µs (CHANGELOG.md:20) and the per-kernel times in DESIGN.md:273 are left out: they are not a release entry, and kernel timings differ between CHANGELOG.md and DESIGN.md. Bar lengths are proportional to the values (860 px for 933 µs). No ModelSpec images/s figure is in the repository, so none is shown.</aside>
+</section>
+
+<!-- 15 -->
+<section class="slide" data-n="15">
+  <span class="tag m0">Epic · training observatory</span>
+  <h2 style="margin-bottom:30px">Watch a run while it trains</h2>
+  <div class="strip">
+    <div class="step"><b>train --serve</b><span>typed <code>RunEvent</code>s over Server-Sent Events at <code>/events</code>, loopback only</span></div>
+    <div class="ar">→</div>
+    <div class="step"><b>train --record</b><span>one JSON <code>RunEvent</code> per line, in <code>sequence</code> order</span></div>
+    <div class="ar">→</div>
+    <div class="step"><b>observe --serve</b><span>replays the file as the same stream; refuses a gap or a broken order</span></div>
+  </div>
+  <div class="grid3" style="gap:24px;margin-top:36px">
+    <div class="card" style="padding:22px 26px">
+      <h3 style="font-size:26px">Built</h3>
+      <p style="font-size:22px">Live event stream and input adjoint (0.2.0) · run recording and replay (on main) · event schema generated from the ESS spec</p>
+    </div>
+    <div class="card" style="padding:22px 26px">
+      <h3 style="font-size:26px">In progress</h3>
+      <p style="font-size:22px">Vue UI with live loss charts · parameter and gradient statistics per step</p>
+    </div>
+    <div class="card" style="padding:22px 26px">
+      <h3 style="font-size:26px">Drafted</h3>
+      <p style="font-size:22px">Architecture graph from the IR · activation statistics · gradient × input saliency</p>
+    </div>
+  </div>
+  <aside class="notes">--serve: CHANGELOG.md:70 [0.2.0] and website/docs/reference/cli.md:134 (loopback address). Input adjoint: CHANGELOG.md:71 [0.2.0]. --record and observe: CHANGELOG.md:16 [Unreleased] and website/docs/reference/cli.md:109-135. Schema: AGENTS.md "State" (modelspec-observatory's JSON Schema under schema/ is ess generate output). In progress: story:observatory-ui-live-loss-chart and story:observatory-parameter-statistics, both active in wave m1-h (.engineering/waves/m1-h.md). Drafted: story:observatory-architecture-graph, story:observatory-activation-statistics, story:observatory-saliency-gradient-x-input, status draft (aep plan artifact list). Epic intent: epic:training-observatory (draft).</aside>
+</section>
+
+<!-- 16 -->
+<section class="slide" data-n="16">
   <h2>How it is built</h2>
   <div class="grid3" style="margin-bottom:40px">
-    <div class="card"><h3>Spec-first</h3><p>ESS data contracts under <code>spec/</code>: artifact, checkpoint, device, training</p></div>
+    <div class="card"><h3>Spec-first</h3><p>ESS data contracts under <code>spec/</code>: artifact, checkpoint, data, device, observatory, training</p></div>
     <div class="card"><h3>Planned</h3><p>An AEP store holds epics, stories and evidence</p></div>
-    <div class="card"><h3>Delivered in waves</h3><p>Wave m0: 8 units</p></div>
+    <div class="card"><h3>Delivered in waves</h3><p>11 waves, 29 stories, m0 to m1-g; wave m1-h in progress with 5</p></div>
   </div>
   <p class="mut" style="font-size:26px;margin-bottom:14px">Each unit</p>
   <div class="strip">
@@ -537,35 +614,42 @@ body.all .hud, body.all .narrow { display: none; }
     <div class="step"><b>Commit</b><span>through a bot identity</span></div>
   </div>
   <p style="font-size:26px;margin-top:34px">The same process is what would govern the self-improvement loop.</p>
-  <aside class="notes">Coordinator status note on process; AGENTS.md "Planning and specification"; spec/system.yaml domains; vision direction item 5.</aside>
+  <aside class="notes">AGENTS.md "Planning and specification"; spec/domains/ holds artifact, checkpoint, data, device, observatory and training .yaml; vision direction item 5. Waves: .engineering/waves/ pages and the merge commits in git log. Delivered: m0 (8 stories, commit 7877c6c), observatory-1 (2: observatory-input-adjoint, observatory-live-event-stream), cpu-perf-1 (1), cpu-perf-2 (1), m1-a (4), m1-b (1), m1-c (2), m1-d (1), m1-e (3), m1-f (1), m1-g (5, units 1 to 5 merged, last at 03e46dc); 29 in total, equal to the implemented stories in aep plan artifact list --kind story. m1-h: 5 active stories (commit cafcb92).</aside>
 </section>
 
-<!-- 15 -->
-<section class="slide" data-n="15">
+<!-- 17 -->
+<section class="slide" data-n="17">
+  <div class="kicker">2026-10-23</div>
   <h2>Next steps</h2>
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:48px;align-items:start">
+  <div style="display:grid;grid-template-columns:1fr 1.25fr 1fr;gap:40px;align-items:start">
     <div>
-      <div class="kicker">1 · M0, done</div>
-      <ul class="bul">
-        <li>Released as 0.1.0 on 2026-10-21</li>
-        <li>First training run: linear regression on CPU<br><span class="mut">seed 42 · 500 steps</span></li>
-        <li>Final loss 5.6 × 10<sup>−11</sup> from 9.69, inside the 10<sup>−3</sup> × step-0 bar</li>
+      <div class="kicker">1 · Done</div>
+      <ul class="bul" style="font-size:0">
+        <li style="font-size:24px;margin-bottom:16px">M0 released as 0.1.0<br><span class="mut">2026-10-21</span></li>
+        <li style="font-size:24px;margin-bottom:16px">Training on the RTX 3090 through Vulkan, released in 0.4.0<br><span class="mut">2026-10-22</span></li>
+        <li style="font-size:24px;margin-bottom:16px">MNIST step from 40.225 to 27.282 µs in 0.5.0<br><span class="mut">2026-10-23</span></li>
       </ul>
     </div>
     <div>
-      <div class="kicker" style="color:var(--m1)">2 · M1 device run on the RTX 3090</div>
+      <div class="kicker" style="color:var(--m1)">2 · In progress · wave m1-h</div>
       <ul class="bul" style="font-size:0">
-        <li style="font-size:24px;margin-bottom:12px">Runtime finds the GPU through Vulkan, prints verified features</li>
-        <li style="font-size:24px;margin-bottom:12px">Valid SPIR-V for f32 elementwise, reduction, transpose, matmul, update</li>
-        <li style="font-size:24px;margin-bottom:12px">Forward, backward and update on GPU, no CUDA API or toolkit</li>
-        <li style="font-size:24px;margin-bottom:12px">GPU and CPU agree within specified tolerances</li>
-        <li style="font-size:24px;margin-bottom:12px">Checkpoint save/load and inference keep parameter identities</li>
-        <li style="font-size:24px;margin-bottom:12px">Kernels, IR, dispatch graph and timings inspectable</li>
+        <li style="font-size:24px;margin-bottom:12px"><code>train --backend vulkan</code> refuses a NaN or ±inf loss or parameter</li>
+        <li style="font-size:24px;margin-bottom:12px">The plan verifier stays bounded on an untrusted artifact</li>
+        <li style="font-size:24px;margin-bottom:12px">Weight-gradient matmul: several output columns per invocation</li>
+        <li style="font-size:24px;margin-bottom:12px">Observatory UI: live loss charts in Vue</li>
+        <li style="font-size:24px;margin-bottom:12px">Parameter and gradient statistics per step</li>
       </ul>
-      <p class="mut" style="font-size:22px;margin-top:8px">6 of the 9 M1 acceptance criteria. The other 3: a .mspec without Python, the compiler, CPU training.</p>
+    </div>
+    <div>
+      <div class="kicker hum">3 · Open</div>
+      <ul class="bul" style="font-size:0">
+        <li style="font-size:24px;margin-bottom:16px">6 changelog entries on main, not in a release yet</li>
+        <li style="font-size:24px;margin-bottom:16px">M1 acceptance: the 9 boxes of DESIGN.md § 9 are not ticked</li>
+        <li style="font-size:24px;margin-bottom:16px">ADR-007: accuracy and final weights not measured</li>
+      </ul>
     </div>
   </div>
-  <aside class="notes">First-run bar from story:m0-cpu-sgd-training; the loss from website/docs/getting-started.md; DESIGN.md section 9, M1 acceptance criteria. The three not listed: a .mspec defines a linear model or MLP, loss and SGD without Python; the compiler parses, checks, builds IR, gradients and optimizer step; the CPU backend trains and validates gradients.</aside>
+  <aside class="notes">Done: CHANGELOG.md:98 (0.1.0, 2026-10-21), :35-37 and :48 (0.4.0, 2026-10-22, train --backend vulkan), :27-29 (0.5.0, 2026-10-23, 27.282 µs from 40.225 µs). In progress: the five active stories of wave m1-h, titles from aep plan artifact list (story:train-vulkan-refuses-non-finite-loss, story:plan-verifier-bounded-on-untrusted-artifact, story:m1-f-weight-grad-matmul-columns, story:observatory-ui-live-loss-chart, story:observatory-parameter-statistics) and .engineering/waves/m1-h.md; listed as in progress only. Open: CHANGELOG.md:12-25 [Unreleased] has 6 entries (3 Added, 1 Changed, 2 Fixed); DESIGN.md:550-558 nine unticked boxes and epic:m1-vulkan-execution in draft; CHANGELOG.md:29 "ADR-007's accuracy and final-weight conditions were not measured for this release". The m1-f-weight-grad-matmul-columns story's µs threshold is left out: the story is in flight. The M0 first-run loss (website/docs/getting-started.md:48-51) moved off this slide.</aside>
 </section>
 
 <div class="narrow">The slides are 16:9: turn the device sideways to read them. Tap the right or left half, or swipe, to change slides.</div>
