@@ -5,7 +5,9 @@
 //! `GET /events` answers `200` with `Content-Type: text/event-stream` and sends every frame of the
 //! run from sequence 0, or from the one after the `Last-Event-ID` request header, then each new
 //! frame as it is emitted, and closes the response once the frame that ends the stream is sent.
-//! Every other path answers `404`, every other method `405`. Each connection has its own thread.
+//! A server given a [`Ui`] (`UiDirectory`) also answers `GET /` with its `index.html` and
+//! `GET /<path>` with its file at `<path>`. Every other path answers `404`, every other method
+//! `405`. Each connection has its own thread.
 
 use std::io::{self, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};
@@ -14,6 +16,7 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use crate::event::{EventSequence, RunEvent, RunEventBody, TrainingRunId};
+use crate::ui::{Ui, UiFile};
 
 /// The path of the stream.
 pub const EVENTS_PATH: &str = "/events";
@@ -66,6 +69,8 @@ struct Frames {
 struct Hub {
     frames: Mutex<Frames>,
     grown: Condvar,
+    /// The built UI served beside the stream, if any.
+    ui: Option<Ui>,
 }
 
 impl Hub {
@@ -89,6 +94,15 @@ impl Server {
     /// Binds `address` and starts accepting connections for the events of run `training_run_id`.
     /// A non-loopback address is refused with [`io::ErrorKind::InvalidInput`].
     pub fn bind(address: SocketAddr, training_run_id: TrainingRunId) -> io::Result<Server> {
+        Server::bind_with_ui(address, training_run_id, None)
+    }
+
+    /// [`Server::bind`], also serving `ui`, when given, at `/` beside the stream.
+    pub fn bind_with_ui(
+        address: SocketAddr,
+        training_run_id: TrainingRunId,
+        ui: Option<Ui>,
+    ) -> io::Result<Server> {
         if !address.ip().is_loopback() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -97,7 +111,10 @@ impl Server {
         }
         let listener = TcpListener::bind(address)?;
         let address = listener.local_addr()?;
-        let hub = Arc::new(Hub::default());
+        let hub = Arc::new(Hub {
+            ui,
+            ..Hub::default()
+        });
         let accepting = Arc::clone(&hub);
         let accept = std::thread::Builder::new()
             .name("observatory-accept".into())
@@ -148,10 +165,19 @@ impl Server {
     /// without one, such as none, are served to a response that stays open. A non-loopback
     /// address is refused as by [`Server::bind`].
     pub fn replay(address: SocketAddr, events: &[RunEvent]) -> io::Result<Server> {
+        Server::replay_with_ui(address, events, None)
+    }
+
+    /// [`Server::replay`], also serving `ui`, when given, at `/` beside the stream.
+    pub fn replay_with_ui(
+        address: SocketAddr,
+        events: &[RunEvent],
+        ui: Option<Ui>,
+    ) -> io::Result<Server> {
         let training_run_id = events
             .first()
             .map_or_else(TrainingRunId::new, |event| event.training_run_id);
-        let server = Server::bind(address, training_run_id)?;
+        let server = Server::bind_with_ui(address, training_run_id, ui)?;
         if let Some(last) = events.last() {
             *server
                 .sequence
@@ -214,21 +240,46 @@ fn read_head(stream: &mut TcpStream) -> io::Result<String> {
     String::from_utf8(head).map_err(|_| io::ErrorKind::InvalidData.into())
 }
 
+/// The answer to a method other than `GET` on a path that is served.
+const NOT_ALLOWED: &[u8] =
+    b"HTTP/1.1 405 Method Not Allowed\r\nAllow: GET\r\nContent-Length: 0\r\n\
+      Connection: close\r\n\r\n";
+
+/// The `Content-Security-Policy` of a UI file: the app loads its scripts, styles and stream from
+/// this server only.
+const UI_POLICY: &str = "default-src 'self'; img-src 'self' data:; frame-ancestors 'none'";
+
+/// Answers with a file of the built UI.
+fn serve_file(stream: &mut TcpStream, file: &UiFile) -> io::Result<()> {
+    let head = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: {}\r\nContent-Length: {}\r\nCache-Control: no-cache\r\n\
+         X-Content-Type-Options: nosniff\r\nContent-Security-Policy: {UI_POLICY}\r\n\
+         Connection: close\r\n\r\n",
+        file.content_type,
+        file.bytes.len()
+    );
+    stream.write_all(head.as_bytes())?;
+    stream.write_all(&file.bytes)?;
+    stream.flush()
+}
+
 fn respond(mut stream: TcpStream, hub: &Hub) -> io::Result<()> {
     let head = read_head(&mut stream)?;
     let Some((method, path, last_event_id)) = parse_head(&head) else {
         return Ok(());
     };
     if path != EVENTS_PATH {
-        return stream.write_all(
-            b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-        );
+        let file = hub.ui.as_ref().and_then(|ui| ui.get(path));
+        return match file {
+            None => stream.write_all(
+                b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            ),
+            Some(_) if method != "GET" => stream.write_all(NOT_ALLOWED),
+            Some(file) => serve_file(&mut stream, file),
+        };
     }
     if method != "GET" {
-        return stream.write_all(
-            b"HTTP/1.1 405 Method Not Allowed\r\nAllow: GET\r\nContent-Length: 0\r\n\
-              Connection: close\r\n\r\n",
-        );
+        return stream.write_all(NOT_ALLOWED);
     }
     let mut next = last_event_id
         .and_then(|id| id.parse::<usize>().ok())

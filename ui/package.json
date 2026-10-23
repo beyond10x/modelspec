@@ -1,0 +1,25 @@
+{
+  "name": "modelspec-observatory-ui",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc --noEmit && vite build",
+    "typecheck": "vue-tsc --noEmit && vue-tsc --noEmit -p tsconfig.node.json",
+    "test": "node --test --disable-warning=ExperimentalWarning \"src/lib/*.test.ts\""
+  },
+  "dependencies": {
+    "vue": "^3.5.43"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.0",
+    "@vitejs/plugin-vue": "^6.0.9",
+    "typescript": "~6.0.3",
+    "vite": "^8.3.1",
+    "vue-tsc": "^3.3.11"
+  },
+  "engines": {
+    "node": ">=22.18"
+  }
+}

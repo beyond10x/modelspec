@@ -9,6 +9,10 @@ history.
 
 ## [Unreleased]
 
+### Added
+
+- The observatory UI in `ui/` (Vue 3, TypeScript, Vite, pnpm; `task ui` builds `ui/dist`) draws the loss and every `MetricSample` per step from the event stream, and `--ui <dir>` on `modelspec train --serve` and `modelspec observe` serves it at `/` beside `/events` (`modelspec_observatory::Ui`; `spec/domains/observatory.yaml`, `UiDirectory`), refusing a directory over 4096 files or 64 MiB without reading more than 64 MiB of it; a page left open after the server is stopped mid-run connects again every second and shows the run of whatever server then answers at that address; its TypeScript types are generated from the Rust `RunEvent` types by `modelspec-ui-types` and drift-checked in `task ci` (story:observatory-ui-live-loss-chart)
+
 ### Fixed
 
 - `modelspec train --backend vulkan` checks every loss and the parameters it reads back, after the last step and before each `--checkpoint-every` checkpoint, and stops a diverged run with the CPU run's `E-TRAIN-001` diagnostic, stdout and `--serve` events instead of printing NaN parameters and exiting 0, with no host wait of its own; a parameter that goes non-finite between read-backs while its step's loss is finite is named at the first later step that shows it, so `sgd(lr = 1e38)` names the loss of step 1 where the CPU names the update of step 0, and `--stats` and `--profile` print the counters of the steps the device ran after the diagnostic (DESIGN.md § 8) (story:train-vulkan-refuses-non-finite-loss)

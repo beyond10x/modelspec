@@ -26,3 +26,5 @@ ctrlc.workspace = true
 serde_json.workspace = true
 jsonschema.workspace = true
 nix.workspace = true
+uuid.workspace = true
+headless_chrome.workspace = true

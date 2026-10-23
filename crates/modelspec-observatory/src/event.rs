@@ -6,8 +6,13 @@
 //! the specification, because JSON has no NaN or ±inf: an `f64` field here is written as a number
 //! when it is finite and as `null` when it is not (`non_finite_null`), and `null` reads back as
 //! NaN.
+//!
+//! Each type also derives `ts_rs::TS`, from which [`crate::typescript`] generates the TypeScript
+//! types of the observatory UI; a `non_finite_null` field says `#[ts(as = ...)]` the JSON it is
+//! written as, `number | null`.
 
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 use uuid::Uuid;
 
 /// The JSON of an `Optional<Binary64>` field held as `f64`: a finite value is a number, NaN and
@@ -47,7 +52,7 @@ mod non_finite_null {
 }
 
 /// `modelspec.training.TrainingRunId`: minted per `modelspec train` invocation.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
 #[serde(transparent)]
 pub struct TrainingRunId(pub Uuid);
 
@@ -65,12 +70,12 @@ impl Default for TrainingRunId {
 }
 
 /// `modelspec.observatory.RunEventId`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
 #[serde(transparent)]
 pub struct RunEventId(pub Uuid);
 
 /// `modelspec.observatory.RunEvent`: one event of a run's stream at its position `sequence`.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct RunEvent {
     pub run_event_id: RunEventId,
@@ -83,7 +88,7 @@ pub struct RunEvent {
 }
 
 /// `modelspec.observatory.RunEvent.State`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub enum RunEventState {
     Emitted,
 }
@@ -91,7 +96,7 @@ pub enum RunEventState {
 /// `modelspec.observatory.RunEventBody`: [`RunEventBody::RunStarted`] first, one
 /// [`RunEventBody::StepCompleted`] per recorded loss, then exactly one of
 /// [`RunEventBody::RunFinished`] and [`RunEventBody::RunFailed`].
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "kind", content = "value", deny_unknown_fields)]
 pub enum RunEventBody {
     RunStarted(RunStarted),
@@ -118,7 +123,7 @@ impl RunEventBody {
 }
 
 /// `modelspec.observatory.RunStarted`.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct RunStarted {
     /// `TrainingRun.steps`, the steps of this invocation.
@@ -128,30 +133,32 @@ pub struct RunStarted {
 }
 
 /// `modelspec.observatory.StepCompleted`.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct StepCompleted {
     pub step: u64,
     /// The `f32` loss of the step, widened exactly; `loss as f32` is the value the CLI prints.
     /// `null` in JSON when it is NaN or ±inf.
     #[serde(with = "non_finite_null")]
+    #[ts(as = "Option<f64>")]
     pub loss: f64,
     pub metrics: Vec<MetricSample>,
     pub parameters: Vec<ParameterStatistics>,
 }
 
 /// `modelspec.observatory.MetricSample`.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct MetricSample {
     pub name: String,
     /// `null` in JSON when it is NaN or ±inf.
     #[serde(with = "non_finite_null")]
+    #[ts(as = "Option<f64>")]
     pub value: f64,
 }
 
 /// `modelspec.observatory.ParameterStatistics`.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct ParameterStatistics {
     /// A `modelspec.checkpoint.ParameterPath`.
@@ -159,33 +166,36 @@ pub struct ParameterStatistics {
     pub subject: StatisticsSubject,
     /// `null` in JSON when it is NaN or ±inf.
     #[serde(with = "non_finite_null")]
+    #[ts(as = "Option<f64>")]
     pub norm: f64,
     pub histogram: Histogram,
 }
 
 /// `modelspec.observatory.StatisticsSubject`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub enum StatisticsSubject {
     Value,
     Gradient,
 }
 
 /// `modelspec.observatory.Histogram`.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct Histogram {
     /// An edge is `null` in JSON when it is NaN or ±inf.
     #[serde(with = "non_finite_null::list")]
+    #[ts(as = "Vec<Option<f64>>")]
     pub bin_edges: Vec<f64>,
     pub counts: Vec<u64>,
 }
 
 /// `modelspec.observatory.RunFailed`.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct RunFailed {
     /// The diagnostic code that refused the run (DESIGN.md § 8.1); `None` for a runtime error.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub code: Option<String>,
     /// The failure on one line.
     pub message: String,
