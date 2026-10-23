@@ -120,8 +120,10 @@ impl fmt::Display for TensorProgram {
 /// (`input x: Tensor<f32, [8, 4]> view b0[f32 x 32, bytes 0..128, align 4]`); per parameter, with
 /// its views; `loss <view>` and `prediction <view>`. Then one line per kernel, numbered `k0`, `k1`
 /// in the order the step plan first dispatches them: `kernel k0 <module id> <kind> <op> <dtype>
-/// (<operands>) -> <result> [over <reduced>] workgroup_size <n> workgroups [x, y, z]`, the
-/// workgroup size being the constant of the kind. Then `plan step` and `plan forward`, each
+/// (<operands>) -> <result> [over <reduced>] [epilogue <op> [writes pre-activation]]
+/// workgroup_size <n> workgroups [x, y, z] [tile <tile>]`, the workgroup size being the constant
+/// of the kind or, for a matmul, its tile's, and the epilogue and the tile, every `MatMulTile`
+/// field, on a matmul only. Then `plan step` and `plan forward`, each
 /// followed by one indented line per step: its position, op, kernel, value, views, workgroups and
 /// dependencies.
 pub fn print_kernel(plan: &ExecutionPlan) -> String {
