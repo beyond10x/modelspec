@@ -25,6 +25,7 @@ mod enabled;
 pub mod memory;
 pub mod negotiate;
 pub mod pipeline;
+mod pool;
 mod probe;
 pub mod profile;
 pub mod runner;
@@ -114,6 +115,20 @@ pub enum ExecError {
     /// A timestamp was written to a query past the end of its pool.
     #[error("query {query} is past the {count} queries of its pool")]
     QueryPastPool { query: u32, count: u32 },
+    /// A descriptor arena was asked to bind past the sets or the storage-buffer descriptors its
+    /// pool was made with, which a driver that accounts the pool exactly refuses with
+    /// `VK_ERROR_OUT_OF_POOL_MEMORY` and another may let pass.
+    #[error(
+        "the descriptor pool holds {sets} sets and {descriptors} storage-buffer descriptors; \
+         {bound_sets} sets of {bound} are bound, and one more set of {needed} does not fit"
+    )]
+    DescriptorPoolFull {
+        sets: u32,
+        descriptors: u32,
+        bound_sets: u32,
+        bound: u32,
+        needed: usize,
+    },
     /// A SPIR-V module declares no `LocalSize`.
     #[error("the SPIR-V module declares no LocalSize execution mode")]
     NoLocalSize,

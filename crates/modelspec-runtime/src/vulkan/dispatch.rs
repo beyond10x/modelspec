@@ -10,9 +10,10 @@
 //! fences only the last ([`Chain::finish`]): a fence signals once every earlier submission to the
 //! queue has finished, so the one wait covers the whole chain. A [`DescriptorArena`] binds a
 //! dispatch's buffers once ([`DescriptorArena::bind`]) for a [`Bound`] dispatch that many
-//! recordings record ([`Recording::dispatch_bound`]). Each submission adds what it recorded to
-//! the device's counters: one submit, its dispatches, and the bytes of its copies from a staging
-//! buffer to a device-local one (uploaded) and back (downloaded).
+//! recordings record ([`Recording::dispatch_bound`]), and refuses a set past the sets or
+//! descriptors of its pool ([`ExecError::DescriptorPoolFull`]). Each submission adds what it
+//! recorded to the device's counters: one submit, its dispatches, and the bytes of its copies
+//! from a staging buffer to a device-local one (uploaded) and back (downloaded).
 
 use std::cell::Cell;
 use std::marker::PhantomData;
@@ -23,6 +24,7 @@ use modelspec_core::ir::tensor::{Dim, TensorType};
 
 use super::memory::Buffer;
 use super::pipeline::{PUSH_CONSTANT_BYTES, Pipeline};
+use super::pool::{Admitted, PoolRoom, admit, pool_info, pool_sizes};
 use super::sync::Barrier;
 use super::{Device, ExecError};
 
@@ -149,6 +151,7 @@ impl Drop for Chain<'_> {
 pub struct DescriptorArena<'d> {
     device: &'d Device<'d>,
     pool: vk::DescriptorPool,
+    room: PoolRoom,
 }
 
 impl Drop for DescriptorArena<'_> {
@@ -176,16 +179,13 @@ impl Device<'_> {
         sets: u32,
         descriptors: u32,
     ) -> Result<DescriptorArena<'d>, ExecError> {
-        let sizes = [vk::DescriptorPoolSize::default()
-            .ty(vk::DescriptorType::STORAGE_BUFFER)
-            .descriptor_count(descriptors.max(1))];
-        let info = vk::DescriptorPoolCreateInfo::default()
-            .max_sets(sets.max(1))
-            .pool_sizes(&sizes);
-        // SAFETY: `info` outlives the call; the pool is destroyed by the arena's drop.
-        let pool = unsafe { self.device.create_descriptor_pool(&info, None) }
-            .map_err(ExecError::call("vkCreateDescriptorPool"))?;
-        Ok(DescriptorArena { device: self, pool })
+        let room = PoolRoom::new(sets, descriptors);
+        let pool = create_pool(&self.device, &room)?;
+        Ok(DescriptorArena {
+            device: self,
+            pool,
+            room,
+        })
     }
 }
 
@@ -210,7 +210,8 @@ impl<'d> DescriptorArena<'d> {
             bindings.invocations,
             kernel.workgroups,
         )?;
-        let set = allocate_set(&self.device.device, self.pool, pipeline, buffers)?;
+        let admitted = admit(&self.room, buffers.len())?;
+        let set = allocate_set(&self.device.device, self.pool, admitted, pipeline, buffers)?;
         Ok(Bound {
             pipeline,
             set,
@@ -264,13 +265,30 @@ fn check_dispatch(
     Ok(())
 }
 
-/// A descriptor set of `pipeline`'s layout from `pool` with `buffers`, whole, at bindings 0, 1, ….
+/// A descriptor pool made with exactly the sets and descriptors of `room` ([`pool_info`]).
+fn create_pool(device: &ash::Device, room: &PoolRoom) -> Result<vk::DescriptorPool, ExecError> {
+    let sizes = pool_sizes(room);
+    let info = pool_info(room, &sizes);
+    // SAFETY: `info` and `sizes` outlive the call; the caller destroys the pool.
+    unsafe { device.create_descriptor_pool(&info, None) }
+        .map_err(ExecError::call("vkCreateDescriptorPool"))
+}
+
+/// A descriptor set of `pipeline`'s layout from `pool`, which `admitted` admitted into the
+/// pool's room, with `buffers`, whole, at bindings 0, 1, ….
 fn allocate_set(
     device: &ash::Device,
     pool: vk::DescriptorPool,
+    admitted: Admitted,
     pipeline: &Pipeline<'_>,
     buffers: &[&Buffer<'_>],
 ) -> Result<vk::DescriptorSet, ExecError> {
+    if admitted.bindings() != buffers.len() {
+        return Err(ExecError::Bindings {
+            expected: pipeline.bindings,
+            got: admitted.bindings(),
+        });
+    }
     let layouts = [pipeline.set_layout];
     let info = vk::DescriptorSetAllocateInfo::default()
         .descriptor_pool(pool)
@@ -643,17 +661,12 @@ impl<'r> Recording<'r> {
     ) -> Result<(), ExecError> {
         check_dispatch(pipeline, buffers, needed, count, invocations, workgroups)?;
         let device = self.device();
-        let sizes = [vk::DescriptorPoolSize::default()
-            .ty(vk::DescriptorType::STORAGE_BUFFER)
-            .descriptor_count(pipeline.bindings.max(1))];
-        let info = vk::DescriptorPoolCreateInfo::default()
-            .max_sets(1)
-            .pool_sizes(&sizes);
-        // SAFETY: `info` outlives the call; the pool is destroyed by `Commands`' drop.
-        let pool = unsafe { device.create_descriptor_pool(&info, None) }
-            .map_err(ExecError::call("vkCreateDescriptorPool"))?;
+        let room = PoolRoom::new(1, pipeline.bindings);
+        // The pool is destroyed by `Commands`' drop.
+        let pool = create_pool(device, &room)?;
         self.commands.descriptor_pools.push(pool);
-        let set = allocate_set(device, pool, pipeline, buffers)?;
+        let admitted = admit(&room, buffers.len())?;
+        let set = allocate_set(device, pool, admitted, pipeline, buffers)?;
         self.record_dispatch(pipeline, set, count, workgroups);
         Ok(())
     }
