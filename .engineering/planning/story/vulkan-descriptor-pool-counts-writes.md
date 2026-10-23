@@ -7,7 +7,14 @@ title: The Vulkan descriptor pool counts every bound buffer
 relations:
 - serves: vision:modelspec
 - decomposes: epic:m1-vulkan-execution
-revision: 4
+scope:
+- confidence: cited
+  path: crates/modelspec-runtime/src/vulkan/dispatch.rs
+- confidence: cited
+  path: crates/modelspec-runtime/src/vulkan/mod.rs
+- confidence: cited
+  path: crates/modelspec-runtime/src/vulkan/runner.rs
+revision: 5
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-23T18:08:55Z", actor: "human:timo", revision: 2}
 - {from: "proposed", to: "active", at: "2026-10-23T18:08:55Z", actor: "human:timo", revision: 3}
