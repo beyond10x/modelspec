@@ -1,0 +1,15 @@
+{
+  "at": "2026-10-23T00:42:45Z",
+  "actor": "human:timo",
+  "artifact": "story:m1-f-weight-grad-matmul-tiled",
+  "kind": "story",
+  "revision": 14,
+  "change": {
+    "change": "evidence",
+    "kind": "review_outcome",
+    "source": "aep:adversary",
+    "reference": "e70b75f",
+    "review": "review-result:m1-g-wgrad-adversary-1",
+    "outcome": "fixed"
+  }
+}

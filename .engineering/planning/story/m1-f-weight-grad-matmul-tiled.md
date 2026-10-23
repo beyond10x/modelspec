@@ -2,7 +2,7 @@
 format: aep.planning-md/3
 id: story:m1-f-weight-grad-matmul-tiled
 kind: story
-status: active
+status: implemented
 title: Tiled matmul tuned for the weight-gradient shape, and the closing re-time against release 0.5.0
 relations:
 - decomposes: epic:pytorch-10x-mnist
@@ -27,10 +27,11 @@ scope:
   path: crates/modelspec-runtime/src/vulkan/dispatch.rs
 - confidence: inferred
   path: crates/modelspec-runtime/tests
-revision: 14
+revision: 15
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-22T15:28:57Z", actor: "human:timo", revision: 11}
 - {from: "proposed", to: "active", at: "2026-10-22T15:28:58Z", actor: "human:timo", revision: 12}
+- {from: "active", to: "implemented", at: "2026-10-23T00:42:45Z", actor: "human:timo", revision: 15, decided_on: {"recorded":{"test_result":1,"review_outcome":1}}}
 ---
 # Tiled matmul tuned for the weight-gradient shape, and the closing re-time against release 0.5.0
 

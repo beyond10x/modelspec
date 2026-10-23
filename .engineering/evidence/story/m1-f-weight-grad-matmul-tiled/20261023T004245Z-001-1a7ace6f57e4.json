@@ -1,0 +1,13 @@
+{
+  "at": "2026-10-23T00:42:45Z",
+  "actor": "human:timo",
+  "artifact": "story:m1-f-weight-grad-matmul-tiled",
+  "kind": "story",
+  "revision": 14,
+  "change": {
+    "change": "evidence",
+    "kind": "test_result",
+    "source": "task ci on wave/m1-g: 1272 passed, 0 failed, 94 ignored, exit 0",
+    "reference": "72bcdef"
+  }
+}
