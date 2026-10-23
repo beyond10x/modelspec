@@ -88,9 +88,10 @@ fn stages() -> Vec<Stage> {
             title: "Artifacts",
             file: "crates/modelspec-core/src/artifact.rs",
             about: "The artifact directory reader of `modelspec compile`, which checks the format \
-                    version, that every kernel module file is present and no longer than its \
-                    entry, each module hash and the artifact hash, and then the invariants and \
-                    the execution plan, in that order.",
+                    version, the size of each plan as the manifest is parsed, that every kernel \
+                    module file is present and no longer than its entry, each module hash and \
+                    the artifact hash, and then the invariants and the execution plan, in that \
+                    order.",
             codes: vec![
                 modelspec_core::artifact::E_ARTIFACT_001,
                 modelspec_core::artifact::E_ARTIFACT_002,

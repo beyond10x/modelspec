@@ -17,19 +17,25 @@
 //!
 //! [`read`] validates an untrusted directory before anything is dispatched, in this order: the
 //! manifest is a regular file, readable and of a known format version ([`E_ARTIFACT_001`]);
-//! every module file is a regular file no longer than its entry says and `kernels/` holds no
-//! other entry ([`E_ARTIFACT_004`]); each module's hash and then `artifact_hash` and
-//! `artifact_id` ([`E_ARTIFACT_002`]); then every byte size computed from a shape or element
-//! count fits in 64 bits, the invariants of `spec/domains/artifact.yaml`, every Dispatch names a
-//! module the artifact owns, every module is SPIR-V, and the plan verifier ([`verify_plan`])
+//! each plan has at most [`MAX_PLAN_STEPS`] steps, [`MAX_PLAN_DEPENDENCIES`] dependencies and
+//! [`MAX_PLAN_VIEWS`] step views ([`E_ARTIFACT_003`]), counted as the manifest is parsed, so
+//! that a plan past them is refused without being held, whether it is sealed or not; every
+//! module file is a regular file no longer than its entry says and `kernels/` holds no other
+//! entry ([`E_ARTIFACT_004`]); each module's hash and then `artifact_hash` and `artifact_id`
+//! ([`E_ARTIFACT_002`]); then every byte size computed from a shape or element count fits in 64
+//! bits, the invariants of `spec/domains/artifact.yaml`, every Dispatch names a module the
+//! artifact owns, every module is SPIR-V, and the plan verifier ([`verify_plan`])
 //! ([`E_ARTIFACT_003`]).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
-use std::io::Read as _;
+use std::io::{Read as _, Write as _};
+use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 
+use serde::de::{Deserializer, IgnoredAny, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use uuid::Uuid;
 
 use crate::diag::{Code, Diagnostic};
@@ -188,11 +194,14 @@ pub const E_ARTIFACT_001: Code = Code::new("E-ARTIFACT-001");
 /// was changed after it was written.
 pub const E_ARTIFACT_002: Code = Code::new("E-ARTIFACT-002");
 
-/// The artifact is sealed but breaks an invariant of `spec/domains/artifact.yaml` or the plan
-/// verifier: a byte size that does not fit in 64 bits, a buffer larger than 4294967295 bytes, a
-/// kernel module that is not SPIR-V (whole little-endian words, a 5-word header, the magic number
-/// 0x07230203), a Dispatch naming a module the artifact does not own, a dependency on a step that
-/// is not before it, a view outside its buffer, or any other execution-plan rule.
+/// The artifact breaks an invariant of `spec/domains/artifact.yaml` or the plan verifier: a plan
+/// of more than 4096 steps ([`MAX_PLAN_STEPS`]), 65536 dependencies ([`MAX_PLAN_DEPENDENCIES`])
+/// or 65536 step views ([`MAX_PLAN_VIEWS`]), refused as the manifest is parsed, before the module
+/// files and the hashes are checked and so whether the artifact is sealed or not; or, in a sealed
+/// artifact, a byte size that does not fit in 64 bits, a buffer larger than 4294967295 bytes, a
+/// kernel module that is not SPIR-V (whole little-endian words, a 5-word header, the magic
+/// number 0x07230203), a Dispatch naming a module the artifact does not own, a dependency on a
+/// step that is not before it, a view outside its buffer, or any other execution-plan rule.
 pub const E_ARTIFACT_003: Code = Code::new("E-ARTIFACT-003");
 
 /// A kernel module file the manifest names is missing, not a regular file (a link, a device or a
@@ -212,6 +221,20 @@ pub const KERNELS_DIR: &str = "kernels";
 
 /// The largest `artifact.json` [`read`] parses.
 pub const MAX_MANIFEST_BYTES: u64 = 64 << 20;
+
+/// The most steps [`read`] accepts in the step plan, and in the forward plan. The plan verifier
+/// ([`verify_plan`]) keeps, for each step, the steps it is ordered after as a bit set, so its
+/// memory grows with the square of the steps; at this limit two such sets take 4 MiB. The
+/// largest plan an example compiles to, the MNIST step plan, has 22 steps.
+pub const MAX_PLAN_STEPS: usize = 4096;
+
+/// The most dependencies, summed over its steps, [`read`] accepts in each plan. The verifier
+/// merges one bit set per dependency.
+pub const MAX_PLAN_DEPENDENCIES: usize = 65_536;
+
+/// The most step views, the reads and writes summed over its steps, [`read`] accepts in each
+/// plan. The verifier merges one bit set per view.
+pub const MAX_PLAN_VIEWS: usize = 65_536;
 
 /// `modelspec.artifact.KernelCacheKey`: what a module was built under (DESIGN.md § 5.3).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -343,7 +366,7 @@ pub fn module_path(dir: &Path, id: KernelModuleId) -> PathBuf {
 /// Reads and validates the artifact directory `dir` in the order of the module documentation,
 /// and returns the artifact or the diagnostic of the first check it fails.
 pub fn read(dir: &Path) -> Result<LoadedArtifact, Diagnostic> {
-    let manifest = read_manifest(dir)?;
+    let mut manifest = read_manifest(dir)?;
     let files = open_modules(dir, &manifest)?;
     let mut modules = Vec::new();
     for (kernel, file) in manifest.kernels.iter().zip(files) {
@@ -398,11 +421,8 @@ pub fn read(dir: &Path) -> Result<LoadedArtifact, Diagnostic> {
         .with("recorded", manifest.artifact_id.clone())
         .with("found", id.hyphenated().to_string()));
     }
-    let invalid = |message: String| {
-        Diagnostic::new(E_ARTIFACT_003, "the artifact breaks an invariant")
-            .with("artifact", dir.join(MANIFEST_FILE).display().to_string())
-            .with("invariant", message)
-    };
+    let manifest_path = dir.join(MANIFEST_FILE);
+    let invalid = |message: String| broken_invariant(&manifest_path, message);
     let artifact = manifest.check().map_err(invalid)?;
     for (kernel, (_, spirv)) in manifest.kernels.iter().zip(&modules) {
         if let Err(why) = check_spirv(spirv) {
@@ -535,7 +555,10 @@ fn open_modules(dir: &Path, manifest: &Manifest) -> Result<Vec<std::fs::File>, D
     Ok(files)
 }
 
-/// `artifact.json` of `dir`, of a known format version.
+/// `artifact.json` of `dir`, of a known format version and with plans within their limits. The
+/// manifest is parsed once into its types, its plans as [`BoundedPlan`]; only when that fails is
+/// it parsed again, holding nothing, to tell JSON that is not a manifest from text that is not
+/// JSON and to find its `format_version`.
 fn read_manifest(dir: &Path) -> Result<Manifest, Diagnostic> {
     let path = dir.join(MANIFEST_FILE);
     let unreadable = |message: &str| {
@@ -561,19 +584,40 @@ fn read_manifest(dir: &Path) -> Result<Manifest, Diagnostic> {
         return Err(unreadable("the artifact manifest is too large")
             .with("limit", format!("{MAX_MANIFEST_BYTES} bytes")));
     }
-    let value: serde_json::Value = serde_json::from_slice(&bytes).map_err(|e| {
-        unreadable("the artifact manifest is not JSON").with("error", e.to_string())
-    })?;
-    let version = value.get("format_version");
-    if version.and_then(serde_json::Value::as_u64) != Some(FORMAT_VERSION) {
-        let found = version.map_or_else(|| "none".to_owned(), ToString::to_string);
+    let manifest = serde_json::from_slice::<Manifest<BoundedPlan>>(&bytes);
+    let version = match &manifest {
+        Ok(manifest) if bytes.trim_ascii_start().starts_with(b"{") => {
+            Some(Value::from(manifest.format_version))
+        }
+        Ok(_) => None,
+        Err(_) => {
+            serde_json::from_slice::<FormatVersion>(&bytes)
+                .map_err(|e| {
+                    unreadable("the artifact manifest is not JSON").with("error", e.to_string())
+                })?
+                .0
+        }
+    };
+    if version.as_ref().and_then(Value::as_u64) != Some(FORMAT_VERSION) {
+        let found = version.map_or_else(|| "none".to_owned(), |v| v.to_string());
         return Err(unreadable("the artifact has an unknown format version")
             .with("format_version", found)
             .with("supported", FORMAT_VERSION.to_string()));
     }
-    serde_json::from_value(value).map_err(|e| {
-        unreadable("the artifact manifest is not of format version 1").with("error", e.to_string())
-    })
+    manifest
+        .map_err(|e| {
+            unreadable("the artifact manifest is not of format version 1")
+                .with("error", e.to_string())
+        })?
+        .within_plan_limits()
+        .map_err(|invariant| broken_invariant(&path, invariant))
+}
+
+/// [`E_ARTIFACT_003`] for the manifest at `path`, which breaks `invariant`.
+fn broken_invariant(path: &Path, invariant: String) -> Diagnostic {
+    Diagnostic::new(E_ARTIFACT_003, "the artifact breaks an invariant")
+        .with("artifact", path.display().to_string())
+        .with("invariant", invariant)
 }
 
 /// The artifact id of `hash`: its first 16 bytes, marked as a version 8 UUID.
@@ -782,18 +826,192 @@ enum WireOp {
     Complete,
 }
 
-/// `modelspec.artifact.PlanStep`.
+/// `modelspec.artifact.PlanStep`. [`read`] parses its views and dependencies as [`Counted`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct WireStep {
+struct WireStep<V = Vec<WireView>, D = Vec<usize>> {
     op: WireOp,
     #[serde(with = "module_id::optional")]
     kernel_module_id: Option<KernelModuleId>,
     workgroups: Option<[u32; 3]>,
-    reads: Vec<WireView>,
-    writes: Vec<WireView>,
-    depends_on: Vec<usize>,
+    reads: V,
+    writes: V,
+    depends_on: D,
     value: Option<u32>,
+}
+
+/// A step as [`read`] parses it.
+type CountedStep =
+    WireStep<Counted<WireView, MAX_PLAN_VIEWS>, Counted<usize, MAX_PLAN_DEPENDENCIES>>;
+
+impl CountedStep {
+    /// The step with the elements its arrays kept.
+    fn kept(self) -> WireStep {
+        WireStep {
+            op: self.op,
+            kernel_module_id: self.kernel_module_id,
+            workgroups: self.workgroups,
+            reads: self.reads.kept,
+            writes: self.writes.kept,
+            depends_on: self.depends_on.kept,
+            value: self.value,
+        }
+    }
+}
+
+/// An array of a plan step as [`read`] parses it: every element is parsed and counted, and the
+/// first `LIMIT` are kept, so that an array past its plan's limit is not held.
+struct Counted<T, const LIMIT: usize> {
+    kept: Vec<T>,
+    count: usize,
+}
+
+impl<'de, T: Deserialize<'de>, const LIMIT: usize> Deserialize<'de> for Counted<T, LIMIT> {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Elements<T, const LIMIT: usize>(PhantomData<T>);
+        impl<'de, T: Deserialize<'de>, const LIMIT: usize> Visitor<'de> for Elements<T, LIMIT> {
+            type Value = Counted<T, LIMIT>;
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("a sequence")
+            }
+            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+                let mut counted = Counted {
+                    kept: Vec::new(),
+                    count: 0,
+                };
+                while let Some(element) = seq.next_element::<T>()? {
+                    if counted.count < LIMIT {
+                        counted.kept.push(element);
+                    }
+                    counted.count += 1;
+                }
+                Ok(counted)
+            }
+        }
+        deserializer.deserialize_seq(Elements(PhantomData))
+    }
+}
+
+/// The steps of a plan, its dependencies and its views (reads and writes) summed over its steps.
+#[derive(Clone, Copy, Debug, Default)]
+struct PlanSizes {
+    steps: usize,
+    dependencies: usize,
+    views: usize,
+}
+
+impl PlanSizes {
+    fn within_limits(&self) -> bool {
+        self.steps <= MAX_PLAN_STEPS
+            && self.dependencies <= MAX_PLAN_DEPENDENCIES
+            && self.views <= MAX_PLAN_VIEWS
+    }
+
+    /// `Ok` when the plan `name` has at most [`MAX_PLAN_STEPS`] steps,
+    /// [`MAX_PLAN_DEPENDENCIES`] dependencies and [`MAX_PLAN_VIEWS`] views, so that the plan
+    /// verifier's work is bounded; otherwise the invariant it breaks.
+    fn check(&self, name: &str) -> Result<(), String> {
+        let sizes = [
+            ("steps", self.steps, MAX_PLAN_STEPS),
+            ("dependencies", self.dependencies, MAX_PLAN_DEPENDENCIES),
+            ("views", self.views, MAX_PLAN_VIEWS),
+        ];
+        for (what, count, limit) in sizes {
+            if count > limit {
+                return Err(format!(
+                    "{name} has at most {limit} {what} (it has {count})"
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// A plan as [`read`] parses it: every step is parsed and counted, and the steps are kept while
+/// the plan is within its limits ([`PlanSizes::within_limits`]), so that the reader refuses a
+/// plan past them without holding it.
+struct BoundedPlan {
+    steps: Vec<WireStep>,
+    sizes: PlanSizes,
+}
+
+impl<'de> Deserialize<'de> for BoundedPlan {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Steps;
+        impl<'de> Visitor<'de> for Steps {
+            type Value = BoundedPlan;
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("a sequence")
+            }
+            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<BoundedPlan, A::Error> {
+                let mut plan = BoundedPlan {
+                    steps: Vec::new(),
+                    sizes: PlanSizes::default(),
+                };
+                while let Some(step) = seq.next_element::<CountedStep>()? {
+                    plan.sizes.steps += 1;
+                    plan.sizes.dependencies += step.depends_on.count;
+                    plan.sizes.views += step.reads.count + step.writes.count;
+                    if plan.sizes.within_limits() {
+                        plan.steps.push(step.kept());
+                    }
+                }
+                Ok(plan)
+            }
+        }
+        deserializer.deserialize_seq(Steps)
+    }
+}
+
+/// The `format_version` of a manifest's top-level object, the last one where it repeats, or
+/// `None` when the manifest has none or is not an object. Every other value is only checked to
+/// be JSON, so that the probe holds nothing of it.
+struct FormatVersion(Option<Value>);
+
+impl<'de> Deserialize<'de> for FormatVersion {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Probe;
+        impl<'de> Visitor<'de> for Probe {
+            type Value = FormatVersion;
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("a JSON value")
+            }
+            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<FormatVersion, A::Error> {
+                let mut version = None;
+                while let Some(key) = map.next_key::<String>()? {
+                    if key == "format_version" {
+                        version = Some(map.next_value()?);
+                    } else {
+                        map.next_value::<IgnoredAny>()?;
+                    }
+                }
+                Ok(FormatVersion(version))
+            }
+            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<FormatVersion, A::Error> {
+                while seq.next_element::<IgnoredAny>()?.is_some() {}
+                Ok(FormatVersion(None))
+            }
+            fn visit_bool<E>(self, _: bool) -> Result<FormatVersion, E> {
+                Ok(FormatVersion(None))
+            }
+            fn visit_i64<E>(self, _: i64) -> Result<FormatVersion, E> {
+                Ok(FormatVersion(None))
+            }
+            fn visit_u64<E>(self, _: u64) -> Result<FormatVersion, E> {
+                Ok(FormatVersion(None))
+            }
+            fn visit_f64<E>(self, _: f64) -> Result<FormatVersion, E> {
+                Ok(FormatVersion(None))
+            }
+            fn visit_str<E>(self, _: &str) -> Result<FormatVersion, E> {
+                Ok(FormatVersion(None))
+            }
+            fn visit_unit<E>(self) -> Result<FormatVersion, E> {
+                Ok(FormatVersion(None))
+            }
+        }
+        deserializer.deserialize_any(Probe)
+    }
 }
 
 /// [`KernelKind`], by the name the Kernel IR printer shows.
@@ -886,9 +1104,10 @@ struct WireKernel {
 }
 
 /// `artifact.json`: `modelspec.artifact.CompiledArtifact` and its kernel modules' entries.
+/// [`read`] parses its plans as [`BoundedPlan`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Manifest {
+struct Manifest<P = Vec<WireStep>> {
     format_version: u64,
     artifact_id: String,
     backend: WireBackend,
@@ -902,11 +1121,40 @@ struct Manifest {
     parameters: Vec<WireParameter>,
     data: Vec<WireData>,
     kernels: Vec<WireKernel>,
-    plan: Vec<WireStep>,
-    forward_plan: Vec<WireStep>,
+    plan: P,
+    forward_plan: P,
     buffers: Vec<u64>,
     loss_view: WireView,
     prediction_view: WireView,
+}
+
+impl Manifest<BoundedPlan> {
+    /// The manifest with the steps its plans kept, when both plans are within their limits;
+    /// otherwise the invariant the first plan past them breaks.
+    fn within_plan_limits(self) -> Result<Manifest, String> {
+        self.plan.sizes.check("plan")?;
+        self.forward_plan.sizes.check("forward_plan")?;
+        Ok(Manifest {
+            format_version: self.format_version,
+            artifact_id: self.artifact_id,
+            backend: self.backend,
+            artifact_hash: self.artifact_hash,
+            source_hash: self.source_hash,
+            ir_hash: self.ir_hash,
+            fast_math: self.fast_math,
+            deterministic: self.deterministic,
+            compiler_version: self.compiler_version,
+            schema_hash: self.schema_hash,
+            parameters: self.parameters,
+            data: self.data,
+            kernels: self.kernels,
+            plan: self.plan.steps,
+            forward_plan: self.forward_plan.steps,
+            buffers: self.buffers,
+            loss_view: self.loss_view,
+            prediction_view: self.prediction_view,
+        })
+    }
 }
 
 fn wire_steps(steps: &[PlanStep]) -> Vec<WireStep> {
@@ -1127,13 +1375,21 @@ impl Manifest {
     }
 
     /// blake3 over the JSON of the manifest with `artifact_hash` and `artifact_id` empty, then
-    /// over each module's bytes; `modules` are in id order.
-    fn hash(&self, modules: &[(KernelModuleId, &[u8])]) -> ContentHash {
-        let mut blank = self.clone();
-        blank.artifact_hash.clear();
-        blank.artifact_id.clear();
+    /// over each module's bytes; `modules` are in id order. The JSON goes into the hasher as it
+    /// is serialized, and the two fields are emptied in place and then restored, so that hashing
+    /// holds no copy of the manifest.
+    fn hash(&mut self, modules: &[(KernelModuleId, &[u8])]) -> ContentHash {
+        let artifact_hash = std::mem::take(&mut self.artifact_hash);
+        let artifact_id = std::mem::take(&mut self.artifact_id);
         let mut hasher = blake3::Hasher::new();
-        hasher.update(blank.to_json().as_bytes());
+        let mut json = std::io::BufWriter::new(&mut hasher);
+        serde_json::to_writer_pretty(&mut json, self).expect("a manifest serializes");
+        json.write_all(b"\n")
+            .and_then(|()| json.flush())
+            .expect("a hasher takes every byte");
+        drop(json);
+        self.artifact_hash = artifact_hash;
+        self.artifact_id = artifact_id;
         for (_, bytes) in modules {
             hasher.update(bytes);
         }
