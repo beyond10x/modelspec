@@ -83,6 +83,9 @@ fn numbers_are_numbers_and_floats_may_be_null() {
         "norm: number | null,",
         "bin_edges: Array<number | null>,",
         "counts: Array<number>,",
+        "nan_count: number,",
+        "positive_infinity_count: number,",
+        "negative_infinity_count: number,",
         "code?: string,",
         "message: string,",
     ] {

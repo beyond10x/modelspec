@@ -143,6 +143,8 @@ pub struct StepCompleted {
     #[ts(as = "Option<f64>")]
     pub loss: f64,
     pub metrics: Vec<MetricSample>,
+    /// Empty except on a sampled step: per parameter in path order its `Value` entry, then its
+    /// `Gradient` entry when the step makes an update the parameter has a gradient in.
     pub parameters: Vec<ParameterStatistics>,
 }
 
@@ -187,6 +189,12 @@ pub struct Histogram {
     #[ts(as = "Vec<Option<f64>>")]
     pub bin_edges: Vec<f64>,
     pub counts: Vec<u64>,
+    /// The NaN elements, in no bin.
+    pub nan_count: u64,
+    /// The +inf elements, in no bin.
+    pub positive_infinity_count: u64,
+    /// The −inf elements, in no bin.
+    pub negative_infinity_count: u64,
 }
 
 /// `modelspec.observatory.RunFailed`.

@@ -3,7 +3,11 @@ import { computed } from 'vue';
 import { FRAME, domain, label, line, project } from '../lib/chart.ts';
 import type { Series } from '../lib/series.ts';
 
-const props = defineProps<{ series: Series; version: number }>();
+// `tag` holds the attributes that say which chart this is, `data-metric` and the series name
+// unless given: a reader of `svg[data-metric]` reads the loss and metric charts and no other.
+const props = defineProps<{ series: Series; version: number; tag?: Record<string, string> }>();
+
+const tag = computed(() => props.tag ?? { 'data-metric': props.series.name });
 
 const last = computed(() => {
   void props.version;
@@ -48,7 +52,7 @@ const axes = computed(() => {
       :viewBox="`0 0 ${FRAME.width} ${FRAME.height}`"
       role="img"
       :aria-label="`${series.name} per step`"
-      :data-metric="series.name"
+      v-bind="tag"
       :data-points="series.points.length"
       :data-last-step="last === null ? undefined : last.step"
       :data-last-value="last === null ? undefined : String(last.value)"

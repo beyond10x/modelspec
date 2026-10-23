@@ -111,7 +111,7 @@ fn main() {
                     ),
                 ),
             ]);
-            loss = sgd_step(&step, &inputs, &mut state).unwrap();
+            loss = sgd_step(&step, &inputs, &mut state).unwrap().loss;
         }
         loss
     };

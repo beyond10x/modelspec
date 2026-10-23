@@ -45,6 +45,9 @@ fn step(loss: f32, value: f64) -> RunEventBody {
             histogram: Histogram {
                 bin_edges: vec![value, value],
                 counts: vec![0],
+                nan_count: 0,
+                positive_infinity_count: 0,
+                negative_infinity_count: 0,
             },
         }],
     })
@@ -173,7 +176,10 @@ fn valid_step() -> Value {
                            "parameters": [{"path": "LinearReg.w", "subject": "Value",
                                            "norm": 0.5,
                                            "histogram": {"bin_edges": [0.0, 1.0],
-                                                         "counts": [1]}}]}},
+                                                         "counts": [1],
+                                                         "nan_count": 0,
+                                                         "positive_infinity_count": 0,
+                                                         "negative_infinity_count": 0}}]}},
         "state": "Emitted"
     })
 }
@@ -268,6 +274,34 @@ fn null_is_admitted_only_where_the_spec_puts_it() {
             set(
                 &["body", "value", "parameters", "0", "histogram", "bin_edges"],
                 Value::Null,
+            ),
+        ),
+        (
+            "nan_count null",
+            set(
+                &["body", "value", "parameters", "0", "histogram", "nan_count"],
+                Value::Null,
+            ),
+        ),
+        (
+            "no positive_infinity_count",
+            remove(
+                &["body", "value", "parameters", "0", "histogram"],
+                "positive_infinity_count",
+            ),
+        ),
+        (
+            "negative_infinity_count negative",
+            set(
+                &[
+                    "body",
+                    "value",
+                    "parameters",
+                    "0",
+                    "histogram",
+                    "negative_infinity_count",
+                ],
+                json!(-1),
             ),
         ),
         (

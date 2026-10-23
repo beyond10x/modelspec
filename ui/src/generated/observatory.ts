@@ -8,7 +8,19 @@ export type Histogram = {
 /**
  * An edge is `null` in JSON when it is NaN or ±inf.
  */
-bin_edges: Array<number | null>, counts: Array<number>, };
+bin_edges: Array<number | null>, counts: Array<number>,
+/**
+ * The NaN elements, in no bin.
+ */
+nan_count: number,
+/**
+ * The +inf elements, in no bin.
+ */
+positive_infinity_count: number,
+/**
+ * The −inf elements, in no bin.
+ */
+negative_infinity_count: number, };
 
 /**
  * `modelspec.observatory.MetricSample`.
@@ -101,7 +113,12 @@ export type StepCompleted = { step: number,
  * The `f32` loss of the step, widened exactly; `loss as f32` is the value the CLI prints.
  * `null` in JSON when it is NaN or ±inf.
  */
-loss: number | null, metrics: Array<MetricSample>, parameters: Array<ParameterStatistics>, };
+loss: number | null, metrics: Array<MetricSample>,
+/**
+ * Empty except on a sampled step: per parameter in path order its `Value` entry, then its
+ * `Gradient` entry when the step makes an update the parameter has a gradient in.
+ */
+parameters: Array<ParameterStatistics>, };
 
 /**
  * `modelspec.training.TrainingRunId`: minted per `modelspec train` invocation.

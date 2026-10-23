@@ -38,9 +38,9 @@
 //! compiled before the loader is opened; then a missing loader exits 1 with `E-TARGET-002`, no
 //! device or a `--device` that names none with `E-TARGET-003`, and a device below the
 //! requirements with `E-TARGET-004`. A build without the `vulkan` feature refuses the backend
-//! with [`E_TARGET_001`] before the file is read. `--data`, `--init` and `--eval` are CPU-only,
-//! and `--device`, `--stats` and `--profile` Vulkan-only: naming one with the other backend is a
-//! usage error (exit 2).
+//! with [`E_TARGET_001`] before the file is read. `--data`, `--init`, `--eval` and
+//! `--statistics-every` are CPU-only, and `--device`, `--stats` and `--profile` Vulkan-only:
+//! naming one with the other backend is a usage error (exit 2).
 //!
 //! `--data <dir>` trains on dense `f32` files instead of synthetic data, `--init <dir>` starts
 //! the parameters that have a file from it, and `--eval <dir>` adds a last line
@@ -62,8 +62,13 @@
 //! Once the file compiles the address is bound and `serving http://<bound address>/events` is
 //! printed on stderr; then the stream is `RunStarted`, one `StepCompleted` per loss, for each of the
 //! `steps + 1` the run records, and `RunFinished` once stdout is written, or `RunFailed` with the
-//! failure stderr reports. Stdout is byte for byte what the run prints without the flag. The
-//! process then keeps serving, so a client that connects late reads the whole stream, until
+//! failure stderr reports. A CPU run's `StepCompleted` carries `parameters` on its first step,
+//! every step that is a multiple of `--statistics-every <n>` (100 without the flag) and its last:
+//! per parameter in path order the norm and histogram of its values, then of its gradient unless
+//! the step is the last or the loss does not read it ([`modelspec_observatory::statistics`]); every
+//! other step's list is empty, and so is every step's of a Vulkan run, which reads no gradient
+//! back. Stdout is byte for byte what the run prints without the flag. The process then keeps
+//! serving, so a client that connects late reads the whole stream, until
 //! SIGINT, SIGTERM or SIGHUP, on which it exits with the run's own status: 0 for a run that
 //! finished, 1 for one that failed (wave observatory-1 coordinator, 2026-10-21). The run has ended
 //! once it has printed its last stdout line, or for a run that fails its failure on stderr, so a
@@ -98,15 +103,15 @@ use modelspec_core::compile::{self, CompiledTraining};
 use modelspec_core::diag::{Code, Diagnostic};
 use modelspec_core::ir::tensor::ParamId;
 use modelspec_observatory::{
-    EVENTS_PATH, EventSequence, Recorder, RunEventBody, RunFailed, RunStarted, Server,
-    StepCompleted, TrainingRunId, Ui,
+    EVENTS_PATH, EventSequence, ParameterStatistics, Recorder, RunEventBody, RunFailed, RunStarted,
+    Server, StatisticsSubject, StepCompleted, TrainingRunId, Ui,
 };
 use modelspec_runtime::cpu::HostTensor;
 use modelspec_runtime::train::checkpoint::{self, Checkpoint, CheckpointError};
 use modelspec_runtime::train::data::{self, DataError, DenseData};
 use modelspec_runtime::train::init;
 use modelspec_runtime::train::optimizer::ParamState;
-use modelspec_runtime::train::runner::{self, Diverged, Eval, Run, RunError};
+use modelspec_runtime::train::runner::{self, Diverged, Eval, Observed, Run, RunError};
 
 /// The selected backend is not available: `--backend vulkan` of `train` or `infer` in a build
 /// without the `vulkan` feature.
@@ -114,6 +119,10 @@ pub const E_TARGET_001: Code = Code::new("E-TARGET-001");
 
 /// A loss line is printed every this many steps, besides the last.
 const LOSS_EVERY: u64 = 50;
+
+/// Statistics are taken every this many steps without `--statistics-every`, besides the first
+/// and the last (approval-record:parameter-statistics-settlements, question 3).
+const STATISTICS_EVERY: u64 = 100;
 
 /// Arguments of `modelspec train`.
 #[derive(clap::Args)]
@@ -164,6 +173,11 @@ pub struct Args {
     /// and step 0, refused unless it matches the compiled file and its optimizer.
     #[arg(long, value_name = "PATH", conflicts_with = "init")]
     pub resume: Option<PathBuf>,
+    /// Take the norm and histogram of every parameter and its gradient for the event stream at
+    /// the first step, every step that is a multiple of N and the last, instead of every 100;
+    /// CPU only: a Vulkan run sends every step's parameters list empty.
+    #[arg(long, value_name = "N", value_parser = clap::value_parser!(u64).range(1..))]
+    pub statistics_every: Option<u64>,
     /// With --backend vulkan, train on the physical device INDEX, in the order the Vulkan loader
     /// lists them, instead of device 0.
     #[arg(long, value_name = "INDEX")]
@@ -193,6 +207,7 @@ fn misplaced_flag(args: &Args) -> Option<&'static str> {
             ("--data", args.data.is_some()),
             ("--init", args.init.is_some()),
             ("--eval", args.eval.is_some()),
+            ("--statistics-every", args.statistics_every.is_some()),
         ]
         .into_iter()
         .find_map(|(flag, given)| given.then_some(flag)),
@@ -201,7 +216,8 @@ fn misplaced_flag(args: &Args) -> Option<&'static str> {
 
 /// What runs the steps: the CPU interpreter, or a Vulkan device with the file's execution plan.
 enum Engine {
-    Cpu,
+    /// `statistics_every` is the N of `--statistics-every`.
+    Cpu { statistics_every: u64 },
     #[cfg(feature = "vulkan")]
     Vulkan {
         artifact: Box<modelspec_core::artifact::CompiledArtifact>,
@@ -358,7 +374,9 @@ pub fn run(args: Args, stdout: &mut dyn Write, stderr: &mut dyn Write) -> u8 {
         compiled.config.steps = steps;
     }
     let engine = match args.backend {
-        Backend::Cpu => Engine::Cpu,
+        Backend::Cpu => Engine::Cpu {
+            statistics_every: args.statistics_every.unwrap_or(STATISTICS_EVERY),
+        },
         #[cfg(not(feature = "vulkan"))]
         Backend::Vulkan => unreachable!("refused above in a build without the vulkan feature"),
         #[cfg(feature = "vulkan")]
@@ -545,7 +563,8 @@ fn interrupted() -> Option<mpsc::Receiver<()>> {
     Some(receive)
 }
 
-/// Trains `compiled` on `engine`, emits a `StepCompleted` for each loss as it is recorded and
+/// Trains `compiled` on `engine`, emits a `StepCompleted` for each loss as it is recorded (on the
+/// CPU with the parameter statistics of the steps `statistics_every` samples) and
 /// writes the run to stdout. A failure is reported on stderr and returned as the `RunFailed`
 /// that ends the stream. `end` is called as the run ends: before the last stdout line, and
 /// before a failure line. A device run records its losses on the device and emits them once the
@@ -561,12 +580,12 @@ fn train(
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
 ) -> Result<(), RunFailed> {
-    let observe = |step, loss| {
+    let step_completed = |step, loss: f32, parameters| {
         emit(RunEventBody::StepCompleted(StepCompleted {
             step,
             loss: f64::from(loss),
             metrics: Vec::new(),
-            parameters: Vec::new(),
+            parameters,
         }));
     };
     let observed: Result<(Run, Option<Eval>), Failure> = 'run: {
@@ -622,7 +641,7 @@ fn train(
             ) {
                 Ok((run, counted, profiled)) => {
                     for (k, &loss) in (run.start_step..).zip(&run.losses) {
-                        observe(k, loss);
+                        step_completed(k, loss, Vec::new());
                     }
                     let _ = write!(stderr, "{}", counters(&counted, profiled));
                     let end = run.start_step + counted.steps;
@@ -647,7 +666,7 @@ fn train(
                         profile: profiled,
                     } = *stopped;
                     for (k, &loss) in (diverged.run.start_step..).zip(&diverged.run.losses) {
-                        observe(k, loss);
+                        step_completed(k, loss, Vec::new());
                     }
                     Err(Failure::Diverged(
                         Box::new(diverged),
@@ -659,7 +678,11 @@ fn train(
             };
         }
         #[cfg(not(feature = "vulkan"))]
-        let Engine::Cpu = engine;
+        let &Engine::Cpu { statistics_every } = engine;
+        #[cfg(feature = "vulkan")]
+        let &Engine::Cpu { statistics_every } = engine else {
+            unreachable!("a Vulkan run ends above")
+        };
         let loaded = match files.load(compiled) {
             Ok(loaded) => loaded,
             Err(error) => break 'run Err(RunError::from(error).into()),
@@ -672,6 +695,36 @@ fn train(
                 checkpoint::write(&path, &Checkpoint::of_state(compiled, k, &state.values))
             }
             _ => Ok(()),
+        };
+        let params: BTreeMap<&str, ParamId> = compiled
+            .forward
+            .program
+            .params
+            .iter()
+            .map(|(&id, decl)| (decl.path.as_str(), id))
+            .collect();
+        let observe = |o: &Observed<'_>| {
+            let sampled =
+                o.step == start || o.step == end || o.step.is_multiple_of(statistics_every);
+            let mut parameters = Vec::new();
+            if sampled {
+                for (&path, id) in &params {
+                    let value = o.values[id].data();
+                    parameters.push(ParameterStatistics::of(
+                        path,
+                        StatisticsSubject::Value,
+                        value,
+                    ));
+                    if let Some(gradient) = o.gradients.and_then(|gradients| gradients.get(id)) {
+                        parameters.push(ParameterStatistics::of(
+                            path,
+                            StatisticsSubject::Gradient,
+                            gradient.data(),
+                        ));
+                    }
+                }
+            }
+            step_completed(o.step, o.loss, parameters);
         };
         let run = match runner::run_from(
             compiled,

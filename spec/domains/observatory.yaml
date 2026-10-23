@@ -29,17 +29,38 @@ types:
   - name: modelspec.observatory.Histogram
     kind: struct
     naming:
-      summary: The distribution of one tensor's elements in bins; bin i counts the elements in [bin_edges[i], bin_edges[i+1]), so there is one more edge than counts, which ESS does not state here.
-    # UNMAPPED: the bin count and how the edges are chosen (fixed, per step, per tensor) are not
-    # settled by the epic. Open question.
+      summary: The distribution of one tensor's elements in bins, the edges taken anew from that tensor each time statistics are taken (approval-record:parameter-statistics-settlements, question 1). With min and max the tensor's smallest and largest finite element widened to Binary64, a tensor with min < max has 32 bins and the 33 edges min + (max − min) · i / 32 for i from 0 through 32, the last edge max itself; bin i counts the finite elements x with bin_edges[i] <= x < bin_edges[i+1], and the last bin also counts x = max. A tensor with min = max has one bin, edges [min, max], counting every finite element. A tensor with no finite element has no min or max, so no edge and no bin. NaN, +inf and −inf are in no bin; nan_count, positive_infinity_count and negative_infinity_count count them, so the counts and those three sum to the tensor's element count, which ESS does not state here.
     fields:
       - name: bin_edges
         type: List<Optional<Binary64>>
-        summary: The bin edges in ascending order; an edge is null when it is NaN or ±inf, which Binary64 does not hold (wave observatory-1 coordinator, 2026-10-21).
+        summary: The bin edges in ascending order. Edges taken between finite min and max are finite; the type keeps null for an edge that is NaN or ±inf, which Binary64 does not hold (wave observatory-1 coordinator, 2026-10-21).
       - name: counts
         type: List<Integer>
+        summary: The finite elements in each bin, in edge order.
+      - name: nan_count
+        type: Integer
+        summary: The tensor's NaN elements, counted in no bin (approval-record:parameter-statistics-settlements, question 1).
+      - name: positive_infinity_count
+        type: Integer
+        summary: The tensor's +inf elements, counted in no bin (approval-record:parameter-statistics-settlements, question 1).
+      - name: negative_infinity_count
+        type: Integer
+        summary: The tensor's −inf elements, counted in no bin (approval-record:parameter-statistics-settlements, question 1).
     invariants:
       - forall: {in: counts, as: count, that: count >= 0}
+      - nan_count >= 0
+      - positive_infinity_count >= 0
+      - negative_infinity_count >= 0
+      - any:
+          - all:
+              - counts.count == 0
+              - bin_edges.count == 0
+          - all:
+              - counts.count == 1
+              - bin_edges.count == 2
+          - all:
+              - counts.count == 32
+              - bin_edges.count == 33
 
   - name: modelspec.observatory.StatisticsSubject
     kind: enum
@@ -59,8 +80,7 @@ types:
       - name: norm
         type: Optional<Binary64>
         presence: null_when_absent
-        summary: The norm; null when it is NaN or ±inf, which Binary64 does not hold (wave observatory-1 coordinator, 2026-10-21).
-        # UNMAPPED: the epic says "norms" and not which norm (L2, max). Open question.
+        summary: The L2 norm of the tensor, the square root of the sum of its elements' squares, each element widened to Binary64 and summed in row-major order (approval-record:parameter-statistics-settlements, question 2); null when it is NaN or ±inf, which Binary64 does not hold, as it is when an element is NaN or ±inf (wave observatory-1 coordinator, 2026-10-21).
       - name: histogram
         type: modelspec.observatory.Histogram
     invariants:
@@ -85,9 +105,7 @@ types:
         summary: Metric samples of the step besides the loss; names are unique.
       - name: parameters
         type: List<modelspec.observatory.ParameterStatistics>
-        summary: Value and gradient statistics per parameter; the pair (path, subject) is unique, which ESS does not state here. A parameter the loss does not read has no gradient (DESIGN.md § 3.3 step 4).
-        # UNMAPPED: whether every step carries statistics or only sampled steps (the list then
-        # empty) is not settled by the epic. Open question.
+        summary: Value and gradient statistics per parameter at a sampled step, empty at every other step (approval-record:parameter-statistics-settlements, question 3); the pair (path, subject) is unique, which ESS does not state here. `modelspec train --backend cpu --statistics-every N`, N at least 1 and 100 without the flag, samples step k when k is the run's start_step, a multiple of N, or start_step + steps. A sampled step lists each declared parameter in path order, its Value entry for its values after k updates, then, for k < start_step + steps, its Gradient entry for the gradient of step k's loss with respect to it, the gradient step k's update applies. Step start_step + steps, the loss of the final parameters, makes no update and so has Value entries only. A parameter the loss does not read has no gradient and so no Gradient entry (DESIGN.md § 3.3 step 4). A Vulkan run keeps parameters and gradients on the device between its host waits, so every one of its steps has the list empty, and `--statistics-every` with `--backend vulkan` is a usage error (story:observatory-parameter-statistics).
     # UNMAPPED: the epic shows activation statistics per step but does not say what they are keyed by
     # (a Tensor IR value, a layer, a parameter path) or what they hold; not typed. Open question.
     invariants:

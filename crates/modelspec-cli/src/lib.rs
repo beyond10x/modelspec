@@ -53,7 +53,7 @@ pub enum Command {
     /// Replay a recorded run file over the event stream of `train --serve`.
     Observe(observe::Args),
     /// Train a `.mspec` model.
-    Train(train::Args),
+    Train(Box<train::Args>),
 }
 
 /// Parses the process arguments, runs the subcommand and returns the process exit code.
@@ -86,6 +86,6 @@ pub fn dispatch(command: Command, stdout: &mut dyn Write, stderr: &mut dyn Write
         Command::InspectDevice(args) => inspect_device::run(args, stdout, stderr),
         Command::Ir(args) => ir::run(args, stdout, stderr),
         Command::Observe(args) => observe::run(args, stdout, stderr),
-        Command::Train(args) => train::run(args, stdout, stderr),
+        Command::Train(args) => train::run(*args, stdout, stderr),
     }
 }

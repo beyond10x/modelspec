@@ -276,10 +276,24 @@ fn linear_regression_events_conform() {
         501,
         "one StepCompleted per loss, steps 0..=500"
     );
+    // Without --statistics-every a CPU run samples every 100th step and its first and last
+    // (approval-record:parameter-statistics-settlements, question 3): `LinearReg.w`'s values and
+    // the gradient of the step's update, and at step 500, which makes no update, its values only.
     for (k, step) in steps.iter().enumerate() {
         assert_eq!(step["step"], k as u64);
         assert_eq!(step["metrics"], Value::Array(vec![]));
-        assert_eq!(step["parameters"], Value::Array(vec![]));
+        let entries: Vec<(&str, &str)> = step["parameters"]
+            .as_array()
+            .unwrap_or_else(|| panic!("a parameters list: {step}"))
+            .iter()
+            .map(|e| (e["path"].as_str().unwrap(), e["subject"].as_str().unwrap()))
+            .collect();
+        let expected: &[(&str, &str)] = match k {
+            500 => &[("LinearReg.w", "Value")],
+            k if k % 100 == 0 => &[("LinearReg.w", "Value"), ("LinearReg.w", "Gradient")],
+            _ => &[],
+        };
+        assert_eq!(entries, expected, "step {k}");
     }
 }
 

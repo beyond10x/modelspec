@@ -164,7 +164,7 @@ fn a_resumed_run_equals_one_that_never_stopped() {
         None,
         &init,
         loaded.step,
-        |k, loss| seen.push((k, loss)),
+        |o| seen.push((o.step, o.loss)),
         |_, _| Ok(()),
     )
     .unwrap();
@@ -187,7 +187,7 @@ fn the_hook_sees_the_state_after_each_update() {
         None,
         &BTreeMap::new(),
         10,
-        |_, _| {},
+        |_| {},
         |k, _| {
             seen.push(k);
             Ok(())

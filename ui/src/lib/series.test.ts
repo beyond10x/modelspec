@@ -1,7 +1,14 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import type { MetricSample, RunEvent, RunEventBody } from '../generated/observatory.ts';
-import { LOSS, apply, chartName, charts, emptyRun, ends } from './series.ts';
+import type {
+  Histogram,
+  MetricSample,
+  ParameterStatistics,
+  RunEvent,
+  RunEventBody,
+  StatisticsSubject,
+} from '../generated/observatory.ts';
+import { LOSS, apply, chartName, charts, emptyRun, ends, sampleAt } from './series.ts';
 
 const RUN = '00000000-0000-4000-8000-000000000001';
 
@@ -136,4 +143,79 @@ test('RunFinished and RunFailed end the stream, nothing else does', () => {
   assert.equal(ends(event(0, step(0, 1))), false);
   assert.equal(ends(event(0, { kind: 'RunFinished' })), true);
   assert.equal(ends(event(0, { kind: 'RunFailed', value: { message: 'm' } })), true);
+});
+
+function histogram(counts: number[]): Histogram {
+  return {
+    bin_edges: counts.length === 0 ? [] : counts.map((_, i) => i).concat([counts.length]),
+    counts,
+    nan_count: 0,
+    positive_infinity_count: 0,
+    negative_infinity_count: 0,
+  };
+}
+
+function stats(path: string, subject: StatisticsSubject, norm: number | null, counts = [1]): ParameterStatistics {
+  return { path, subject, norm, histogram: histogram(counts) };
+}
+
+function sampled(step: number, parameters: ParameterStatistics[]): RunEventBody {
+  return { kind: 'StepCompleted', value: { step, loss: 1, metrics: [], parameters } };
+}
+
+test('parameter statistics fold into a value and a gradient norm series per path, in the order paths first appear', () => {
+  const run = emptyRun();
+  apply(run, event(0, started));
+  apply(
+    run,
+    event(1, sampled(0, [stats('M.b', 'Value', 2), stats('M.b', 'Gradient', 0.5), stats('M.a', 'Value', 3)])),
+  );
+  apply(run, event(2, step(1, 0.5)));
+  apply(run, event(3, sampled(2, [stats('M.b', 'Value', 1.5), stats('M.a', 'Value', null)])));
+  assert.deepEqual(
+    run.parameters.map((p) => p.path),
+    ['M.b', 'M.a'],
+  );
+  const [b, a] = run.parameters;
+  assert.deepEqual(b?.value.points, [
+    { step: 0, value: 2 },
+    { step: 2, value: 1.5 },
+  ]);
+  assert.deepEqual(b?.gradient.points, [{ step: 0, value: 0.5 }], 'the last step has values only');
+  assert.deepEqual(a?.value.points, [
+    { step: 0, value: 3 },
+    { step: 2, value: null },
+  ]);
+  assert.deepEqual(a?.gradient.points, [], 'a parameter the loss does not read has no gradient');
+  assert.notEqual(b?.value.name, b?.gradient.name);
+  assert.deepEqual(
+    charts(run).map((s) => s.name),
+    ['loss'],
+    'norms are not metric charts',
+  );
+});
+
+test('only a step with statistics is a sample, and the sample shown is the selected one, else the latest', () => {
+  const run = emptyRun();
+  apply(run, event(0, started));
+  assert.equal(sampleAt(run, null), null, 'no sample before the first');
+  apply(run, event(1, sampled(0, [stats('M.w', 'Value', 2, [1, 0, 3])])));
+  apply(run, event(2, step(1, 0.5)));
+  apply(run, event(3, sampled(2, [stats('M.w', 'Value', 1, [2, 2])])));
+  assert.deepEqual(
+    run.samples.map((s) => s.step),
+    [0, 2],
+  );
+  assert.equal(sampleAt(run, null)?.step, 2);
+  assert.deepEqual(sampleAt(run, 0)?.statistics[0]?.histogram.counts, [1, 0, 3]);
+  assert.equal(sampleAt(run, 1)?.step, 2, 'a step without statistics shows the latest sample');
+});
+
+test('a RunStarted of another run clears the parameter series and the samples', () => {
+  const run = emptyRun();
+  apply(run, event(0, started));
+  apply(run, event(1, sampled(0, [stats('M.w', 'Value', 2)])));
+  apply(run, event(0, started, '00000000-0000-4000-8000-000000000002'));
+  assert.deepEqual(run.parameters, []);
+  assert.deepEqual(run.samples, []);
 });

@@ -4,20 +4,20 @@
   "x-ess-provenance": {
     "system": "modelspec",
     "specification_version": "v1",
-    "source_digest": "6ef7da18d5f014a4f006ad6ef17be88a7eabcb145bb9d31594ce5b3a089b4e23",
-    "contract_digest": "slice-sha256/2:d894c405c84b197774ebcf5a1992ecf4ff2c61b15411e04febf886d2ca1f526a",
+    "source_digest": "4451cd69e4d8118413abaed302b87bed7fd18a98ea1fd923abe64974c9a4dd74",
+    "contract_digest": "slice-sha256/2:0a76182d58f0be83d8c695c5fa3558376b45667ee6c487c144eba62707d2d487",
     "regenerate": "ess generate"
   },
   "$defs": {
     "modelspec.observatory.Histogram": {
       "title": "Histogram",
-      "description": "The distribution of one tensor's elements in bins; bin i counts the elements in [bin_edges[i], bin_edges[i+1]), so there is one more edge than counts, which ESS does not state here.",
+      "description": "The distribution of one tensor's elements in bins, the edges taken anew from that tensor each time statistics are taken (approval-record:parameter-statistics-settlements, question 1). With min and max the tensor's smallest and largest finite element widened to Binary64, a tensor with min < max has 32 bins and the 33 edges min + (max − min) · i / 32 for i from 0 through 32, the last edge max itself; bin i counts the finite elements x with bin_edges[i] <= x < bin_edges[i+1], and the last bin also counts x = max. A tensor with min = max has one bin, edges [min, max], counting every finite element. A tensor with no finite element has no min or max, so no edge and no bin. NaN, +inf and −inf are in no bin; nan_count, positive_infinity_count and negative_infinity_count count them, so the counts and those three sum to the tensor's element count, which ESS does not state here.",
       "x-ess-name": "modelspec.observatory.Histogram",
       "x-ess-kind": "struct",
       "type": "object",
       "properties": {
         "bin_edges": {
-          "description": "The bin edges in ascending order; an edge is null when it is NaN or ±inf, which Binary64 does not hold (wave observatory-1 coordinator, 2026-10-21).",
+          "description": "The bin edges in ascending order. Edges taken between finite min and max are finite; the type keeps null for an edge that is NaN or ±inf, which Binary64 does not hold (wave observatory-1 coordinator, 2026-10-21).",
           "type": "array",
           "items": {
             "anyOf": [
@@ -31,19 +31,42 @@
           }
         },
         "counts": {
+          "description": "The finite elements in each bin, in edge order.",
           "type": "array",
           "items": {
             "type": "integer"
           }
+        },
+        "nan_count": {
+          "description": "The tensor's NaN elements, counted in no bin (approval-record:parameter-statistics-settlements, question 1).",
+          "type": "integer",
+          "minimum": 0
+        },
+        "positive_infinity_count": {
+          "description": "The tensor's +inf elements, counted in no bin (approval-record:parameter-statistics-settlements, question 1).",
+          "type": "integer",
+          "minimum": 0
+        },
+        "negative_infinity_count": {
+          "description": "The tensor's −inf elements, counted in no bin (approval-record:parameter-statistics-settlements, question 1).",
+          "type": "integer",
+          "minimum": 0
         }
       },
       "required": [
         "bin_edges",
-        "counts"
+        "counts",
+        "nan_count",
+        "positive_infinity_count",
+        "negative_infinity_count"
       ],
       "additionalProperties": false,
       "x-ess-invariants": [
-        "forall count in counts: (count >= 0)"
+        "forall count in counts: (count >= 0)",
+        "nan_count >= 0",
+        "positive_infinity_count >= 0",
+        "negative_infinity_count >= 0",
+        "((counts.count == 0 and bin_edges.count == 0) or (counts.count == 1 and bin_edges.count == 2) or (counts.count == 32 and bin_edges.count == 33))"
       ]
     }
   }

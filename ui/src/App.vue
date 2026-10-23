@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, shallowRef } from 'vue';
 import MetricChart from './components/MetricChart.vue';
-import { apply, charts, emptyRun } from './lib/series.ts';
+import ParameterPanel from './components/ParameterPanel.vue';
+import { apply, charts, emptyRun, sampleAt } from './lib/series.ts';
 import { subscribe } from './lib/stream.ts';
 
 // The run is folded in place and redrawn at most once per animation frame: a fast run sends
@@ -57,6 +58,20 @@ const failure = computed(() => {
   void version.value;
   return run.value.failure;
 });
+const parameters = computed(() => {
+  void version.value;
+  return run.value.parameters;
+});
+const sampled = computed(() => {
+  void version.value;
+  return run.value.samples.map((s) => s.step);
+});
+// The step whose histograms are drawn; `null` follows the latest sample as the run goes on.
+const selected = ref<number | null>(null);
+const shown = computed(() => {
+  void version.value;
+  return sampleAt(run.value, selected.value);
+});
 </script>
 
 <template>
@@ -73,6 +88,22 @@ const failure = computed(() => {
     <p v-if="state === 'failed'" class="failure" role="alert">{{ failure }}</p>
     <section class="charts">
       <MetricChart v-for="s in series" :key="s.name" :series="s" :version="version" />
+    </section>
+    <section v-if="parameters.length > 0" class="parameters">
+      <label class="pick">
+        histograms at
+        <select v-model="selected" data-step-select>
+          <option :value="null">latest sampled step</option>
+          <option v-for="step in sampled" :key="step" :value="step">step {{ step }}</option>
+        </select>
+      </label>
+      <ParameterPanel
+        v-for="p in parameters"
+        :key="p.path"
+        :series="p"
+        :sample="shown"
+        :version="version"
+      />
     </section>
   </main>
 </template>
