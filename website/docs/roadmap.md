@@ -1,12 +1,13 @@
 ---
 title: Roadmap
-description: Milestones M0 to M4 from DESIGN.md § 1. M0 is built; GPU execution starts at M1 and is not built.
+description: Milestones M0 to M4 from DESIGN.md § 1. M0 is built; M1, GPU execution through Vulkan, is in progress and trains on the GPU since 0.4.0.
 ---
 
 # Roadmap
 
 The milestones are those of [DESIGN.md § 1](https://github.com/beyond10x/modelspec/blob/main/DESIGN.md#1-scope-and-milestones).
-M0 is built and released as 0.1.0. Everything below it is design, not software.
+M0 is built and released as 0.1.0. M1 is in progress; the latest release is 0.6.0. M2 to M4 are
+design, apart from the M2 items M1 did early.
 
 ## M0: semantic core
 
@@ -21,15 +22,17 @@ reference interpreter, and `modelspec check`, `ir` and `train --backend cpu`.
 
 ## M1: native Vulkan execution
 
-:::planned[In progress, not released]
+:::planned[In progress, partly released]
 
-On `main`, not in a release yet: `modelspec train --backend vulkan` trains both examples on one
-Vulkan device with one host wait per run, within the GPU tolerance of the CPU reference, and
-`modelspec inspect-device --backend vulkan` reports each device. `modelspec compile` writes an
-artifact directory, `modelspec train` writes and resumes checkpoints on both backends, the device
-run waiting once more per requested checkpoint, and `modelspec infer` runs a checkpoint on the CPU
-or on the device. The work is planned as `epic:m1-vulkan-execution` in the repository's planning
-store.
+Released since 0.4.0: `modelspec train --backend vulkan` trains both examples on one Vulkan
+device with one host wait per run, within the GPU tolerance of the CPU reference, and `modelspec
+inspect-device --backend vulkan` reports each device; CPU checkpoints and `modelspec infer
+--backend cpu` are in 0.4.0 too. Released in 0.6.0: `modelspec compile` writes an artifact
+directory, `train --backend vulkan` writes and resumes checkpoints, waiting once more per
+requested checkpoint, and `infer --backend vulkan` runs a checkpoint on the device. On `main`, not in a release yet: `train --backend vulkan`
+refuses a diverged run with `E-TRAIN-001` as the CPU run does, and the artifact reader bounds the
+plan verifier's work on an untrusted artifact. The 9 acceptance boxes of DESIGN.md § 9 are not
+ticked. The work is planned as `epic:m1-vulkan-execution` in the repository's planning store.
 
 :::
 
@@ -53,7 +56,9 @@ The M1 acceptance criteria are the checklist in
 
 :::planned[Not built]
 
-Designed in DESIGN.md; no code and no stories yet.
+Designed in DESIGN.md; not built. Three M2 items were done early, in M1: elementwise fusion and
+per-dispatch profiling (`train --profile`) in 0.4.0, and the tiled shared-memory matmul in 0.5.0.
+M3's small BERT-like proof model has draft stories under `epic:bert-from-scratch`.
 
 :::
 

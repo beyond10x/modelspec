@@ -2,7 +2,7 @@
 title: What ModelSpec is
 slug: /
 sidebar_label: Overview
-description: A declarative, statically typed language and a Rust compiler for differentiable tensor programs. M0 trains on a CPU reference; GPU execution is the next milestone.
+description: A declarative, statically typed language and a Rust compiler for differentiable tensor programs. It trains on a CPU reference and on one Vulkan GPU; GPU execution, M1, is in progress.
 ---
 
 # What ModelSpec is

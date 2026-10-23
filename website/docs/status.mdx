@@ -7,21 +7,26 @@ import status from '@site/data/status.json';
 
 # Status
 
-0.1.0 is the latest release and the first. It is milestone M0, the semantic core: `modelspec
-check`, `modelspec ir --stage tensor|training` and `modelspec train --backend cpu` on the M0
-subset of the language, with a prebuilt binary for Linux x86_64
-([changelog](https://github.com/beyond10x/modelspec/blob/main/CHANGELOG.md)).
+0.6.0 is the latest release; each release carries a prebuilt binary for Linux x86_64
+([changelog](https://github.com/beyond10x/modelspec/blob/main/CHANGELOG.md)). 0.1.0 was
+milestone M0, the semantic core. `modelspec train --backend vulkan` trains on one Vulkan device
+within the GPU tolerance of the CPU reference since 0.4.0, and since 0.6.0 it writes and resumes
+checkpoints there, `modelspec infer --backend vulkan` runs a checkpoint on the device, `modelspec
+compile` writes a sealed artifact directory and `train --record` with `observe` records and
+replays a run. A binary built without the `vulkan` feature refuses that backend with
+`E-TARGET-001`.
 
-On `main`, not in a release yet, `modelspec train --backend vulkan` trains on one Vulkan device
-within the GPU tolerance of the CPU reference, writes and resumes checkpoints there, and
-`modelspec infer --backend vulkan` runs a checkpoint on the device. A binary built without the `vulkan` feature refuses
-that backend with `E-TARGET-001`. M1, native Vulkan execution, is in progress
-([Roadmap](./roadmap.md)).
+On `main`, not in a release yet: `train --backend vulkan` refuses a diverged run with the CPU
+run's `E-TRAIN-001`; the plan verifier is bounded on an untrusted artifact; a matmul kernel's
+module id covers its tile; `--ui ui/dist` serves the observatory UI, which draws the loss and
+every metric per step; and a run's events carry parameter and gradient statistics on sampled
+steps (`--statistics-every`). The rows below that start with "On main, not released" are these.
+M1, native Vulkan execution, is in progress ([Roadmap](./roadmap.md)).
 
 | milestone | state |
 |---|---|
 | M0 semantic core | done: released as 0.1.0 |
-| M1 native Vulkan execution | in progress: Vulkan training, `compile`, checkpoints and Vulkan `infer` on `main` |
+| M1 native Vulkan execution | in progress: Vulkan training since 0.4.0; `compile`, Vulkan checkpoints and Vulkan `infer` since 0.6.0 |
 | M2 to M4 | designed in DESIGN.md § 1; not built |
 
 ## Every capability

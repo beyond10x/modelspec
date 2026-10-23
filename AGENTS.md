@@ -12,7 +12,7 @@ A Rust compiler and runtime for `.mspec` tensor-program specifications. Humans s
 ## State
 
 Milestone M0 implemented (DESIGN.md revision 0.6, § 1 and § 11, iteration 1; wave `m0` closed);
-M1 (`epic:m1-vulkan-execution`) is next. A Cargo workspace of five crates: `modelspec-core`
+M1 (`epic:m1-vulkan-execution`) is in progress, latest release 0.6.0. A Cargo workspace of five crates: `modelspec-core`
 (parser, checker, Tensor IR, autodiff, lowering, DCE; no Vulkan), `modelspec-runtime` (CPU oracle
 and SGD training; the `vulkan` feature holds Vulkan device discovery, negotiation, SPIR-V
 emission and the training runner `vulkan::runner` through `ash` and `rspirv`), `modelspec-observatory` (the typed

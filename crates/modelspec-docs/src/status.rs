@@ -16,7 +16,7 @@ use serde_json::{Value, json};
 pub const FILE: &str = "status.json";
 
 /// The date [`CAPABILITIES`] was last checked against `main` and the planning store.
-pub const AS_OF: &str = "2026-10-22";
+pub const AS_OF: &str = "2026-10-23";
 
 /// What holds a shipped capability.
 #[derive(Clone, Copy)]
@@ -205,6 +205,51 @@ pub const CAPABILITIES: &[Capability] = &[
         "modelspec train writes and resumes .msckpt checkpoints on cpu and vulkan, the device run waiting once per requested checkpoint and once at the end; modelspec infer runs a checkpoint on either backend; a resumed device run lies within the GPU tolerance of the run that never stopped.",
         Evidence::Test(
             "crates/modelspec-runtime/tests/vulkan_checkpoint.rs::a_resumed_device_run_passes_against_the_run_that_never_stopped",
+        ),
+        "/docs/reference/cli",
+    ),
+    shipped(
+        "GPU",
+        "A diverged device run is refused as the CPU run is",
+        "On main, not released: modelspec train --backend vulkan checks every loss and the parameters it reads back, after the last step and before each checkpoint, and stops a NaN or ±inf run with the CPU run's E-TRAIN-001, stdout and events.",
+        Evidence::Test(
+            "crates/modelspec-cli/tests/train_vulkan_non_finite.rs::a_divergent_loss_on_vulkan_prints_what_the_cpu_prints",
+        ),
+        "/docs/reference/diagnostics",
+    ),
+    shipped(
+        "GPU",
+        "A matmul kernel's module id covers its tile",
+        "On main, not released: Kernel::signature ends with the MatMulTile, so two matmuls that differ only in tile depth or ahead get different module ids; the SPIR-V and the bits do not change.",
+        Evidence::Test(
+            "crates/modelspec-core/src/ir/kernel.rs::two_matmuls_differing_only_in_tile_depth_or_ahead_have_different_signatures",
+        ),
+        "/docs/concepts/pipeline",
+    ),
+    shipped(
+        "Compiler",
+        "The plan verifier is bounded on an untrusted artifact",
+        "On main, not released: an artifact whose plan has more than 4,096 steps, 65,536 dependencies or 65,536 views is refused with E-ARTIFACT-003 before the verifier runs; a re-sealed 300,000-step chain is refused in under 10 s and 1 GiB.",
+        Evidence::Test(
+            "crates/modelspec-core/tests/plan_verifier_bounds.rs::a_re_sealed_300000_step_chain_is_refused_in_under_10_s_and_1_gib",
+        ),
+        "/docs/reference/diagnostics",
+    ),
+    shipped(
+        "Observatory",
+        "The observatory UI draws a run's loss in the browser",
+        "On main, not released: --ui ui/dist on modelspec train --serve and modelspec observe serves the Vue app at / beside /events; it draws the loss and every metric per step, live or from a recording.",
+        Evidence::Test(
+            "crates/modelspec-cli/tests/observatory_ui.rs::observatory_ui_live_linear_regression",
+        ),
+        "/docs/reference/cli",
+    ),
+    shipped(
+        "Observatory",
+        "Parameter and gradient statistics on sampled steps",
+        "On main, not released: a CPU run's StepCompleted carries, per parameter, the L2 norm and a 32-bin histogram of its values and its gradient at the first step, every --statistics-every steps and the last; a Vulkan run carries its values at the first and the last step.",
+        Evidence::Test(
+            "crates/modelspec-cli/tests/observatory_parameter_stats.rs::observatory_stats_gradient_at_step",
         ),
         "/docs/reference/cli",
     ),
