@@ -4,7 +4,8 @@
 //! `--stage training` prints the verified training step (forward, loss, backward and the SGD
 //! subgraph, with subgraph tags, effect tokens and state versions) the same way; `--stage kernel`
 //! prints the Kernel IR of the step's Vulkan artifact, its views, kernels, step plan and forward
-//! plan (`print_kernel`). A file that does not compile prints its diagnostics to stderr as
+//! plan (`print_kernel`), each dispatch with its `flop <n> bytes <n>` or `uncounted` (DESIGN.md
+//! § 3.1, the counting rule). A file that does not compile prints its diagnostics to stderr as
 //! `modelspec check` does and exits 1; a file that cannot be read, or IR that cannot be written to
 //! stdout (a closed pipe, a full device), is reported on one line and exits 1. Any other stage is
 //! a usage error (exit 2): `tensor`, `training` and `kernel` are the stages this build has.
@@ -34,7 +35,8 @@ pub enum Stage {
     Tensor,
     /// Training IR: the Tensor IR with its reverse pass and SGD step attached.
     Training,
-    /// Kernel IR: the kernels of the training step, its step plan and its forward plan.
+    /// Kernel IR: the kernels of the training step, its step plan and its forward plan, each
+    /// dispatch with its FLOP and byte count.
     Kernel,
 }
 

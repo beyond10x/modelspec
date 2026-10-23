@@ -248,8 +248,12 @@ fn mnist_mlp_profile_prints_every_dispatch_site_and_leaves_stdout_alone() {
     let got: Vec<(String, usize, String, u64)> = lines
         .iter()
         .map(|w| {
-            assert_eq!(w.len(), 10, "{w:?}");
+            assert_eq!(w.len(), 18, "{w:?}");
             assert_eq!((w[4], w[6], w[8]), ("calls", "total_us", "mean_us"));
+            assert_eq!(
+                (w[10], w[12], w[14], w[16]),
+                ("flop", "bytes", "gflop_per_s", "gb_per_s")
+            );
             (
                 w[0].to_owned(),
                 w[1].parse().unwrap(),
@@ -277,6 +281,7 @@ fn mnist_mlp_profile_prints_every_dispatch_site_and_leaves_stdout_alone() {
         "profile pipeline_creation_us ",
         "profile compile_us ",
         "profile steady_us_per_step ",
+        "profile step_total flop ",
     ] {
         assert!(stderr.contains(counter), "{counter}: {stderr}");
     }

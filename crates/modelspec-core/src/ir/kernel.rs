@@ -376,6 +376,45 @@ impl Kernel {
         (k == k2).then_some((m, k, n))
     }
 
+    /// The floating-point operations of one dispatch of the kernel under the counting rule of
+    /// DESIGN.md § 3.1: `2·m·k·n` for a matmul, its epilogue adding none; per output element,
+    /// one for `Add`, `Sub`, `Mul`, `Relu` and `ReluGrad` and two for the scaled SGD update
+    /// `p - (lr * g)`; one per element of the buffer operands of a reduction stage or a loss
+    /// sum; none for a transpose or a broadcast. `None` for an op without a rule, a shape with
+    /// a dimension that is not static, or a count past `u64`.
+    pub fn flop(&self) -> Option<u64> {
+        let elements = |ty: &TensorType| {
+            ty.shape.iter().try_fold(1u64, |n, dim| match dim {
+                Dim::Static(d) => n.checked_mul(*d),
+                Dim::Symbol(_) => None,
+            })
+        };
+        let per_output = |flop: u64| elements(&self.result)?.checked_mul(flop);
+        match self.kind {
+            KernelKind::MatMul => {
+                let (m, k, n) = Kernel::matmul_shape(&self.operands)?;
+                2u64.checked_mul(m)?.checked_mul(k)?.checked_mul(n)
+            }
+            KernelKind::Elementwise => match self.op {
+                "Add" | "Sub" | "Mul" | "Relu" | "ReluGrad" => per_output(1),
+                _ => None,
+            },
+            KernelKind::SgdUpdate => match (self.op, self.operands.len()) {
+                ("Sub", 3) => per_output(2),
+                ("Sub", 2) => per_output(1),
+                _ => None,
+            },
+            KernelKind::ReduceStage1 | KernelKind::ReduceStage2 | KernelKind::LossSum => self
+                .operands
+                .iter()
+                .try_fold(0u64, |n, operand| match operand {
+                    Operand::Buffer(ty) => n.checked_add(elements(ty)?),
+                    Operand::Immediate(_) => Some(n),
+                }),
+            KernelKind::Transpose | KernelKind::Broadcast => Some(0),
+        }
+    }
+
     /// The text the module id is derived from: every field but the id, and a matmul's
     /// [`MatMulTile`], so that a module the tile changes gets a new id.
     pub fn signature(&self) -> String {
@@ -448,10 +487,51 @@ pub struct ExecutionPlan {
     pub prediction_view: BufferView,
 }
 
+/// The arithmetic and memory traffic of one Dispatch step under the counting rule of DESIGN.md
+/// § 3.1, computed from the plan when it is read: no field of an artifact holds it. Printed
+/// `flop <n> bytes <n>`, or `uncounted`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum DispatchCount {
+    /// The floating-point operations of the dispatch, and the bytes of the views it reads plus
+    /// the bytes of the views it writes.
+    Counted { flop: u64, bytes: u64 },
+    /// A dispatch the rule has no count for: its kernel's kind and op have no rule, a shape it
+    /// needs is not static, a count overflows, or the plan has no kernel of its module id.
+    Uncounted,
+}
+
+impl fmt::Display for DispatchCount {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            DispatchCount::Counted { flop, bytes } => write!(f, "flop {flop} bytes {bytes}"),
+            DispatchCount::Uncounted => f.write_str("uncounted"),
+        }
+    }
+}
+
 impl ExecutionPlan {
     /// The kernel with module id `id`.
     pub fn kernel(&self, id: KernelModuleId) -> Option<&Kernel> {
         self.kernels.iter().find(|k| k.id == id)
+    }
+
+    /// The count of `step` under the counting rule (DESIGN.md § 3.1): its kernel's
+    /// [`Kernel::flop`], and the `size_bytes` of its read views plus those of its write views.
+    /// `None` for a step that is not a Dispatch.
+    pub fn dispatch_count(&self, step: &PlanStep) -> Option<DispatchCount> {
+        if step.op != PlanOp::Dispatch {
+            return None;
+        }
+        let counted = || {
+            let flop = self.kernel(step.kernel_module_id?)?.flop()?;
+            let bytes = step
+                .reads
+                .iter()
+                .chain(&step.writes)
+                .try_fold(0u64, |n, view| n.checked_add(view.size_bytes))?;
+            Some(DispatchCount::Counted { flop, bytes })
+        };
+        Some(counted().unwrap_or(DispatchCount::Uncounted))
     }
 }
 
@@ -580,6 +660,305 @@ mod tests {
                 "{field}: {base}"
             );
         }
+    }
+
+    /// A whole-buffer `f32` view of `elements` values.
+    fn view(buffer: u32, elements: u64) -> BufferView {
+        BufferView {
+            buffer,
+            dtype: DType::F32,
+            element_count: elements,
+            offset: 0,
+            size_bytes: 4 * elements,
+            alignment: 4,
+        }
+    }
+
+    /// A kernel of `kind` and `op` with its content-derived module id.
+    fn kernel(
+        kind: KernelKind,
+        op: &'static str,
+        operands: Vec<Operand>,
+        result: TensorType,
+        reduces: Option<TensorType>,
+    ) -> Kernel {
+        let mut kernel = Kernel {
+            id: KernelModuleId([0; 16]),
+            kind,
+            op,
+            dtype: DType::F32,
+            operands,
+            result,
+            reduces,
+            epilogue: None,
+            workgroup_size: kind.workgroup_size(),
+            workgroups: [1, 1, 1],
+        };
+        kernel.id = Kernel::module_id(&kernel.signature());
+        kernel
+    }
+
+    fn dispatch(kernel: &Kernel, reads: Vec<BufferView>, writes: Vec<BufferView>) -> PlanStep {
+        PlanStep {
+            op: PlanOp::Dispatch,
+            kernel_module_id: Some(kernel.id),
+            workgroups: Some(kernel.workgroups),
+            reads,
+            writes,
+            depends_on: Vec::new(),
+            value: None,
+        }
+    }
+
+    /// A plan of `kernels` whose step plan is `step`: one buffer per view, no parameter or data.
+    fn plan(kernels: Vec<Kernel>, step: Vec<PlanStep>) -> ExecutionPlan {
+        let buffers = step
+            .iter()
+            .flat_map(|s| s.reads.iter().chain(&s.writes))
+            .fold(Vec::new(), |mut buffers: Vec<u64>, v| {
+                let at = v.buffer as usize;
+                if buffers.len() <= at {
+                    buffers.resize(at + 1, 0);
+                }
+                buffers[at] = buffers[at].max(v.size_bytes);
+                buffers
+            });
+        ExecutionPlan {
+            buffers,
+            parameters: Vec::new(),
+            data: Vec::new(),
+            kernels,
+            step,
+            forward: Vec::new(),
+            loss_view: view(0, 1),
+            prediction_view: view(0, 1),
+        }
+    }
+
+    fn counted(flop: u64, bytes: u64) -> Option<DispatchCount> {
+        Some(DispatchCount::Counted { flop, bytes })
+    }
+
+    /// story:profile-achieved-throughput: the `[100, 784] x [784, 64]` matmul of the MNIST
+    /// step, with its `relu` epilogue writing the pre-activation and the activation, is
+    /// `2 * 100 * 784 * 64` FLOP; the epilogue adds none. Its bytes are x and w1 read and the
+    /// two `[100, 64]` views written.
+    #[test]
+    fn a_matmul_dispatch_counts_2_m_k_n_flop_and_the_bytes_of_its_views() {
+        let (mut matmul, _) = mnist_matmul();
+        matmul.epilogue = Some(Epilogue::Relu {
+            writes_pre_activation: true,
+        });
+        let step = dispatch(
+            &matmul,
+            vec![view(0, 100 * 784), view(1, 784 * 64)],
+            vec![view(2, 100 * 64), view(3, 100 * 64)],
+        );
+        let plan = plan(vec![matmul], vec![step.clone()]);
+        assert_eq!(
+            plan.dispatch_count(&step),
+            counted(10_035_200, 313_600 + 200_704 + 25_600 + 25_600)
+        );
+    }
+
+    /// One FLOP per output element for `sub`; two for the SGD update `p - lr * g`, its product
+    /// and its difference, which reads `p` and `g` and writes `p` in place.
+    #[test]
+    fn an_elementwise_dispatch_counts_its_arithmetic_per_output_element() {
+        let ty = TensorType::f32(&[100, 10]);
+        let sub = kernel(
+            KernelKind::Elementwise,
+            "Sub",
+            vec![Operand::Buffer(ty.clone()), Operand::Buffer(ty.clone())],
+            ty.clone(),
+            None,
+        );
+        let sub_step = dispatch(
+            &sub,
+            vec![view(0, 1000), view(1, 1000)],
+            vec![view(2, 1000)],
+        );
+        let w1 = TensorType::f32(&[784, 64]);
+        let update = kernel(
+            KernelKind::SgdUpdate,
+            "Sub",
+            vec![
+                Operand::Buffer(w1.clone()),
+                Operand::Immediate(0.1),
+                Operand::Buffer(w1.clone()),
+            ],
+            w1,
+            None,
+        );
+        let update_step = dispatch(
+            &update,
+            vec![view(3, 50_176), view(4, 50_176)],
+            vec![view(3, 50_176)],
+        );
+        let plan = plan(
+            vec![sub, update],
+            vec![sub_step.clone(), update_step.clone()],
+        );
+        assert_eq!(plan.dispatch_count(&sub_step), counted(1000, 12_000));
+        assert_eq!(
+            plan.dispatch_count(&update_step),
+            counted(2 * 50_176, 3 * 200_704)
+        );
+    }
+
+    /// A `ReduceSum` of 1,000 values is a stage 1 over them into 16 partials and a stage 2 over
+    /// the partials; the `mse` loss sum reads two `[100, 10]` tensors. One FLOP per element read.
+    #[test]
+    fn a_reduction_dispatch_counts_one_flop_per_input_element() {
+        let input = TensorType::f32(&[100, 10]);
+        let partials = TensorType::f32(&[16]);
+        let stage1 = kernel(
+            KernelKind::ReduceStage1,
+            "ReduceSum",
+            vec![Operand::Buffer(input.clone())],
+            partials.clone(),
+            Some(input.clone()),
+        );
+        let stage2 = kernel(
+            KernelKind::ReduceStage2,
+            "ReduceSum",
+            vec![Operand::Buffer(partials)],
+            TensorType::f32_scalar(),
+            Some(input.clone()),
+        );
+        let loss = kernel(
+            KernelKind::LossSum,
+            "Mse",
+            vec![Operand::Buffer(input.clone()), Operand::Buffer(input)],
+            TensorType::f32_scalar(),
+            None,
+        );
+        let steps = vec![
+            dispatch(&stage1, vec![view(0, 1000)], vec![view(1, 16)]),
+            dispatch(&stage2, vec![view(1, 16)], vec![view(2, 1)]),
+            dispatch(&loss, vec![view(0, 1000), view(3, 1000)], vec![view(4, 1)]),
+        ];
+        let plan = plan(vec![stage1, stage2, loss], steps.clone());
+        assert_eq!(plan.dispatch_count(&steps[0]), counted(1000, 4000 + 64));
+        assert_eq!(plan.dispatch_count(&steps[1]), counted(16, 64 + 4));
+        assert_eq!(plan.dispatch_count(&steps[2]), counted(2000, 8000 + 4));
+    }
+
+    /// A transpose and a scalar broadcast compute nothing and move their bytes.
+    #[test]
+    fn a_transpose_or_broadcast_dispatch_counts_no_flop_and_its_bytes() {
+        let transpose = kernel(
+            KernelKind::Transpose,
+            "Transpose",
+            vec![Operand::Buffer(TensorType::f32(&[64, 10]))],
+            TensorType::f32(&[10, 64]),
+            None,
+        );
+        let broadcast = kernel(
+            KernelKind::Broadcast,
+            "BroadcastScalar",
+            vec![Operand::Immediate(1.0)],
+            TensorType::f32(&[8]),
+            None,
+        );
+        let steps = vec![
+            dispatch(&transpose, vec![view(0, 640)], vec![view(1, 640)]),
+            dispatch(&broadcast, Vec::new(), vec![view(2, 8)]),
+        ];
+        let plan = plan(vec![transpose, broadcast], steps.clone());
+        assert_eq!(plan.dispatch_count(&steps[0]), counted(0, 5120));
+        assert_eq!(plan.dispatch_count(&steps[1]), counted(0, 32));
+    }
+
+    /// An elementwise op the rule names no arithmetic for, a matmul whose shape is not static
+    /// and a module the plan has no kernel of are `uncounted`, never 0; a barrier has no count.
+    #[test]
+    fn a_dispatch_with_no_counting_rule_is_uncounted_never_zero() {
+        let ty = TensorType::f32(&[8]);
+        let exp = kernel(
+            KernelKind::Elementwise,
+            "Exp",
+            vec![Operand::Buffer(ty.clone())],
+            ty,
+            None,
+        );
+        let symbolic = TensorType {
+            dtype: DType::F32,
+            shape: vec![Dim::Symbol(0), Dim::Static(4)],
+        };
+        let matmul = kernel(
+            KernelKind::MatMul,
+            "MatMul",
+            vec![
+                Operand::Buffer(symbolic),
+                Operand::Buffer(TensorType::f32(&[4, 1])),
+            ],
+            TensorType::f32(&[8, 1]),
+            None,
+        );
+        let mut unknown = dispatch(&exp, vec![view(0, 8)], vec![view(1, 8)]);
+        unknown.kernel_module_id = Some(KernelModuleId([7; 16]));
+        let steps = vec![
+            dispatch(&exp, vec![view(0, 8)], vec![view(1, 8)]),
+            dispatch(&matmul, vec![view(2, 32), view(3, 4)], vec![view(4, 8)]),
+            unknown,
+        ];
+        let barrier = PlanStep {
+            op: PlanOp::Barrier,
+            kernel_module_id: None,
+            workgroups: None,
+            reads: Vec::new(),
+            writes: Vec::new(),
+            depends_on: Vec::new(),
+            value: None,
+        };
+        let plan = plan(vec![exp, matmul], steps.clone());
+        for step in &steps {
+            assert_eq!(
+                plan.dispatch_count(step),
+                Some(DispatchCount::Uncounted),
+                "{step:?}"
+            );
+        }
+        assert_eq!(plan.dispatch_count(&barrier), None);
+        assert_eq!(DispatchCount::Uncounted.to_string(), "uncounted");
+        let printed = crate::ir::print::print_kernel(&plan);
+        let dispatches: Vec<&str> = printed
+            .lines()
+            .filter(|l| l.contains(": dispatch "))
+            .collect();
+        assert_eq!(dispatches.len(), 3, "{printed}");
+        for line in dispatches {
+            assert!(line.ends_with(" uncounted"), "{line}");
+            assert!(!line.contains(" flop "), "{line}");
+        }
+    }
+
+    #[test]
+    fn a_counted_dispatch_prints_its_flop_and_bytes_on_its_plan_line() {
+        let (matmul, _) = mnist_matmul();
+        let step = dispatch(
+            &matmul,
+            vec![view(0, 100 * 784), view(1, 784 * 64)],
+            vec![view(2, 100 * 64)],
+        );
+        assert_eq!(
+            DispatchCount::Counted {
+                flop: 10_035_200,
+                bytes: 539_904
+            }
+            .to_string(),
+            "flop 10035200 bytes 539904"
+        );
+        let printed = crate::ir::print::print_kernel(&plan(vec![matmul], vec![step]));
+        let line = printed
+            .lines()
+            .find(|l| l.contains(": dispatch "))
+            .expect("a dispatch line");
+        assert!(
+            line.ends_with(" workgroups [52, 1, 1] flop 10035200 bytes 539904"),
+            "{line}"
+        );
     }
 
     #[test]

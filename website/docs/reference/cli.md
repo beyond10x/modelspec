@@ -104,7 +104,7 @@ Every argument is required and has no default.
 | Argument | Meaning |
 |---|---|
 | `<PATH>` | The .mspec file to lower. |
-| `--stage <STAGE>` | The IR level to print. One of:<br/>`tensor`: Tensor IR after lowering and dead-code elimination<br/>`training`: Training IR: the Tensor IR with its reverse pass and SGD step attached<br/>`kernel`: Kernel IR: the kernels of the training step, its step plan and its forward plan |
+| `--stage <STAGE>` | The IR level to print. One of:<br/>`tensor`: Tensor IR after lowering and dead-code elimination<br/>`training`: Training IR: the Tensor IR with its reverse pass and SGD step attached<br/>`kernel`: Kernel IR: the kernels of the training step, its step plan and its forward plan, each dispatch with its FLOP and byte count |
 
 ## `modelspec observe`
 
@@ -145,4 +145,4 @@ Usage: modelspec train [OPTIONS] --backend <BACKEND> <PATH>
 | `--statistics-every <N>` | no | none | Take the norm and histogram of every parameter and its gradient for the event stream at the first step, every step that is a multiple of N and the last, instead of every 100; CPU only: a Vulkan run sends the Value entries of its first and last step and every other step's list empty. |
 | `--device <INDEX>` | no | none | With --backend vulkan, train on the physical device INDEX, in the order the Vulkan loader lists them, instead of device 0. |
 | `--stats` | no | `false` | With --backend vulkan, print the run's host waits, submits, dispatches, bytes copied up and down, numerics class and microseconds per step on stderr after it. |
-| `--profile` | no | `false` | With --backend vulkan, time every dispatch with GPU timestamp queries and print one `profile dispatch` line per dispatch site, then the run's counters, compile and pipeline creation time and steady-state microseconds per step on stderr after it. |
+| `--profile` | no | `false` | With --backend vulkan, time every dispatch with GPU timestamp queries and print one `profile dispatch` line per dispatch site, with its FLOP, bytes, achieved GFLOP/s and GB/s, then the run's counters, compile and pipeline creation time, steady-state microseconds per step and the step's total FLOP, bytes, GFLOP/s and GB/s on stderr after it. |

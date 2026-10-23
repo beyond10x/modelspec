@@ -6,13 +6,15 @@
 //! evaluation, into query pools it reads back after its one host wait. [`timings`] sums the
 //! stamps per dispatch site: one site per Dispatch step of the step plan, called once per
 //! step, then one per Dispatch step the final loss evaluation records, called once. Two sites
-//! that dispatch one module are two sites. [`Profile::report`] prints the sites and the counters
-//! of the run's [`RunStats`].
+//! that dispatch one module are two sites. Each site carries the FLOP and bytes of its plan
+//! step ([`ExecutionPlan::dispatch_count`], DESIGN.md § 3.1). [`Profile::report`] prints the
+//! sites with their GFLOP/s and GB/s over their mean time, the counters of the run's
+//! [`RunStats`], and the step total over the steady time per step.
 
 use std::fmt::{self, Write as _};
 use std::time::Duration;
 
-use modelspec_core::ir::kernel::KernelModuleId;
+use modelspec_core::ir::kernel::{DispatchCount, ExecutionPlan, KernelModuleId};
 
 use super::runner::RunStats;
 
@@ -46,6 +48,28 @@ pub struct Site {
     pub kernel_module_id: KernelModuleId,
     /// The entry point of the kernel's SPIR-V module.
     pub entry: String,
+    /// The FLOP and bytes of one dispatch of the step (DESIGN.md § 3.1, the counting rule).
+    pub count: DispatchCount,
+}
+
+impl Site {
+    /// The site of the Dispatch step at `position` of `execution`'s step plan, in `plan`, with
+    /// its module id and count from the step; `None` when that step is not a Dispatch.
+    pub fn new(
+        execution: &ExecutionPlan,
+        plan: PlanName,
+        position: usize,
+        entry: String,
+    ) -> Option<Self> {
+        let step = execution.step.get(position)?;
+        Some(Site {
+            plan,
+            position,
+            kernel_module_id: step.kernel_module_id?,
+            entry,
+            count: execution.dispatch_count(step)?,
+        })
+    }
 }
 
 /// The GPU time of one dispatch site over a run.
@@ -173,20 +197,44 @@ pub struct Profile {
     pub compile: Duration,
 }
 
+/// `flop <f> bytes <b> gflop_per_s <g> gb_per_s <h>` for the `(flop, bytes)` of `count`, the
+/// rates being the counts over `us` microseconds, or `unavailable` without a positive time;
+/// `uncounted` without a count.
+fn write_throughput(out: &mut String, count: Option<(u128, u128)>, us: Option<f64>) {
+    let Some((flop, bytes)) = count else {
+        out.push_str("uncounted");
+        return;
+    };
+    let _ = write!(out, "flop {flop} bytes {bytes}");
+    for (label, units) in [("gflop_per_s", flop), ("gb_per_s", bytes)] {
+        match us.filter(|us| *us > 0.0) {
+            Some(us) => {
+                let _ = write!(out, " {label} {:.3}", units as f64 / us / 1e3);
+            }
+            None => {
+                let _ = write!(out, " {label} unavailable");
+            }
+        }
+    }
+}
+
 impl Profile {
     /// The report lines: one `profile dispatch <plan> <position> <kernel_module_id> <entry>
-    /// calls <n> total_us <t> mean_us <m>` line per site, or one saying the device has no
-    /// timestamp queries, then one `profile <counter> <value>` line per counter of `stats` and
-    /// of the profile.
+    /// calls <n> total_us <t> mean_us <m> <throughput>` line per site, `<throughput>` being
+    /// `flop <f> bytes <b> gflop_per_s <g> gb_per_s <h>` over the mean time, or `uncounted`; or
+    /// one line saying the device has no timestamp queries. Then one `profile <counter> <value>`
+    /// line per counter of `stats` and of the profile, and last `profile step_total flop <f>
+    /// bytes <b> gflop_per_s <g> gb_per_s <h> uncounted_sites <n>`: the counts of the counted
+    /// step sites over the steady time per step, and the step sites left out.
     pub fn report(&self, stats: &RunStats) -> String {
         let mut out = String::new();
         match &self.timings {
             Some(timings) => {
                 for time in &timings.sites {
                     let site = &time.site;
-                    let _ = writeln!(
+                    let _ = write!(
                         out,
-                        "profile dispatch {} {} {} {} calls {} total_us {:.3} mean_us {:.3}",
+                        "profile dispatch {} {} {} {} calls {} total_us {:.3} mean_us {:.3} ",
                         site.plan,
                         site.position,
                         site.kernel_module_id,
@@ -195,6 +243,12 @@ impl Profile {
                         time.total_us(),
                         time.mean_us()
                     );
+                    let count = match site.count {
+                        DispatchCount::Counted { flop, bytes } => Some((flop.into(), bytes.into())),
+                        DispatchCount::Uncounted => None,
+                    };
+                    write_throughput(&mut out, count, Some(time.mean_us()));
+                    out.push('\n');
                 }
             }
             None => out.push_str("profile kernel timings unavailable: no timestamp queries\n"),
@@ -216,6 +270,25 @@ impl Profile {
                 let _ = writeln!(out, "profile steady_us_per_step {steady:.3}");
             }
             None => out.push_str("profile steady_us_per_step unavailable\n"),
+        }
+        match &self.timings {
+            Some(timings) => {
+                let (mut flop, mut bytes, mut uncounted) = (0u128, 0u128, 0usize);
+                for site in timings.sites.iter().map(|time| &time.site) {
+                    match (site.plan, site.count) {
+                        (PlanName::Step, DispatchCount::Counted { flop: f, bytes: b }) => {
+                            flop += u128::from(f);
+                            bytes += u128::from(b);
+                        }
+                        (PlanName::Step, DispatchCount::Uncounted) => uncounted += 1,
+                        (PlanName::Final, _) => {}
+                    }
+                }
+                out.push_str("profile step_total ");
+                write_throughput(&mut out, Some((flop, bytes)), timings.steady_us_per_step);
+                let _ = writeln!(out, " uncounted_sites {uncounted}");
+            }
+            None => out.push_str("profile step_total unavailable\n"),
         }
         out
     }

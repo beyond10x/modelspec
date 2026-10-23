@@ -58,7 +58,11 @@ kernel k2 d588cbc2-b3eb-8bf1-93a1-29d8680aba58 loss_sum Mse f32 (Tensor<f32, [10
 
 `plan step` is the training step, numbered: `dispatch` steps run a kernel, `barrier` steps order
 them. `plan forward` is the forward program alone; `train` does not run it. The profile below
-names a dispatch by its position in `plan step`.
+names a dispatch by its position in `plan step`. Each `dispatch` line carries, after its
+workgroups, `flop <n> bytes <n>`: the arithmetic of the kernel and the bytes of the views it reads
+and writes, by the counting rule of DESIGN.md § 3.1, or `uncounted` for a kernel the rule has no
+count for. Step 0, `k0`, is `flop 10035200 bytes 565504`, the `2·m·k·n` of
+`[100, 784] x [784, 64]`; the 14 dispatches of the step count 20,566,432 FLOP and 2,600,004 bytes.
 
 ## 4. The compiled artifact
 
@@ -140,6 +144,16 @@ profile steady_us_per_step 44.797
 | `total_us`, `mean_us` | GPU time from just before the dispatch starts to just after it ends, summed over the calls and per call |
 | `steady_us_per_step` | GPU time per step from step 20 to the final loss, so the first 20 steps are left out as warm-up |
 | `pipeline_creation_us`, `compile_us` | host time to build the pipelines and to compile the file and emit its kernels, outside the steady state |
+| `flop`, `bytes` | after `mean_us`: the counts of the dispatch on its `plan step` line of `--stage kernel` |
+| `gflop_per_s`, `gb_per_s` | `flop` and `bytes` over `mean_us`; `unavailable` when the time is 0 |
+| `uncounted` | in place of the four fields above, for a dispatch the counting rule has no count for |
+| `step_total` | the last line: the `flop` and `bytes` of every counted `step` site, over `steady_us_per_step`, and `uncounted_sites`, the `step` sites it leaves out |
+
+The run above was made before the profile printed those fields. For its times, the current
+`--profile` adds `flop 10035200 bytes 565504 gflop_per_s 1166.423 gb_per_s 65.730` to step 0,
+and its last line is `profile step_total flop 20566432 bytes 2600004` with about 459.1 GFLOP/s
+and 58.04 GB/s over the 44.797 µs step, `uncounted_sites 0`. Bytes are what the views name, not
+DRAM traffic measured on the device.
 
 Here step position 4, module `d588cbc2…`, is `k2`, the `mse` loss sum on one workgroup of 64
 invocations: 4.1 µs of the 44.8 µs step. A device without timestamp queries prints
