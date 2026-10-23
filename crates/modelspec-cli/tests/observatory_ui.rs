@@ -544,7 +544,12 @@ struct PageRead {
 /// Opens `http://<address>/` in a headless browser, reads it every 50 ms until the page says the
 /// run ended and reads its charts.
 fn charts(address: &str) -> PageRead {
-    let browser = browser();
+    charts_in(&browser(), address)
+}
+
+/// [`charts`] in a browser that is already running, so a live scenario starts it before the run
+/// and the browser's start-up does not use up the run's steps.
+fn charts_in(browser: &headless_chrome::Browser, address: &str) -> PageRead {
     let tab = browser.new_tab().expect("a tab opens");
     tab.navigate_to(&format!("http://{address}/"))
         .expect("the page is requested");
@@ -640,8 +645,8 @@ fn assert_loss_chart(chart: &Chart, data: &[String]) {
 /// Opens the UI served at `served`, then reads the stream it read and checks the loss chart
 /// against it, and that the run's only chart is the loss.
 /// Returns what the page said before the run ended and the number of `StepCompleted` events.
-fn assert_loss_only(served: &Served) -> (Vec<Reading>, usize) {
-    let read = charts(&served.address);
+fn assert_loss_only(served: &Served, browser: &headless_chrome::Browser) -> (Vec<Reading>, usize) {
+    let read = charts_in(browser, &served.address);
     assert_eq!(read.state, "finished");
     let data = streamed(&served.address);
     let charts = &read.charts;
@@ -664,6 +669,7 @@ const LIVE_STEPS: &str = "50000";
 /// chart the stream gives.
 fn live(model: &str) {
     let ui = built_ui();
+    let browser = browser();
     let mut served = Served::start(&[
         "train",
         model,
@@ -677,7 +683,7 @@ fn live(model: &str) {
         &ui,
     ]);
     assert_eq!(served.next_line(), format!("ui http://{}/", served.address));
-    let (before, points) = assert_loss_only(&served);
+    let (before, points) = assert_loss_only(&served, &browser);
     assert!(
         before.iter().any(|r| r.state == "streaming"
             && r.loss_points > 0
@@ -690,7 +696,7 @@ fn replay(fixture: &str) {
     let ui = built_ui();
     let mut served = Served::start(&["observe", fixture, "--ui", &ui]);
     assert_eq!(served.next_line(), format!("ui http://{}/", served.address));
-    assert_loss_only(&served);
+    assert_loss_only(&served, &browser());
 }
 
 /// `observatory.ui.live-linear-regression`.
@@ -762,7 +768,7 @@ fn observatory_ui_metric_charts() {
 
     let mut plain = Served::start(&["observe", LINEAR_FIXTURE, "--ui", &ui]);
     assert_eq!(plain.next_line(), format!("ui http://{}/", plain.address));
-    assert_loss_only(&plain);
+    assert_loss_only(&plain, &browser());
 }
 
 /// One streamed `ParameterStatistics` entry: its step, its norm as the server wrote it and its
