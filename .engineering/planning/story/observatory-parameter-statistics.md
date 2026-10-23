@@ -2,7 +2,7 @@
 format: aep.planning-md/3
 id: story:observatory-parameter-statistics
 kind: story
-status: active
+status: implemented
 title: 'Parameter and gradient statistics per step: norms and histograms'
 summary: StepCompleted carries per-parameter value and gradient norms and histograms from the CPU step, drawn in the UI; settles the histogram, norm and sampling markers.
 relations:
@@ -40,10 +40,11 @@ scope:
   path: ui/
 - confidence: cited
   path: ui/src/generated/
-revision: 21
+revision: 22
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-23T08:16:30Z", actor: "human:timo", revision: 5, decided_on: {"recorded":{"review_outcome":2}}}
 - {from: "proposed", to: "active", at: "2026-10-23T08:16:31Z", actor: "human:timo", revision: 6, decided_on: {"recorded":{"review_outcome":2}}}
+- {from: "active", to: "implemented", at: "2026-10-23T16:37:27Z", actor: "human:timo", revision: 22, decided_on: {"recorded":{"test_result":1,"review_outcome":3}}}
 ---
 # Parameter and gradient statistics per step: norms and histograms
 

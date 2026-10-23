@@ -1,0 +1,15 @@
+{
+  "at": "2026-10-23T16:37:27Z",
+  "actor": "human:timo",
+  "artifact": "story:observatory-parameter-statistics",
+  "kind": "story",
+  "revision": 21,
+  "change": {
+    "change": "evidence",
+    "kind": "review_outcome",
+    "source": "round 2 fix 884843b: Vulkan first and post-loop Value entries from host values, value/gradient norm chart names reserved",
+    "reference": "884843b",
+    "review": "review-result:adversary-observatory-parameter-statistics-pass-1",
+    "outcome": "fixed"
+  }
+}

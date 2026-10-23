@@ -38,4 +38,4 @@ Dispatch: `aep:implementor` per unit, then `aep:adversary`.
 | 2 | plan-verifier-bounded-on-untrusted-artifact | impl/plan-verifier-bounded-on-untrusted-artifact | modelspec-impl-m1h-verifier | merged, implemented |
 | 3 | kernel-signature-covers-matmul-tile (re-scoped from m1-f-weight-grad-matmul-columns) | impl/kernel-signature-covers-matmul-tile | modelspec-impl-m1h-wgrad-cols | merged, implemented |
 | 4 | observatory-ui-live-loss-chart | impl/observatory-ui-live-loss-chart | modelspec-impl-m1h-ui-chart | merged at c7daf8b, implemented |
-| 5 | observatory-parameter-statistics | impl/observatory-parameter-statistics | modelspec-impl-m1h-param-stats | 6272b74, adversary pass 1 |
+| 5 | observatory-parameter-statistics | impl/observatory-parameter-statistics | modelspec-impl-m1h-param-stats | merged at 06dacc6, implemented |

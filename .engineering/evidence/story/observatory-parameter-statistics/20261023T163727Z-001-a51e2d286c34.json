@@ -1,0 +1,13 @@
+{
+  "at": "2026-10-23T16:37:27Z",
+  "actor": "human:timo",
+  "artifact": "story:observatory-parameter-statistics",
+  "kind": "story",
+  "revision": 21,
+  "change": {
+    "change": "evidence",
+    "kind": "test_result",
+    "source": "task ci on impl/observatory-parameter-statistics at 884843b: 1429 passed, 0 failed, 131 ignored, exit 0; node 27/27; Vulkan first/last-event test passed on RTX 3090",
+    "reference": "884843b"
+  }
+}
