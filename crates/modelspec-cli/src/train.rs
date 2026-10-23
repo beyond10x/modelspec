@@ -22,8 +22,9 @@
 //!
 //! `--backend vulkan` compiles the file's execution plan for Vulkan and trains on device 0, or
 //! on the device `--device <index>` names, in the loader's enumeration order
-//! ([`modelspec_runtime::vulkan::runner`]): the host waits for the device once, after the last
-//! step. `--stats` prints the run's counters on stderr after it (host waits, submits,
+//! ([`modelspec_runtime::vulkan::runner`]): the host waits for the device once after the last
+//! step, and once after each step `--checkpoint-every` writes a checkpoint at, whose parameters it
+//! reads back then and no other step. `--stats` prints the run's counters on stderr after it (host waits, submits,
 //! dispatches, bytes up and down, the numerics class, microseconds per step). `--profile` times
 //! every dispatch with GPU timestamp queries, read back after the one host wait, and prints on
 //! stderr after it one `profile dispatch <plan> <position> <kernel_module_id> <entry> calls <n>
@@ -33,9 +34,9 @@
 //! compiled before the loader is opened; then a missing loader exits 1 with `E-TARGET-002`, no
 //! device or a `--device` that names none with `E-TARGET-003`, and a device below the
 //! requirements with `E-TARGET-004`. A build without the `vulkan` feature refuses the backend
-//! with [`E_TARGET_001`] before the file is read. `--data`, `--init`, `--eval`, `--checkpoint`
-//! and `--resume` are CPU-only, and `--device`, `--stats` and `--profile` Vulkan-only: naming one with the
-//! other backend is a usage error (exit 2).
+//! with [`E_TARGET_001`] before the file is read. `--data`, `--init` and `--eval` are CPU-only,
+//! and `--device`, `--stats` and `--profile` Vulkan-only: naming one with the other backend is a
+//! usage error (exit 2).
 //!
 //! `--data <dir>` trains on dense `f32` files instead of synthetic data, `--init <dir>` starts
 //! the parameters that have a file from it, and `--eval <dir>` adds a last line
@@ -99,8 +100,8 @@ use modelspec_runtime::train::init;
 use modelspec_runtime::train::optimizer::ParamState;
 use modelspec_runtime::train::runner::{self, Diverged, Eval, Run, RunError};
 
-/// The selected backend is not available: `train --backend vulkan` in a build without the `vulkan`
-/// feature, and `infer --backend vulkan` in every M1 build.
+/// The selected backend is not available: `--backend vulkan` of `train` or `infer` in a build
+/// without the `vulkan` feature.
 pub const E_TARGET_001: Code = Code::new("E-TARGET-001");
 
 /// A loss line is printed every this many steps, besides the last.
@@ -180,8 +181,6 @@ fn misplaced_flag(args: &Args) -> Option<&'static str> {
             ("--data", args.data.is_some()),
             ("--init", args.init.is_some()),
             ("--eval", args.eval.is_some()),
-            ("--checkpoint", args.checkpoint.is_some()),
-            ("--resume", args.resume.is_some()),
         ]
         .into_iter()
         .find_map(|(flag, given)| given.then_some(flag)),
@@ -290,7 +289,7 @@ impl Files {
 pub enum Backend {
     /// The CPU interpreter.
     Cpu,
-    /// Vulkan compute on one device: `train` only, in a build with the vulkan feature.
+    /// Vulkan compute on one device, in a build with the vulkan feature.
     Vulkan,
 }
 
@@ -548,8 +547,34 @@ fn train(
             profile,
         } = engine
         {
-            use modelspec_runtime::vulkan::runner::{DeviceRunError, train_on_device_with};
-            break 'run match train_on_device_with(*device, compiled, artifact, profile.is_some()) {
+            use modelspec_runtime::vulkan::runner::{
+                Checkpoints, DeviceRunError, RunOptions, VulkanRunError, train_on_device_from,
+            };
+            let mut write = |k: u64, values: &BTreeMap<ParamId, HostTensor<f32>>| match files
+                .every_path(k)
+            {
+                Some(path) => checkpoint::write(&path, &Checkpoint::of_state(compiled, k, values)),
+                None => Ok(()),
+            };
+            let options = RunOptions {
+                start: files.start(),
+                init: files
+                    .resume
+                    .as_ref()
+                    .map(|(_, values)| values.clone())
+                    .unwrap_or_default(),
+                checkpoints: files.checkpoint_every.map(|every| Checkpoints {
+                    every,
+                    write: &mut write,
+                }),
+            };
+            break 'run match train_on_device_from(
+                *device,
+                compiled,
+                artifact,
+                profile.is_some(),
+                options,
+            ) {
                 Ok((run, counted, profiled)) => {
                     for (k, &loss) in (run.start_step..).zip(&run.losses) {
                         observe(k, loss);
@@ -561,9 +586,19 @@ fn train(
                         profiled.compile += compiling;
                         let _ = write!(stderr, "{}", profiled.report(&counted));
                     }
-                    Ok((run, None))
+                    let end = run.start_step + counted.steps;
+                    match &files.checkpoint {
+                        Some(path) => checkpoint::write(
+                            path,
+                            &Checkpoint::of_state(compiled, end, &run.state.values),
+                        )
+                        .map(|()| (run, None))
+                        .map_err(|error| RunError::from(error).into()),
+                        None => Ok((run, None)),
+                    }
                 }
                 Err(DeviceRunError::Refused(diagnostic)) => Err(Failure::Refused(diagnostic)),
+                Err(DeviceRunError::Failed(VulkanRunError::Run(error))) => Err((*error).into()),
                 Err(DeviceRunError::Failed(error)) => Err(Failure::Failed(error.to_string())),
             };
         }

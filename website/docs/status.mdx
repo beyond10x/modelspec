@@ -13,14 +13,15 @@ subset of the language, with a prebuilt binary for Linux x86_64
 ([changelog](https://github.com/beyond10x/modelspec/blob/main/CHANGELOG.md)).
 
 On `main`, not in a release yet, `modelspec train --backend vulkan` trains on one Vulkan device
-within the GPU tolerance of the CPU reference. A binary built without the `vulkan` feature refuses
+within the GPU tolerance of the CPU reference, writes and resumes checkpoints there, and
+`modelspec infer --backend vulkan` runs a checkpoint on the device. A binary built without the `vulkan` feature refuses
 that backend with `E-TARGET-001`. M1, native Vulkan execution, is in progress
 ([Roadmap](./roadmap.md)).
 
 | milestone | state |
 |---|---|
 | M0 semantic core | done: released as 0.1.0 |
-| M1 native Vulkan execution | in progress: Vulkan training on `main`; `compile` and Vulkan `infer` not built |
+| M1 native Vulkan execution | in progress: Vulkan training, `compile`, checkpoints and Vulkan `infer` on `main` |
 | M2 to M4 | designed in DESIGN.md § 1; not built |
 
 ## Every capability

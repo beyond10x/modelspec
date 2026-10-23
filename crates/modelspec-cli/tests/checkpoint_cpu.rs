@@ -304,7 +304,19 @@ fn infer_on_vulkan_and_checkpoint_every_without_checkpoint_are_refused() {
         "x.msckpt",
     ]);
     assert_eq!(output.status.code(), Some(1));
-    assert!(text(&output.stderr).starts_with("E-TARGET-001: "));
+    // With the vulkan feature `infer --backend vulkan` reads the checkpoint before it opens the
+    // loader, so the missing checkpoint is the refusal (tests/checkpoint_vulkan.rs); without it
+    // the backend is refused before the file is read.
+    let refusal = if cfg!(feature = "vulkan") {
+        "E-CKPT-001: "
+    } else {
+        "E-TARGET-001: "
+    };
+    assert!(
+        text(&output.stderr).starts_with(refusal),
+        "{}",
+        text(&output.stderr)
+    );
     let output = modelspec(&[
         "train",
         EXAMPLE,

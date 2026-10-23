@@ -86,11 +86,9 @@ fn mnist_mlp_on_vulkan_prints_the_lines_of_the_cpu_run() {
 }
 
 #[test]
-fn the_checkpoint_and_data_flags_are_usage_errors_on_vulkan() {
+fn the_data_flags_are_usage_errors_on_vulkan() {
     for flags in [
-        &["--checkpoint", "run.msckpt"][..],
-        &["--resume", "run.msckpt"],
-        &["--data", "data"],
+        &["--data", "data"][..],
         &["--init", "init"],
         &["--eval", "eval"],
     ] {

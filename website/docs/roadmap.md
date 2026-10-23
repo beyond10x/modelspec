@@ -25,9 +25,11 @@ reference interpreter, and `modelspec check`, `ir` and `train --backend cpu`.
 
 On `main`, not in a release yet: `modelspec train --backend vulkan` trains both examples on one
 Vulkan device with one host wait per run, within the GPU tolerance of the CPU reference, and
-`modelspec inspect-device --backend vulkan` reports each device. `modelspec compile` and Vulkan
-`infer` are not built. The work is planned as `epic:m1-vulkan-execution` in the repository's
-planning store.
+`modelspec inspect-device --backend vulkan` reports each device. `modelspec compile` writes an
+artifact directory, `modelspec train` writes and resumes checkpoints on both backends, the device
+run waiting once more per requested checkpoint, and `modelspec infer` runs a checkpoint on the CPU
+or on the device. The work is planned as `epic:m1-vulkan-execution` in the repository's planning
+store.
 
 :::
 

@@ -22,8 +22,11 @@ tooling: the derived pages of the documentation site).
 `check` resolves names and checks types and shapes;
 `ir <file> --stage tensor|training` prints the verified Tensor IR or the verified training step;
 `train <file> --backend cpu` trains on the CPU reference (DESIGN.md § 8), and `--backend vulkan`
-trains on one Vulkan device with one host wait per run (`--stats` prints its counters); a CLI
-built without the `vulkan` feature refuses it with E-TARGET-001. `inspect-device --backend vulkan`
+trains on one Vulkan device with one host wait per run plus one per requested checkpoint
+(`--stats` prints its counters); `--checkpoint`, `--checkpoint-every` and `--resume` work on both
+backends, and `infer <file> --backend cpu|vulkan --checkpoint <path>` runs a checkpoint's forward
+program and loss, on Vulkan with one host wait; a CLI built without the `vulkan` feature refuses
+`--backend vulkan` with E-TARGET-001. `inspect-device --backend vulkan`
 prints each device's profile and negotiation verdict; the device tests run on a GPU only with
 `--ignored`. CI: `check.yml` runs `task ci`; `shared-gates.yml` runs the
 common source gates; `pages.yml` and `b10x-docs-site.yml` build and publish the documentation site.
