@@ -11,7 +11,7 @@ history.
 
 ### Fixed
 
-- `modelspec train --backend cpu` stops at the first step whose loss or updated parameter is NaN or ±inf and exits 1 with `E-TRAIN-001` naming the step and the loss or parameter, instead of printing a diverged run and exiting 0; stdout ends with that step's `step <k> loss <v>` line and has no `param` lines, and `--serve` ends with that step's event, its loss `null`, then `RunFailed` (DESIGN.md § 8) (story:train-refuses-non-finite-loss)
+- `modelspec train --backend cpu` stops at the first step whose loss or updated parameter is NaN or ±inf and exits 1 with `E-TRAIN-001` naming the step and the loss or parameter, instead of printing a diverged run and exiting 0; stdout ends with that step's `step <k> loss <v>` line and has no `param` lines, and `--serve` ends with that step's event (its loss `null` when the loss is the non-finite value), then `RunFailed` (DESIGN.md § 8) (story:train-refuses-non-finite-loss)
 
 ## [0.5.0] - 2026-10-23
 
