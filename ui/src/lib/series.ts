@@ -11,6 +11,7 @@ export interface Point {
 
 /** The values of one named quantity, one point per `StepCompleted` that carried it, in step order. */
 export interface Series {
+  /** The chart's name, distinct among the charts of a run (`chartName`). */
   name: string;
   points: Point[];
 }
@@ -33,6 +34,19 @@ export interface Run {
 
 export const LOSS = 'loss';
 
+/** The names that `chartName` gives one more ` (metric)`: `loss`, `loss (metric)`, ... */
+const RESERVED = /^loss( \(metric\))*$/;
+
+/**
+ * The chart name of the metric `name`: the name itself, except that a name of the form `loss`,
+ * `loss (metric)`, ... gets one more ` (metric)`. Metric names are distinct within a step
+ * (`StepCompleted`), and the map is one-to-one and never gives `loss`, so the loss chart and every
+ * metric chart have distinct names, and so distinct Vue keys and `svg[data-metric]` values.
+ */
+export function chartName(name: string): string {
+  return RESERVED.test(name) ? `${name} (metric)` : name;
+}
+
 export function emptyRun(): Run {
   return {
     state: 'connecting',
@@ -47,11 +61,19 @@ export function emptyRun(): Run {
 }
 
 /**
- * Folds `event` into `run` in place and returns whether it changed. An event whose `sequence` was
- * already folded (a reconnecting stream sends from `Last-Event-ID` on, but a replay of the page may
- * not) and an event of another run are skipped.
+ * Folds `event` into `run` in place and returns whether it changed. A `RunStarted` of another run
+ * (the server at the page's address was restarted with a new run) starts `run` over on that run.
+ * An event whose `sequence` was already folded (the stream resends a run from its start on every
+ * reconnect) and any other event of another run are skipped.
  */
 export function apply(run: Run, event: RunEvent): boolean {
+  if (
+    run.trainingRunId !== null &&
+    event.training_run_id !== run.trainingRunId &&
+    event.body.kind === 'RunStarted'
+  ) {
+    Object.assign(run, emptyRun());
+  }
   if (event.sequence < run.next) {
     return false;
   }
@@ -72,9 +94,10 @@ export function apply(run: Run, event: RunEvent): boolean {
       const step = body.value.step;
       run.loss.points.push({ step, value: body.value.loss });
       for (const sample of body.value.metrics) {
-        let series = run.metrics.find((s) => s.name === sample.name);
+        const name = chartName(sample.name);
+        let series = run.metrics.find((s) => s.name === name);
         if (series === undefined) {
-          series = { name: sample.name, points: [] };
+          series = { name, points: [] };
           run.metrics.push(series);
         }
         series.points.push({ step, value: sample.value });

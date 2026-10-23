@@ -76,8 +76,9 @@ Entry points are the `Taskfile.yml` tasks (go-task):
   `node --test` cases of `src/lib/`) and `pnpm build` into `ui/dist/` (Node 22.18 or later, pnpm
   11; `ui/node_modules/` and `ui/dist/` are never committed).
 - `task ui-browser`: `task ui`, then the `#[ignore]`d browser tests of
-  `crates/modelspec-cli/tests/observatory_ui.rs` with `--ignored`. They start Chrome or Chromium
-  headless through `headless_chrome`: the executable named by `CHROME`, else the first of
+  `crates/modelspec-cli/tests/observatory_ui.rs` and `observatory_ui_adversary.rs` with
+  `--ignored`. They start Chrome or Chromium headless through `headless_chrome`: the executable
+  named by `CHROME`, else the first of
   `google-chrome-stable`, `chromium`, `chromium-browser`, `chrome`, ... on `PATH`; `check.yml` sets
   `CHROME`.
 - `task ci`: all of the above; the gate. `task ci` needs Node and pnpm for

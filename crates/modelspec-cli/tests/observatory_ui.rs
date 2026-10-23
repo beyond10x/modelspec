@@ -520,32 +520,60 @@ fn built_ui() -> String {
     path_arg(&dir)
 }
 
-/// Opens `http://<address>/` in a headless browser, waits until the page says the run ended and
-/// reads its charts.
-fn charts(address: &str) -> (String, Vec<Chart>) {
+/// What the page said at one reading before the run ended: its run state and the points of its
+/// loss chart.
+#[derive(Debug, Clone, PartialEq)]
+struct Reading {
+    state: String,
+    loss_points: u64,
+}
+
+/// The charts the page drew once the run ended, the state it ended in and every distinct
+/// [`Reading`] before that.
+struct PageRead {
+    state: String,
+    charts: Vec<Chart>,
+    before: Vec<Reading>,
+}
+
+/// Opens `http://<address>/` in a headless browser, reads it every 50 ms until the page says the
+/// run ended and reads its charts.
+fn charts(address: &str) -> PageRead {
     let browser = browser();
     let tab = browser.new_tab().expect("a tab opens");
     tab.navigate_to(&format!("http://{address}/"))
         .expect("the page is requested");
     tab.wait_until_navigated().expect("the page loads");
     let start = Instant::now();
+    let mut before: Vec<Reading> = Vec::new();
     let state = loop {
-        let state = tab
+        let read = tab
             .evaluate(
-                "document.querySelector('main')?.dataset.runState ?? 'none'",
+                "JSON.stringify({
+                    state: document.querySelector('main')?.dataset.runState ?? 'none',
+                    points: Number(document.querySelector('svg[data-metric=\"loss\"]')?.dataset.points ?? 0),
+                })",
                 false,
             )
             .expect("the page answers")
             .value
             .and_then(|v| v.as_str().map(str::to_owned))
-            .unwrap_or_default();
-        if state == "finished" || state == "failed" {
-            break state;
+            .expect("a JSON string");
+        let read = json(&read);
+        let reading = Reading {
+            state: read["state"].as_str().unwrap_or_default().to_owned(),
+            loss_points: read["points"].as_u64().unwrap_or_default(),
+        };
+        if reading.state == "finished" || reading.state == "failed" {
+            break reading.state;
         }
         assert!(
             start.elapsed() < WAIT,
-            "the page still says {state:?} after {WAIT:?}"
+            "the page still says {reading:?} after {WAIT:?}"
         );
+        if before.last() != Some(&reading) {
+            before.push(reading);
+        }
         std::thread::sleep(Duration::from_millis(50));
     };
     let read = tab
@@ -578,7 +606,11 @@ fn charts(address: &str) -> (String, Vec<Chart>) {
             drawn: chart["drawn"].as_u64().expect("drawn") as usize,
         })
         .collect();
-    (state, charts)
+    PageRead {
+        state,
+        charts,
+        before,
+    }
 }
 
 /// The loss chart has one point per `StepCompleted` of `data`, a drawn point per finite loss, and
@@ -602,18 +634,29 @@ fn assert_loss_chart(chart: &Chart, data: &[String]) {
 
 /// Opens the UI served at `served`, then reads the stream it read and checks the loss chart
 /// against it, and that the run's only chart is the loss.
-fn assert_loss_only(served: &Served) {
-    let (state, charts) = charts(&served.address);
-    assert_eq!(state, "finished");
+/// Returns what the page said before the run ended and the number of `StepCompleted` events.
+fn assert_loss_only(served: &Served) -> (Vec<Reading>, usize) {
+    let read = charts(&served.address);
+    assert_eq!(read.state, "finished");
     let data = streamed(&served.address);
+    let charts = &read.charts;
     assert_eq!(
         charts.iter().map(|c| c.metric.as_str()).collect::<Vec<_>>(),
         ["loss"],
         "{charts:?}"
     );
     assert_loss_chart(&charts[0], &data);
+    (read.before, losses(&data).len())
 }
 
+/// The steps of a live scenario's run: the models' own 500 and 200 end in under 0.1 s, before the
+/// browser has opened the page, and 50000 take 5 and 9 s on the CPU backend (debug build, on the
+/// machine this was written on), so the page reads the stream while the run is still emitting it.
+const LIVE_STEPS: &str = "50000";
+
+/// A live scenario: the page opened during a run of [`LIVE_STEPS`] steps says `streaming` with
+/// some but not all of the loss points at one reading at least, and at the end draws the loss
+/// chart the stream gives.
 fn live(model: &str) {
     let ui = built_ui();
     let mut served = Served::start(&[
@@ -621,13 +664,21 @@ fn live(model: &str) {
         model,
         "--backend",
         "cpu",
+        "--steps",
+        LIVE_STEPS,
         "--serve",
         "127.0.0.1:0",
         "--ui",
         &ui,
     ]);
     assert_eq!(served.next_line(), format!("ui http://{}/", served.address));
-    assert_loss_only(&served);
+    let (before, points) = assert_loss_only(&served);
+    assert!(
+        before.iter().any(|r| r.state == "streaming"
+            && r.loss_points > 0
+            && (r.loss_points as usize) < points),
+        "the page drew the run of {points} loss points while it streamed: {before:?}"
+    );
 }
 
 fn replay(fixture: &str) {
@@ -676,7 +727,7 @@ fn observatory_ui_metric_charts() {
     let ui = built_ui();
     let mut served = Served::start(&["observe", ACCURACY_FIXTURE, "--ui", &ui]);
     assert_eq!(served.next_line(), format!("ui http://{}/", served.address));
-    let (state, charts) = charts(&served.address);
+    let PageRead { state, charts, .. } = charts(&served.address);
     assert_eq!(state, "finished");
     assert_eq!(
         charts.iter().map(|c| c.metric.as_str()).collect::<Vec<_>>(),

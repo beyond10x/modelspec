@@ -45,9 +45,10 @@ export function domain(points: readonly Point[]): Domain | null {
     last += 1;
   }
   if (low === high) {
-    const pad = low === 0 ? 1 : Math.abs(low) / 2;
-    low -= pad;
-    high += pad;
+    // At least the smallest step, so a subnormal value still widens; at most to ±MAX_VALUE.
+    const pad = low === 0 ? 1 : Math.max(Math.abs(low) / 2, Number.MIN_VALUE);
+    low = Math.max(low - pad, -Number.MAX_VALUE);
+    high = Math.min(high + pad, Number.MAX_VALUE);
   }
   return { steps: [first, last], values: [low, high] };
 }
@@ -59,9 +60,14 @@ export function project(frame: Frame, range: Domain): { x(step: number): number;
   const up = height - margin.top - margin.bottom;
   const [first, last] = range.steps;
   const [low, high] = range.values;
+  // Two finite values can be further apart than the largest finite one; their halves cannot.
+  const span = high - low;
+  const above = Number.isFinite(span)
+    ? (value: number) => (value - low) / span
+    : (value: number) => (value / 2 - low / 2) / (high / 2 - low / 2);
   return {
     x: (step) => margin.left + ((step - first) / (last - first)) * across,
-    y: (value) => margin.top + (1 - (value - low) / (high - low)) * up,
+    y: (value) => margin.top + (1 - above(value)) * up,
   };
 }
 

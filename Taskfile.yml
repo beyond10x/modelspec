@@ -72,7 +72,7 @@ tasks:
   ui-browser:
     cmds:
       - task: ui
-      - cargo test -p modelspec-cli --test observatory_ui -- --ignored
+      - cargo test -p modelspec-cli --test observatory_ui --test observatory_ui_adversary -- --ignored
 
   website:
     dir: website

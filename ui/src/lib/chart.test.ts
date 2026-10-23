@@ -53,6 +53,33 @@ test('one point or one value still has a range', () => {
   assert.equal(line(FRAME, []), '');
 });
 
+test('every finite value, however large, small or far apart, is drawn inside the frame', () => {
+  const max = Number.MAX_VALUE;
+  const tiny = Number.MIN_VALUE;
+  const cases: number[][] = [
+    [-max, max],
+    [max],
+    [-max],
+    [max, max / 2],
+    [tiny],
+    [0, tiny],
+    [-tiny, tiny],
+    [-max, 0, tiny, max],
+  ];
+  const { width, height, margin } = FRAME;
+  for (const values of cases) {
+    const all = commands(line(FRAME, values.map((value, step) => ({ step, value }))));
+    assert.equal(all.length, values.length, `one command per value of ${values}`);
+    for (const command of all) {
+      const [x, y] = command.slice(1).split(',').map(Number);
+      assert.ok(
+        x >= margin.left && x <= width - margin.right && y >= margin.top && y <= height - margin.bottom,
+        `${command} of ${values} is inside the frame`,
+      );
+    }
+  }
+});
+
 test('labels keep six significant digits', () => {
   assert.equal(label(0.123456789), '0.123457');
   assert.equal(label(0), '0');
