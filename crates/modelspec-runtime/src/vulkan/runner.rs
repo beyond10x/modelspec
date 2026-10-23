@@ -554,12 +554,7 @@ fn execute(
                 .zip(&modules)
                 .find(|(kernel, _)| kernel.id == id)
                 .map(|(_, module)| module.entry_point.clone())?;
-            Some(Site {
-                plan: plan_name,
-                position: *at,
-                kernel_module_id: id,
-                entry,
-            })
+            Site::new(plan, plan_name, *at, entry)
         }
         _ => None,
     };

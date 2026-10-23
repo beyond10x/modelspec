@@ -13,14 +13,16 @@
 //!   the final loss evaluation records, `calls` 1 (acceptance 1);
 //! - the sum of every site's total is at most the wall time of the profiled run (acceptance 1);
 //! - the same host waits and bit-equal losses and parameters with and without (acceptance 2);
-//! - the counter lines are the run's `RunStats` (acceptance 3).
+//! - the counter lines are the run's `RunStats` (acceptance 3);
+//! - every site carries the FLOP and byte count of its plan step, and the report prints its
+//!   rates and the step total (`story:profile-achieved-throughput`).
 #![cfg(feature = "vulkan")]
 
 use std::time::{Duration, Instant};
 
 use modelspec_core::artifact::Backend;
 use modelspec_core::compile::{compile_artifact, compile_training};
-use modelspec_core::ir::kernel::{KernelModuleId, PlanOp};
+use modelspec_core::ir::kernel::{DispatchCount, KernelKind, KernelModuleId, PlanOp};
 use modelspec_runtime::vulkan::negotiate::{NumericsClass, negotiate};
 use modelspec_runtime::vulkan::profile::{
     Clock, PlanName, Profile, Site, Timings, WARMUP_STEPS, timings,
@@ -30,12 +32,19 @@ use modelspec_runtime::vulkan::{VALIDATION_ENV, Vulkan};
 
 const MNIST_MLP: &str = "examples/mnist_mlp.mspec";
 
-fn site(plan: PlanName, position: usize, id: u8) -> Site {
+/// The count of a dispatch of 48 FLOP over 120 bytes.
+const COUNTED: DispatchCount = DispatchCount::Counted {
+    flop: 48,
+    bytes: 120,
+};
+
+fn site(plan: PlanName, position: usize, id: u8, count: DispatchCount) -> Site {
     Site {
         plan,
         position,
         kernel_module_id: KernelModuleId([id; 16]),
         entry: "main".to_owned(),
+        count,
     }
 }
 
@@ -53,11 +62,15 @@ fn stats() -> RunStats {
     }
 }
 
-/// Two step sites (positions 0 and 2, the second sharing the first's module) and one final
-/// site, three steps: the stamps are `(start, end)` pairs in recording order, steps first.
+/// Two step sites (positions 0 and 2, the second sharing the first's module and uncounted) and
+/// one final site, three steps: the stamps are `(start, end)` pairs in recording order, steps
+/// first.
 fn three_steps() -> (Vec<Site>, Vec<Site>, Vec<u64>) {
-    let steps = vec![site(PlanName::Step, 0, 1), site(PlanName::Step, 2, 1)];
-    let last = vec![site(PlanName::Final, 0, 1)];
+    let steps = vec![
+        site(PlanName::Step, 0, 1, COUNTED),
+        site(PlanName::Step, 2, 1, DispatchCount::Uncounted),
+    ];
+    let last = vec![site(PlanName::Final, 0, 1, COUNTED)];
     let stamps = vec![
         100, 110, 120, 125, // step 0: 10 and 5 ticks
         200, 212, 230, 236, // step 1: 12 and 6 ticks
@@ -99,8 +112,8 @@ fn timings_sum_each_site_over_the_steps_and_count_the_final_loss_once() {
 
 #[test]
 fn a_timestamp_that_wraps_its_valid_bits_counts_the_ticks_past_the_wrap() {
-    let steps = vec![site(PlanName::Step, 0, 1)];
-    let last = vec![site(PlanName::Final, 0, 1)];
+    let steps = vec![site(PlanName::Step, 0, 1, COUNTED)];
+    let last = vec![site(PlanName::Final, 0, 1, COUNTED)];
     let clock = Clock {
         valid_bits: 8,
         period_ns: 1000.0,
@@ -114,8 +127,8 @@ fn a_timestamp_that_wraps_its_valid_bits_counts_the_ticks_past_the_wrap() {
 
 #[test]
 fn the_steady_state_runs_from_the_first_step_after_the_warm_up_to_the_final_loss() {
-    let steps = vec![site(PlanName::Step, 0, 1)];
-    let final_sites = vec![site(PlanName::Final, 0, 1)];
+    let steps = vec![site(PlanName::Step, 0, 1, COUNTED)];
+    let final_sites = vec![site(PlanName::Final, 0, 1, COUNTED)];
     let n = WARMUP_STEPS + 4;
     let mut stamps = Vec::new();
     for k in 0..n {
@@ -148,6 +161,9 @@ fn stamps_that_do_not_fit_the_sites_are_refused() {
     assert!(timings(&steps, &last, 3, &stamps, clock).is_err());
 }
 
+/// A counted site's line ends with its FLOP and bytes and their rates over its mean time: 48 FLOP
+/// in 0.024 µs is 2 GFLOP/s, 120 bytes 5 GB/s. The uncounted site prints `uncounted`, and the
+/// step total, with no steady state to divide by, names it.
 #[test]
 fn the_report_prints_one_line_per_site_then_the_counters() {
     let (steps, last, stamps) = three_steps();
@@ -164,9 +180,11 @@ fn the_report_prints_one_line_per_site_then_the_counters() {
     assert_eq!(
         profile.report(&stats()),
         format!(
-            "profile dispatch step 0 {id} main calls 3 total_us 0.072 mean_us 0.024\n\
-             profile dispatch step 2 {id} main calls 3 total_us 0.036 mean_us 0.012\n\
-             profile dispatch final 0 {id} main calls 1 total_us 0.006 mean_us 0.006\n\
+            "profile dispatch step 0 {id} main calls 3 total_us 0.072 mean_us 0.024 \
+             flop 48 bytes 120 gflop_per_s 2.000 gb_per_s 5.000\n\
+             profile dispatch step 2 {id} main calls 3 total_us 0.036 mean_us 0.012 uncounted\n\
+             profile dispatch final 0 {id} main calls 1 total_us 0.006 mean_us 0.006 \
+             flop 48 bytes 120 gflop_per_s 8.000 gb_per_s 20.000\n\
              profile dispatches 7\n\
              profile submits 1\n\
              profile host_waits 1\n\
@@ -174,7 +192,9 @@ fn the_report_prints_one_line_per_site_then_the_counters() {
              profile bytes_downloaded 28\n\
              profile pipeline_creation_us 1500.000\n\
              profile compile_us 2250.500\n\
-             profile steady_us_per_step unavailable\n"
+             profile steady_us_per_step unavailable\n\
+             profile step_total flop 48 bytes 120 gflop_per_s unavailable gb_per_s unavailable \
+             uncounted_sites 1\n"
         )
     );
 }
@@ -196,7 +216,8 @@ fn without_timestamp_queries_the_report_says_so_and_still_prints_the_counters() 
          profile bytes_downloaded 28\n\
          profile pipeline_creation_us 1.000\n\
          profile compile_us 2.000\n\
-         profile steady_us_per_step unavailable\n"
+         profile steady_us_per_step unavailable\n\
+         profile step_total unavailable\n"
     );
 }
 
@@ -207,6 +228,115 @@ fn counter<'a>(report: &'a str, name: &str) -> &'a str {
         .lines()
         .find_map(|line| line.strip_prefix(head.as_str()))
         .unwrap_or_else(|| panic!("no line {head}<value> in\n{report}"))
+}
+
+/// The stamps of `n` steps of `per_step` dispatches, then `last` final ones: the warm-up steps
+/// start 1,000 ticks apart and the steady ones 50, each dispatch 2 ticks, back to back.
+fn steady_stamps(n: u64, per_step: u64, last: u64) -> Vec<u64> {
+    let start = |k: u64| {
+        if k <= WARMUP_STEPS {
+            1000 * k
+        } else {
+            1000 * WARMUP_STEPS + 50 * (k - WARMUP_STEPS)
+        }
+    };
+    let mut stamps = Vec::new();
+    for k in 0..=n {
+        let dispatches = if k < n { per_step } else { last };
+        for d in 0..dispatches {
+            stamps.extend([start(k) + 2 * d, start(k) + 2 * d + 2]);
+        }
+    }
+    stamps
+}
+
+/// story:profile-achieved-throughput (D3): the step total is the counted FLOP and bytes of the
+/// step sites, 100 and 400, over the steady 0.05 µs per step, and it names the uncounted site;
+/// the final loss's site is not a step site.
+#[test]
+fn the_step_total_divides_the_counted_step_sites_by_the_steady_time_per_step() {
+    let steps = vec![
+        site(
+            PlanName::Step,
+            0,
+            1,
+            DispatchCount::Counted {
+                flop: 60,
+                bytes: 300,
+            },
+        ),
+        site(
+            PlanName::Step,
+            1,
+            2,
+            DispatchCount::Counted {
+                flop: 40,
+                bytes: 100,
+            },
+        ),
+        site(PlanName::Step, 3, 3, DispatchCount::Uncounted),
+    ];
+    let final_sites = vec![site(PlanName::Final, 0, 1, COUNTED)];
+    let n = WARMUP_STEPS + 4;
+    let clock = Clock {
+        valid_bits: 64,
+        period_ns: 1.0,
+    };
+    let timed =
+        timings(&steps, &final_sites, n, &steady_stamps(n, 3, 1), clock).expect("the stamps fit");
+    assert_eq!(timed.steady_us_per_step, Some(0.05));
+    let profile = Profile {
+        timings: Some(timed),
+        pipeline_creation: Duration::from_micros(1),
+        compile: Duration::from_micros(2),
+    };
+    let report = profile.report(&stats());
+    assert_eq!(
+        counter(&report, "step_total"),
+        "flop 100 bytes 400 gflop_per_s 2.000 gb_per_s 8.000 uncounted_sites 1",
+        "{report}"
+    );
+    let uncounted = report
+        .lines()
+        .find(|l| l.starts_with("profile dispatch step 3 "))
+        .expect("the uncounted site has a line");
+    assert!(
+        uncounted.ends_with(" mean_us 0.002 uncounted"),
+        "{uncounted}"
+    );
+    assert!(!uncounted.contains(" flop "), "{uncounted}");
+}
+
+/// story:profile-achieved-throughput: a site carries the count of its plan step. Every step site
+/// of the MNIST plan is counted, and its five matmuls are `2·m·k·n` FLOP, 20,454,400 in all.
+#[test]
+fn a_site_of_the_mnist_plan_carries_the_count_of_its_dispatch() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join(MNIST_MLP);
+    let source = std::fs::read_to_string(&path).expect("the example reads");
+    let artifact = compile_artifact(MNIST_MLP, &source, Backend::Vulkan)
+        .expect("the example compiles for Vulkan");
+    let plan = &artifact.execution;
+    let mut matmul_flop = 0;
+    for (at, step) in plan.step.iter().enumerate() {
+        let site = Site::new(plan, PlanName::Step, at, "main".to_owned());
+        if step.op != PlanOp::Dispatch {
+            assert_eq!(site, None, "step {at} is no dispatch");
+            continue;
+        }
+        let site = site.expect("a dispatch is a site");
+        assert_eq!(Some(site.kernel_module_id), step.kernel_module_id);
+        assert_eq!(Some(site.count), plan.dispatch_count(step));
+        let DispatchCount::Counted { flop, .. } = site.count else {
+            panic!("step {at} is uncounted: {step:?}");
+        };
+        let kind = plan.kernel(site.kernel_module_id).map(|k| k.kind);
+        if kind == Some(KernelKind::MatMul) {
+            matmul_flop += flop;
+        }
+    }
+    assert_eq!(matmul_flop, 20_454_400);
 }
 
 #[test]
@@ -310,6 +440,24 @@ fn mnist_mlp_profile_times_every_dispatch_site_without_changing_the_run() {
             .filter(|l| l.starts_with("profile dispatch "))
             .count(),
         dispatch_positions.len() + final_positions.len()
+    );
+    // story:profile-achieved-throughput: every site carries its step's count, every line its
+    // rates, and the step total counts every step site.
+    for time in &timed.sites {
+        let step = &plan.step[time.site.position];
+        assert_eq!(Some(time.site.count), plan.dispatch_count(step), "{time:?}");
+    }
+    assert!(
+        report
+            .lines()
+            .filter(|l| l.starts_with("profile dispatch "))
+            .all(|l| l.contains(" gflop_per_s ") && l.contains(" gb_per_s ")),
+        "{report}"
+    );
+    let total = counter(&report, "step_total");
+    assert!(
+        total.starts_with("flop ") && total.ends_with(" uncounted_sites 0"),
+        "{total}"
     );
     assert!(timed.sites.iter().all(|s| s.total_us() > 0.0), "{report}");
     let sum_us: f64 = timed.sites.iter().map(|s| s.total_us()).sum();

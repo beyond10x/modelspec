@@ -124,8 +124,9 @@ impl fmt::Display for TensorProgram {
 /// workgroup_size <n> workgroups [x, y, z] [tile <tile>]`, the workgroup size being the constant
 /// of the kind or, for a matmul, its tile's, and the epilogue and the tile, every `MatMulTile`
 /// field, on a matmul only. Then `plan step` and `plan forward`, each
-/// followed by one indented line per step: its position, op, kernel, value, views, workgroups and
-/// dependencies.
+/// followed by one indented line per step: its position, op, kernel, value, views, workgroups,
+/// on a dispatch its count (`flop <n> bytes <n>` or `uncounted`,
+/// [`ExecutionPlan::dispatch_count`]), and dependencies.
 pub fn print_kernel(plan: &ExecutionPlan) -> String {
     let mut out = String::new();
     write_kernel(&mut out, plan).expect("writing to a String does not fail");
@@ -191,6 +192,9 @@ fn write_plan_step(
     }
     if let Some([x, y, z]) = step.workgroups {
         write!(out, " workgroups [{x}, {y}, {z}]")?;
+    }
+    if let Some(count) = plan.dispatch_count(step) {
+        write!(out, " {count}")?;
     }
     if !step.depends_on.is_empty() {
         out.write_str(" after [")?;

@@ -149,6 +149,57 @@ fn ir_stage_kernel_of_mnist_shows_the_fused_step_plan() {
     );
 }
 
+/// The `flop <n> bytes <n>` of a dispatch line, or `None` when it has none.
+fn counts(line: &str) -> Option<(u64, u64)> {
+    let (_, rest) = line.split_once(" flop ")?;
+    let mut words = rest.split(' ');
+    let flop = words.next()?.parse().ok()?;
+    (words.next()? == "bytes").then_some(())?;
+    Some((flop, words.next()?.parse().ok()?))
+}
+
+/// story:profile-achieved-throughput: `ir --stage kernel` shows the FLOP and byte count of every
+/// dispatch of both plans. The five matmuls of the MNIST step are `2·m·k·n` each:
+/// 10,035,200 for `x · w1` and for the `w1` gradient, 128,000 for each of the other three.
+#[test]
+fn ir_stage_kernel_of_mnist_shows_the_counts_of_every_dispatch() {
+    let output = modelspec(&["ir", MNIST, "--stage", "kernel"]);
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output.stderr));
+    let printed = text(&output.stdout);
+    let kinds: std::collections::BTreeMap<String, String> = printed
+        .lines()
+        .filter_map(|l| l.strip_prefix("kernel "))
+        .map(|l| {
+            let words: Vec<&str> = l.split(' ').collect();
+            (words[0].to_owned(), words[2].to_owned())
+        })
+        .collect();
+    for plan in ["step", "forward"] {
+        for line in plan_lines(&printed, plan) {
+            if line.contains(": dispatch ") {
+                assert!(counts(line).is_some(), "{plan}: {line}");
+            } else {
+                assert!(!line.contains(" flop "), "{plan}: {line}");
+            }
+        }
+    }
+    let matmuls: Vec<u64> = plan_lines(&printed, "step")
+        .into_iter()
+        .filter_map(|line| {
+            let kernel = line.split_once(": dispatch ")?.1.split(' ').next()?;
+            (kinds[kernel] == "matmul").then(|| counts(line).expect("counted").0)
+        })
+        .collect();
+    assert_eq!(
+        matmuls,
+        [10_035_200, 128_000, 128_000, 128_000, 10_035_200],
+        "{printed}"
+    );
+    assert_eq!(matmuls.iter().sum::<u64>(), 20_454_400);
+    let first = plan_lines(&printed, "step")[0];
+    assert_eq!(counts(first), Some((10_035_200, 565_504)), "{first}");
+}
+
 #[test]
 fn the_mnist_golden_is_the_printed_plan_of_the_vulkan_artifact() {
     let source = std::fs::read_to_string(repo_root().join(MNIST)).expect("the example exists");

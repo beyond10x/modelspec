@@ -32,8 +32,10 @@
 //! dispatches, bytes up and down, the numerics class, microseconds per step). `--profile` times
 //! every dispatch with GPU timestamp queries, read back after the one host wait, and prints on
 //! stderr after it one `profile dispatch <plan> <position> <kernel_module_id> <entry> calls <n>
-//! total_us <t> mean_us <m>` line per dispatch site, then the counters, the compile and
-//! pipeline creation times and the steady-state microseconds per step
+//! total_us <t> mean_us <m> flop <f> bytes <b> gflop_per_s <g> gb_per_s <h>` line per dispatch
+//! site (`uncounted` in place of the last four for a step without a count), then the counters,
+//! the compile and pipeline creation times, the steady-state microseconds per step and a
+//! `profile step_total` line, the step's counts over that time
 //! ([`modelspec_runtime::vulkan::profile`]); stdout is unchanged. The file is
 //! compiled before the loader is opened; then a missing loader exits 1 with `E-TARGET-002`, no
 //! device or a `--device` that names none with `E-TARGET-003`, and a device below the
@@ -191,8 +193,10 @@ pub struct Args {
     #[arg(long)]
     pub stats: bool,
     /// With --backend vulkan, time every dispatch with GPU timestamp queries and print one
-    /// `profile dispatch` line per dispatch site, then the run's counters, compile and pipeline
-    /// creation time and steady-state microseconds per step on stderr after it.
+    /// `profile dispatch` line per dispatch site, with its FLOP, bytes, achieved GFLOP/s and
+    /// GB/s, then the run's counters, compile and pipeline creation time, steady-state
+    /// microseconds per step and the step's total FLOP, bytes, GFLOP/s and GB/s on stderr after
+    /// it.
     #[arg(long)]
     pub profile: bool,
 }
