@@ -534,13 +534,8 @@ fn execute(
         .iter()
         .filter(|step| step.op == PlanOp::Dispatch)
         .count();
-    let descriptors: usize = plan
-        .step
-        .iter()
-        .filter(|step| step.op == PlanOp::Dispatch)
-        .map(|step| step.reads.len() + 1)
-        .sum();
-    let arena = device.descriptor_arena(count_u32(dispatch_steps)?, count_u32(descriptors)?)?;
+    let arena =
+        device.descriptor_arena(count_u32(dispatch_steps)?, count_u32(descriptors(plan))?)?;
     let (actions, loss_end) = actions(plan, &arena, &pipelines, &buffers)?;
 
     // The dispatch sites a profile times, and one timestamp pool per chunk of `CHUNK_STEPS`
@@ -924,6 +919,16 @@ fn buffer<'b, 'd>(
         .ok_or_else(|| VulkanRunError::Plan(format!("{view} names no plan buffer")))
 }
 
+/// The storage-buffer descriptors the dispatches of the step plan bind, one set each: every view
+/// a dispatch reads and every view it writes ([`actions`]).
+fn descriptors(plan: &ExecutionPlan) -> usize {
+    plan.step
+        .iter()
+        .filter(|step| step.op == PlanOp::Dispatch)
+        .map(|step| step.reads.len() + step.writes.len())
+        .sum()
+}
+
 fn count_u32(count: usize) -> Result<u32, VulkanRunError> {
     u32::try_from(count)
         .map_err(|_| VulkanRunError::Plan(format!("{count} descriptors do not fit u32")))
@@ -1076,7 +1081,8 @@ fn numerics_class(negotiated: &Negotiated, plan: &ExecutionPlan) -> NumericsClas
 #[cfg(test)]
 mod tests {
     use super::*;
-    use modelspec_core::compile::compile_training;
+    use modelspec_core::artifact::Backend;
+    use modelspec_core::compile::{compile_artifact, compile_training};
 
     const EXAMPLE: &str = include_str!("../../../../examples/linear_regression.mspec");
     const W: ParamId = ParamId(0);
@@ -1095,6 +1101,59 @@ mod tests {
     fn refused(found: Option<(u64, Diagnostic)>) -> (u64, String) {
         let (kept, diagnostic) = found.expect("the read-back is refused");
         (kept, diagnostic.to_string())
+    }
+
+    fn vulkan_plan(file: &str, source: &str) -> ExecutionPlan {
+        compile_artifact(file, source, Backend::Vulkan)
+            .expect("the example compiles for Vulkan")
+            .execution
+    }
+
+    /// The pool holds one descriptor per view each set binds: 14 dispatches of `mnist_mlp`
+    /// bind 39, the fused matmul and ReLU of step 0 two reads and two writes
+    /// (`crates/modelspec-cli/tests/golden/mnist_mlp.kernel.ir`).
+    #[test]
+    fn the_pool_counts_every_read_and_write_of_the_mnist_plan() {
+        let plan = vulkan_plan(
+            "mnist_mlp.mspec",
+            include_str!("../../../../examples/mnist_mlp.mspec"),
+        );
+        let first = &plan.step[0];
+        assert_eq!(first.op, PlanOp::Dispatch);
+        assert_eq!((first.reads.len(), first.writes.len()), (2, 2));
+        assert_eq!(descriptors(&plan), 39);
+    }
+
+    /// A second write on one dispatch takes one more descriptor; barriers and copies take none.
+    #[test]
+    fn a_two_write_step_takes_a_descriptor_per_write() {
+        let mut plan = vulkan_plan("fit.mspec", EXAMPLE);
+        let bound: usize = plan
+            .step
+            .iter()
+            .filter(|step| step.op == PlanOp::Dispatch)
+            .map(|step| step.reads.len() + step.writes.len())
+            .sum();
+        assert_eq!(descriptors(&plan), bound);
+        let at = plan
+            .step
+            .iter()
+            .position(|step| step.op == PlanOp::Dispatch && step.writes.len() == 1)
+            .expect("a dispatch writes one view");
+        let written = plan.step[at].writes[0];
+        plan.step[at].writes.push(written);
+        assert_eq!(descriptors(&plan), bound + 1);
+        let copy = PlanStep {
+            op: PlanOp::Copy,
+            kernel_module_id: None,
+            workgroups: None,
+            reads: vec![written],
+            writes: vec![written],
+            depends_on: Vec::new(),
+            value: None,
+        };
+        plan.step.push(copy);
+        assert_eq!(descriptors(&plan), bound + 1);
     }
 
     #[test]
