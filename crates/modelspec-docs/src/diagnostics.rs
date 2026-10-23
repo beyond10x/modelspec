@@ -64,6 +64,13 @@ fn stages() -> Vec<Stage> {
             ],
         },
         Stage {
+            title: "Training",
+            file: "crates/modelspec-runtime/src/train/runner.rs",
+            about: "The CPU training loop of `modelspec train`, which checks the loss and every \
+                    parameter after each step.",
+            codes: vec![modelspec_runtime::train::runner::E_TRAIN_001],
+        },
+        Stage {
             title: "Checkpoints",
             file: "crates/modelspec-runtime/src/train/checkpoint.rs",
             about: "The `.msckpt` reader of `modelspec train --resume` and `modelspec infer`, \
@@ -322,6 +329,7 @@ mod tests {
             "E-NAME-008",
             "E-TYPE-017",
             "E-DATA-003",
+            "E-TRAIN-001",
             "E-TARGET-001",
             "E-TARGET-002",
             "E-TARGET-003",

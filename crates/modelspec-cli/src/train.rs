@@ -15,7 +15,10 @@
 //! round-trip decimal form. A file that does not compile, or data the file's declarations
 //! cannot have, prints its diagnostics to stderr and exits 1; a file that cannot be read, a run
 //! that fails, or a run that cannot be written to stdout (a closed pipe, a full device) is
-//! reported on one line and exits 1.
+//! reported on one line and exits 1. A CPU run whose loss or an updated parameter stops being
+//! finite stops at that step: stdout has its `init` lines and its `step` lines through the
+//! failing step's, no `param` lines, stderr has one [`runner::E_TRAIN_001`] diagnostic, and it
+//! exits 1.
 //!
 //! `--backend vulkan` compiles the file's execution plan for Vulkan and trains on device 0, or
 //! on the device `--device <index>` names, in the loader's enumeration order
@@ -81,7 +84,7 @@ use modelspec_runtime::train::checkpoint::{self, Checkpoint, CheckpointError};
 use modelspec_runtime::train::data::{self, DataError, DenseData};
 use modelspec_runtime::train::init;
 use modelspec_runtime::train::optimizer::ParamState;
-use modelspec_runtime::train::runner::{self, Eval, Run, RunError};
+use modelspec_runtime::train::runner::{self, Diverged, Eval, Run, RunError};
 
 /// The selected backend is not available: `train --backend vulkan` in a build without the `vulkan`
 /// feature, and `infer --backend vulkan` in every M1 build.
@@ -185,6 +188,8 @@ enum Engine {
 enum Failure {
     Refused(Diagnostic),
     Failed(String),
+    /// E-TRAIN-001: the run up to its failing step goes to stdout, then the diagnostic.
+    Diverged(Box<Diverged>),
 }
 
 impl From<RunError> for Failure {
@@ -194,6 +199,7 @@ impl From<RunError> for Failure {
             | RunError::Checkpoint(CheckpointError::Refused(diagnostic)) => {
                 Failure::Refused(diagnostic)
             }
+            RunError::NonFinite(diverged) => Failure::Diverged(diverged),
             error => Failure::Failed(error.to_string()),
         }
     }
@@ -536,6 +542,18 @@ fn train(
                 message: diagnostic.message.clone(),
             });
         }
+        Err(Failure::Diverged(diverged)) => {
+            let Diverged { diagnostic, run } = *diverged;
+            let _ = stdout
+                .write_all(report(compiled, &run, None, false).as_bytes())
+                .and_then(|()| stdout.flush());
+            end();
+            let _ = writeln!(stderr, "{diagnostic}");
+            return Err(RunFailed {
+                code: Some(diagnostic.code.to_string()),
+                message: diagnostic.message.clone(),
+            });
+        }
         Err(Failure::Failed(message)) => {
             end();
             let _ = writeln!(stderr, "modelspec train {file}: {message}");
@@ -545,7 +563,7 @@ fn train(
             });
         }
     };
-    let printed = report(compiled, &run, eval);
+    let printed = report(compiled, &run, eval, true);
     let body = printed.trim_end_matches('\n');
     let (head, last) = printed.split_at(body.rfind('\n').map_or(0, |i| i + 1));
     let written = stdout
@@ -570,8 +588,9 @@ fn train(
     }
 }
 
-/// The stdout of a finished run.
-fn report(compiled: &CompiledTraining, run: &Run, eval: Option<Eval>) -> String {
+/// The stdout of a run: of a finished one, or without its `param` lines of one that stopped at
+/// its last loss (E-TRAIN-001).
+fn report(compiled: &CompiledTraining, run: &Run, eval: Option<Eval>, finished: bool) -> String {
     let params: BTreeMap<&str, ParamId> = compiled
         .forward
         .program
@@ -593,7 +612,9 @@ fn report(compiled: &CompiledTraining, run: &Run, eval: Option<Eval>) -> String 
             let _ = writeln!(out, "step {k} loss {loss}");
         }
     }
-    tensors(&mut out, "param", &run.state.values);
+    if finished {
+        tensors(&mut out, "param", &run.state.values);
+    }
     if let Some(Eval { loss, accuracy }) = eval {
         let _ = writeln!(out, "eval loss={loss} accuracy={accuracy}");
     }

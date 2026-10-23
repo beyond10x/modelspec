@@ -192,10 +192,12 @@ train Fit {
 
 /// `StepCompleted.loss` (wave observatory-1 coordinator, 2026-10-22): "null when the loss is NaN
 /// or ±inf ... The CLI prints a `step <k> loss <v>` line on stdout only for step 0, every 50th
-/// step and the last; for a printed step whose loss is null that line names which". Stdout prints
-/// exactly those steps, each printed step with a null loss names `NaN`, `inf` or `-inf`, and a
-/// printed step names one of them only when its loss is null. Run at 50 steps, where the last
-/// step is a 50th, and at 120, where it is not.
+/// step and the last; for a printed step whose loss is null that line names which". Since
+/// story:train-refuses-non-finite-loss the run stops at its first null loss with E-TRAIN-001: the
+/// stream has one `StepCompleted` per step through that one, only its loss null, then `RunFailed`,
+/// and stdout prints those steps that are 0 or a 50th, then the failing step. Each printed step
+/// with a null loss names `NaN`, `inf` or `-inf`, and a printed step names one of them only when
+/// its loss is null. Run at 50 steps, where the last step is a 50th, and at 120, where it is not.
 #[test]
 fn every_printed_null_loss_step_names_nan_or_inf() {
     for steps in [50u64, 120] {
@@ -212,10 +214,25 @@ fn every_printed_null_loss_step_names_nan_or_inf() {
                 (value["step"].as_u64().unwrap(), &value["loss"])
             })
             .collect();
-        assert_eq!(losses.len() as u64, steps + 1, "{steps} steps");
-        assert!(
-            losses.iter().any(|(_, loss)| loss.is_null()),
-            "the run does not diverge: {stdout}"
+        let failing = losses
+            .iter()
+            .position(|(_, loss)| loss.is_null())
+            .unwrap_or_else(|| panic!("the run does not diverge: {stdout}"))
+            as u64;
+        assert!(failing <= steps, "{steps} steps");
+        assert_eq!(
+            losses.len() as u64,
+            failing + 1,
+            "{steps} steps: the stream stops there"
+        );
+        assert_eq!(
+            events.last().unwrap()["body"]["kind"],
+            "RunFailed",
+            "{steps} steps"
+        );
+        assert_eq!(
+            events.last().unwrap()["body"]["value"]["code"],
+            "E-TRAIN-001"
         );
         let printed: Vec<(u64, &str)> = stdout
             .lines()
@@ -225,7 +242,9 @@ fn every_printed_null_loss_step_names_nan_or_inf() {
                 (k.parse().unwrap(), v)
             })
             .collect();
-        let expected: Vec<u64> = (0..=steps).filter(|k| k % 50 == 0 || *k == steps).collect();
+        let expected: Vec<u64> = (0..=failing)
+            .filter(|k| k % 50 == 0 || *k == failing)
+            .collect();
         assert_eq!(
             printed.iter().map(|(k, _)| *k).collect::<Vec<_>>(),
             expected,
