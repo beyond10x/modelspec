@@ -1,0 +1,1088 @@
+runs:
+  - run_id: mnist-0.1.1-modelspec-cpu
+    date: "2026-10-21"
+    workload: mnist-784-64-10
+    side: ModelSpecCpu
+    threads: 1
+    modelspec_version: "0.1.1"
+    commit: 16d3dd2f576450fcc71b07cfea2d7c2b01d1fb4a
+    mode: Timed
+    timed_steps: 1800
+    repeat_count: 3
+    repeats_us_per_step:
+      - 19355.555555555555
+      - 19900
+      - 20700
+    median_us_per_step: 19900
+    note: the source gives the median 35.82 s and range 34.84–37.26 s of 3 repeats over 1,800 steps, which are the 3 repeats, listed ascending because their order is not stated; CPU reference through a custom dataset adapter, pinned to CPU 3 of an Intel Core i9-10900K, load average 11–16
+    source: verification-report:mnist-benchmark-0-1-1
+    state: Recorded
+  - run_id: mnist-2026-10-21-pytorch-cpu-eager-1-thread
+    date: "2026-10-21"
+    workload: mnist-784-64-10
+    side: PyTorchCpuEager
+    threads: 1
+    opponent_version: torch 2.14.1+cpu
+    mode: Timed
+    timed_steps: 1800
+    repeat_count: 3
+    repeats_us_per_step:
+      - 455
+      - 526.1111111111111
+      - 723.3333333333334
+    median_us_per_step: 526.1111111111111
+    note: the source gives the median 0.947 s and range 0.819–1.302 s of 3 repeats over 1,800 steps, which are the 3 repeats, listed ascending because their order is not stated; pinned to CPU 3 of an Intel Core i9-10900K, load average 11–16
+    source: verification-report:mnist-benchmark-0-1-1
+    state: Recorded
+  - run_id: mnist-2026-10-21-pytorch-cpu-compile-1-thread
+    date: "2026-10-21"
+    workload: mnist-784-64-10
+    side: PyTorchCpuCompile
+    threads: 1
+    opponent_version: torch 2.14.1+cpu
+    mode: Timed
+    timed_steps: 1800
+    repeat_count: 3
+    repeats_us_per_step:
+      - 535
+      - 538.8888888888889
+      - 569.4444444444443
+    median_us_per_step: 538.8888888888889
+    note: the source gives the median 0.970 s and range 0.963–1.025 s of 3 repeats over 1,800 steps, which are the 3 repeats, listed ascending because their order is not stated; pinned to CPU 3 of an Intel Core i9-10900K, load average 11–16
+    source: verification-report:mnist-benchmark-0-1-1
+    state: Recorded
+  - run_id: mnist-2026-10-21-pytorch-cuda-eager
+    date: "2026-10-21"
+    workload: mnist-784-64-10
+    side: PyTorchCudaEager
+    opponent_version: torch 2.14.1+cu130, CUDA 13.0
+    mode: Timed
+    timed_steps: 1800
+    repeat_count: 3
+    repeats_us_per_step:
+      - 567.1111111111111
+      - 518.8333333333334
+      - 496.6666666666667
+    median_us_per_step: 518.8333333333334
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    note: repeats 1.0208, 0.9339 and 0.8940 s over 1,800 steps; GPU at 38 % utilization with 404 MiB used by other processes at start, load average 18.17 at start and 20.15 at end
+    source: verification-report:mnist-benchmark-cuda-baseline
+    state: Recorded
+  - run_id: mnist-2026-10-21-pytorch-cuda-compile
+    date: "2026-10-21"
+    workload: mnist-784-64-10
+    side: PyTorchCudaCompile
+    opponent_version: torch 2.14.1+cu130, CUDA 13.0
+    mode: Timed
+    timed_steps: 1800
+    repeat_count: 3
+    repeats_us_per_step:
+      - 1276.6666666666667
+      - 932.6666666666666
+      - 759.8333333333334
+    median_us_per_step: 932.6666666666666
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    note: repeats 2.2980, 1.6788 and 1.3677 s over 1,800 steps; GPU at 38 % utilization with 404 MiB used by other processes at start, load average 18.17 at start and 20.15 at end
+    source: verification-report:mnist-benchmark-cuda-baseline
+    state: Recorded
+  - run_id: mnist-2026-10-22-pytorch-cpu-eager-1-thread
+    date: "2026-10-22"
+    workload: mnist-784-64-10
+    side: PyTorchCpuEager
+    threads: 1
+    opponent_version: torch 2.14.1+cpu
+    mode: Timed
+    timed_steps: 1800
+    repeat_count: 10
+    repeats_us_per_step: null
+    median_us_per_step: 451
+    note: repeats not recorded; p10 447, p90 469; contended, 1-minute load 6.57 at start with 2 build slots held
+    source: verification-report:pytorch-cpu-multithread-2026-10-22
+    state: Recorded
+  - run_id: mnist-2026-10-22-pytorch-cpu-eager-2-threads
+    date: "2026-10-22"
+    workload: mnist-784-64-10
+    side: PyTorchCpuEager
+    threads: 2
+    opponent_version: torch 2.14.1+cpu
+    mode: Timed
+    timed_steps: 1800
+    repeat_count: 10
+    repeats_us_per_step: null
+    median_us_per_step: 379
+    note: repeats not recorded; p10 373, p90 403; contended, 1-minute load 10.81 at start with 3 build slots held
+    source: verification-report:pytorch-cpu-multithread-2026-10-22
+    state: Recorded
+  - run_id: mnist-2026-10-22-pytorch-cpu-eager-4-threads
+    date: "2026-10-22"
+    workload: mnist-784-64-10
+    side: PyTorchCpuEager
+    threads: 4
+    opponent_version: torch 2.14.1+cpu
+    mode: Timed
+    timed_steps: 1800
+    repeat_count: 10
+    repeats_us_per_step: null
+    median_us_per_step: 318
+    note: repeats not recorded; p10 313, p90 326; contended, 1-minute load 6.09 at start with 3 build slots held
+    source: verification-report:pytorch-cpu-multithread-2026-10-22
+    state: Recorded
+  - run_id: mnist-2026-10-22-pytorch-cpu-eager-8-threads
+    date: "2026-10-22"
+    workload: mnist-784-64-10
+    side: PyTorchCpuEager
+    threads: 8
+    opponent_version: torch 2.14.1+cpu
+    mode: Timed
+    timed_steps: 1800
+    repeat_count: 10
+    repeats_us_per_step: null
+    median_us_per_step: 314
+    note: repeats not recorded; p10 309, p90 340; contended, 1-minute load 6.92 at start with 3 build slots held
+    source: verification-report:pytorch-cpu-multithread-2026-10-22
+    state: Recorded
+  - run_id: mnist-2026-10-22-pytorch-cpu-eager-20-threads
+    date: "2026-10-22"
+    workload: mnist-784-64-10
+    side: PyTorchCpuEager
+    threads: 20
+    opponent_version: torch 2.14.1+cpu
+    mode: Timed
+    timed_steps: 1800
+    repeat_count: 10
+    repeats_us_per_step: null
+    median_us_per_step: 23367
+    note: repeats not recorded; p10 4,722, p90 32,793; shared every logical CPU with 3 builds, so it measures contention, not scaling; 1-minute load 10.98 at start
+    source: verification-report:pytorch-cpu-multithread-2026-10-22
+    state: Recorded
+  - run_id: mnist-2026-10-22-pytorch-cpu-compile-8-threads
+    date: "2026-10-22"
+    workload: mnist-784-64-10
+    side: PyTorchCpuCompile
+    threads: 8
+    opponent_version: torch 2.14.1+cpu
+    mode: Timed
+    timed_steps: 1800
+    repeat_count: 10
+    repeats_us_per_step: null
+    median_us_per_step: 430
+    note: repeats not recorded; p10 394, p90 643; torch.compile (inductor), started at 1-minute load 149.76 with 3 build slots held
+    source: verification-report:pytorch-cpu-multithread-2026-10-22
+    state: Recorded
+  - run_id: mnist-0.4.0-modelspec-vulkan
+    date: "2026-10-22"
+    workload: mnist-784-64-10
+    side: ModelSpecVulkan
+    modelspec_version: "0.4.0"
+    mode: Timed
+    timed_steps: 144000
+    repeat_count: 5
+    repeats_us_per_step: null
+    median_us_per_step: 40.225
+    gpu: RTX 3090
+    sm_clock: mean P0 clock 1935 to 1951 MHz
+    note: repeats not recorded; the date is the release's
+    source: CHANGELOG.md [0.4.0]
+    state: Recorded
+  - run_id: mnist-0.5.0-modelspec-vulkan
+    date: "2026-10-23"
+    workload: mnist-784-64-10
+    side: ModelSpecVulkan
+    modelspec_version: "0.5.0"
+    mode: Timed
+    timed_steps: 144000
+    repeat_count: 5
+    repeats_us_per_step: null
+    median_us_per_step: 27.282
+    gpu: RTX 3090
+    sm_clock: mean P0 clock 1957 to 1965 MHz
+    note: repeats not recorded; the date is the release's
+    source: CHANGELOG.md [0.5.0]
+    state: Recorded
+  - run_id: mnist-0.6.0-modelspec-vulkan
+    date: "2026-10-23"
+    workload: mnist-784-64-10
+    side: ModelSpecVulkan
+    modelspec_version: "0.6.0"
+    mode: Timed
+    timed_steps: 144000
+    repeat_count: 5
+    repeats_us_per_step: null
+    median_us_per_step: 27.14
+    gpu: RTX 3090
+    note: repeats not recorded; the date is the release's
+    source: CHANGELOG.md [0.6.0]
+    state: Recorded
+  - run_id: mnist-2026-10-23-modelspec-vulkan-profiled
+    date: "2026-10-23"
+    workload: mnist-784-64-10
+    side: ModelSpecVulkan
+    modelspec_version: "0.6.0"
+    commit: b2f9553
+    mode: Profiled
+    flop_per_step: 20566432
+    flop_rule: AllSites
+    repeat_count: 1
+    repeats_us_per_step:
+      - 45.925
+    median_us_per_step: 45.925
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: 132 samples every 100 ms, 71 at 210 MHz, 20 at 1860 MHz, 41 at 1950 MHz; not locked
+    note: steady µs per step of a 72,000-step profiled run with no warm-up run before it, served to the observatory UI in a browser on the same machine while it ran; load average 15.15 after the run
+    source: verification-report:mnist-profile-throughput-2026-10-23
+    state: Recorded
+  - run_id: sweep-b100-h64-modelspec-vulkan
+    date: "2026-10-23"
+    workload: mlp-784-H-10
+    side: ModelSpecVulkan
+    modelspec_version: "0.6.0"
+    commit: b2f955313ce46d8b793a27ba8680a2b6ff441a4c
+    mode: Timed
+    batch: 100
+    hidden: 64
+    flop_per_step: 20454400
+    flop_rule: MatmulOnly
+    timed_steps: 213489
+    repeat_count: 3
+    repeats_us_per_step:
+      - 28.074111246949496
+      - 28.058208460389057
+      - 28.029153502053973
+    median_us_per_step: 28.058208460389057
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1950–1950 (median 1950, n=176) in the 3 timed spans"
+    source: verification-report:mlp-size-sweep-2026-10-23, raw records benchmarks/raw/2026-10-23-mlp-sweep/modelspec.jsonl
+    state: Recorded
+  - run_id: sweep-b100-h256-modelspec-vulkan
+    date: "2026-10-23"
+    workload: mlp-784-H-10
+    side: ModelSpecVulkan
+    modelspec_version: "0.6.0"
+    commit: b2f955313ce46d8b793a27ba8680a2b6ff441a4c
+    mode: Timed
+    batch: 100
+    hidden: 256
+    flop_per_step: 81817600
+    flop_rule: MatmulOnly
+    timed_steps: 131046
+    repeat_count: 3
+    repeats_us_per_step:
+      - 46.58027272866016
+      - 46.63567125284251
+      - 46.6662190833753
+    median_us_per_step: 46.63567125284251
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1935–1935 (median 1935, n=183) in the 3 timed spans"
+    source: verification-report:mlp-size-sweep-2026-10-23, raw records benchmarks/raw/2026-10-23-mlp-sweep/modelspec.jsonl
+    state: Recorded
+  - run_id: sweep-b100-h1024-modelspec-vulkan
+    date: "2026-10-23"
+    workload: mlp-784-H-10
+    side: ModelSpecVulkan
+    modelspec_version: "0.6.0"
+    commit: b2f955313ce46d8b793a27ba8680a2b6ff441a4c
+    mode: Timed
+    batch: 100
+    hidden: 1024
+    flop_per_step: 327270400
+    flop_rule: MatmulOnly
+    timed_steps: 55602
+    repeat_count: 3
+    repeats_us_per_step:
+      - 105.23912353872164
+      - 104.33007848638539
+      - 104.27360026617748
+    median_us_per_step: 104.33007848638539
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1830–1875 (median 1860, n=174) in the 3 timed spans"
+    source: verification-report:mlp-size-sweep-2026-10-23, raw records benchmarks/raw/2026-10-23-mlp-sweep/modelspec.jsonl
+    state: Recorded
+  - run_id: sweep-b100-h4096-modelspec-vulkan
+    date: "2026-10-23"
+    workload: mlp-784-H-10
+    side: ModelSpecVulkan
+    modelspec_version: "0.6.0"
+    commit: b2f955313ce46d8b793a27ba8680a2b6ff441a4c
+    mode: Timed
+    batch: 100
+    hidden: 4096
+    flop_per_step: 1309081600
+    flop_rule: MatmulOnly
+    timed_steps: 16258
+    repeat_count: 3
+    repeats_us_per_step:
+      - 366.8694458728011
+      - 368.03863691720994
+      - 370.32446629351705
+    median_us_per_step: 368.03863691720994
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1740–1830 (median 1755, n=179) in the 3 timed spans"
+    source: verification-report:mlp-size-sweep-2026-10-23, raw records benchmarks/raw/2026-10-23-mlp-sweep/modelspec.jsonl
+    state: Recorded
+  - run_id: sweep-b1000-h64-modelspec-vulkan
+    date: "2026-10-23"
+    workload: mlp-784-H-10
+    side: ModelSpecVulkan
+    modelspec_version: "0.6.0"
+    commit: b2f955313ce46d8b793a27ba8680a2b6ff441a4c
+    mode: Timed
+    batch: 1000
+    hidden: 64
+    flop_per_step: 204544000
+    flop_rule: MatmulOnly
+    timed_steps: 54049
+    repeat_count: 3
+    repeats_us_per_step:
+      - 111.61322553608763
+      - 110.86760452552315
+      - 110.38552827989416
+    median_us_per_step: 110.86760452552315
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1890–1920 (median 1890, n=181) in the 3 timed spans"
+    source: verification-report:mlp-size-sweep-2026-10-23, raw records benchmarks/raw/2026-10-23-mlp-sweep/modelspec.jsonl
+    state: Recorded
+  - run_id: sweep-b1000-h256-modelspec-vulkan
+    date: "2026-10-23"
+    workload: mlp-784-H-10
+    side: ModelSpecVulkan
+    modelspec_version: "0.6.0"
+    commit: b2f955313ce46d8b793a27ba8680a2b6ff441a4c
+    mode: Timed
+    batch: 1000
+    hidden: 256
+    flop_per_step: 818176000
+    flop_rule: MatmulOnly
+    timed_steps: 26511
+    repeat_count: 3
+    repeats_us_per_step:
+      - 227.30504590547318
+      - 227.90909607332802
+      - 228.3972820715929
+    median_us_per_step: 227.90909607332802
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1785–1860 (median 1815, n=178) in the 3 timed spans"
+    source: verification-report:mlp-size-sweep-2026-10-23, raw records benchmarks/raw/2026-10-23-mlp-sweep/modelspec.jsonl
+    state: Recorded
+  - run_id: sweep-b1000-h1024-modelspec-vulkan
+    date: "2026-10-23"
+    workload: mlp-784-H-10
+    side: ModelSpecVulkan
+    modelspec_version: "0.6.0"
+    commit: b2f955313ce46d8b793a27ba8680a2b6ff441a4c
+    mode: Timed
+    batch: 1000
+    hidden: 1024
+    flop_per_step: 3272704000
+    flop_rule: MatmulOnly
+    timed_steps: 7205
+    repeat_count: 3
+    repeats_us_per_step:
+      - 751.5402817487854
+      - 739.9517794587093
+      - 740.6384727272726
+    median_us_per_step: 740.6384727272726
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1665–1725 (median 1680, n=157) in the 3 timed spans"
+    source: verification-report:mlp-size-sweep-2026-10-23, raw records benchmarks/raw/2026-10-23-mlp-sweep/modelspec.jsonl
+    state: Recorded
+  - run_id: sweep-b1000-h4096-modelspec-vulkan
+    date: "2026-10-23"
+    workload: mlp-784-H-10
+    side: ModelSpecVulkan
+    modelspec_version: "0.6.0"
+    commit: b2f955313ce46d8b793a27ba8680a2b6ff441a4c
+    mode: Timed
+    batch: 1000
+    hidden: 4096
+    flop_per_step: 13090816000
+    flop_rule: MatmulOnly
+    timed_steps: 2010
+    repeat_count: 3
+    repeats_us_per_step:
+      - 3008.1556014925372
+      - 3031.4980621890545
+      - 3006.7894915422885
+    median_us_per_step: 3008.1556014925372
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1545–1905 (median 1575, n=180) in the 3 timed spans"
+    source: verification-report:mlp-size-sweep-2026-10-23, raw records benchmarks/raw/2026-10-23-mlp-sweep/modelspec.jsonl
+    state: Recorded
+  - run_id: sweep-b8192-h64-modelspec-vulkan
+    date: "2026-10-23"
+    workload: mlp-784-H-10
+    side: ModelSpecVulkan
+    modelspec_version: "0.6.0"
+    commit: b2f955313ce46d8b793a27ba8680a2b6ff441a4c
+    mode: Timed
+    batch: 8192
+    hidden: 64
+    flop_per_step: 1675624448
+    flop_rule: MatmulOnly
+    timed_steps: 7625
+    repeat_count: 3
+    repeats_us_per_step:
+      - 789.1599370491803
+      - 788.3033232786885
+      - 788.7748739672131
+    median_us_per_step: 788.7748739672131
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1830–1890 (median 1845, n=180) in the 3 timed spans"
+    source: verification-report:mlp-size-sweep-2026-10-23, raw records benchmarks/raw/2026-10-23-mlp-sweep/modelspec.jsonl
+    state: Recorded
+  - run_id: sweep-b8192-h256-modelspec-vulkan
+    date: "2026-10-23"
+    workload: mlp-784-H-10
+    side: ModelSpecVulkan
+    modelspec_version: "0.6.0"
+    commit: b2f955313ce46d8b793a27ba8680a2b6ff441a4c
+    mode: Timed
+    batch: 8192
+    hidden: 256
+    flop_per_step: 6702497792
+    flop_rule: MatmulOnly
+    timed_steps: 3001
+    repeat_count: 3
+    repeats_us_per_step:
+      - 1790.3786181272908
+      - 1790.9964428523822
+      - 1794.9965264911698
+    median_us_per_step: 1790.9964428523822
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1680–1770 (median 1725, n=162) in the 3 timed spans"
+    source: verification-report:mlp-size-sweep-2026-10-23, raw records benchmarks/raw/2026-10-23-mlp-sweep/modelspec.jsonl
+    state: Recorded
+  - run_id: sweep-b8192-h1024-modelspec-vulkan
+    date: "2026-10-23"
+    workload: mlp-784-H-10
+    side: ModelSpecVulkan
+    modelspec_version: "0.6.0"
+    commit: b2f955313ce46d8b793a27ba8680a2b6ff441a4c
+    mode: Timed
+    batch: 8192
+    hidden: 1024
+    flop_per_step: 26809991168
+    flop_rule: MatmulOnly
+    timed_steps: 951
+    repeat_count: 3
+    repeats_us_per_step:
+      - 6139.964267087276
+      - 6147.87796214511
+      - 6158.694559411147
+    median_us_per_step: 6147.87796214511
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1620–1695 (median 1665, n=174) in the 3 timed spans"
+    source: verification-report:mlp-size-sweep-2026-10-23, raw records benchmarks/raw/2026-10-23-mlp-sweep/modelspec.jsonl
+    state: Recorded
+  - run_id: sweep-b8192-h4096-modelspec-vulkan
+    date: "2026-10-23"
+    workload: mlp-784-H-10
+    side: ModelSpecVulkan
+    modelspec_version: "0.6.0"
+    commit: b2f955313ce46d8b793a27ba8680a2b6ff441a4c
+    mode: Timed
+    batch: 8192
+    hidden: 4096
+    flop_per_step: 107239964672
+    flop_rule: MatmulOnly
+    timed_steps: 193
+    repeat_count: 3
+    repeats_us_per_step:
+      - 31279.383663212437
+      - 31067.11405699482
+      - 31052.68516580311
+    median_us_per_step: 31067.11405699482
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1500–1890 (median 1590, n=179) in the 3 timed spans"
+    source: verification-report:mlp-size-sweep-2026-10-23, raw records benchmarks/raw/2026-10-23-mlp-sweep/modelspec.jsonl
+    state: Recorded
+  - run_id: sweep-b100-h64-pytorch-cuda-eager
+    date: "2026-10-23"
+    workload: mlp-784-H-10
+    side: PyTorchCudaEager
+    commit: b2f955313ce46d8b793a27ba8680a2b6ff441a4c
+    opponent_version: torch 2.14.1+cu130, CUDA 13.0
+    mode: Timed
+    batch: 100
+    hidden: 64
+    flop_per_step: 20454400
+    flop_rule: MatmulOnly
+    timed_steps: 13207
+    repeat_count: 3
+    repeats_us_per_step:
+      - 625.6039501037025
+      - 537.4719205649433
+      - 469.56963213632395
+    median_us_per_step: 537.4719205649433
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1860–1860 (median 1860, n=215) in the 3 timed spans"
+    note: the opponent's record says dirty, the tree then held uncommitted planning-store files only
+    source: verification-report:mlp-size-sweep-2026-10-23, raw records benchmarks/raw/2026-10-23-mlp-sweep/pytorch.jsonl
+    state: Recorded
+  - run_id: sweep-b100-h64-pytorch-cuda-compile
+    date: "2026-10-23"
+    workload: mlp-784-H-10
+    side: PyTorchCudaCompile
+    commit: b2f955313ce46d8b793a27ba8680a2b6ff441a4c
+    opponent_version: torch 2.14.1+cu130, CUDA 13.0
+    mode: Timed
+    batch: 100
+    hidden: 64
+    flop_per_step: 20454400
+    flop_rule: MatmulOnly
+    timed_steps: 10067
+    repeat_count: 3
+    repeats_us_per_step:
+      - 543.528791292029
+      - 526.3115624540361
+      - 573.4750107422899
+    median_us_per_step: 543.528791292029
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1860–1860 (median 1860, n=164) in the 3 timed spans"
+    note: the opponent's record says dirty, the tree then held uncommitted planning-store files only
+    source: verification-report:mlp-size-sweep-2026-10-23, raw records benchmarks/raw/2026-10-23-mlp-sweep/pytorch.jsonl
+    state: Recorded
+  - run_id: sweep-b100-h256-pytorch-cuda-eager
+    date: "2026-10-23"
+    workload: mlp-784-H-10
+    side: PyTorchCudaEager
+    commit: b2f955313ce46d8b793a27ba8680a2b6ff441a4c
+    opponent_version: torch 2.14.1+cu130, CUDA 13.0
+    mode: Timed
+    batch: 100
+    hidden: 256
+    flop_per_step: 81817600
+    flop_rule: MatmulOnly
+    timed_steps: 12756
+    repeat_count: 3
+    repeats_us_per_step:
+      - 434.84220970754956
+      - 436.0556781937959
+      - 466.28964274909083
+    median_us_per_step: 436.0556781937959
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1860–1860 (median 1860, n=170) in the 3 timed spans"
+    note: the opponent's record says dirty, the tree then held uncommitted planning-store files only
+    source: verification-report:mlp-size-sweep-2026-10-23, raw records benchmarks/raw/2026-10-23-mlp-sweep/pytorch.jsonl
+    state: Recorded
+  - run_id: sweep-b100-h256-pytorch-cuda-compile
+    date: "2026-10-23"
+    workload: mlp-784-H-10
+    side: PyTorchCudaCompile
+    commit: b2f955313ce46d8b793a27ba8680a2b6ff441a4c
+    opponent_version: torch 2.14.1+cu130, CUDA 13.0
+    mode: Timed
+    batch: 100
+    hidden: 256
+    flop_per_step: 81817600
+    flop_rule: MatmulOnly
+    timed_steps: 11419
+    repeat_count: 3
+    repeats_us_per_step:
+      - 538.0343700047837
+      - 548.9105039171542
+      - 704.9998445712844
+    median_us_per_step: 548.9105039171542
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1860–1860 (median 1860, n=204) in the 3 timed spans"
+    note: the opponent's record says dirty, the tree then held uncommitted planning-store files only
+    source: verification-report:mlp-size-sweep-2026-10-23, raw records benchmarks/raw/2026-10-23-mlp-sweep/pytorch.jsonl
+    state: Recorded
+  - run_id: sweep-b100-h1024-pytorch-cuda-eager
+    date: "2026-10-23"
+    workload: mlp-784-H-10
+    side: PyTorchCudaEager
+    commit: b2f955313ce46d8b793a27ba8680a2b6ff441a4c
+    opponent_version: torch 2.14.1+cu130, CUDA 13.0
+    mode: Timed
+    batch: 100
+    hidden: 1024
+    flop_per_step: 327270400
+    flop_rule: MatmulOnly
+    timed_steps: 12500
+    repeat_count: 3
+    repeats_us_per_step:
+      - 440.05234722048044
+      - 453.8032955676317
+      - 438.8789814338088
+    median_us_per_step: 440.05234722048044
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1860–1860 (median 1860, n=167) in the 3 timed spans"
+    note: the opponent's record says dirty, the tree then held uncommitted planning-store files only
+    source: verification-report:mlp-size-sweep-2026-10-23, raw records benchmarks/raw/2026-10-23-mlp-sweep/pytorch.jsonl
+    state: Recorded
+  - run_id: sweep-b100-h1024-pytorch-cuda-compile
+    date: "2026-10-23"
+    workload: mlp-784-H-10
+    side: PyTorchCudaCompile
+    commit: b2f955313ce46d8b793a27ba8680a2b6ff441a4c
+    opponent_version: torch 2.14.1+cu130, CUDA 13.0
+    mode: Timed
+    batch: 100
+    hidden: 1024
+    flop_per_step: 327270400
+    flop_rule: MatmulOnly
+    timed_steps: 9897
+    repeat_count: 3
+    repeats_us_per_step:
+      - 580.1719980086837
+      - 546.2760708166925
+      - 531.3104029484767
+    median_us_per_step: 546.2760708166925
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1860–1860 (median 1860, n=163) in the 3 timed spans"
+    note: the opponent's record says dirty, the tree then held uncommitted planning-store files only
+    source: verification-report:mlp-size-sweep-2026-10-23, raw records benchmarks/raw/2026-10-23-mlp-sweep/pytorch.jsonl
+    state: Recorded
+  - run_id: sweep-b100-h4096-pytorch-cuda-eager
+    date: "2026-10-23"
+    workload: mlp-784-H-10
+    side: PyTorchCudaEager
+    commit: b2f955313ce46d8b793a27ba8680a2b6ff441a4c
+    opponent_version: torch 2.14.1+cu130, CUDA 13.0
+    mode: Timed
+    batch: 100
+    hidden: 4096
+    flop_per_step: 1309081600
+    flop_rule: MatmulOnly
+    timed_steps: 12120
+    repeat_count: 3
+    repeats_us_per_step:
+      - 420.4211568708836
+      - 435.49533920338
+      - 433.2296542205507
+    median_us_per_step: 433.2296542205507
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1890–1920 (median 1920, n=157) in the 3 timed spans"
+    note: the opponent's record says dirty, the tree then held uncommitted planning-store files only
+    source: verification-report:mlp-size-sweep-2026-10-23, raw records benchmarks/raw/2026-10-23-mlp-sweep/pytorch.jsonl
+    state: Recorded
+  - run_id: sweep-b100-h4096-pytorch-cuda-compile
+    date: "2026-10-23"
+    workload: mlp-784-H-10
+    side: PyTorchCudaCompile
+    commit: b2f955313ce46d8b793a27ba8680a2b6ff441a4c
+    opponent_version: torch 2.14.1+cu130, CUDA 13.0
+    mode: Timed
+    batch: 100
+    hidden: 4096
+    flop_per_step: 1309081600
+    flop_rule: MatmulOnly
+    timed_steps: 10114
+    repeat_count: 3
+    repeats_us_per_step:
+      - 555.3590111870562
+      - 538.285594784933
+      - 527.2439495355203
+    median_us_per_step: 538.285594784933
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1860–1890 (median 1860, n=164) in the 3 timed spans"
+    note: the opponent's record says dirty, the tree then held uncommitted planning-store files only
+    source: verification-report:mlp-size-sweep-2026-10-23, raw records benchmarks/raw/2026-10-23-mlp-sweep/pytorch.jsonl
+    state: Recorded
+  - run_id: sweep-b1000-h64-pytorch-cuda-eager
+    date: "2026-10-23"
+    workload: mlp-784-H-10
+    side: PyTorchCudaEager
+    commit: b2f955313ce46d8b793a27ba8680a2b6ff441a4c
+    opponent_version: torch 2.14.1+cu130, CUDA 13.0
+    mode: Timed
+    batch: 1000
+    hidden: 64
+    flop_per_step: 204544000
+    flop_rule: MatmulOnly
+    timed_steps: 12861
+    repeat_count: 3
+    repeats_us_per_step:
+      - 439.2723067633268
+      - 432.5635588853386
+      - 437.9866850324802
+    median_us_per_step: 437.9866850324802
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1860–1860 (median 1860, n=168) in the 3 timed spans"
+    note: the opponent's record says dirty, the tree then held uncommitted planning-store files only
+    source: verification-report:mlp-size-sweep-2026-10-23, raw records benchmarks/raw/2026-10-23-mlp-sweep/pytorch.jsonl
+    state: Recorded
+  - run_id: sweep-b1000-h64-pytorch-cuda-compile
+    date: "2026-10-23"
+    workload: mlp-784-H-10
+    side: PyTorchCudaCompile
+    commit: b2f955313ce46d8b793a27ba8680a2b6ff441a4c
+    opponent_version: torch 2.14.1+cu130, CUDA 13.0
+    mode: Timed
+    batch: 1000
+    hidden: 64
+    flop_per_step: 204544000
+    flop_rule: MatmulOnly
+    timed_steps: 12171
+    repeat_count: 3
+    repeats_us_per_step:
+      - 527.760463874417
+      - 520.009425996806
+      - 512.7866258892941
+    median_us_per_step: 520.009425996806
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1860–1860 (median 1860, n=190) in the 3 timed spans"
+    note: the opponent's record says dirty, the tree then held uncommitted planning-store files only
+    source: verification-report:mlp-size-sweep-2026-10-23, raw records benchmarks/raw/2026-10-23-mlp-sweep/pytorch.jsonl
+    state: Recorded
+  - run_id: sweep-b1000-h256-pytorch-cuda-eager
+    date: "2026-10-23"
+    workload: mlp-784-H-10
+    side: PyTorchCudaEager
+    commit: b2f955313ce46d8b793a27ba8680a2b6ff441a4c
+    opponent_version: torch 2.14.1+cu130, CUDA 13.0
+    mode: Timed
+    batch: 1000
+    hidden: 256
+    flop_per_step: 818176000
+    flop_rule: MatmulOnly
+    timed_steps: 12498
+    repeat_count: 3
+    repeats_us_per_step:
+      - 415.32845758432234
+      - 430.1096868156853
+      - 434.56288540292013
+    median_us_per_step: 430.1096868156853
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1860–1860 (median 1860, n=160) in the 3 timed spans"
+    note: the opponent's record says dirty, the tree then held uncommitted planning-store files only
+    source: verification-report:mlp-size-sweep-2026-10-23, raw records benchmarks/raw/2026-10-23-mlp-sweep/pytorch.jsonl
+    state: Recorded
+  - run_id: sweep-b1000-h256-pytorch-cuda-compile
+    date: "2026-10-23"
+    workload: mlp-784-H-10
+    side: PyTorchCudaCompile
+    commit: b2f955313ce46d8b793a27ba8680a2b6ff441a4c
+    opponent_version: torch 2.14.1+cu130, CUDA 13.0
+    mode: Timed
+    batch: 1000
+    hidden: 256
+    flop_per_step: 818176000
+    flop_rule: MatmulOnly
+    timed_steps: 11414
+    repeat_count: 3
+    repeats_us_per_step:
+      - 550.8051864184023
+      - 606.9567023748892
+      - 576.4334487632656
+    median_us_per_step: 576.4334487632656
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1860–1860 (median 1860, n=198) in the 3 timed spans"
+    note: the opponent's record says dirty, the tree then held uncommitted planning-store files only
+    source: verification-report:mlp-size-sweep-2026-10-23, raw records benchmarks/raw/2026-10-23-mlp-sweep/pytorch.jsonl
+    state: Recorded
+  - run_id: sweep-b1000-h1024-pytorch-cuda-eager
+    date: "2026-10-23"
+    workload: mlp-784-H-10
+    side: PyTorchCudaEager
+    commit: b2f955313ce46d8b793a27ba8680a2b6ff441a4c
+    opponent_version: torch 2.14.1+cu130, CUDA 13.0
+    mode: Timed
+    batch: 1000
+    hidden: 1024
+    flop_per_step: 3272704000
+    flop_rule: MatmulOnly
+    timed_steps: 12760
+    repeat_count: 3
+    repeats_us_per_step:
+      - 749.3528458260607
+      - 516.3126512354701
+      - 555.1170044634082
+    median_us_per_step: 555.1170044634082
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1815–1920 (median 1875, n=232) in the 3 timed spans"
+    note: the opponent's record says dirty, the tree then held uncommitted planning-store files only
+    source: verification-report:mlp-size-sweep-2026-10-23, raw records benchmarks/raw/2026-10-23-mlp-sweep/pytorch.jsonl
+    state: Recorded
+  - run_id: sweep-b1000-h1024-pytorch-cuda-compile
+    date: "2026-10-23"
+    workload: mlp-784-H-10
+    side: PyTorchCudaCompile
+    commit: b2f955313ce46d8b793a27ba8680a2b6ff441a4c
+    opponent_version: torch 2.14.1+cu130, CUDA 13.0
+    mode: Timed
+    batch: 1000
+    hidden: 1024
+    flop_per_step: 3272704000
+    flop_rule: MatmulOnly
+    timed_steps: 9000
+    repeat_count: 3
+    repeats_us_per_step:
+      - 578.6688490253356
+      - 712.9185706790951
+      - 676.0777367485894
+    median_us_per_step: 676.0777367485894
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1860–1905 (median 1890, n=177) in the 3 timed spans"
+    note: the opponent's record says dirty, the tree then held uncommitted planning-store files only
+    source: verification-report:mlp-size-sweep-2026-10-23, raw records benchmarks/raw/2026-10-23-mlp-sweep/pytorch.jsonl
+    state: Recorded
+  - run_id: sweep-b1000-h4096-pytorch-cuda-eager
+    date: "2026-10-23"
+    workload: mlp-784-H-10
+    side: PyTorchCudaEager
+    commit: b2f955313ce46d8b793a27ba8680a2b6ff441a4c
+    opponent_version: torch 2.14.1+cu130, CUDA 13.0
+    mode: Timed
+    batch: 1000
+    hidden: 4096
+    flop_per_step: 13090816000
+    flop_rule: MatmulOnly
+    timed_steps: 5993
+    repeat_count: 3
+    repeats_us_per_step:
+      - 982.7301151405267
+      - 1026.6146182345067
+      - 994.7264842544824
+    median_us_per_step: 994.7264842544824
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1575–1875 (median 1635, n=178) in the 3 timed spans"
+    note: the opponent's record says dirty, the tree then held uncommitted planning-store files only
+    source: verification-report:mlp-size-sweep-2026-10-23, raw records benchmarks/raw/2026-10-23-mlp-sweep/pytorch.jsonl
+    state: Recorded
+  - run_id: sweep-b1000-h4096-pytorch-cuda-compile
+    date: "2026-10-23"
+    workload: mlp-784-H-10
+    side: PyTorchCudaCompile
+    commit: b2f955313ce46d8b793a27ba8680a2b6ff441a4c
+    opponent_version: torch 2.14.1+cu130, CUDA 13.0
+    mode: Timed
+    batch: 1000
+    hidden: 4096
+    flop_per_step: 13090816000
+    flop_rule: MatmulOnly
+    timed_steps: 6166
+    repeat_count: 3
+    repeats_us_per_step:
+      - 990.9937251268599
+      - 994.6302325620962
+      - 996.0114556850162
+    median_us_per_step: 994.6302325620962
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1575–1620 (median 1590, n=184) in the 3 timed spans"
+    note: the opponent's record says dirty, the tree then held uncommitted planning-store files only
+    source: verification-report:mlp-size-sweep-2026-10-23, raw records benchmarks/raw/2026-10-23-mlp-sweep/pytorch.jsonl
+    state: Recorded
+  - run_id: sweep-b8192-h64-pytorch-cuda-eager
+    date: "2026-10-23"
+    workload: mlp-784-H-10
+    side: PyTorchCudaEager
+    commit: b2f955313ce46d8b793a27ba8680a2b6ff441a4c
+    opponent_version: torch 2.14.1+cu130, CUDA 13.0
+    mode: Timed
+    batch: 8192
+    hidden: 64
+    flop_per_step: 1675624448
+    flop_rule: MatmulOnly
+    timed_steps: 13807
+    repeat_count: 3
+    repeats_us_per_step:
+      - 506.8942906361033
+      - 470.61903780755114
+      - 520.5775131309905
+    median_us_per_step: 506.8942906361033
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1860–1905 (median 1890, n=207) in the 3 timed spans"
+    note: the opponent's record says dirty, the tree then held uncommitted planning-store files only
+    source: verification-report:mlp-size-sweep-2026-10-23, raw records benchmarks/raw/2026-10-23-mlp-sweep/pytorch.jsonl
+    state: Recorded
+  - run_id: sweep-b8192-h64-pytorch-cuda-compile
+    date: "2026-10-23"
+    workload: mlp-784-H-10
+    side: PyTorchCudaCompile
+    commit: b2f955313ce46d8b793a27ba8680a2b6ff441a4c
+    opponent_version: torch 2.14.1+cu130, CUDA 13.0
+    mode: Timed
+    batch: 8192
+    hidden: 64
+    flop_per_step: 1675624448
+    flop_rule: MatmulOnly
+    timed_steps: 8988
+    repeat_count: 3
+    repeats_us_per_step:
+      - 617.483387532108
+      - 761.9613094166631
+      - 629.199673894181
+    median_us_per_step: 629.199673894181
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1860–1860 (median 1860, n=180) in the 3 timed spans"
+    note: the opponent's record says dirty, the tree then held uncommitted planning-store files only
+    source: verification-report:mlp-size-sweep-2026-10-23, raw records benchmarks/raw/2026-10-23-mlp-sweep/pytorch.jsonl
+    state: Recorded
+  - run_id: sweep-b8192-h256-pytorch-cuda-eager
+    date: "2026-10-23"
+    workload: mlp-784-H-10
+    side: PyTorchCudaEager
+    commit: b2f955313ce46d8b793a27ba8680a2b6ff441a4c
+    opponent_version: torch 2.14.1+cu130, CUDA 13.0
+    mode: Timed
+    batch: 8192
+    hidden: 256
+    flop_per_step: 6702497792
+    flop_rule: MatmulOnly
+    timed_steps: 10498
+    repeat_count: 3
+    repeats_us_per_step:
+      - 542.3138396728235
+      - 749.1863556160095
+      - 624.5743750512407
+    median_us_per_step: 624.5743750512407
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1620–1890 (median 1665, n=201) in the 3 timed spans"
+    note: the opponent's record says dirty, the tree then held uncommitted planning-store files only
+    source: verification-report:mlp-size-sweep-2026-10-23, raw records benchmarks/raw/2026-10-23-mlp-sweep/pytorch.jsonl
+    state: Recorded
+  - run_id: sweep-b8192-h256-pytorch-cuda-compile
+    date: "2026-10-23"
+    workload: mlp-784-H-10
+    side: PyTorchCudaCompile
+    commit: b2f955313ce46d8b793a27ba8680a2b6ff441a4c
+    opponent_version: torch 2.14.1+cu130, CUDA 13.0
+    mode: Timed
+    batch: 8192
+    hidden: 256
+    flop_per_step: 6702497792
+    flop_rule: MatmulOnly
+    timed_steps: 10914
+    repeat_count: 3
+    repeats_us_per_step:
+      - 592.0983763745804
+      - 730.8554236666365
+      - 799.4394663728832
+    median_us_per_step: 730.8554236666365
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1575–1875 (median 1650, n=231) in the 3 timed spans"
+    note: the opponent's record says dirty, the tree then held uncommitted planning-store files only
+    source: verification-report:mlp-size-sweep-2026-10-23, raw records benchmarks/raw/2026-10-23-mlp-sweep/pytorch.jsonl
+    state: Recorded
+  - run_id: sweep-b8192-h1024-pytorch-cuda-eager
+    date: "2026-10-23"
+    workload: mlp-784-H-10
+    side: PyTorchCudaEager
+    commit: b2f955313ce46d8b793a27ba8680a2b6ff441a4c
+    opponent_version: torch 2.14.1+cu130, CUDA 13.0
+    mode: Timed
+    batch: 8192
+    hidden: 1024
+    flop_per_step: 26809991168
+    flop_rule: MatmulOnly
+    timed_steps: 3386
+    repeat_count: 3
+    repeats_us_per_step:
+      - 1936.2111836099723
+      - 1932.1047595872094
+      - 1915.474760451184
+    median_us_per_step: 1932.1047595872094
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1440–1560 (median 1515, n=196) in the 3 timed spans"
+    note: the opponent's record says dirty, the tree then held uncommitted planning-store files only
+    source: verification-report:mlp-size-sweep-2026-10-23, raw records benchmarks/raw/2026-10-23-mlp-sweep/pytorch.jsonl
+    state: Recorded
+  - run_id: sweep-b8192-h1024-pytorch-cuda-compile
+    date: "2026-10-23"
+    workload: mlp-784-H-10
+    side: PyTorchCudaCompile
+    commit: b2f955313ce46d8b793a27ba8680a2b6ff441a4c
+    opponent_version: torch 2.14.1+cu130, CUDA 13.0
+    mode: Timed
+    batch: 8192
+    hidden: 1024
+    flop_per_step: 26809991168
+    flop_rule: MatmulOnly
+    timed_steps: 3312
+    repeat_count: 3
+    repeats_us_per_step:
+      - 1946.8945685317424
+      - 1920.3219049585452
+      - 1931.6096341064208
+    median_us_per_step: 1931.6096341064208
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1455–1530 (median 1500, n=192) in the 3 timed spans"
+    note: the opponent's record says dirty, the tree then held uncommitted planning-store files only
+    source: verification-report:mlp-size-sweep-2026-10-23, raw records benchmarks/raw/2026-10-23-mlp-sweep/pytorch.jsonl
+    state: Recorded
+  - run_id: sweep-b8192-h4096-pytorch-cuda-eager
+    date: "2026-10-23"
+    workload: mlp-784-H-10
+    side: PyTorchCudaEager
+    commit: b2f955313ce46d8b793a27ba8680a2b6ff441a4c
+    opponent_version: torch 2.14.1+cu130, CUDA 13.0
+    mode: Timed
+    batch: 8192
+    hidden: 4096
+    flop_per_step: 107239964672
+    flop_rule: MatmulOnly
+    timed_steps: 856
+    repeat_count: 3
+    repeats_us_per_step:
+      - 7290.460927646921
+      - 7292.758964467794
+      - 7200.61892295413
+    median_us_per_step: 7290.460927646921
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1440–1515 (median 1470, n=186) in the 3 timed spans"
+    note: the opponent's record says dirty, the tree then held uncommitted planning-store files only
+    source: verification-report:mlp-size-sweep-2026-10-23, raw records benchmarks/raw/2026-10-23-mlp-sweep/pytorch.jsonl
+    state: Recorded
+  - run_id: sweep-b8192-h4096-pytorch-cuda-compile
+    date: "2026-10-23"
+    workload: mlp-784-H-10
+    side: PyTorchCudaCompile
+    commit: b2f955313ce46d8b793a27ba8680a2b6ff441a4c
+    opponent_version: torch 2.14.1+cu130, CUDA 13.0
+    mode: Timed
+    batch: 8192
+    hidden: 4096
+    flop_per_step: 107239964672
+    flop_rule: MatmulOnly
+    timed_steps: 865
+    repeat_count: 3
+    repeats_us_per_step:
+      - 7215.9062974111885
+      - 7261.328335119293
+      - 7311.155491460093
+    median_us_per_step: 7261.328335119293
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1425–1500 (median 1470, n=188) in the 3 timed spans"
+    note: the opponent's record says dirty, the tree then held uncommitted planning-store files only
+    source: verification-report:mlp-size-sweep-2026-10-23, raw records benchmarks/raw/2026-10-23-mlp-sweep/pytorch.jsonl
+    state: Recorded

@@ -7,9 +7,10 @@
 //! operator reference from the operator registry of `modelspec-core`, the crate list from
 //! `cargo metadata`, the example pages and the landing page's terminal from running the
 //! `modelspec` command line on the example models, the code highlighter's word lists from the
-//! lexer and the operator registry, and the status data from
-//! [`status::CAPABILITIES`].
+//! lexer and the operator registry, the benchmark page and its charts from `benchmarks/runs.yaml`,
+//! and the status data from [`status::CAPABILITIES`].
 
+mod benchmarks;
 mod cli;
 mod crates;
 mod diagnostics;
@@ -206,6 +207,7 @@ struct Output {
 /// Every generated file of the site, and any warnings.
 fn outputs(root: &Path) -> Result<(Vec<Output>, Vec<String>)> {
     let examples = example::pages()?;
+    let (benchmarks_page, charts) = benchmarks::files(root)?;
     let (status, warnings) = status::document(root)?;
     let reference = Pages::from([
         ("cli.md".to_owned(), cli::page()),
@@ -234,6 +236,16 @@ fn outputs(root: &Path) -> Result<(Vec<Output>, Vec<String>)> {
                 dir: DATA,
                 files: data,
                 exclusive: false,
+            },
+            Output {
+                dir: DOCS,
+                files: Pages::from([(benchmarks::PAGE.to_owned(), benchmarks_page)]),
+                exclusive: false,
+            },
+            Output {
+                dir: benchmarks::IMAGES,
+                files: charts,
+                exclusive: true,
             },
         ],
         warnings,

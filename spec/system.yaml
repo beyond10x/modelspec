@@ -4,6 +4,7 @@ version: v1
 
 domains:
   - modelspec.artifact
+  - modelspec.benchmark
   - modelspec.checkpoint
   - modelspec.data
   - modelspec.device

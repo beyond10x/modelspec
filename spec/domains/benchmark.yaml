@@ -1,0 +1,121 @@
+domain: modelspec.benchmark
+
+summary: The benchmark runs measured so far, ModelSpec against its opponents on the same workloads (story:benchmark-history). Every run is one BenchmarkRun in `benchmarks/runs.yaml`, the file's top-level `runs` list, each citing the verification report or CHANGELOG release that states its figures. `modelspec-docs generate` reads the file, validates each entry against the JSON Schema of BenchmarkRun, refuses a median that is not the median of its repeats with the entry's line and field, and writes `website/docs/benchmarks.md`. A figure the source does not state is absent, never estimated.
+
+types:
+  - name: modelspec.benchmark.BenchmarkRunId
+    kind: newtype
+    of: String
+    naming:
+      summary: The name of one run in `benchmarks/runs.yaml`, unique in the file, such as `mnist-0.6.0-modelspec-vulkan`.
+
+  - name: modelspec.benchmark.PositiveInteger
+    kind: newtype
+    of: Integer
+    naming:
+      summary: A whole number of at least 1, the type of every count and size of a BenchmarkRun (threads, batch, hidden, flop_per_step, timed_steps, repeat_count); the generated JSON Schema carries it as `minimum` 1.
+    invariants:
+      - value >= 1
+
+  - name: modelspec.benchmark.Side
+    kind: enum
+    naming:
+      summary: Who ran the workload, a ModelSpec backend or an opponent (AGENTS.md, an opponent is a competing implementation under `opponents/`), and how. PyTorchCudaCompile and PyTorchCpuCompile are `torch.compile`; the eager variants are PyTorch without it.
+    variants: [ModelSpecCpu, ModelSpecVulkan, PyTorchCpuEager, PyTorchCpuCompile, PyTorchCudaEager, PyTorchCudaCompile]
+
+  - name: modelspec.benchmark.Mode
+    kind: enum
+    naming:
+      summary: Timed is a run measured end to end over its timed span; Profiled is the steady µs per step of `modelspec train --backend vulkan --profile`, with timestamp queries in the run.
+    variants: [Timed, Profiled]
+
+  - name: modelspec.benchmark.FlopRule
+    kind: enum
+    naming:
+      summary: What flop_per_step counts. MatmulOnly is `3196·B·H`, the matmuls of a 784 → H → 10 step at batch B; AllSites is the `profile step_total` count over every dispatch site of the step (DESIGN.md § 3.1 counting rule).
+    variants: [MatmulOnly, AllSites]
+
+entities:
+  - name: modelspec.benchmark.BenchmarkRun
+    naming:
+      summary: One measured run of a workload by one side, at one date and build, with the µs per step of each repeat and their median (story:benchmark-history). The median of an odd number of repeats is the middle one in ascending order, of an even number the mean of the middle two.
+    identity:
+      name: run_id
+      type: modelspec.benchmark.BenchmarkRunId
+    fields:
+      - name: date
+        type: String
+        summary: The day of the run, `YYYY-MM-DD`; for a figure that only a CHANGELOG release states, that release's date.
+      - name: workload
+        type: String
+        summary: What was trained, `mnist-784-64-10` (examples/mnist_mlp.mspec on MNIST, batch 100) or `mlp-784-H-10` (the `mlp_sweep` bench, 784 → H ReLU → 10 at the batch and hidden width of the run).
+      - name: side
+        type: modelspec.benchmark.Side
+      - name: threads
+        type: Optional<modelspec.benchmark.PositiveInteger>
+        summary: The CPU threads of a CPU side, where the source states them.
+      - name: modelspec_version
+        type: Optional<String>
+        summary: The ModelSpec release the run was built from, on a ModelSpec side.
+      - name: commit
+        type: Optional<String>
+        summary: The ModelSpec repository commit the run was built or run from, as the source states it, full or abbreviated.
+      - name: opponent_version
+        type: Optional<String>
+        summary: The opponent's version, such as `torch 2.14.1+cu130`, on an opponent side.
+      - name: mode
+        type: modelspec.benchmark.Mode
+      - name: batch
+        type: Optional<modelspec.benchmark.PositiveInteger>
+        summary: The batch of a workload that takes one as a parameter.
+      - name: hidden
+        type: Optional<modelspec.benchmark.PositiveInteger>
+        summary: The hidden width H of a workload that takes one as a parameter.
+      - name: flop_per_step
+        type: Optional<modelspec.benchmark.PositiveInteger>
+        summary: The FLOP of one step by flop_rule, where the source states it.
+      - name: flop_rule
+        type: Optional<modelspec.benchmark.FlopRule>
+        summary: What flop_per_step counts; present exactly with flop_per_step.
+      - name: timed_steps
+        type: Optional<modelspec.benchmark.PositiveInteger>
+        summary: The steps of one timed repeat, where the source states them.
+      - name: repeat_count
+        type: modelspec.benchmark.PositiveInteger
+        summary: The repeats the source measured, recorded in repeats_us_per_step or not.
+      - name: repeats_us_per_step
+        type: Optional<List<Binary64>>
+        presence: null_when_absent
+        summary: The µs per step of each repeat in the order the source lists them; null when the source states only the median. A source that gives seconds per repeat over timed_steps steps has each value as seconds · 10⁶ / timed_steps.
+      - name: median_us_per_step
+        type: Binary64
+        summary: The median µs per step of the repeats, as the source states it, or computed from its median seconds as seconds · 10⁶ / timed_steps.
+      - name: gpu
+        type: Optional<String>
+        summary: The GPU of a GPU side, as the source names it.
+      - name: driver
+        type: Optional<String>
+        summary: The GPU driver version, as the source states it.
+      - name: sm_clock
+        type: Optional<String>
+        summary: The SM clock during the run as the source states it, in its own words; clocks were not locked.
+      - name: note
+        type: Optional<String>
+        summary: What the source says qualifies the figure, such as a loaded host.
+      - name: source
+        type: String
+        summary: Where the figures are stated, a verification-report id such as `verification-report:mlp-size-sweep-2026-10-23` or a CHANGELOG release such as `CHANGELOG.md [0.6.0]`, followed by `raw records <path>` when the per-repeat values come from records committed under `benchmarks/raw/` that the report does not hold.
+    invariants:
+      - median_us_per_step > 0
+      - forall: {in: repeats_us_per_step, as: repeat, that: repeat > 0}
+      - any:
+          - all:
+              - defined(flop_per_step)
+              - defined(flop_rule)
+          - all:
+              - not defined(flop_per_step)
+              - not defined(flop_rule)
+    lifecycle:
+      initial: Recorded
+      states: [Recorded]
+      terminal: [Recorded]

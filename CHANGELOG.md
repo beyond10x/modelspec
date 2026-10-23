@@ -9,6 +9,10 @@ history.
 
 ## [Unreleased]
 
+### Added
+
+- `benchmarks/runs.yaml` holds every benchmark run measured so far (51: the MNIST 784-64-10 runs of ModelSpec CPU and Vulkan and of the PyTorch CPU and CUDA opponents, and the 36 points of the MLP sweep), typed by the ESS domain `modelspec.benchmark`; `modelspec-docs` checks it and generates the page Benchmarks (`website/docs/benchmarks.md`) with a chart per workload of µs per step over time, ModelSpec beside the opponents.
+
 ## [0.7.1] - 2026-10-23
 
 Throughput you can measure, and a Vulkan descriptor pool sized right: the bench `mlp_sweep` trains 784 -> H ReLU -> 10 at 12 sizes on one Vulkan device beside a PyTorch CUDA opponent, every Dispatch step of a plan has a FLOP and a byte count that `ir --stage kernel` and `train --backend vulkan --profile` print, and the descriptor pool counts every view a dispatch reads and writes. On an RTX 3090, `train --backend vulkan --profile` on `examples/mnist_mlp.mspec` reached 447.8 GFLOP/s and 56.6 GB/s over 45.925 µs per profiled step, with 0 uncounted sites; the sweep measured 36 of 36 points, ModelSpec on Vulkan faster than PyTorch eager CUDA at every batch-100 point (28.1 µs against 537.5 µs at hidden 64) and PyTorch eager up to 4.26 times faster at batch 8192 (7290.5 µs against 31067.1 µs at hidden 4096). No new timed MNIST step time was measured for this release; the latest is 0.6.0's 27.14 µs per step, and ADR-007's accuracy and final-weight conditions were not measured.

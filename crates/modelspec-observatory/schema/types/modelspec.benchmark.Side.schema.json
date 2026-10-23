@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/modelspec.benchmark.Side",
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "164665e925ba9a7bb5fbe1764f9ee0f8a2339c58f0c3fd86f01294b3de8c4cb2",
+    "contract_digest": "slice-sha256/2:7fa890a68ee5abb2f984dbb6f3df6d7589a904b16630480091dd8ddb26546e08",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.benchmark.Side": {
+      "title": "Side",
+      "description": "Who ran the workload, a ModelSpec backend or an opponent (AGENTS.md, an opponent is a competing implementation under `opponents/`), and how. PyTorchCudaCompile and PyTorchCpuCompile are `torch.compile`; the eager variants are PyTorch without it.",
+      "x-ess-name": "modelspec.benchmark.Side",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "ModelSpecCpu",
+        "ModelSpecVulkan",
+        "PyTorchCpuEager",
+        "PyTorchCpuCompile",
+        "PyTorchCudaEager",
+        "PyTorchCudaCompile"
+      ]
+    }
+  }
+}
