@@ -156,8 +156,15 @@ fn the_tiled_matmul_with_and_without_its_relu_epilogue_matches_the_cpu() {
 }
 
 /// Shapes whose tile computes two rows per invocation: the MNIST weight gradient, one with a
-/// partial row block, column block and last tile, and one whose tile loop runs 6 passes.
-const TWO_ROW_SHAPES: [(u64, u64, u64); 3] = [(784, 100, 64), (2049, 129, 17), (1025, 1000, 33)];
+/// partial row block, column block and last tile, one whose tile loop runs 14 passes, and
+/// (story:m1-f-weight-grad-matmul-tiled, tiles of 16 values) `k = 1` and one past a tile.
+const TWO_ROW_SHAPES: [(u64, u64, u64); 5] = [
+    (784, 100, 64),
+    (2049, 129, 17),
+    (1025, 1000, 33),
+    (2048, 1, 16),
+    (2049, 17, 17),
+];
 
 #[test]
 #[ignore = "needs a Vulkan device"]

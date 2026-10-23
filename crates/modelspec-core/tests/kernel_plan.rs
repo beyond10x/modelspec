@@ -957,3 +957,59 @@ fn a_matmul_tile_fits_the_minimum_workgroup_memory_and_covers_its_output() {
         "128 rows of 16 overflow 16 KiB"
     );
 }
+
+// story:m1-f-weight-grad-matmul-tiled: a two-row tile reads tiles of up to 16 values of `k`, 2
+// tiles ahead; a one-row tile keeps up to 64 values, 6 ahead.
+
+#[test]
+fn a_two_row_matmul_tile_reads_tiles_of_16_values_2_ahead() {
+    assert_eq!(
+        MatMulTile::of(784, 100, 64),
+        MatMulTile {
+            workgroup_size: 128,
+            cols: 16,
+            rows: 2,
+            depth: 16,
+            ahead: 2,
+            buffers: 2,
+        },
+        "the weight-gradient matmul of the MNIST example"
+    );
+    // (m, k, n, depth): two rows per invocation; 256 rows of one column overflow 16 KiB at 16.
+    for (m, k, n, depth) in [
+        (2049, 129, 17, 16),
+        (1025, 1000, 33, 16),
+        (2048, 1, 16, 1),
+        (2048, 15, 16, 15),
+        (2048, 16, 16, 16),
+        (2048, 17, 16, 16),
+        (32641, 100, 1, 4),
+    ] {
+        let tile = MatMulTile::of(m, k, n);
+        let what = format!("[{m}, {k}] x [{k}, {n}]: {tile:?}");
+        assert_eq!(tile.rows, 2, "{what}");
+        assert_eq!(tile.depth, depth, "{what}");
+        assert_eq!(tile.ahead, 2, "{what}");
+        assert_eq!(
+            tile.buffers,
+            if u64::from(depth) < k { 2 } else { 1 },
+            "{what}"
+        );
+        assert!(tile.shared_bytes() <= MIN_SHARED_MEMORY_BYTES, "{what}");
+    }
+    // (m, k, n, depth): one row per invocation, as before.
+    for (m, k, n, depth) in [
+        (100, 784, 64, 64),
+        (100, 64, 10, 64),
+        (64, 100, 10, 64),
+        (100, 10, 64, 10),
+        (2040, 773, 16, 64),
+        (129, 200, 1, 8),
+    ] {
+        let tile = MatMulTile::of(m, k, n);
+        let what = format!("[{m}, {k}] x [{k}, {n}]: {tile:?}");
+        assert_eq!(tile.rows, 1, "{what}");
+        assert_eq!(tile.depth, depth, "{what}");
+        assert_eq!(tile.ahead, 6, "{what}");
+    }
+}
