@@ -208,6 +208,16 @@ impl EventSequence {
         }
     }
 
+    /// The sequence of a run whose last event so far is `last`: the next event is numbered after
+    /// it, and none follows an event that ends the stream.
+    pub fn after(last: &RunEvent) -> Self {
+        Self {
+            training_run_id: last.training_run_id,
+            next: last.sequence + 1,
+            ended: last.body.is_last(),
+        }
+    }
+
     pub fn training_run_id(&self) -> TrainingRunId {
         self.training_run_id
     }

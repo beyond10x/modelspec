@@ -47,9 +47,9 @@ pub fn parse_serve_address(text: &str) -> Result<SocketAddr, String> {
 
 /// The SSE frame of `event`: its `event:`, `id:` and `data:` lines and a blank line.
 pub fn frame(event: &RunEvent) -> String {
-    let data = serde_json::to_string(event).expect("a RunEvent serializes");
+    let data = crate::record::line(event);
     format!(
-        "event: {}\nid: {}\ndata: {data}\n\n",
+        "event: {}\nid: {}\ndata: {data}\n",
         event.body.kind(),
         event.sequence
     )
@@ -127,12 +127,43 @@ impl Server {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let event = sequence.event(body);
+        self.publish(&event);
+        event
+    }
+
+    /// Sends `event`, made by the caller's own [`EventSequence`], to every connected client and
+    /// keeps it for every later one. A caller that publishes its events does not also
+    /// [`emit`](Self::emit), whose numbering is the server's own.
+    pub fn publish(&self, event: &RunEvent) {
         let mut frames = self.hub.lock();
-        frames.frames.push(frame(&event));
+        frames.frames.push(frame(event));
         frames.ended = event.body.is_last();
         drop(frames);
         self.hub.grown.notify_all();
-        event
+    }
+
+    /// Binds `address` and serves `events`, a whole recorded run
+    /// ([`read_recording`](crate::read_recording)), as the live stream served them: every frame
+    /// at once, then the response ends once the event that ends the stream is sent, so `events`
+    /// without one, such as none, are served to a response that stays open. A non-loopback
+    /// address is refused as by [`Server::bind`].
+    pub fn replay(address: SocketAddr, events: &[RunEvent]) -> io::Result<Server> {
+        let training_run_id = events
+            .first()
+            .map_or_else(TrainingRunId::new, |event| event.training_run_id);
+        let server = Server::bind(address, training_run_id)?;
+        if let Some(last) = events.last() {
+            *server
+                .sequence
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = EventSequence::after(last);
+        }
+        let mut frames = server.hub.lock();
+        frames.frames.extend(events.iter().map(frame));
+        frames.ended = events.last().is_some_and(|event| event.body.is_last());
+        drop(frames);
+        server.hub.grown.notify_all();
+        Ok(server)
     }
 
     /// Blocks while the server accepts connections, which is until the process ends.

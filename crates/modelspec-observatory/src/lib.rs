@@ -8,8 +8,13 @@
 //! `text/event-stream` at `GET /events` on a loopback address ([`parse_serve_address`]), one
 //! [`frame`] per event. Nothing here knows about a backend: a CPU and a Vulkan run send the same
 //! events.
+//!
+//! A [`Recorder`] writes a run's events to a recorded run file, one [`line`] each, the `data:` of
+//! its frame; [`read_recording`] reads one back, refusing a damaged file, and
+//! [`Server::replay`] serves it as the live stream was served.
 
 mod event;
+mod record;
 mod server;
 
 pub use event::{
@@ -17,4 +22,5 @@ pub use event::{
     RunEventId, RunEventState, RunFailed, RunStarted, StatisticsSubject, StepCompleted,
     TrainingRunId,
 };
+pub use record::{Recorder, RecordingError, line, parse_recording, read_recording};
 pub use server::{EVENTS_PATH, Server, frame, parse_serve_address};

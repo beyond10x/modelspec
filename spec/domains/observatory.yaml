@@ -2,11 +2,14 @@ domain: modelspec.observatory
 
 summary: What the training observatory reads from a training run, the architecture it draws and the insights it shows (epic:training-observatory). The event stream of a run is its RunEvents in sequence order, served live as `text/event-stream` (ServeAddress, StreamFrame) or replayed from a recorded run file.
 
-# UNMAPPED (recorded file): the recorded run file a stream replays from (its format, the flag that
-# writes it, and how a replay is started) is named by the epic but not settled; no file format is
-# declared here. Open question for the owner.
-
 types:
+  - name: modelspec.observatory.RecordedRunFile
+    kind: newtype
+    of: String
+    naming:
+      summary: The path of a recorded run file, the file a stream replays from (epic:training-observatory, In scope, first bullet; wave m1-g coordinator, 2026-10-23). The file is JSON Lines, one RunEvent per line in sequence order from 0, each line the JSON of a StreamFrame's `data:` and ending in a newline, all of one training_run_id, the last RunFinished or RunFailed. `modelspec train <file> --record <path>`, with or without `--serve`, creates the file before the run starts and writes each event to it as the run emits it, before a client of `--serve` reads it. `modelspec observe <path> [--serve <addr>]` replays it as the live stream is served (ServeAddress, StreamFrame), the same frames with the same `id:` lines, all of them at once, at port 0 of 127.0.0.1 without `--serve`, until SIGINT, SIGTERM or SIGHUP, and then exits 0. Before serving, `observe` refuses with one line on stderr and exit 1 a file that cannot be read, a line that is not a whole RunEvent (a truncated file), a sequence that skips or repeats a number, two training_run_id values, a first event that is not RunStarted, a RunStarted that is not the first event, an event after RunFinished or RunFailed, or a last event that is not RunFinished or RunFailed. training_run_id and run_event_id differ per invocation, and the events carry no timestamp; a recording compared with another run's events is compared without those two fields.
+
+
   - name: modelspec.observatory.RunEventId
     kind: newtype
     of: Uuid

@@ -12,6 +12,7 @@ history.
 ### Added
 
 - `modelspec compile <file> --backend cpu|vulkan --output <dir> [--device-profile <json>]` writes an artifact directory, `artifact.json` and for Vulkan one `kernels/<kernel_module_id>.spv` per kernel, sealed by a blake3 `artifact_hash`, byte-equal across two compiles, replacing the `artifact.json` and `kernels/` of an earlier artifact in that directory; `modelspec_core::artifact::read` reads one back and refuses an altered one with `E-ARTIFACT-001` (format version), `E-ARTIFACT-004` (module file missing, not a regular file or too long, or a stray file in `kernels/`), `E-ARTIFACT-002` (hash mismatch) or `E-ARTIFACT-003` (broken invariant or plan, a buffer over 4294967295 bytes, a module that is not SPIR-V), in that order (DESIGN.md § 7.1, § 8) (story:m1-compile-artifact)
+- `modelspec train --record <path>` writes the run's events to a recorded run file, one JSON `RunEvent` per line in `sequence` order (`modelspec_observatory::Recorder`), and `modelspec observe <path> [--serve <addr>]` replays it as the `text/event-stream` of `--serve`, the same frames and `id:` lines, refusing a truncated file, a `sequence` gap or two `training_run_id` values, an order `RunEventBody` forbids (a first event other than `RunStarted`, a second `RunStarted`, an event after `RunFinished` or `RunFailed`, a missing end) on one line with exit 1 before serving (`spec/domains/observatory.yaml`, `RecordedRunFile`) (story:observatory-run-recording-replay)
 
 ### Changed
 
