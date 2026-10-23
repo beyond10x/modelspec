@@ -19,6 +19,14 @@ serde_json = { workspace = true, features = ["raw_value"] }
 ash = { workspace = true, optional = true }
 rspirv = { workspace = true, optional = true }
 
+[dev-dependencies]
+clap.workspace = true
+
 [[bench]]
 name = "mnist_shape"
 harness = false
+
+[[bench]]
+name = "mlp_sweep"
+harness = false
+required-features = ["vulkan"]
