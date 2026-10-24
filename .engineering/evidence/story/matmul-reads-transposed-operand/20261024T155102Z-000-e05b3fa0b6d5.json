@@ -1,0 +1,13 @@
+{
+  "at": "2026-10-24T15:51:02Z",
+  "actor": "human:timo",
+  "artifact": "story:matmul-reads-transposed-operand",
+  "kind": "story",
+  "revision": 8,
+  "change": {
+    "change": "evidence",
+    "kind": "test_result",
+    "source": "task ci",
+    "reference": "impl/matmul-reads-transposed-operand 7bc96c0: steps through docs-check exit 0 (237 suites ok) on 8d58780, schema-check, ui-types-check and ui-browser exit 0 on the regenerated tree"
+  }
+}
