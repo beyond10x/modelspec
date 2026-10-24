@@ -1,0 +1,13 @@
+{
+  "at": "2026-10-24T22:02:34Z",
+  "actor": "human:timo",
+  "artifact": "story:bert-embedding-lookup",
+  "kind": "story",
+  "revision": 5,
+  "change": {
+    "change": "evidence",
+    "kind": "test_result",
+    "source": "task ci",
+    "reference": "af3aba9a0950118148d65a44a874c78241075ed5"
+  }
+}

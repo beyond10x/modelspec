@@ -18,7 +18,8 @@
 //!
 //! A declaration the loss does not read has no `Input` node after dead-code elimination, so the
 //! program could not take a value for it; it is refused at its declaration ([`E_DATA_003`])
-//! before anything runs.
+//! before anything runs. Neither source supplies `i32` row ids: an `i32` declaration is refused
+//! at its declaration too ([`E_DATA_004`]).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::ErrorKind;
@@ -26,7 +27,7 @@ use std::path::Path;
 
 use modelspec_core::diag::{Code, Diagnostic};
 use modelspec_core::hir::DataRole;
-use modelspec_core::ir::tensor::{Dim, ParamId, TensorOp, TensorType, ValueId};
+use modelspec_core::ir::tensor::{DType, Dim, ParamId, TensorOp, TensorType, ValueId};
 use modelspec_core::ir::training::{DataDecl, TrainConfig};
 use modelspec_core::lower::LoweredProgram;
 use thiserror::Error;
@@ -40,6 +41,9 @@ pub const E_DATA_001: Code = Code::new("E-DATA-001");
 pub const E_DATA_002: Code = Code::new("E-DATA-002");
 /// A declared `input` or `target` is not read by the loss.
 pub const E_DATA_003: Code = Code::new("E-DATA-003");
+/// A declared `input` or `target` is `i32`: synthetic data draws `f32` values and dense files
+/// hold `f32`, so neither can supply row ids.
+pub const E_DATA_004: Code = Code::new("E-DATA-004");
 /// A data, order or `--init` file is missing, unreadable, or not a whole number of samples (for
 /// `--init`, not the parameter's size), or a data or `--init` file holds a NaN or an infinity, or
 /// the data files differ in sample count, or the `input` and `target` do not share a leading
@@ -78,7 +82,8 @@ pub enum DataError {
 /// `lowered.prediction` is the model output.
 ///
 /// Refused, in this order, with [`E_DATA_001`] unless the block declares exactly one `input` and
-/// one `target`, with [`E_DATA_002`] unless the target has the type of the prediction, and with
+/// one `target`, with [`E_DATA_004`] at the input, else the target, when it is `i32`, with
+/// [`E_DATA_002`] unless the target has the type of the prediction, and with
 /// [`E_DATA_003`] at the first declaration of `lowered.declared_inputs` the program has no
 /// `Input` node for.
 pub fn synthetic(
@@ -120,6 +125,21 @@ fn declarations<'c>(
             .with("targets", config.targets.len().to_string()),
         ));
     };
+    for (decl, role) in [(input, "input"), (target, "target")] {
+        if decl.ty.dtype != DType::F32 {
+            return Err(DataError::Refused(
+                Diagnostic::new(
+                    E_DATA_004,
+                    format!(
+                        "{what} cannot supply the {} {role} `{}`",
+                        decl.ty.dtype, decl.name
+                    ),
+                )
+                .at(decl.span.clone())
+                .with(role, decl.ty.to_string()),
+            ));
+        }
+    }
     let output = &forward
         .node(prediction)
         .ok_or(DataError::UndefinedPrediction(prediction))?
@@ -632,7 +652,7 @@ mod tests {
             let expected = row[1..]
                 .iter()
                 .zip(&w[1..])
-                .fold(row[0] * w[0], |acc, (&a, &b)| acc + a * b);
+                .fold(row[0] * w[0], |acc, (&a, &b)| a.mul_add(b, acc));
             assert_eq!(got, expected, "row {i}");
         }
     }
@@ -779,5 +799,43 @@ mod tests {
         assert_eq!(refused(synthetic(&two, &forward)).code, E_DATA_001);
         let wide = config(42, vec![decl("x", &[8, 4], 3)], vec![decl("y", &[8, 2], 4)]);
         assert_eq!(refused(synthetic(&wide, &forward)).code, E_DATA_002);
+    }
+
+    const EMBEDDING: &str = "model M {
+    param table: Tensor<f32, [6, 3]> = xavier_uniform();
+    fn forward(ids: Tensor<i32, [4]>) -> Tensor<f32, [4, 3]> {
+        return embedding(table, ids);
+    }
+}
+train T {
+    model = M;
+    input ids: Tensor<i32, [4]>;
+    target y: Tensor<f32, [4, 3]>;
+    loss = mse(model.forward(ids), y);
+    optimizer = sgd(lr = 0.1);
+    steps = 1;
+    seed = 0;
+    device = cpu;
+}
+";
+
+    /// Synthetic inputs are standard normal `f32` draws and dense files hold `f32`: neither
+    /// supplies an `i32` declaration, refused at it with E-DATA-004 before any file is read.
+    #[test]
+    fn an_i32_declaration_is_refused_with_e_data_004() {
+        let compiled = modelspec_core::compile::compile_training("e.mspec", EMBEDDING).unwrap();
+        let d = refused(synthetic(&compiled.config, &compiled.forward));
+        assert_eq!(
+            d.to_string(),
+            "E-DATA-004: M0 synthetic data cannot supply the i32 input `ids`\n  \
+             e.mspec:9:5\n  \
+             input: Tensor<i32, [4]>"
+        );
+        let missing = Path::new("no-such-directory");
+        let Err(DataError::Refused(d)) = dense(missing, &compiled.config, &compiled.forward) else {
+            panic!("dense data is refused");
+        };
+        assert_eq!(d.code, E_DATA_004);
+        assert!(d.message.starts_with("dense data cannot supply"), "{d}");
     }
 }

@@ -6,5 +6,7 @@ pub mod interpreter;
 pub mod matmul;
 pub mod tensor;
 
-pub use interpreter::{Evaluation, RuntimeError, evaluate, evaluate_all};
+pub use interpreter::{
+    Evaluation, RuntimeError, evaluate, evaluate_all, evaluate_all_with_ids, evaluate_with_ids,
+};
 pub use tensor::{Element, HostTensor, TensorError};

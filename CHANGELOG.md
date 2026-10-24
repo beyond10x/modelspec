@@ -9,6 +9,11 @@ history.
 
 ## [Unreleased]
 
+### Added
+
+- `i32` row ids and `embedding(table: f32[V,H], ids: i32[N]) -> f32[N,H]`, whose table gradient is the internal scatter-add `EmbeddingGrad` (rows added in ascending `n`, a row never read exactly 0, ids without a gradient), checked against central differences in `f64` and `f32` for a token table and a positional one; an id outside the table is a `RuntimeError` of the CPU interpreter, any other use of `i32` is E-TYPE-018, and `train` refuses an `i32` input or target with E-DATA-004; `Embedding` and `EmbeddingGrad` have no Vulkan kernel yet, so `ir --stage kernel`, `compile --backend vulkan`, `train --backend vulkan` and `infer --backend vulkan` refuse an `embedding` program with E-TARGET-011 at the call, and `compile --backend cpu` writes its artifact; DESIGN.md revision 0.37 (story:bert-embedding-lookup)
+- Changed: deterministic matmul, reduction and mse loss-sum fuse each later product into its sum (GLSL `Fma` on Vulkan, `mul_add` and `_mm256_fmadd_ps` on the CPU), per DESIGN.md § 12 ADR-009. Recorded bits (run records, goldens, same-bits fixtures) change once.
+
 ## [0.9.0] - 2026-10-24
 
 Three performance stories toward the batch-8192 goal, each verified bit-equal to the plan before it: a register-blocked matmul tile for large outputs (64×128 at 8×8 per invocation, 128 invocations), the opt-in `--fast-math` of ADR-008 (contraction only: the kernels drop `NoContraction`, the run is compared within tolerance, the deterministic figure stays the headline), and matmuls that read a transposed operand in place so the step dispatches no transpose. `mlp_sweep` on the RTX 3090 at batch 8192, hidden 4096: 32,810.6 µs per step in 0.7.1 → 12,008.4 µs deterministic and 9,220.4 µs under `--fast-math` (PyTorch eager CUDA 7,290.5 µs; ratio 4.50 → 1.65 and 1.27). At batch 1000, hidden 1024 ModelSpec runs 483.5 µs against PyTorch's 555.1. The 12 sweep points are re-measured from this release's clean build and recorded in `benchmarks/runs.yaml` (`sweep-b<B>-h<H>-modelspec-vulkan-0.9.0`). ADR-007's MNIST accuracy and final-weight conditions were not measured.

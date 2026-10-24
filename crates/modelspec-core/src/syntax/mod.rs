@@ -54,7 +54,7 @@ pub mod codes {
         CONST = "E-SYNTAX-010";
         /// `repeat`, which arrives with DESIGN.md § 11 iteration 3.
         REPEAT = "E-SYNTAX-011";
-        /// An element type other than `f32`.
+        /// An element type other than `f32` or `i32`.
         DTYPE = "E-SYNTAX-012";
         /// An optimizer other than `sgd`.
         OPTIMIZER = "E-SYNTAX-013";
@@ -171,6 +171,7 @@ fn print_function(out: &mut String, function: &Function) {
 fn ty(t: &TensorType) -> String {
     let dtype = match t.dtype.kind {
         ast::DType::F32 => "f32",
+        ast::DType::I32 => "i32",
     };
     let dims: Vec<String> = t.dims.iter().map(|d| d.size.to_string()).collect();
     format!("Tensor<{dtype}, [{}]>", dims.join(", "))

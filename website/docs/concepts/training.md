@@ -57,7 +57,8 @@ model's output type, and the loss must read both. Each rule has its code, `E-DAT
 Two runs with the same file and seed print identical bytes. That holds because the arithmetic is
 fixed as well as the draws: DESIGN.md § 2.2 fixes the reduction order of the CPU reference. A sum
 adds its terms in row-major order, `matmul` accumulates over the contracting index in ascending
-order, every intermediate is rounded to `f32`, and there is no fused multiply-add. The test
+order from its first product, each later product fused into the sum with one IEEE fused
+multiply-add (DESIGN.md § 12 ADR-009), and every other intermediate is rounded to `f32`. The test
 `two_runs_with_seed_42_print_identical_bytes` holds it.
 
 A GPU backend will not be bit-identical to the CPU reference. DESIGN.md § 9 holds it to the CPU

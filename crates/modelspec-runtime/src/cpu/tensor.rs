@@ -1,7 +1,8 @@
 //! Host tensors: a shape and dense row-major storage, generic over the element type.
 //!
 //! The same code runs in `f32`, the M0 dtype, and in `f64`, which the finite-difference gradient
-//! checks use as reference math (DESIGN.md § 4).
+//! checks use as reference math (DESIGN.md § 4). Row ids are `HostTensor<i32>`, read only by
+//! `embedding` and its gradient.
 
 use std::fmt::Debug;
 use std::ops::{Add, Div, Mul, Sub};
@@ -36,10 +37,19 @@ pub trait Element:
     /// An element count in this type, rounded to nearest.
     fn from_count(count: u64) -> Self;
 
+    /// `self * b + c`, the product fused into the sum: for `f32` and `f64` the IEEE 754 fused
+    /// multiply-add, rounded once, as the GPU's `Fma` (DESIGN.md § 12 ADR-009). The interpreter
+    /// computes every product after the first of a sum this way. The default, for a type with
+    /// no fused operation, rounds the product and then the sum.
+    fn mul_add(self, b: Self, c: Self) -> Self {
+        self * b + c
+    }
+
     /// The AVX2 `matmul` kernel for this type ([`Kernel::Avx2`](super::matmul::Kernel::Avx2)):
     /// writes `out`, `m * n` elements, and returns true; `m`, `k` and `n` are nonzero. False,
-    /// writing nothing, where the type has no such kernel or the CPU no AVX2, which is the default.
-    /// Panics when `m * k`, `k * n` or `m * n` overflows `usize` or a slice is not that long.
+    /// writing nothing, where the type has no such kernel or the CPU no AVX2 or no FMA, which is
+    /// the default. Panics when `m * k`, `k * n` or `m * n` overflows `usize` or a slice is not
+    /// that long.
     #[doc(hidden)]
     fn matmul_avx2(
         out: &mut [Self],
@@ -67,6 +77,10 @@ impl Element for f32 {
         count as f32
     }
 
+    fn mul_add(self, b: Self, c: Self) -> Self {
+        f32::mul_add(self, b, c)
+    }
+
     #[cfg(target_arch = "x86_64")]
     fn matmul_avx2(
         out: &mut [Self],
@@ -90,6 +104,10 @@ impl Element for f64 {
 
     fn from_count(count: u64) -> Self {
         count as f64
+    }
+
+    fn mul_add(self, b: Self, c: Self) -> Self {
+        f64::mul_add(self, b, c)
     }
 
     #[cfg(target_arch = "x86_64")]
@@ -126,7 +144,8 @@ pub struct HostTensor<T> {
     data: Vec<T>,
 }
 
-impl<T: Element> HostTensor<T> {
+/// Any `Copy` element: an `Element` the interpreter computes in, or the `i32` of row ids.
+impl<T: Copy> HostTensor<T> {
     /// A tensor of shape `shape` holding `data` in row-major order; `data` has exactly as many
     /// elements as the shape.
     pub fn new(shape: Vec<u64>, data: Vec<T>) -> Result<Self, TensorError> {

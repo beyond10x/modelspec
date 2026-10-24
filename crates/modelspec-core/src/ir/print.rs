@@ -230,6 +230,7 @@ pub fn write_node(out: &mut impl Write, program: &TensorProgram, node: &TensorNo
             }
             out.write_char(']')?;
         }
+        TensorOp::EmbeddingGrad { rows } => write!(out, " [{rows}]")?,
         _ => {}
     }
     for (i, operand) in node.operands.iter().enumerate() {

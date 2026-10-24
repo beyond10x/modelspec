@@ -21,8 +21,9 @@ use modelspec_runtime::train::optimizer::{self, ParamState, PreparedStep, sgd_st
 const MNIST_MLP: &str = "examples/mnist_mlp.mspec";
 
 /// The blake3 of the bits of the loss and of every gradient and parameter of three MNIST steps
-/// through `sgd_step` ([`digest_of_three_steps`]), recorded on the tree before this story.
-const THREE_STEPS_BLAKE3: &str = "870f9004fe3e0a5797f4a225304cf18b5994d645b7012711a54eb9d461af01dd";
+/// through `sgd_step` ([`digest_of_three_steps`]), recorded on the tree before this story and
+/// re-recorded once when DESIGN.md § 12 ADR-009 fused each later product into its sum.
+const THREE_STEPS_BLAKE3: &str = "432a1c821f71330fc17110d9fd7338090750d71ce0eee3e06e12883b4b9555a1";
 
 thread_local! {
     static ALLOCATIONS: Cell<u64> = const { Cell::new(0) };

@@ -59,6 +59,8 @@ fn matmul(m: u64, k: u64, n: u64, limit: u32, transposed: [bool; 2]) -> Kernel {
     kernel
 }
 
+/// Each element one sum from the `k = 0` product in ascending `k`, each later product fused into
+/// it (DESIGN.md § 12 ADR-009).
 fn oracle(a: &[f32], b: &[f32], m: usize, k: usize, n: usize) -> Vec<f32> {
     let mut out = vec![0.0f32; m * n];
     for i in 0..m {
@@ -66,7 +68,7 @@ fn oracle(a: &[f32], b: &[f32], m: usize, k: usize, n: usize) -> Vec<f32> {
         for j in 0..n {
             let mut sum = row[0] * b[j];
             for p in 1..k {
-                sum += row[p] * b[p * n + j];
+                sum = row[p].mul_add(b[p * n + j], sum);
             }
             out[i * n + j] = sum;
         }

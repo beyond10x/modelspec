@@ -16,7 +16,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use thiserror::Error;
 
-use crate::ir::tensor::{Dim, ParamId, TensorNode, TensorOp, TensorProgram, TensorType, ValueId};
+use crate::ir::tensor::{
+    DType, Dim, ParamId, TensorNode, TensorOp, TensorProgram, TensorType, ValueId,
+};
 use crate::ir::training::{Subgraph, TrainingProgram};
 use crate::ir::verify::{TrainingVerifyError, VerifyError, verify, verify_training};
 use crate::ops::{self, GradientSink, OpError};
@@ -183,6 +185,9 @@ pub enum InputAdjointError {
     /// declared input the loss does not read has none.
     #[error("`{name}` is not an input of the program")]
     UnknownInput { name: String },
+    /// The input is `i32` row ids, which have no gradient (DESIGN.md § 4).
+    #[error("`{name}` is an i32 input; row ids have no gradient")]
+    IntegerInput { name: String },
     #[error("prediction {prediction} is not defined")]
     UndefinedPrediction { prediction: ValueId },
     #[error("an index of rank {got} for a prediction of rank {expected}")]
@@ -235,7 +240,7 @@ pub struct InputAdjoint {
 /// input the target does not read has the adjoint zero, a `Scalar 0.0` broadcast to its shape
 /// with `BroadcastScalar` (the `Scalar` itself at rank 0). A name asked for twice is listed twice
 /// with one adjoint. The result passes [`verify`]; `forward` and every training program are left
-/// as they are.
+/// as they are. An `i32` input is refused: row ids have no gradient.
 pub fn differentiate_inputs(
     forward: &TensorProgram,
     target: ValueId,
@@ -259,6 +264,11 @@ pub fn differentiate_inputs(
         let value = input_named(forward, name).ok_or_else(|| InputAdjointError::UnknownInput {
             name: name.to_owned(),
         })?;
+        if nodes[position[&value]].ty.dtype != DType::F32 {
+            return Err(InputAdjointError::IntegerInput {
+                name: name.to_owned(),
+            });
+        }
         asked.push((name, value));
     }
 
@@ -526,5 +536,58 @@ impl GradientSink for Sink {
 
     fn type_of(&self, value: ValueId) -> &TensorType {
         &self.types[&value]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ir::tensor::{Initializer, TensorProgramBuilder};
+
+    /// `mse(embedding(table, ids), t)` with the table a parameter; returns it and its loss.
+    fn lookup() -> (TensorProgram, ValueId) {
+        let mut b = TensorProgramBuilder::new();
+        let id = b
+            .declare_param(
+                "table",
+                TensorType::f32(&[7, 3]),
+                Initializer::XavierUniform,
+            )
+            .unwrap();
+        let table = b.param_read(id).unwrap();
+        let ids = b.input("ids", TensorType::i32(&[10])).unwrap();
+        let rows = b.embedding(table, ids).unwrap();
+        let t = b.input("t", TensorType::f32(&[10, 3])).unwrap();
+        let loss = b.mse(rows, t).unwrap();
+        b.output(loss).unwrap();
+        (b.finish(), loss)
+    }
+
+    /// The table's gradient is one `EmbeddingGrad` of the ids and the rows' adjoint.
+    #[test]
+    fn the_table_gradient_is_an_embedding_grad_of_the_ids() {
+        let (forward, loss) = lookup();
+        let training = differentiate(&forward, loss).unwrap();
+        let g = training.gradients[&ParamId(0)];
+        let node = training.program.node(g).unwrap();
+        assert_eq!(
+            node.op,
+            TensorOp::EmbeddingGrad {
+                rows: Dim::Static(7)
+            }
+        );
+        assert_eq!(node.operands[0], forward.inputs[0], "the ids");
+        assert_eq!(node.ty, TensorType::f32(&[7, 3]));
+    }
+
+    /// An `i32` input has no adjoint: asking for one is refused.
+    #[test]
+    fn the_adjoint_of_an_i32_input_is_refused() {
+        let (forward, loss) = lookup();
+        assert_eq!(
+            differentiate_inputs(&forward, loss, &["t", "ids"]),
+            Err(InputAdjointError::IntegerInput { name: "ids".into() })
+        );
+        assert!(differentiate_inputs(&forward, loss, &["t"]).is_ok());
     }
 }

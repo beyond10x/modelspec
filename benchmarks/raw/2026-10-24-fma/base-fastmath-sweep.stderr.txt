@@ -1,0 +1,23 @@
+# gpu-apps-before [] 2026-10-24T19:04:56Z
+# command: b10x-build-slot cargo bench -p modelspec-runtime --features vulkan --bench mlp_sweep -- --point 8192:4096 --point 8192:1024 --point 1000:1024 --min-seconds 6 --fast-math
+b10x-build-slot: slot 1 of 3, 109G free
+    Finished `bench` profile [optimized] target(s) in 0.03s
+     Running benches/mlp_sweep.rs (target/release/deps/mlp_sweep-9fb6b8e357cfbac8)
+mlp_sweep: warning: not a clean checkout: Build { version: Some("0.9.0"), commit: Some("79c58f7a0e05806b6b04121b37e4a6781b41215d"), dirty: Some(true) }
+mlp_sweep: batch 8192 hidden 4096: 107239964672 FLOP per step
+mlp_sweep:   calibration: 852 steps in 7.217 s
+mlp_sweep:   timed: 852 steps in 7.261 s, 8522.116 us per step
+mlp_sweep:   timed: 852 steps in 7.221 s, 8475.292 us per step
+mlp_sweep:   timed: 852 steps in 7.241 s, 8498.294 us per step
+mlp_sweep: batch 8192 hidden 1024: 26809991168 FLOP per step
+mlp_sweep:   calibration: 2759 steps in 6.945 s
+mlp_sweep:   timed: 2759 steps in 6.953 s, 2520.078 us per step
+mlp_sweep:   timed: 2759 steps in 6.914 s, 2506.062 us per step
+mlp_sweep:   timed: 2759 steps in 6.961 s, 2522.857 us per step
+mlp_sweep: batch 1000 hidden 1024: 3272704000 FLOP per step
+mlp_sweep:   calibration: 16564 steps in 5.939 s
+mlp_sweep:   calibration: 20081 steps in 7.104 s
+mlp_sweep:   timed: 20081 steps in 7.104 s, 353.775 us per step
+mlp_sweep:   timed: 20081 steps in 7.022 s, 349.691 us per step
+mlp_sweep:   timed: 20081 steps in 6.887 s, 342.962 us per step
+# exit 0

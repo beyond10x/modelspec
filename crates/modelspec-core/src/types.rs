@@ -8,7 +8,10 @@
 //!
 //! Beyond the registry's operator rules, the checker enforces the M0 rules of DESIGN.md § 2.2
 //! and the train-block rules: every declared tensor type has positive dimensions and element and
-//! byte counts within `u64`; a parameter is initialized by `xavier_uniform()` and is rank 2; a
+//! byte counts within `u64`; an `i32` tensor is declared only by an `input`, a `target` or a
+//! function argument, and read only as the ids of `embedding` (E-TYPE-018 for a parameter or a
+//! function result of `i32`; the registry refuses every other operand); a parameter is
+//! initialized by `xavier_uniform()` and is rank 2; a
 //! function's `return` has its declared type; a `model.<function>(args)` call matches the
 //! function's arguments; the loss is rank 0 and calls `model.forward` exactly once, counting calls
 //! nested in the arguments of another (the prediction is that call's value, DESIGN.md § 2.1);
@@ -49,7 +52,8 @@ pub mod codes {
         NAMED_ARGUMENT = "E-TYPE-002";
         /// `add`, `sub`, `mul` or `mse` operands of different shapes, neither of them rank 0.
         SHAPE_MISMATCH = "E-TYPE-003";
-        /// A `matmul` or `transpose` operand that is not rank 2.
+        /// A `matmul` or `transpose` operand that is not rank 2, or an `embedding` whose table is
+        /// not rank 2 or whose ids are not rank 1.
         RANK = "E-TYPE-004";
         /// An integer literal where a tensor is expected.
         INTEGER_LITERAL = "E-TYPE-005";
@@ -78,10 +82,15 @@ pub mod codes {
         /// A train block's loss that does not call `model.forward` exactly once: the prediction
         /// is the value of that one call.
         FORWARD_CALLS = "E-TYPE-017";
+        /// An `i32` tensor used other than as the ids of `embedding`: an operand of any other
+        /// operator or the table of `embedding`, a `param` of type `i32`, or a function declared
+        /// to return `i32` (DESIGN.md § 2.2).
+        DTYPE = "E-TYPE-018";
     }
 
     /// A compiler verification failure, not a user error (DESIGN.md § 8.1): the checker reached a
-    /// state its own rules exclude, such as a registry dtype mismatch while M0 has only `f32`.
+    /// state its own rules exclude, such as a registry dtype mismatch between two operands that
+    /// each passed their own dtype check.
     /// Not in [`ALL`]; no source file is meant to reach it.
     pub const INTERNAL: Code = Code::new("E-INTERNAL-001");
 }
@@ -189,7 +198,7 @@ impl Checker {
                 ast::ModelItem::Fn(f) => signatures.push(Signature {
                     name: f.name.name.clone(),
                     args: f.params.iter().map(|a| self.declared(&a.ty)).collect(),
-                    output: self.declared(&f.output),
+                    output: self.output(f),
                 }),
             }
         }
@@ -224,7 +233,10 @@ impl Checker {
     /// (E-TYPE-016).
     fn declared(&mut self, ty: &ast::TensorType) -> Option<TensorType> {
         let sizes: Vec<u64> = ty.dims.iter().map(|d| d.size).collect();
-        let converted = TensorType::f32(&sizes);
+        let converted = match ty.dtype.kind {
+            ast::DType::F32 => TensorType::f32(&sizes),
+            ast::DType::I32 => TensorType::i32(&sizes),
+        };
         let mut valid = true;
         for dim in ty.dims.iter().filter(|d| d.size == 0) {
             self.report(
@@ -239,6 +251,22 @@ impl Checker {
         } else {
             None
         }
+    }
+
+    /// A function's declared result type; a result of `i32` is E-TYPE-018 at its dtype.
+    fn output(&mut self, f: &ast::Function) -> Option<TensorType> {
+        if f.output.dtype.kind != ast::DType::F32 {
+            self.report(
+                codes::DTYPE,
+                format!(
+                    "`{}` must return f32; `i32` is for the ids of `embedding` only",
+                    f.name.name
+                ),
+                &f.output.dtype.span,
+            );
+            return None;
+        }
+        self.declared(&f.output)
     }
 
     /// Whether the element and byte counts of `ty` fit `u64`; E-TYPE-016 at `span` if not.
@@ -266,6 +294,17 @@ impl Checker {
     /// its HIR, only when its initializer is valid as well. An initializer error is independent
     /// of the parameter's uses, so it does not hide their diagnostics.
     fn param(&mut self, model: &str, p: &ast::Param) -> (Option<TensorType>, Option<HirParam>) {
+        if p.ty.dtype.kind != ast::DType::F32 {
+            self.report(
+                codes::DTYPE,
+                format!(
+                    "parameter `{}` must be f32; `i32` is for the ids of `embedding` only",
+                    p.name.name
+                ),
+                &p.ty.dtype.span,
+            );
+            return (None, None);
+        }
         let ty = self.declared(&p.ty);
         let init = &p.init;
         if init.callee.name != "xavier_uniform" || !init.args.is_empty() {
@@ -719,12 +758,23 @@ fn op_diagnostic(name: OpName<'_>, error: OpError, span: &SourceSpan) -> Diagnos
         .with("lhs", lhs.to_string())
         .with("rhs", rhs.to_string())
         .note(format!("expected rhs dimension[0] = {expected}; got {got}")),
-        error @ (OpError::DTypeMismatch { .. } | OpError::MissingDeclaredType { .. }) => {
-            Diagnostic::new(
-                codes::INTERNAL,
-                format!("compiler verification failure in `{name}`: {error}"),
-            )
-        }
+        OpError::OperandDType {
+            index,
+            expected,
+            got,
+            ..
+        } => Diagnostic::new(
+            codes::DTYPE,
+            format!("`{name}` operand {} must be {expected}", index + 1),
+        )
+        .with("got", got.to_string())
+        .note("`i32` tensors are row ids; only `embedding` reads them, as its second operand"),
+        error @ (OpError::DTypeMismatch { .. }
+        | OpError::MissingDeclaredType { .. }
+        | OpError::ParamDType { .. }) => Diagnostic::new(
+            codes::INTERNAL,
+            format!("compiler verification failure in `{name}`: {error}"),
+        ),
     }
     .at(span.clone())
 }
@@ -807,7 +857,8 @@ mod tests {
                 "transpose",
                 "sum",
                 "mean",
-                "mse"
+                "mse",
+                "embedding"
             ]
         );
     }
@@ -828,5 +879,52 @@ mod tests {
             assert_eq!(diagnostic.span, Some(span()));
             assert!(!codes::ALL.contains(&diagnostic.code));
         }
+    }
+
+    /// An operand of the wrong element type is the user's error, E-TYPE-018 at the call.
+    #[test]
+    fn an_operand_of_the_wrong_dtype_is_e_type_018() {
+        let error = OpError::OperandDType {
+            op: "Add",
+            index: 0,
+            expected: DType::F32,
+            got: TensorType::i32(&[4]),
+        };
+        let diagnostic = op_diagnostic("add", error, &span());
+        assert_eq!(diagnostic.code, codes::DTYPE);
+        assert_eq!(diagnostic.code.as_str(), "E-TYPE-018");
+        assert_eq!(diagnostic.span, Some(span()));
+        assert!(
+            diagnostic.message.contains("`add` operand 1 must be f32"),
+            "{}",
+            diagnostic.message
+        );
+    }
+
+    /// `i32` is declared by inputs, targets and function arguments and read by `embedding`.
+    #[test]
+    fn i32_ids_read_by_embedding_check_and_are_typed_i32() {
+        let source = "model M {
+    param table: Tensor<f32, [6, 3]> = xavier_uniform();
+    fn forward(ids: Tensor<i32, [4]>) -> Tensor<f32, [4, 3]> {
+        return embedding(table, ids);
+    }
+}
+train T {
+    model = M;
+    input ids: Tensor<i32, [4]>;
+    target y: Tensor<f32, [4, 3]>;
+    loss = mse(model.forward(ids), y);
+    optimizer = sgd(lr = 0.1);
+    steps = 1;
+    seed = 0;
+    device = cpu;
+}
+";
+        let hir = check_source("m.mspec", source).expect("checks");
+        assert_eq!(hir.train.data[0].ty, TensorType::i32(&[4]));
+        let (_, forward) = hir.model.function("forward").expect("forward");
+        assert_eq!(forward.args[0].ty, TensorType::i32(&[4]));
+        assert_eq!(forward.result.ty, TensorType::f32(&[4, 3]));
     }
 }

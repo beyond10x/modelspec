@@ -96,10 +96,12 @@ pub struct Dtype {
     pub span: SourceSpan,
 }
 
-/// Element types of the M0 subset.
+/// Element types of the M0 subset. `i32` is for row ids only; the checker refuses it anywhere
+/// else (`E-TYPE-018`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DType {
     F32,
+    I32,
 }
 
 /// One integer literal dimension of a tensor type.

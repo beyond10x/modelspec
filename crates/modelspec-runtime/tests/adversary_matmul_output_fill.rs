@@ -8,7 +8,8 @@
 //! This binary installs a global allocator that fills every fresh allocation (and every grown
 //! tail of a reallocation) with `0xFF` bytes, which is a NaN in `f32` and in `f64`. With finite
 //! operands that cannot produce a NaN, every element of every result must equal, by bit pattern,
-//! the ascending-`k` sum of DESIGN.md § 2.2, for every `m` and `n` in `1..=33` and `k` in
+//! the ascending-`k` sum of DESIGN.md § 2.2, each later product fused into it (§ 12 ADR-009), for
+//! every `m` and `n` in `1..=33` and `k` in
 //! `0..=17` (every row block and column panel edge of the AVX2 kernel), in both left-operand
 //! layouts, through each kernel this CPU runs, through `evaluate`, and for an element type the
 //! AVX2 kernel has no code for.
@@ -115,7 +116,8 @@ impl Rng {
     }
 }
 
-/// The ascending-`k` sum, from the `k = 0` product; `+0` where `k` is 0.
+/// The ascending-`k` sum, from the `k = 0` product, each later product fused into it; `+0` where
+/// `k` is 0.
 fn reference<T: Real>(a: &[T], lhs: Lhs, b: &[T], m: usize, k: usize, n: usize) -> Vec<u64> {
     let at = |i: usize, p: usize| match lhs {
         Lhs::RowMajor => a[i * k + p],
@@ -126,7 +128,7 @@ fn reference<T: Real>(a: &[T], lhs: Lhs, b: &[T], m: usize, k: usize, n: usize) 
         for j in 0..n {
             let mut acc = if k == 0 { T::ZERO } else { at(i, 0) * b[j] };
             for p in 1..k {
-                acc = acc + at(i, p) * b[p * n + j];
+                acc = at(i, p).mul_add(b[p * n + j], acc);
             }
             out.push(acc.bits());
         }
@@ -273,6 +275,10 @@ impl Element for Wrapped {
     }
     fn from_count(count: u64) -> Self {
         Wrapped(count as f64)
+    }
+    /// The fused multiply-add of `f64`, so the reference of `f64` is this type's too.
+    fn mul_add(self, b: Self, c: Self) -> Self {
+        Wrapped(self.0.mul_add(b.0, c.0))
     }
 }
 
