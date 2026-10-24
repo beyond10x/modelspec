@@ -2,14 +2,19 @@
 format: aep.planning-md/3
 id: story:dense-step-reuses-batch-buffers
 kind: story
-status: draft
+status: active
 title: A dense step reuses its batch buffers
+relations:
+- serves: vision:modelspec
 scope:
 - confidence: cited
   path: crates/modelspec-runtime/src/train/data.rs
 - confidence: cited
   path: crates/modelspec-runtime/src/train/runner.rs
-revision: 2
+revision: 4
+transitions:
+- {from: "draft", to: "proposed", at: "2026-10-24T08:09:08Z", actor: "human:timo", revision: 3}
+- {from: "proposed", to: "active", at: "2026-10-24T08:09:08Z", actor: "human:timo", revision: 4}
 ---
 # A dense step reuses its batch buffers
 

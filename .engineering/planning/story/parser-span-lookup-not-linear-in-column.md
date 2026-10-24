@@ -2,12 +2,17 @@
 format: aep.planning-md/3
 id: story:parser-span-lookup-not-linear-in-column
 kind: story
-status: draft
+status: active
 title: Span lookup is not linear in the column
+relations:
+- serves: vision:modelspec
 scope:
 - confidence: cited
   path: crates/modelspec-core/src/syntax/parser.rs
-revision: 2
+revision: 4
+transitions:
+- {from: "draft", to: "proposed", at: "2026-10-24T08:09:09Z", actor: "human:timo", revision: 3}
+- {from: "proposed", to: "active", at: "2026-10-24T08:09:09Z", actor: "human:timo", revision: 4}
 ---
 # Span lookup is not linear in the column
 

@@ -2,8 +2,10 @@
 format: aep.planning-md/3
 id: story:vulkan-step-counters
 kind: story
-status: draft
+status: active
 title: Vulkan run counters for barriers, device allocations and peak device bytes
+relations:
+- serves: vision:modelspec
 scope:
 - confidence: cited
   path: DESIGN.md
@@ -25,7 +27,10 @@ scope:
   path: website/docs/guides/inspect-a-run.md
 - confidence: inferred
   path: website/docs/reference/cli.md
-revision: 5
+revision: 7
+transitions:
+- {from: "draft", to: "proposed", at: "2026-10-24T08:09:09Z", actor: "human:timo", revision: 6, decided_on: {"recorded":{"review_outcome":2}}}
+- {from: "proposed", to: "active", at: "2026-10-24T08:09:09Z", actor: "human:timo", revision: 7, decided_on: {"recorded":{"review_outcome":2}}}
 ---
 # Vulkan run counters for barriers, device allocations and peak device bytes
 

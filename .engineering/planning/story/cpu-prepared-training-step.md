@@ -2,8 +2,10 @@
 format: aep.planning-md/3
 id: story:cpu-prepared-training-step
 kind: story
-status: draft
+status: active
 title: 'A prepared CPU training step: verify once, free intermediates, move outputs'
+relations:
+- serves: vision:modelspec
 scope:
 - confidence: cited
   path: crates/modelspec-core/src/ir/verify.rs
@@ -11,7 +13,10 @@ scope:
   path: crates/modelspec-runtime/src/cpu/interpreter.rs
 - confidence: cited
   path: crates/modelspec-runtime/src/train/optimizer.rs
-revision: 3
+revision: 5
+transitions:
+- {from: "draft", to: "proposed", at: "2026-10-24T08:09:08Z", actor: "human:timo", revision: 4, decided_on: {"recorded":{"review_outcome":2}}}
+- {from: "proposed", to: "active", at: "2026-10-24T08:09:08Z", actor: "human:timo", revision: 5, decided_on: {"recorded":{"review_outcome":2}}}
 ---
 # A prepared CPU training step: verify once, free intermediates, move outputs
 
