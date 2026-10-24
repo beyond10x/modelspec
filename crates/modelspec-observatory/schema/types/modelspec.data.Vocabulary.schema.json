@@ -4,8 +4,8 @@
   "x-ess-provenance": {
     "system": "modelspec",
     "specification_version": "v1",
-    "source_digest": "d57780f89393692e702455921c814f30e7a438698e861d98b534c775b25ea13e",
-    "contract_digest": "slice-sha256/2:5a7f52bd8a942fd3d74dd96e9285e5be7007c5a309e7ccc56b702247927072aa",
+    "source_digest": "6a102d4c68da80ba98be3c93eb81a36c6a67249f0c9503dcf6463867796cb421",
+    "contract_digest": "slice-sha256/2:204e5889023d65af174ec56d02b897ebb467a495c86fdc3b15ba964f5d55e0cd",
     "regenerate": "ess generate"
   },
   "$defs": {
@@ -26,18 +26,58 @@
           "type": "integer",
           "minimum": 0,
           "const": 4
+        },
+        "pad_token_id": {
+          "description": "The id of `[PAD]`, the token that fills a sequence up to its length (coordinator decision D19, 2026-10-24, `.engineering/waves/bert-1.md`).",
+          "type": "integer",
+          "minimum": 0,
+          "const": 0
+        },
+        "unk_token_id": {
+          "description": "The id of `[UNK]`, the token a word stands for when the vocabulary cannot encode it (coordinator decision D19, 2026-10-24, `.engineering/waves/bert-1.md`).",
+          "type": "integer",
+          "minimum": 0,
+          "const": 1
+        },
+        "cls_token_id": {
+          "description": "The id of `[CLS]`, the token that opens a sequence (coordinator decision D19, 2026-10-24, `.engineering/waves/bert-1.md`).",
+          "type": "integer",
+          "minimum": 0,
+          "const": 2
+        },
+        "sep_token_id": {
+          "description": "The id of `[SEP]`, the token that closes a sequence (coordinator decision D19, 2026-10-24, `.engineering/waves/bert-1.md`).",
+          "type": "integer",
+          "minimum": 0,
+          "const": 3
         }
       },
       "required": [
         "tokens",
-        "mask_token_id"
+        "mask_token_id",
+        "pad_token_id",
+        "unk_token_id",
+        "cls_token_id",
+        "sep_token_id"
       ],
       "additionalProperties": false,
       "x-ess-invariants": [
         "distinct token in tokens",
         "mask_token_id >= 0",
         "mask_token_id < tokens.count",
-        "mask_token_id == 4"
+        "mask_token_id == 4",
+        "pad_token_id >= 0",
+        "pad_token_id < tokens.count",
+        "pad_token_id == 0",
+        "unk_token_id >= 0",
+        "unk_token_id < tokens.count",
+        "unk_token_id == 1",
+        "cls_token_id >= 0",
+        "cls_token_id < tokens.count",
+        "cls_token_id == 2",
+        "sep_token_id >= 0",
+        "sep_token_id < tokens.count",
+        "sep_token_id == 3"
       ]
     }
   }

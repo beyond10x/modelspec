@@ -2,7 +2,7 @@
 format: aep.planning-md/3
 id: story:bert-tokenizer
 kind: story
-status: draft
+status: active
 title: Train a tokenizer on the train split in Rust, with an exact vocabulary size
 summary: Adds modelspec data tokenizer, trained on the Train split only to an exact vocabulary size, reproducibly; settles the TokenizerKind and Vocabulary special-token markers.
 relations:
@@ -30,7 +30,10 @@ scope:
   path: spec/domains/data.yaml
 - confidence: cited
   path: website/docs/reference/cli.md
-revision: 3
+revision: 5
+transitions:
+- {from: "draft", to: "proposed", at: "2026-10-24T20:02:36Z", actor: "human:timo", revision: 4}
+- {from: "proposed", to: "active", at: "2026-10-24T20:02:36Z", actor: "human:timo", revision: 5}
 ---
 # Train a tokenizer on the train split in Rust, with an exact vocabulary size
 
