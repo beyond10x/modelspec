@@ -9,9 +9,9 @@ scope:
   path: crates/modelspec-runtime/src/vulkan/dispatch.rs
 - confidence: cited
   path: crates/modelspec-runtime/src/vulkan/runner.rs
-- confidence: inferred
-  path: website/docs
-revision: 3
+- confidence: cited
+  path: website/docs/guides/inspect-a-run.md
+revision: 6
 ---
 # Profile begin stamp follows the barrier
 
@@ -28,15 +28,15 @@ Outcome: a profiled kernel's time starts when its own work can start.
 
 - **begin-stamp-stage**: the begin timestamp is written at `COMPUTE_SHADER`, or after the barrier,
   and a host test of the recording asserts the stage.
-- **guide-numbers-retaken**: the profile figures in the guide are retaken on the RTX 3090 and the
-  page says which commit they came from.
+- **guide-numbers-retaken**: the profile figures in `website/docs/guides/inspect-a-run.md` are
+  retaken on the RTX 3090, and the page says which commit they came from.
 - `task ci` exits 0.
 
 ## Scope
 
 - `crates/modelspec-runtime/src/vulkan/dispatch.rs`
 - `crates/modelspec-runtime/src/vulkan/runner.rs`
-- `website/docs`
+- `website/docs/guides/inspect-a-run.md`
 
 ## Out of scope
 
