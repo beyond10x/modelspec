@@ -155,6 +155,18 @@ impl<T: Element> HostTensor<T> {
         Self { shape, data }
     }
 
+    /// Gives the tensor the shape `shape` and lets `fill` rewrite its elements in place, keeping
+    /// both buffers: the shape is copied only when it differs, and `fill` gets the old elements
+    /// and must leave exactly as many as `shape` holds.
+    pub(crate) fn refill(&mut self, shape: &[u64], fill: impl FnOnce(&mut Vec<T>)) {
+        if self.shape != shape {
+            self.shape.clear();
+            self.shape.extend_from_slice(shape);
+        }
+        fill(&mut self.data);
+        debug_assert_eq!(element_count(&self.shape).ok(), Some(self.data.len()));
+    }
+
     pub fn shape(&self) -> &[u64] {
         &self.shape
     }
