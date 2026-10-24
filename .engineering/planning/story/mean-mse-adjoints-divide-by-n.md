@@ -9,7 +9,7 @@ scope:
   path: DESIGN.md
 - confidence: inferred
   path: crates/modelspec-core/tests/adjoint_scale.rs
-revision: 7
+revision: 8
 ---
 # Mean and mse adjoint scale documented as a folded reciprocal
 
@@ -28,7 +28,7 @@ gradient scale of `mse` (folded to a constant at compile time)" in the bit-for-b
 (`OpFDiv`, DESIGN.md:304). So the specification changes to state what the code does.
 
 Outcome: DESIGN.md § 4 states the `mean` and `mse` adjoint scale as a folded reciprocal, and a test
-holds the code to it.
+holds the code to it for both.
 
 ## Acceptance
 
@@ -40,6 +40,9 @@ holds the code to it.
 - **mean-adjoint-bits-n3**: a CPU test differentiates `mean` over 3 elements and asserts that the
   adjoint's bits equal `G * (1.0f32 / 3.0)`. The core crate has no evaluator, so the test reads the
   folded `Scalar` (its bits equal `(1.0f32 / 3.0).to_bits()`) and the `Mul` of `G` by it.
+- **mse-adjoint-bits-n3**: a CPU test differentiates `mse` over 3 elements and asserts that the
+  folded `Scalar`'s bits equal `f32(2/3)`, and that `dY` is `Mul(d, Mul(G, c))` with `d = Sub(Y, T)`,
+  the order at `ops.rs:270-277`.
 - `task ci` exits 0.
 
 ## Scope

@@ -24,7 +24,9 @@ scope:
   path: crates/modelspec-runtime/src/spirv/emit.rs
 - confidence: cited
   path: crates/modelspec-runtime/src/vulkan/runner.rs
-revision: 7
+- confidence: cited
+  path: website/docs/reference/cli.md
+revision: 9
 ---
 # An opt-in fast-math mode: contraction, cooperative matrices and a parallel loss sum
 
@@ -42,7 +44,15 @@ the artifact hash, and the benchmark rule (DESIGN.md:616) runs ModelSpec with `d
 `crates/modelspec-core/src/artifact.rs:247`; `LoadedArtifact`, `artifact.rs:271`). Nothing sets it
 today: `compile` copies it from the cache key (`crates/modelspec-cli/src/compile.rs:184`), and every
 constructor writes `false` (`artifact.rs:1329`, `crates/modelspec-runtime/src/spirv/emit.rs:245`).
-This story sets it with a `--fast-math` flag on `compile` and `train`.
+This story sets it with a `--fast-math` flag on `compile` and `train`. The CLI reference page
+`website/docs/reference/cli.md` is generated from the clap definitions
+(`crates/modelspec-docs/src/main.rs:5`, `:212`) and drift-checked by `task check`, so it is
+regenerated with the flag.
+
+`numerics_class` (`crates/modelspec-runtime/src/vulkan/runner.rs:1068-1080`) decides the class from
+the negotiation and the plan's kernel kinds only. Every M1 training run already prints
+`numerics class: tolerance`, so the printed line cannot show the change; the function itself is
+tested.
 
 The multi-workgroup loss sum rewrites the loss kernel that story:vulkan-loss-slots-written-by-kernel
 makes write the step's loss slot, so this story follows that one.
@@ -62,6 +72,8 @@ loss over more than one workgroup; without the flag nothing changes.
 - **flag-sets-field**: `compile --fast-math` and `train --fast-math` set `fast_math`; a test
   compiles one file with and without the flag, reads `fast_math` back through the artifact reader
   as `true` and `false`, and finds the two artifact hashes different.
+- **cli-reference-regenerated**: `website/docs/reference/cli.md` lists `--fast-math` on `compile`
+  and `train`, and its drift check in `task check` passes.
 - **emission-checked**: a test reads the emitted SPIR-V and finds no `NoContraction` on the matmul
   kernel's `OpFMul` and `OpFAdd` under `fast_math`, and finds it on all of them without it.
 - **cooperative-matrix-emitted**: compiled with `--fast-math` for a `--device-profile` that reports
@@ -73,9 +85,9 @@ loss over more than one workgroup; without the flag nothing changes.
   unchanged.
 - **fast-math-tolerance**: the loss curve under `fast_math` stays within ADR-008's tolerance of the
   CPU oracle.
-- **numerics-class-reported**: `train --backend vulkan --stats --fast-math` prints `numerics class: tolerance`;
-  `numerics_class` (`crates/modelspec-runtime/src/vulkan/runner.rs:1073`) reads the artifact's `fast_math`
-  field, which today it does not.
+- **numerics-class-follows-fast-math**: a unit test calls `numerics_class` with a bit-for-bit
+  negotiation and a plan whose kernels are all matmuls; it returns `BitForBit` when the artifact's
+  `fast_math` is off and `Tolerance` when it is on.
 - **fast-math-throughput** (reported, not gated): `mlp_sweep` at b8192 h4096 and per-matmul GFLOP/s
   from `--profile`, with and without `fast_math`, are recorded in the story's closing evidence.
 - `task ci` exits 0.
@@ -90,6 +102,7 @@ loss over more than one workgroup; without the flag nothing changes.
 - `crates/modelspec-cli/src/compile.rs`
 - `crates/modelspec-cli/src/train.rs`
 - `crates/modelspec-runtime/src/vulkan/runner.rs`
+- `website/docs/reference/cli.md` (generated)
 
 ## Out of scope
 

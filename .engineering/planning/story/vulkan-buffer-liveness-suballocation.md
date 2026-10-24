@@ -9,6 +9,10 @@ relations:
 - informed_by: story:m1-kernel-plan
 - depends_on: story:vulkan-step-counters
 scope:
+- confidence: inferred
+  path: DESIGN.md
+- confidence: cited
+  path: crates/modelspec-cli/tests/golden/linear_regression.kernel.ir
 - confidence: cited
   path: crates/modelspec-cli/tests/golden/mnist_mlp.kernel.ir
 - confidence: inferred
@@ -16,12 +20,18 @@ scope:
 - confidence: cited
   path: crates/modelspec-core/src/schedule.rs
 - confidence: cited
+  path: crates/modelspec-core/tests/adversary_fuse.rs
+- confidence: inferred
+  path: crates/modelspec-observatory/schema/
+- confidence: cited
   path: crates/modelspec-runtime/src/vulkan/memory.rs
 - confidence: cited
   path: crates/modelspec-runtime/src/vulkan/runner.rs
+- confidence: inferred
+  path: spec/domains/artifact.yaml
 - confidence: cited
   path: website/docs/guides/inspect-a-run.md
-revision: 5
+revision: 8
 ---
 # Vulkan buffers reused by liveness and suballocated from few allocations
 
@@ -34,9 +44,17 @@ by one (`crates/modelspec-runtime/src/vulkan/runner.rs:489-494`), and each gets 
 deferred liveness-based reuse to M2 (its line 208). At large batch and width the peak device memory
 is the sum of every intermediate.
 
-Sharing storage changes the `buffer bN` list and the view bindings that the kernel golden
-(`crates/modelspec-cli/tests/golden/mnist_mlp.kernel.ir:1`) and the guide's kernel lines
+Sharing storage changes the `buffer bN` list and the view bindings that the kernel goldens
+(`crates/modelspec-cli/tests/golden/mnist_mlp.kernel.ir:1`;
+`crates/modelspec-cli/tests/golden/linear_regression.kernel.ir:1-9`, checked by
+`crates/modelspec-cli/tests/ir_kernel.rs:17`) and the guide's kernel lines
 (`website/docs/guides/inspect-a-run.md`) pin byte for byte.
+
+The one-buffer-per-value rule is also stated in the specification and the design.
+`spec/domains/artifact.yaml:227` says "each stored value has its own buffer", which
+`crates/modelspec-core/tests/adversary_fuse.rs:297-358` asserts; a change to the specification
+regenerates `crates/modelspec-observatory/schema/` (AGENTS.md:68). DESIGN.md:164 says "one buffer and
+one view per value"; its edit bumps the revision line.
 
 The two counts it reads are the `device allocations` and `peak device bytes` counters of
 story:vulkan-step-counters, which this story follows.
@@ -55,9 +73,12 @@ most `MAX_DEVICE_ALLOCATIONS` device allocations per run.
   sweep point.
 - **verifier-checks-aliasing**: `verify_plan` refuses a plan where two values sharing storage are
   live at once.
-- **goldens-regenerated**: the kernel golden and the guide's kernel lines are regenerated in the
+- **goldens-regenerated**: both kernel goldens and the guide's kernel lines are regenerated in the
   same change, and `crates/modelspec-cli/tests/ir_kernel.rs` and
   `crates/modelspec-cli/tests/adversary_guide_kernel_lines.rs` pass.
+- **buffer-rule-stated**: `spec/domains/artifact.yaml:227` and DESIGN.md:164 state the shared-storage
+  rule, DESIGN.md's revision line is bumped, `crates/modelspec-observatory/schema/` is regenerated,
+  and `adversary_fuse.rs` asserts the new text.
 - `task ci` exits 0.
 
 ## Scope
@@ -67,7 +88,12 @@ most `MAX_DEVICE_ALLOCATIONS` device allocations per run.
 - `crates/modelspec-runtime/src/vulkan/runner.rs`
 - `crates/modelspec-runtime/src/vulkan/memory.rs`
 - `crates/modelspec-cli/tests/golden/mnist_mlp.kernel.ir`
+- `crates/modelspec-cli/tests/golden/linear_regression.kernel.ir`
+- `crates/modelspec-core/tests/adversary_fuse.rs`
 - `website/docs/guides/inspect-a-run.md`
+- `spec/domains/artifact.yaml` (inferred)
+- `crates/modelspec-observatory/schema/` (inferred, regenerated)
+- `DESIGN.md` (inferred)
 
 ## Out of scope
 

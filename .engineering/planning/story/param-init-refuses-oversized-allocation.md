@@ -11,7 +11,9 @@ scope:
   path: crates/modelspec-runtime/src/train/data.rs
 - confidence: cited
   path: crates/modelspec-runtime/src/train/init.rs
-revision: 4
+- confidence: inferred
+  path: website/docs/reference/diagnostics.md
+revision: 6
 ---
 # Parameter init refuses an allocation it cannot make
 
@@ -39,6 +41,10 @@ grant. An input of `Tensor<f32,[2305843009213693952, 2]>` has 2^62 elements, whi
 cannot reach such a count, because `dims` stops it at 2^32 elements, so its fallible path is tested
 at the reservation.
 
+The diagnostic reference page `website/docs/reference/diagnostics.md` is generated from the `E-`
+code constants each stage declares (`crates/modelspec-docs/src/diagnostics.rs:1-7`), so a new code
+regenerates it.
+
 Outcome: a parameter or input whose storage cannot be reserved is a named diagnostic and a non-zero
 exit, not a panic or an abort.
 
@@ -53,7 +59,8 @@ exit, not a panic or an abort.
   the first element is drawn, and a failed reservation maps to the named code. A unit test of that
   reservation with `usize::MAX / 2` elements of `f32` gets the code: the byte size overflows
   `isize::MAX`, so the reservation fails without asking the operating system.
-- DESIGN.md § 8.1 names the code.
+- DESIGN.md § 8.1 names the code, and `website/docs/reference/diagnostics.md` is regenerated with it
+  and passes its drift check.
 - `task ci` exits 0.
 
 ## Scope
@@ -61,6 +68,7 @@ exit, not a panic or an abort.
 - `crates/modelspec-runtime/src/train/init.rs`
 - `crates/modelspec-runtime/src/train/data.rs`
 - `DESIGN.md` (§ 8.1)
+- `website/docs/reference/diagnostics.md` (inferred, generated)
 
 ## Out of scope
 
