@@ -9,6 +9,10 @@ history.
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-10-24
+
+Three performance stories toward the batch-8192 goal, each verified bit-equal to the plan before it: a register-blocked matmul tile for large outputs (64×128 at 8×8 per invocation, 128 invocations), the opt-in `--fast-math` of ADR-008 (contraction only: the kernels drop `NoContraction`, the run is compared within tolerance, the deterministic figure stays the headline), and matmuls that read a transposed operand in place so the step dispatches no transpose. `mlp_sweep` on the RTX 3090 at batch 8192, hidden 4096: 32,810.6 µs per step in 0.7.1 → 12,008.4 µs deterministic and 9,220.4 µs under `--fast-math` (PyTorch eager CUDA 7,290.5 µs; ratio 4.50 → 1.65 and 1.27). At batch 1000, hidden 1024 ModelSpec runs 483.5 µs against PyTorch's 555.1. The 12 sweep points are re-measured from this release's clean build and recorded in `benchmarks/runs.yaml` (`sweep-b<B>-h<H>-modelspec-vulkan-0.9.0`). ADR-007's MNIST accuracy and final-weight conditions were not measured.
+
 ### Added
 
 - `compile --fast-math` and `train --backend vulkan --fast-math` set `fast_math` in the manifest and every kernel cache key (ADR-008): the artifact hash changes, the reader refuses a key whose `fast_math` is not the manifest's with E-ARTIFACT-003, the kernels drop every `NoContraction` and nothing else changes in them, the run's numerics class is `tolerance`, and `--fast-math` with `--backend cpu` is a usage error. `mlp_sweep --fast-math` on the RTX 3090 (medians of 3 runs, µs per step, deterministic figure first): b8192 h4096 13,794.6 → 10,648.6 (PyTorch eager CUDA 7,290.5), b8192 h1024 3,751.8 → 2,747.6 (1,932.1), b1000 h4096 1,882.5 → 1,373.0 (994.7); forward matmul 9,569 → 12,170 GFLOP/s; the tolerance run on `examples/mnist_mlp.mspec` and the b8192 h4096 source stays within 0.2 % of ADR-008's bound and two `fast_math` runs are bit-equal (`benchmarks/raw/2026-10-24-fastmath/`); DESIGN.md revision 0.32 (story:fast-math-mode)
@@ -187,7 +191,8 @@ with `E-TARGET-001`.
 - `examples/linear_regression.mspec` checks and trains; `task check-examples` runs `modelspec check` on it
 - ESS contracts for the compiled artifact, checkpoint, device profile and training run in `spec/`
 
-[Unreleased]: https://github.com/beyond10x/modelspec/compare/0.8.0...HEAD
+[Unreleased]: https://github.com/beyond10x/modelspec/compare/0.9.0...HEAD
+[0.9.0]: https://github.com/beyond10x/modelspec/compare/0.8.0...0.9.0
 [0.8.0]: https://github.com/beyond10x/modelspec/compare/0.7.1...0.8.0
 [0.7.1]: https://github.com/beyond10x/modelspec/compare/0.7.0...0.7.1
 [0.7.0]: https://github.com/beyond10x/modelspec/compare/0.6.0...0.7.0

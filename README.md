@@ -5,7 +5,7 @@ You write the model, the loss and the optimizer in a `.mspec` file; the compiler
 training step, derives its gradients, optimizes the graph and runs it on a GPU through Vulkan and
 SPIR-V. No Python, PyTorch or CUDA.
 
-**Status:** M1 in progress; the latest release is 0.8.0. `modelspec check`, `modelspec ir --stage tensor|training` and `modelspec train <file> --backend cpu` work on the M0 subset; the example below trains on the CPU reference. Since 0.4.0, `modelspec train <file> --backend vulkan` trains on one Vulkan device within the GPU tolerance of the CPU run.
+**Status:** M1 in progress; the latest release is 0.9.0. `modelspec check`, `modelspec ir --stage tensor|training` and `modelspec train <file> --backend cpu` work on the M0 subset; the example below trains on the CPU reference. Since 0.4.0, `modelspec train <file> --backend vulkan` trains on one Vulkan device within the GPU tolerance of the CPU run.
 
 **Releases:** [GitHub Releases](https://github.com/beyond10x/modelspec/releases) carry the `modelspec` binary for Linux x86_64 and its SHA-256 checksum; [CHANGELOG.md](CHANGELOG.md) lists what each version changed.
 
