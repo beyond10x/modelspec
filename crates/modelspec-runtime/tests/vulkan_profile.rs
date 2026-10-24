@@ -3,11 +3,14 @@
 //! host wait, summed per dispatch site.
 //!
 //! The first tests need no device: they feed [`timings`] timestamps by hand and check what it
-//! sums, and check the lines [`Profile::report`] prints. The last test is ignored by default
-//! because it creates a Vulkan instance, which `task ci` never does; run it with
+//! sums, and check the lines [`Profile::report`] and the `--stats` lines of [`RunStats`] print.
+//! The last two tests are ignored by default because they create a Vulkan instance, which
+//! `task ci` never does; run them with
 //! `MODELSPEC_VK_VALIDATION=1 cargo test --release -p modelspec-runtime --features vulkan --test vulkan_profile -- --ignored`;
-//! every message of the Khronos validation layer fails it.
-//! It trains `examples/mnist_mlp.mspec` with and without the profile and checks
+//! every message of the Khronos validation layer fails them.
+//! One trains `examples/linear_regression.mspec` and reads its barriers per step, device
+//! allocations and peak device bytes, each known from its plan (story:vulkan-step-counters).
+//! The other trains `examples/mnist_mlp.mspec` with and without the profile and checks
 //!
 //! - one site per Dispatch step of the step plan, `calls` the steps, and one per Dispatch step
 //!   the final loss evaluation records, `calls` 1 (acceptance 1);
@@ -23,6 +26,7 @@ use std::time::{Duration, Instant};
 use modelspec_core::artifact::Backend;
 use modelspec_core::compile::{compile_artifact, compile_training};
 use modelspec_core::ir::kernel::{DispatchCount, KernelKind, KernelModuleId, PlanOp};
+use modelspec_runtime::vulkan::Device;
 use modelspec_runtime::vulkan::negotiate::{NumericsClass, negotiate};
 use modelspec_runtime::vulkan::profile::{
     Clock, PlanName, Profile, Site, Timings, WARMUP_STEPS, timings,
@@ -31,6 +35,7 @@ use modelspec_runtime::vulkan::runner::{RunStats, train, train_profiled};
 use modelspec_runtime::vulkan::{VALIDATION_ENV, Vulkan};
 
 const MNIST_MLP: &str = "examples/mnist_mlp.mspec";
+const LINEAR_REGRESSION: &str = "examples/linear_regression.mspec";
 
 /// The count of a dispatch of 48 FLOP over 120 bytes.
 const COUNTED: DispatchCount = DispatchCount::Counted {
@@ -55,11 +60,36 @@ fn stats() -> RunStats {
         submits: 1,
         dispatches: 7,
         dispatches_per_step: 2,
+        barriers_per_step: 4,
         bytes_uploaded: 40,
         bytes_downloaded: 28,
+        device_allocations: 5,
+        peak_device_bytes: 1024,
         class: NumericsClass::Tolerance,
         elapsed: Duration::from_micros(90),
     }
+}
+
+/// story:vulkan-step-counters: `--stats` prints one `<name>: <value>` line per counter, the
+/// barriers of one step after its dispatches and the device allocations and their peak bytes after
+/// the bytes copied.
+#[test]
+fn the_stats_lines_name_the_barriers_per_step_the_device_allocations_and_the_peak_bytes() {
+    assert_eq!(
+        stats().to_string(),
+        "steps: 3\n\
+         host waits: 1\n\
+         submits: 1\n\
+         dispatches: 7\n\
+         dispatches per step: 2\n\
+         barriers per step: 4\n\
+         bytes uploaded: 40\n\
+         bytes downloaded: 28\n\
+         device allocations: 5\n\
+         peak device bytes: 1024\n\
+         numerics class: tolerance\n\
+         us per step: 30.000\n"
+    );
 }
 
 /// Two step sites (positions 0 and 2, the second sharing the first's module and uncounted) and
@@ -188,8 +218,11 @@ fn the_report_prints_one_line_per_site_then_the_counters() {
              profile dispatches 7\n\
              profile submits 1\n\
              profile host_waits 1\n\
+             profile barriers_per_step 4\n\
              profile bytes_uploaded 40\n\
              profile bytes_downloaded 28\n\
+             profile device_allocations 5\n\
+             profile peak_device_bytes 1024\n\
              profile pipeline_creation_us 1500.000\n\
              profile compile_us 2250.500\n\
              profile steady_us_per_step unavailable\n\
@@ -212,8 +245,11 @@ fn without_timestamp_queries_the_report_says_so_and_still_prints_the_counters() 
          profile dispatches 7\n\
          profile submits 1\n\
          profile host_waits 1\n\
+         profile barriers_per_step 4\n\
          profile bytes_uploaded 40\n\
          profile bytes_downloaded 28\n\
+         profile device_allocations 5\n\
+         profile peak_device_bytes 1024\n\
          profile pipeline_creation_us 1.000\n\
          profile compile_us 2.000\n\
          profile steady_us_per_step unavailable\n\
@@ -492,10 +528,101 @@ fn mnist_mlp_profile_times_every_dispatch_site_without_changing_the_run() {
     assert_eq!(counter(&report, "bytes_downloaded"), "210468");
     assert_eq!(stats.bytes_uploaded, 520_864);
     assert_eq!(stats.bytes_downloaded, 210_468);
+    // story:vulkan-step-counters: the three counter lines are the run's, the same with and
+    // without the profile.
+    assert_eq!(stats.barriers_per_step, plain_stats.barriers_per_step);
+    assert_eq!(stats.device_allocations, plain_stats.device_allocations);
+    assert_eq!(stats.peak_device_bytes, plain_stats.peak_device_bytes);
+    assert_eq!(
+        counter(&report, "barriers_per_step"),
+        stats.barriers_per_step.to_string()
+    );
+    assert_eq!(
+        counter(&report, "device_allocations"),
+        (plan.buffers.len() as u64 + 3).to_string()
+    );
+    assert_eq!(
+        counter(&report, "peak_device_bytes"),
+        stats.peak_device_bytes.to_string()
+    );
     for name in ["pipeline_creation_us", "compile_us", "steady_us_per_step"] {
         let value: f64 = counter(&report, name)
             .parse()
             .unwrap_or_else(|_| panic!("{name} is a number in\n{report}"));
         assert!(value > 0.0, "{name} {value}");
     }
+}
+
+/// The allocation sizes the device gives a device-local buffer of each size of `device_local`
+/// and a staging buffer of each size of `staging`, summed; every buffer is freed on return.
+fn allocation_bytes(device: &Device<'_>, device_local: &[u64], staging: &[u64]) -> u64 {
+    let local = device_local.iter().map(|&bytes| {
+        device
+            .device_local_buffer(bytes)
+            .expect("the device-local buffer is made")
+            .allocation_bytes()
+    });
+    let mapped = staging.iter().map(|&bytes| {
+        device
+            .staging_buffer(bytes)
+            .expect("the staging buffer is made")
+            .allocation_bytes()
+    });
+    local.chain(mapped).sum()
+}
+
+/// story:vulkan-step-counters: the counters of a run of `linear_regression`, each known from its
+/// plan (`crates/modelspec-cli/tests/golden/linear_regression.kernel.ir`). A step records the 5
+/// barriers of the step plan and the 2 around the copy of its loss: 7. The run allocates one
+/// device-local buffer per plan buffer, 9, the loss buffer and two staging buffers, one for the
+/// upload and one for the read-back: 12. All 12 are live from setup to the end, so the peak is
+/// the sum of their allocation sizes, which the device may round up from the 4,620 bytes asked
+/// for.
+#[test]
+#[ignore = "needs a Vulkan device"]
+fn linear_regression_counts_its_barriers_allocations_and_peak_device_bytes() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join(LINEAR_REGRESSION);
+    let source = std::fs::read_to_string(&path).expect("the example reads");
+    let compiled = compile_training(LINEAR_REGRESSION, &source).expect("the example compiles");
+    let artifact = compile_artifact(LINEAR_REGRESSION, &source, Backend::Vulkan)
+        .expect("the example compiles for Vulkan");
+    let plan = &artifact.execution;
+    let steps = compiled.config.steps;
+    assert_eq!(steps, 500);
+    let ops = |op: PlanOp| plan.step.iter().filter(|step| step.op == op).count();
+    assert_eq!((ops(PlanOp::Barrier), ops(PlanOp::Copy)), (5, 0));
+    assert_eq!(plan.buffers.len(), 9);
+    let param_bytes: u64 = plan.parameters.iter().map(|p| p.views[0].size_bytes).sum();
+    let data_bytes: u64 = plan.data.iter().map(|d| d.view.size_bytes).sum();
+    let loss_bytes = 4 * (steps + 1);
+    let device_local: Vec<u64> = plan.buffers.iter().copied().chain([loss_bytes]).collect();
+    let staging = [param_bytes + data_bytes, param_bytes + loss_bytes];
+    let asked: u64 = device_local.iter().chain(&staging).sum();
+    assert_eq!(asked, 4620);
+
+    let vulkan = Vulkan::load().expect("the Vulkan loader opens");
+    let candidates = vulkan.candidates().expect("the devices are probed");
+    let device_profile = candidates[0].profile.clone();
+    let negotiated = negotiate(&device_profile).expect("device 0 negotiates");
+    let device = vulkan
+        .create_device(0, &negotiated)
+        .expect("device 0 opens");
+    let allocated = allocation_bytes(&device, &device_local, &staging);
+    let (_, stats) = train(&device, &device_profile, &negotiated, &compiled, &artifact)
+        .expect("the run finishes");
+    drop(device);
+    let messages = vulkan.take_validation_messages();
+    assert!(
+        messages.is_empty(),
+        "{} validation messages: {messages:#?}",
+        messages.len()
+    );
+    eprintln!("{LINEAR_REGRESSION}: {asked} bytes asked for, {allocated} allocated\n{stats}");
+
+    assert_eq!(stats.barriers_per_step, 7);
+    assert_eq!(stats.device_allocations, 12);
+    assert!(allocated >= asked, "{allocated} < {asked}");
+    assert_eq!(stats.peak_device_bytes, allocated);
 }

@@ -28,13 +28,15 @@
 //! on the device `--device <index>` names, in the loader's enumeration order
 //! ([`modelspec_runtime::vulkan::runner`]): the host waits for the device once after the last
 //! step, and once after each step `--checkpoint-every` writes a checkpoint at, whose parameters it
-//! reads back then and no other step. `--stats` prints the run's counters on stderr after it (host waits, submits,
-//! dispatches, bytes up and down, the numerics class, microseconds per step). `--profile` times
+//! reads back then and no other step. `--stats` prints the run's counters on stderr after it
+//! (host waits, submits, dispatches, dispatches and barriers per step, bytes up and down, device
+//! allocations, peak device bytes, the numerics class, microseconds per step). `--profile` times
 //! every dispatch with GPU timestamp queries, read back after the one host wait, and prints on
 //! stderr after it one `profile dispatch <plan> <position> <kernel_module_id> <entry> calls <n>
 //! total_us <t> mean_us <m> flop <f> bytes <b> gflop_per_s <g> gb_per_s <h>` line per dispatch
-//! site (`uncounted` in place of the last four for a step without a count), then the counters,
-//! the compile and pipeline creation times, the steady-state microseconds per step and a
+//! site (`uncounted` in place of the last four for a step without a count), then the counters
+//! (barriers per step, device allocations and peak device bytes among them), the compile and
+//! pipeline creation times, the steady-state microseconds per step and a
 //! `profile step_total` line, the step's counts over that time
 //! ([`modelspec_runtime::vulkan::profile`]); stdout is unchanged. The file is
 //! compiled before the loader is opened; then a missing loader exits 1 with `E-TARGET-002`, no
@@ -188,15 +190,17 @@ pub struct Args {
     /// lists them, instead of device 0.
     #[arg(long, value_name = "INDEX")]
     pub device: Option<usize>,
-    /// With --backend vulkan, print the run's host waits, submits, dispatches, bytes copied up
-    /// and down, numerics class and microseconds per step on stderr after it.
+    /// With --backend vulkan, print the run's host waits, submits, dispatches, dispatches and
+    /// barriers per step, bytes copied up and down, device allocations, peak device bytes,
+    /// numerics class and microseconds per step on stderr after it.
     #[arg(long)]
     pub stats: bool,
     /// With --backend vulkan, time every dispatch with GPU timestamp queries and print one
     /// `profile dispatch` line per dispatch site, with its FLOP, bytes, achieved GFLOP/s and
-    /// GB/s, then the run's counters, compile and pipeline creation time, steady-state
-    /// microseconds per step and the step's total FLOP, bytes, GFLOP/s and GB/s on stderr after
-    /// it.
+    /// GB/s, then the run's counters (dispatches, submits, host waits, barriers per step, bytes
+    /// copied up and down, device allocations, peak device bytes), compile and pipeline creation
+    /// time, steady-state microseconds per step and the step's total FLOP, bytes, GFLOP/s and
+    /// GB/s on stderr after it.
     #[arg(long)]
     pub profile: bool,
 }

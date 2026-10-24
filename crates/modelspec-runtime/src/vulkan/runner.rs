@@ -52,12 +52,12 @@ use modelspec_core::ir::tensor::{Dim, ParamId};
 use thiserror::Error;
 
 use super::dispatch::{Bound, DescriptorArena, Recording, TimestampPool};
-use super::memory::Buffer;
+use super::memory::{Buffer, MemorySpan};
 use super::negotiate::{Negotiated, NumericsClass, negotiate};
 use super::pipeline::Pipeline;
 use super::profile::{PlanName, Profile, Site, timings};
 use super::select::select_device;
-use super::sync::Barrier;
+use super::sync::{Barrier, recorded_barriers};
 use super::{Device, ExecError, Vulkan};
 use crate::cpu::HostTensor;
 use crate::spirv::emit::{EmitError, emit_kernels};
@@ -83,10 +83,16 @@ pub struct RunStats {
     pub dispatches: u64,
     /// The dispatches one training step records.
     pub dispatches_per_step: u64,
+    /// The pipeline barriers one training step records.
+    pub barriers_per_step: u64,
     /// The bytes copied from staging buffers to device-local ones.
     pub bytes_uploaded: u64,
     /// The bytes copied from device-local buffers to staging ones.
     pub bytes_downloaded: u64,
+    /// The `vkAllocateMemory` calls of the run, one per buffer it makes.
+    pub device_allocations: u64,
+    /// The largest sum of the allocation sizes of the run's live device memory, in bytes.
+    pub peak_device_bytes: u64,
     /// The comparison with the CPU run the results get (DESIGN.md § 5.4).
     pub class: NumericsClass,
     /// From the first submit to the end of the last wait, the checkpoints written on the way
@@ -111,8 +117,11 @@ impl fmt::Display for RunStats {
         writeln!(f, "submits: {}", self.submits)?;
         writeln!(f, "dispatches: {}", self.dispatches)?;
         writeln!(f, "dispatches per step: {}", self.dispatches_per_step)?;
+        writeln!(f, "barriers per step: {}", self.barriers_per_step)?;
         writeln!(f, "bytes uploaded: {}", self.bytes_uploaded)?;
         writeln!(f, "bytes downloaded: {}", self.bytes_downloaded)?;
+        writeln!(f, "device allocations: {}", self.device_allocations)?;
+        writeln!(f, "peak device bytes: {}", self.peak_device_bytes)?;
         writeln!(f, "numerics class: {}", self.class)?;
         writeln!(f, "us per step: {:.3}", self.us_per_step())
     }
@@ -468,6 +477,8 @@ fn execute(
     };
     stops.push(steps);
 
+    // The device memory of the run: every buffer it makes is made after this.
+    let memory = MemorySpan::start();
     let emitting = Instant::now();
     let modules = emit_kernels(artifact, profile)?;
     let emitted = emitting.elapsed();
@@ -597,17 +608,24 @@ fn execute(
     let uploaded_before = device.bytes_uploaded();
     let downloaded_before = device.bytes_downloaded();
     let mut dispatches_per_step = 0;
+    let mut barriers_per_step = 0;
     let mut first_submit: Option<Instant> = None;
     let loss = buffer(&buffers, &plan.loss_view)?;
     // The counters of the first `ran` steps, from the first submit to the last wait.
-    let count = |ran: u64, dispatches_per_step: u64, first_submit: Option<Instant>| RunStats {
+    let count = |ran: u64,
+                 dispatches_per_step: u64,
+                 barriers_per_step: u64,
+                 first_submit: Option<Instant>| RunStats {
         steps: ran,
         host_waits: device.host_waits() - waits_before,
         submits: device.submits() - submits_before,
         dispatches: device.dispatches() - dispatches_before,
         dispatches_per_step,
+        barriers_per_step,
         bytes_uploaded: device.bytes_uploaded() - uploaded_before,
         bytes_downloaded: device.bytes_downloaded() - downloaded_before,
+        device_allocations: memory.allocations(),
+        peak_device_bytes: memory.peak_bytes(),
         class,
         elapsed: first_submit
             .expect("a run submits at least one command buffer")
@@ -693,11 +711,13 @@ fn execute(
                     }
                 }
                 let before = recording.dispatches();
+                let barriers_before = recorded_barriers();
                 record(&mut recording, &actions, &buffers, stamps.as_mut())?;
                 dispatches_per_step = recording.dispatches() - before;
                 recording.barrier(Barrier::ComputeToTransfer);
                 recording.copy_region(loss, plan.loss_view.offset, &losses, 4 * k, 4)?;
                 recording.barrier(Barrier::TransferToCompute);
+                barriers_per_step = recorded_barriers() - barriers_before;
             }
             if last {
                 record(
@@ -768,7 +788,7 @@ fn execute(
                 };
                 return Err(VulkanRunError::NonFinite(Box::new(DivergedOnDevice {
                     diverged: Diverged { diagnostic, run },
-                    stats: count(stop, dispatches_per_step, first_submit),
+                    stats: count(stop, dispatches_per_step, barriers_per_step, first_submit),
                     profile: profile_of(stop, Some((chunk, next_query)))?,
                 })));
             }
@@ -777,7 +797,7 @@ fn execute(
         last_from = from;
         from = stop;
     }
-    let stats = count(steps, dispatches_per_step, first_submit);
+    let stats = count(steps, dispatches_per_step, barriers_per_step, first_submit);
     let profiled = profile_of(steps, None)?;
 
     let read = download.read_f32()?;

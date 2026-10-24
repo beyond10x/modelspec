@@ -257,8 +257,15 @@ impl Profile {
         let _ = writeln!(out, "profile dispatches {}", stats.dispatches);
         let _ = writeln!(out, "profile submits {}", stats.submits);
         let _ = writeln!(out, "profile host_waits {}", stats.host_waits);
+        let _ = writeln!(out, "profile barriers_per_step {}", stats.barriers_per_step);
         let _ = writeln!(out, "profile bytes_uploaded {}", stats.bytes_uploaded);
         let _ = writeln!(out, "profile bytes_downloaded {}", stats.bytes_downloaded);
+        let _ = writeln!(
+            out,
+            "profile device_allocations {}",
+            stats.device_allocations
+        );
+        let _ = writeln!(out, "profile peak_device_bytes {}", stats.peak_device_bytes);
         let _ = writeln!(
             out,
             "profile pipeline_creation_us {:.3}",
