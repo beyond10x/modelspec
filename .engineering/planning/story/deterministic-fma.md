@@ -2,15 +2,16 @@
 format: aep.planning-md/3
 id: story:deterministic-fma
 kind: story
-status: active
+status: implemented
 title: Deterministic kernels use an explicit fused multiply-add (ADR-009)
 relations:
 - serves: vision:modelspec
 - depends_on: story:matmul-tile-from-device-invocation-limit
-revision: 3
+revision: 4
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-24T18:58:59Z", actor: "human:timo", revision: 2}
 - {from: "proposed", to: "active", at: "2026-10-24T18:58:59Z", actor: "human:timo", revision: 3}
+- {from: "active", to: "implemented", at: "2026-10-24T21:59:14Z", actor: "human:timo", revision: 4, decided_on: {"recorded":{"test_result":1,"review_outcome":1}}}
 ---
 # Deterministic kernels use an explicit fused multiply-add (ADR-009)
 

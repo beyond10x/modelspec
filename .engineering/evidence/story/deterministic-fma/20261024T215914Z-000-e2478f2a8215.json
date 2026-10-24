@@ -1,0 +1,13 @@
+{
+  "at": "2026-10-24T21:59:14Z",
+  "actor": "human:timo",
+  "artifact": "story:deterministic-fma",
+  "kind": "story",
+  "revision": 3,
+  "change": {
+    "change": "evidence",
+    "kind": "test_result",
+    "source": "task ci",
+    "reference": "f9ba03f49938875a8dbc8bd803b347ebe41f2ffb"
+  }
+}
