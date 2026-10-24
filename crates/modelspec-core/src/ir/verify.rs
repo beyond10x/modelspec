@@ -86,6 +86,39 @@ pub enum VerifyError {
     UndefinedOutput { output: ValueId },
 }
 
+/// Per-thread counts of the verifier's work, for the tests of a runtime that verifies once per
+/// run rather than once per step (story:cpu-prepared-training-step). Each count only grows.
+#[doc(hidden)]
+pub mod counters {
+    use std::cell::Cell;
+    use std::thread::LocalKey;
+
+    thread_local! {
+        pub(super) static VERIFY: Cell<u64> = const { Cell::new(0) };
+        pub(super) static VERIFY_STEP: Cell<u64> = const { Cell::new(0) };
+        pub(super) static EFFECTS_IN_ORDER: Cell<u64> = const { Cell::new(0) };
+    }
+
+    pub(super) fn bump(counter: &'static LocalKey<Cell<u64>>) {
+        counter.set(counter.get() + 1);
+    }
+
+    /// Calls of [`super::verify`] on this thread.
+    pub fn verify() -> u64 {
+        VERIFY.get()
+    }
+
+    /// Calls of [`super::verify_step`] or [`super::verify_step_writes`] on this thread.
+    pub fn verify_step() -> u64 {
+        VERIFY_STEP.get()
+    }
+
+    /// Effect orders the step verifier built on this thread: one per step whose graph verified.
+    pub fn effects_in_order() -> u64 {
+        EFFECTS_IN_ORDER.get()
+    }
+}
+
 /// Checks every Tensor IR invariant of `program`, reporting the first failure.
 ///
 /// Every invariant [`crate::ir::tensor::TensorProgramBuilder`] enforces is checked here too, so a
@@ -96,6 +129,7 @@ pub enum VerifyError {
 /// type, registry rule), then the input list (exactly the Input nodes, each once, in node order,
 /// names unique) and the output list.
 pub fn verify(program: &TensorProgram) -> Result<(), VerifyError> {
+    counters::bump(&counters::VERIFY);
     let mut paths: BTreeMap<&str, ParamId> = BTreeMap::new();
     for (&id, param) in &program.params {
         check_concrete(Site::Param(id), &param.ty)?;
@@ -521,6 +555,16 @@ fn check_graph(training: &TrainingProgram, optimizer: bool) -> Result<(), Traini
 /// carried by its parameter's update and every update carrying one; no write ordered before the
 /// last read of the old version; and every write producing exactly the next version.
 pub fn verify_step(step: &TrainingStep) -> Result<(), TrainingVerifyError> {
+    verify_step_writes(step).map(|_| ())
+}
+
+/// [`verify_step`], returning on success each write's parameter and the value it writes, in
+/// effect-token order: the order the verifier builds anyway, for a runtime that applies the
+/// writes without ordering the effects again.
+pub fn verify_step_writes(
+    step: &TrainingStep,
+) -> Result<Vec<(ParamId, ValueId)>, TrainingVerifyError> {
+    counters::bump(&counters::VERIFY_STEP);
     let training = &step.training;
     let program = &training.program;
     let optimizer = &step.optimizer;
@@ -624,8 +668,9 @@ pub fn verify_step(step: &TrainingStep) -> Result<(), TrainingVerifyError> {
     check_effects(step)
 }
 
-/// The legal effects of DESIGN.md § 3.2, on a step whose graph and updates verify.
-fn check_effects(step: &TrainingStep) -> Result<(), TrainingVerifyError> {
+/// The legal effects of DESIGN.md § 3.2, on a step whose graph and updates verify; on success,
+/// the writes in effect-token order ([`verify_step_writes`]).
+fn check_effects(step: &TrainingStep) -> Result<Vec<(ParamId, ValueId)>, TrainingVerifyError> {
     let program = &step.training.program;
     let optimizer = &step.optimizer;
 
@@ -652,6 +697,7 @@ fn check_effects(step: &TrainingStep) -> Result<(), TrainingVerifyError> {
     }
 
     let effects = optimizer.effects_in_order();
+    counters::bump(&counters::EFFECTS_IN_ORDER);
     for pair in effects.windows(2) {
         let ((first, a), (second, b)) = (pair[0], pair[1]);
         if a.token == b.token {
@@ -744,7 +790,11 @@ fn check_effects(step: &TrainingStep) -> Result<(), TrainingVerifyError> {
             });
         }
     }
-    Ok(())
+    Ok(effects
+        .into_iter()
+        .filter(|(_, effect)| effect.access == Access::Write)
+        .map(|(value, effect)| (effect.param, value))
+        .collect())
 }
 
 /// The parameters `value` reads, through its operands, in `ParamId` order.
@@ -1985,5 +2035,34 @@ mod tests {
             missing.is_empty(),
             "never found {missing:?}; found {seen:?}"
         );
+    }
+
+    /// `verify_step_writes` returns the writes of `effects_in_order`, in token order, and counts
+    /// one step verification, one effect order and one program verification.
+    #[test]
+    fn verify_step_writes_returns_the_writes_in_token_order() {
+        let step = crate::compile::compile_training("linear_regression.mspec", EXAMPLE)
+            .expect("the example compiles")
+            .training;
+        let expected: Vec<(ParamId, ValueId)> = step
+            .optimizer
+            .effects_in_order()
+            .into_iter()
+            .filter(|(_, effect)| effect.access == Access::Write)
+            .map(|(value, effect)| (effect.param, value))
+            .collect();
+        assert!(!expected.is_empty());
+        let before = [
+            counters::verify(),
+            counters::verify_step(),
+            counters::effects_in_order(),
+        ];
+        assert_eq!(verify_step_writes(&step), Ok(expected));
+        let after = [
+            counters::verify(),
+            counters::verify_step(),
+            counters::effects_in_order(),
+        ];
+        assert_eq!(after, [before[0] + 1, before[1] + 1, before[2] + 1]);
     }
 }
