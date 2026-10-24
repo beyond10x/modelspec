@@ -1,0 +1,14 @@
+{
+  "at": "2026-10-24T21:51:18Z",
+  "actor": "human:timo",
+  "artifact": "story:deterministic-fma",
+  "kind": "story",
+  "revision": 3,
+  "change": {
+    "change": "evidence",
+    "kind": "review_outcome",
+    "source": "fix pass 1: ADR-009 text corrected, re-recorded files listed, 8 adversary cases kept",
+    "review": "review-result:adversary-fma-pass-1",
+    "outcome": "fixed"
+  }
+}
