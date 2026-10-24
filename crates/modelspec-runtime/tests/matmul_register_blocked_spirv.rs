@@ -1,9 +1,10 @@
 //! `story:matmul-shape-aware-tiling`, acceptance `register-blocked` and `same-bits`, without a
 //! device: the module of a register-blocked matmul passes `spirv-val --target-env vulkan1.2`,
 //! runs its tile's workgroup size, stages exactly its tile's workgroup memory, keeps one
-//! accumulator chain per output element of its block (`rows · cols_per_invocation` chains of
-//! `2k - 1` operations over the tiles it emits straight), every `OpFMul` and `OpFAdd` decorated
-//! `NoContraction`, and is no larger at a long `k` than at a short one but for the constants
+//! accumulator chain per output element of its block (`rows · cols_per_invocation` chains of one
+//! `OpFMul` and `k - 1` `GLSL.std.450 Fma` over the tiles it emits straight, DESIGN.md § 12
+//! ADR-009), every `OpFMul`, `OpFAdd` and `Fma` decorated `NoContraction`, and is no larger at a
+//! long `k` than at a short one but for the constants
 //! that depend on `k`. Needs `spirv-val` on the path and fails, not skips, without it.
 #![cfg(feature = "vulkan")]
 
@@ -106,14 +107,15 @@ fn a_register_blocked_matmul_module_validates_with_one_uncontracted_chain_per_el
             let emitted_k = k - looped.saturating_sub(LOOP_BODY) * u64::from(tile.depth);
             let chains = u64::from(tile.rows * tile.cols_per_invocation);
             let (missing, all) = common::words::uncontracted_arithmetic(&module);
+            let (missing_fma, fma) = common::words::uncontracted_fma(&module);
             assert_eq!(
-                all as u64,
-                chains * (2 * emitted_k - 1),
-                "{what}: one chain of products and sums per output element of the block"
+                (all as u64, fma as u64),
+                (chains, chains * (emitted_k - 1)),
+                "{what}: one chain of a product and fused products per output element of the block"
             );
             assert!(
-                missing.is_empty(),
-                "{what}: no NoContraction on {missing:?}"
+                missing.is_empty() && missing_fma.is_empty(),
+                "{what}: no NoContraction on {missing:?} {missing_fma:?}"
             );
             total += 1;
         }

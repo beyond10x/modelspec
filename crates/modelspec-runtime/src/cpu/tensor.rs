@@ -37,10 +37,19 @@ pub trait Element:
     /// An element count in this type, rounded to nearest.
     fn from_count(count: u64) -> Self;
 
+    /// `self * b + c`, the product fused into the sum: for `f32` and `f64` the IEEE 754 fused
+    /// multiply-add, rounded once, as the GPU's `Fma` (DESIGN.md § 12 ADR-009). The interpreter
+    /// computes every product after the first of a sum this way. The default, for a type with
+    /// no fused operation, rounds the product and then the sum.
+    fn mul_add(self, b: Self, c: Self) -> Self {
+        self * b + c
+    }
+
     /// The AVX2 `matmul` kernel for this type ([`Kernel::Avx2`](super::matmul::Kernel::Avx2)):
     /// writes `out`, `m * n` elements, and returns true; `m`, `k` and `n` are nonzero. False,
-    /// writing nothing, where the type has no such kernel or the CPU no AVX2, which is the default.
-    /// Panics when `m * k`, `k * n` or `m * n` overflows `usize` or a slice is not that long.
+    /// writing nothing, where the type has no such kernel or the CPU no AVX2 or no FMA, which is
+    /// the default. Panics when `m * k`, `k * n` or `m * n` overflows `usize` or a slice is not
+    /// that long.
     #[doc(hidden)]
     fn matmul_avx2(
         out: &mut [Self],
@@ -68,6 +77,10 @@ impl Element for f32 {
         count as f32
     }
 
+    fn mul_add(self, b: Self, c: Self) -> Self {
+        f32::mul_add(self, b, c)
+    }
+
     #[cfg(target_arch = "x86_64")]
     fn matmul_avx2(
         out: &mut [Self],
@@ -91,6 +104,10 @@ impl Element for f64 {
 
     fn from_count(count: u64) -> Self {
         count as f64
+    }
+
+    fn mul_add(self, b: Self, c: Self) -> Self {
+        f64::mul_add(self, b, c)
     }
 
     #[cfg(target_arch = "x86_64")]

@@ -117,16 +117,16 @@ fn mse_divides_and_does_not_multiply_by_a_reciprocal() {
     assert_eq!(got.to_bits(), 4_196_101.5f32.to_bits(), "got {got}");
 }
 
-/// DESIGN.md § 2.2: every product rounded to the element type, no fused multiply-add, which
-/// includes the squares of `mse`. `d = [2^-12, 2^-12, 1, 1 + 2^-12]`: the partial sum before the
-/// last term is `1 + 2^-23`; the last square `1 + 2^-11 + 2^-24` rounds to `1 + 2^-11`, so the sum
-/// is the tie `2 + 2^-11 + 2^-23`, which rounds to even, `2 + 2^-11`. Fused, the extra `2^-24`
-/// breaks the tie upward. In `f64` every step is exact.
+/// DESIGN.md § 12 ADR-009: the first square of `mse` starts the sum and every later square is
+/// fused into it, one rounding. `d = [2^-12, 2^-12, 1, 1 + 2^-12]`: the partial sum before the
+/// last term is `1 + 2^-23`; fused, the last step is `2 + 2^-11 + 2^-23 + 2^-24`, which rounds up
+/// to `2 + 2^-11 + 2^-22`. Rounding the square first (`1 + 2^-11`) would leave the tie
+/// `2 + 2^-11 + 2^-23`, which rounds to even, `2 + 2^-11`. In `f64` every step is exact.
 #[test]
-fn mse_rounds_each_square_before_adding_it_in_f32() {
+fn mse_fuses_each_later_square_into_its_sum_in_f32() {
     let d = [p(-12), p(-12), 1.0, 1.0 + p(-12)];
     let got = mse_of::<f32>(&[4], d.iter().map(|&v| v as f32).collect(), vec![0.0; 4]);
-    let want = (0.5 + p(-13)) as f32;
+    let want = (0.5 + p(-13) + p(-24)) as f32;
     assert_eq!(
         got.to_bits(),
         want.to_bits(),
@@ -137,14 +137,14 @@ fn mse_rounds_each_square_before_adding_it_in_f32() {
     assert_eq!(got64.to_bits(), want64.to_bits(), "f64: got {got64:e}");
 }
 
-/// The same in `f64`: `d = [2^-26, 1, 1 + 2^-27, 0]`; the partial sum is `1 + 2^-52`, the square
-/// `1 + 2^-26 + 2^-54` rounds to `1 + 2^-26`, the sum `2 + 2^-26 + 2^-52` is a tie that rounds to
-/// `2 + 2^-26`; fused, it rounds up to `2 + 2^-26 + 2^-51`.
+/// The same in `f64`: `d = [2^-26, 1, 1 + 2^-27, 0]`; the partial sum is `1 + 2^-52`, and fused,
+/// `2 + 2^-26 + 2^-52 + 2^-54` rounds up to `2 + 2^-26 + 2^-51`. Rounding the square first
+/// (`1 + 2^-26`) would leave the tie `2 + 2^-26 + 2^-52`, which rounds to `2 + 2^-26`.
 #[test]
-fn mse_rounds_each_square_before_adding_it_in_f64() {
+fn mse_fuses_each_later_square_into_its_sum_in_f64() {
     let d = vec![p(-26), 1.0, 1.0 + p(-27), 0.0];
     let got = mse_of::<f64>(&[4], d, vec![0.0; 4]);
-    let want = 0.5 + p(-28);
+    let want = 0.5 + p(-28) + p(-53);
     assert_eq!(
         got.to_bits(),
         want.to_bits(),

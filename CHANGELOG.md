@@ -11,7 +11,8 @@ history.
 
 ### Added
 
-- `i32` row ids and `embedding(table: f32[V,H], ids: i32[N]) -> f32[N,H]`, whose table gradient is the internal scatter-add `EmbeddingGrad` (rows added in ascending `n`, a row never read exactly 0, ids without a gradient), checked against central differences in `f64` and `f32` for a token table and a positional one; an id outside the table is a `RuntimeError` of the CPU interpreter, any other use of `i32` is E-TYPE-018, and `train` refuses an `i32` input or target with E-DATA-004; `Embedding` and `EmbeddingGrad` have no Vulkan kernel yet, so `ir --stage kernel`, `compile --backend vulkan`, `train --backend vulkan` and `infer --backend vulkan` refuse an `embedding` program with E-TARGET-011 at the call, and `compile --backend cpu` writes its artifact; DESIGN.md revision 0.36 (story:bert-embedding-lookup)
+- `i32` row ids and `embedding(table: f32[V,H], ids: i32[N]) -> f32[N,H]`, whose table gradient is the internal scatter-add `EmbeddingGrad` (rows added in ascending `n`, a row never read exactly 0, ids without a gradient), checked against central differences in `f64` and `f32` for a token table and a positional one; an id outside the table is a `RuntimeError` of the CPU interpreter, any other use of `i32` is E-TYPE-018, and `train` refuses an `i32` input or target with E-DATA-004; `Embedding` and `EmbeddingGrad` have no Vulkan kernel yet, so `ir --stage kernel`, `compile --backend vulkan`, `train --backend vulkan` and `infer --backend vulkan` refuse an `embedding` program with E-TARGET-011 at the call, and `compile --backend cpu` writes its artifact; DESIGN.md revision 0.37 (story:bert-embedding-lookup)
+- Changed: deterministic matmul, reduction and mse loss-sum fuse each later product into its sum (GLSL `Fma` on Vulkan, `mul_add` and `_mm256_fmadd_ps` on the CPU), per DESIGN.md § 12 ADR-009. Recorded bits (run records, goldens, same-bits fixtures) change once.
 
 ## [0.9.0] - 2026-10-24
 

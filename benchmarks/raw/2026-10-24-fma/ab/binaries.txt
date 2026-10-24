@@ -1,0 +1,4 @@
+base bench <scratch>/base-tree/target/release/deps/mlp_sweep-9fb6b8e357cfbac8
+fma bench <worktree>/target/release/deps/mlp_sweep-9fb6b8e357cfbac8
+base cli <scratch>/modelspec-base
+fma cli <scratch>/modelspec-fma

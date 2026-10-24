@@ -84,14 +84,15 @@ fn matmul(m: u64, k: u64, n: u64, transposed: [bool; 2]) -> Kernel {
     kernel
 }
 
-/// The CPU oracle of DESIGN.md § 5.2: each element one sum from the `k = 0` product, ascending.
+/// The CPU oracle of DESIGN.md § 5.2: each element one sum from the `k = 0` product, ascending,
+/// each later product fused into it (§ 12 ADR-009).
 fn oracle(a: &[f32], b: &[f32], m: usize, k: usize, n: usize) -> Vec<f32> {
     let mut out = vec![0.0f32; m * n];
     for i in 0..m {
         for j in 0..n {
             let mut sum = a[i * k] * b[j];
             for p in 1..k {
-                sum += a[i * k + p] * b[p * n + j];
+                sum = a[i * k + p].mul_add(b[p * n + j], sum);
             }
             out[i * n + j] = sum;
         }

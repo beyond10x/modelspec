@@ -6,12 +6,15 @@
 //! kernel's workgroup size. [`emit_module`] adds the three float-control execution modes of
 //! DESIGN.md § 5.4 (`RoundingModeRTE`, `DenormPreserve`, `SignedZeroInfNanPreserve`, width 32) and
 //! their capabilities to a loss-sum or matmul module exactly when the device profile reports all
-//! three for f32; no other module declares a float-control mode. Every `OpFAdd`, `OpFSub` and
-//! `OpFMul` of a reduction, loss-sum or matmul module is decorated `NoContraction`, so no driver
-//! fuses a multiply and an add; so are the multiply and the subtraction of an SGD update with
-//! three operands, `p - (lr * g)` (DESIGN.md § 3.1). The modules [`emit_kernels`] builds for an
-//! artifact whose `fast_math` is set carry none of these decorations, so the driver may contract
-//! a multiply and an add into a fused multiply-add, and nothing else in them changes; their
+//! three for f32; no other module declares a float-control mode. A matmul or loss-sum module
+//! fuses each product after the first of every sum into the sum, one `GLSL.std.450 Fma` per
+//! product-and-sum, the instruction set imported once by such a module and by no other
+//! (DESIGN.md § 12 ADR-009). Every `OpFAdd`, `OpFSub`, `OpFMul` and `Fma` of a reduction,
+//! loss-sum or matmul module is decorated `NoContraction`, so no driver fuses a multiply and an
+//! add or splits an `Fma`; so are the multiply and the subtraction of an SGD update with three
+//! operands, `p - (lr * g)` (DESIGN.md § 3.1). The modules [`emit_kernels`] builds for an
+//! artifact whose `fast_math` is set carry none of these decorations, and nothing else in them
+//! changes: the same `Fma` instructions, and a driver free to contract what is left; their
 //! cache keys say `fast_math` (DESIGN.md § 12 ADR-008). [`emit`], [`emit_module`] and
 //! [`emit_loss_sum_undivided`] build the deterministic module.
 //!
@@ -33,10 +36,10 @@
 //! each output still runs in one invocation, in ascending `k` order from the first term, as the
 //! CPU interpreter does; a tile that needs more workgroup memory than the device profile's
 //! `max_shared_memory_bytes` is refused with [`EmitError::SharedMemory`]. The loss sum runs one
-//! workgroup of 64: its invocations stage the terms `(a - b) * (a - b)` in workgroup memory, as
-//! many at a time as the device profile's `max_shared_memory_bytes` holds, and invocation 0 adds
-//! them in ascending element order from the first term, chunk after chunk, as the CPU
-//! interpreter does.
+//! workgroup of 64: its invocations stage the differences `a - b` in workgroup memory, as many
+//! at a time as the device profile's `max_shared_memory_bytes` holds, and invocation 0 adds
+//! their squares in ascending element order from the first term, each later square fused into
+//! the sum, chunk after chunk, as the CPU interpreter does.
 
 use std::collections::{BTreeMap, VecDeque};
 
@@ -50,7 +53,7 @@ use rspirv::binary::Assemble;
 use rspirv::dr::{self, Builder};
 use rspirv::spirv::{
     AddressingModel, BuiltIn, Capability, Decoration, ExecutionMode, ExecutionModel,
-    FunctionControl, LoopControl, MemoryModel, SelectionControl, StorageClass, Word,
+    FunctionControl, GlslStd450Op, LoopControl, MemoryModel, SelectionControl, StorageClass, Word,
 };
 
 /// Why a kernel has no module.
@@ -622,9 +625,10 @@ fn build(
             "only a matmul kernel has an epilogue",
         ));
     }
-    // Every float add, subtract and multiply of a reduction, loss-sum, transpose or matmul module,
-    // and the product and difference of an SGD update with three operands, is decorated
-    // `NoContraction`; none is in a `fast_math` module (DESIGN.md § 5.4, § 12 ADR-008).
+    // Every float add, subtract, multiply and fused multiply-add of a reduction, loss-sum,
+    // transpose or matmul module, and the product and difference of an SGD update with three
+    // operands, is decorated `NoContraction`; none is in a `fast_math` module (DESIGN.md § 5.4,
+    // § 12 ADR-008, ADR-009).
     let exact = !fast_math
         && match body {
             Body::Elementwise(arith, _) => arith == Arith::ScaledSub,
@@ -829,9 +833,12 @@ struct Shell {
     matmul_vars: Vec<Word>,
     /// The workgroup size, the `LocalSize` x of the entry point.
     group: Word,
-    /// Whether [`Shell::f_add`], [`Shell::f_sub`] and [`Shell::f_mul`] decorate their result
-    /// `NoContraction`.
+    /// Whether [`Shell::f_add`], [`Shell::f_sub`], [`Shell::f_mul`] and [`Shell::f_fma`]
+    /// decorate their result `NoContraction`.
     exact: bool,
+    /// The `GLSL.std.450` instruction set, imported by the first [`Shell::f_fma`] of the module:
+    /// once by a module that fuses a product into a sum, and by no other.
+    glsl: Option<Word>,
     u32_constants: BTreeMap<u32, Word>,
     f32_constants: BTreeMap<u32, Word>,
 }
@@ -1012,6 +1019,7 @@ impl Shell {
             matmul_vars,
             group,
             exact,
+            glsl: None,
             u32_constants,
             f32_constants: BTreeMap::new(),
         })
@@ -1060,6 +1068,30 @@ impl Shell {
 
     fn f_mul(&mut self, a: Word, b: Word) -> Result<Word, EmitError> {
         let id = self.b.f_mul(self.f32_ty, None, a, b)?;
+        Ok(self.no_contraction(id))
+    }
+
+    /// `a * b + c` as one fused multiply-add, `GLSL.std.450 Fma` (DESIGN.md § 12 ADR-009),
+    /// decorated `NoContraction` where the arithmetic is: the extended instruction set then
+    /// counts the `Fma` as one operation and requires every such `Fma` to be computed the same
+    /// way, so the driver neither splits it into a multiply and an add nor treats it as the
+    /// expression `a * b + c`.
+    fn f_fma(&mut self, a: Word, b: Word, c: Word) -> Result<Word, EmitError> {
+        let glsl = match self.glsl {
+            Some(glsl) => glsl,
+            None => *self.glsl.insert(self.b.ext_inst_import("GLSL.std.450")),
+        };
+        let id = self.b.ext_inst(
+            self.f32_ty,
+            None,
+            glsl,
+            GlslStd450Op::Fma as u32,
+            [
+                dr::Operand::IdRef(a),
+                dr::Operand::IdRef(b),
+                dr::Operand::IdRef(c),
+            ],
+        )?;
         Ok(self.no_contraction(id))
     }
 
@@ -1214,6 +1246,15 @@ impl Shell {
     fn accumulate(&mut self, value: Word) -> Result<(), EmitError> {
         let acc = self.b.load(self.f32_ty, None, self.f32_var, None, [])?;
         let sum = self.f_add(acc, value)?;
+        self.b.store(self.f32_var, sum, None, [])?;
+        Ok(())
+    }
+
+    /// `acc = fma(d, d, acc)` on the module's `f32` variable: the square of `d` fused into the
+    /// sum.
+    fn accumulate_square(&mut self, d: Word) -> Result<(), EmitError> {
+        let acc = self.b.load(self.f32_ty, None, self.f32_var, None, [])?;
+        let sum = self.f_fma(d, d, acc)?;
         self.b.store(self.f32_var, sum, None, [])?;
         Ok(())
     }
@@ -1377,13 +1418,15 @@ impl Shell {
     }
 
     /// The `mse` loss sum of one workgroup over the `terms` elements of the shape, `chunk` terms
-    /// at a time. For the chunk at element `base`, invocation `i` stores the term
-    /// `(a - b) * (a - b)` of elements `base + i`, `base + i + 64`, … at its offset in workgroup
-    /// memory; after a barrier invocation 0 adds the chunk's terms in ascending order, starting
-    /// from the term of element 0 in the first chunk; a second barrier frees the memory for the
-    /// next chunk. The order of additions is the one-invocation order: the first term, then each
-    /// next one. `divide_by` divides the sum by the element count. The counts are constants of
-    /// the shape, so the driver sees every trip count; no term is added for an empty shape.
+    /// at a time. For the chunk at element `base`, invocation `i` stores the difference `a - b`
+    /// of elements `base + i`, `base + i + 64`, … at its offset in workgroup memory; after a
+    /// barrier invocation 0 adds the chunk's terms `(a - b) * (a - b)` in ascending order, the
+    /// term of element 0 in the first chunk starting the sum as a product and every later one
+    /// fused into it, `fma(d, d, acc)` (DESIGN.md § 12 ADR-009); a second barrier frees the
+    /// memory for the next chunk. The order of additions is the one-invocation order: the first
+    /// term, then each next one. `divide_by` divides the sum by the element count. The counts
+    /// are constants of the shape, so the driver sees every trip count; no term is added for an
+    /// empty shape.
     fn loss_sum(
         &mut self,
         divide_by: Option<u32>,
@@ -1421,7 +1464,8 @@ impl Shell {
     }
 
     /// One chunk of [`Shell::loss_sum`]: the `len` terms from element `base`. The `opening` chunk
-    /// starts the sum with its first term; the `closing` one needs no barrier after it.
+    /// starts the sum with the square of its first difference; the `closing` one needs no barrier
+    /// after it.
     fn loss_chunk(
         &mut self,
         base: Word,
@@ -1437,8 +1481,7 @@ impl Shell {
             let a = m.read(0, at)?;
             let b = m.read(1, at)?;
             let d = m.f_sub(a, b)?;
-            let term = m.f_mul(d, d)?;
-            m.store_shared(j, term)
+            m.store_shared(j, d)
         };
         let size = TREE;
         let (rounds, partial) = (len / size, len % size);
@@ -1462,14 +1505,15 @@ impl Shell {
         let start = u32::from(opening);
         self.when(first_invocation, |m| {
             if opening {
-                let first = m.load_shared(zero)?;
+                let d = m.load_shared(zero)?;
+                let first = m.f_mul(d, d)?;
                 m.b.store(m.f32_var, first, None, [])?;
             }
             let start = m.uint(start);
             m.repeat(term_var, len - u32::from(opening), UNROLL, |m, t| {
                 let j = m.add(t, start)?;
-                let term = m.load_shared(j)?;
-                m.accumulate(term)
+                let d = m.load_shared(j)?;
+                m.accumulate_square(d)
             })
         })?;
         if !closing {
@@ -1511,12 +1555,13 @@ impl Shell {
     /// `a[rows, tile]` and `b[tile, cols]` into registers `ahead` tiles early, stage them in
     /// workgroup memory (`b` transposed when an invocation computes one column, as read when it
     /// computes several), wait on a barrier, and each invocation reads its `rows` values of `a`
-    /// and `cols_per_invocation` values of `b` of each `k` of the tile into registers and adds
-    /// their products to the accumulator of each output element of its block in ascending `k`,
+    /// and `cols_per_invocation` values of `b` of each `k` of the tile into registers and fuses
+    /// their products into the accumulator of each output element of its block in ascending `k`,
     /// the first product of the first tile starting the sum. Values outside the matrices are
     /// staged but never enter a written output, and the last tile has its own trip count, so no
-    /// padding term is added: every output element is `a[i, 0] * b[0, j]`, then each next
-    /// product added in ascending `k`, as the CPU computes it. With an [`Epilogue`] the rounded
+    /// padding term is added: every output element is `a[i, 0] * b[0, j]`, then
+    /// `fma(a[i, p], b[p, j], acc)` for each next `p` in ascending order, as the CPU computes it
+    /// with `mul_add` (DESIGN.md § 12 ADR-009). With an [`Epilogue`] the rounded
     /// sum is written to the pre-activation binding when the kernel keeps it, and its `relu` to
     /// the result.
     ///
@@ -1745,8 +1790,9 @@ impl Shell {
 
         let accumulators = matmul_accumulators(&tile);
         let b_line = layout.b_stride;
-        // Adds the products of the first `len` values of the tile staged in the buffer at
-        // `buffer` to the accumulators, the first product starting the sum when `opening`. Per
+        // Fuses the products of the first `len` values of the tile staged in the buffer at
+        // `buffer` into the accumulators (`Fma`), the first product starting the sum when
+        // `opening`. Per
         // `k`, the invocation reads its `b` value of each of its columns into registers, then
         // per row its `a` value and that row's products, accumulator `q * per + c` holding row
         // `q` and column `c` of its block.
@@ -1781,10 +1827,9 @@ impl Shell {
                         let a_at = s.add(a_start, p_c)?;
                         let a = s.load_shared(a_at)?;
                         for (sum, &b) in row_sums.iter_mut().zip(&bs) {
-                            let product = s.f_mul(a, b)?;
                             *sum = Some(match *sum {
-                                None => product,
-                                Some(acc) => s.f_add(acc, product)?,
+                                None => s.f_mul(a, b)?,
+                                Some(acc) => s.f_fma(a, b, acc)?,
                             });
                         }
                     }

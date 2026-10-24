@@ -9,7 +9,9 @@
 //! tensor the folded transpose read). `tests/fixtures/matmul_plan_sites_same_bits.txt` holds one
 //! FNV-1a digest per written view, recorded at the base commit (where no matmul reads an operand
 //! transposed) with `MODELSPEC_SAME_BITS_RECORD=1`, under a header naming the device and driver
-//! it ran on; a run on another device or driver fails rather than comparing.
+//! it ran on; a run on another device or driver fails rather than comparing. Re-recorded once at
+//! the tree of story:deterministic-fma, whose fused multiply-add changed every view (DESIGN.md
+//! § 12 ADR-009).
 //!
 //! Ignored by default: it creates a Vulkan instance, which `task ci` never does. Run it with
 //! `MODELSPEC_VK_VALIDATION=1 cargo test --release -p modelspec-runtime --features vulkan --test vulkan_matmul_plan_sites_same_bits -- --ignored`.

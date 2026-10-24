@@ -9,8 +9,10 @@
 //! the element type, starting from its first term; `matmul` accumulates each output element over
 //! the contracting index in ascending order the same way; `mean` is that sum divided by the
 //! element count converted to the element type; `mse` is the same sum of `(a - b)^2` divided by
-//! the element count converted to the element type. Every product, difference and partial sum is
-//! rounded to the element type; nothing is fused.
+//! the element count converted to the element type. Every difference is rounded to the element
+//! type; the first product of a `matmul` or `mse` sum is rounded and starts the sum, and each later
+//! product is fused into the sum with [`Element::mul_add`], rounded once, as the GPU's `Fma`
+//! (DESIGN.md § 12 ADR-009). The partial sums of `reduce_sum` and `mean` are rounded each.
 //!
 //! Every value is allocated through one checked path; a value the host cannot hold is a
 //! [`RuntimeError::Allocation`].
@@ -651,11 +653,12 @@ impl<'p, T: Element> Prepared<'p, T> {
             }
             TensorOp::Mse => {
                 let (a, b) = (arg(0), arg(1));
-                let squares = a.data.iter().zip(b.data).map(|(&x, &y)| {
-                    let d = x - y;
-                    d * d
-                });
-                data.push(sum(squares) / count(a));
+                let mut diffs = a.data.iter().zip(b.data).map(|(&x, &y)| x - y);
+                let total = match diffs.next() {
+                    Some(first) => diffs.fold(first * first, |acc, d| d.mul_add(d, acc)),
+                    None => T::ZERO,
+                };
+                data.push(total / count(a));
             }
             TensorOp::ReluGrad => {
                 let (a, g) = (arg(0), arg(1));

@@ -2,15 +2,15 @@
 //! order of a register-blocked matmul module read from its SPIR-V, over shapes at the edges of
 //! the block rule.
 //!
-//! For every `OpStore` of an `OpFAdd` or `OpFMul` result into a function variable (an
-//! accumulator), the chain of `OpFAdd`s it stores is followed back to where it starts: the
-//! `k = 0` product (`OpFMul`) on the first tile, or a load of the same variable on a later one,
-//! never a constant (a sum started from zero). The products of one chain read workgroup memory
-//! at one `a` start and one `b` start plus constants that ascend by one value of `k` each (by
-//! 1 for `a`, by the `b` stride for `b`), so each tile adds its products in ascending `k`. Each
-//! accumulator has exactly one opening chain, and there are `rows · cols_per_invocation` of
-//! them. Every module passes `spirv-val` with and without the three float-control modes, and
-//! every `OpFAdd`, `OpFSub` and `OpFMul` is `NoContraction`.
+//! For every `OpStore` of a `GLSL.std.450 Fma` or `OpFMul` result into a function variable (an
+//! accumulator), the chain of `Fma`s it stores is followed back through their addends to where it
+//! starts: the `k = 0` product (`OpFMul`) on the first tile, or a load of the same variable on a
+//! later one, never a constant (a sum started from zero; DESIGN.md § 12 ADR-009). The products of
+//! one chain read workgroup memory at one `a` start and one `b` start plus constants that ascend
+//! by one value of `k` each (by 1 for `a`, by the `b` stride for `b`), so each tile adds its
+//! products in ascending `k`. Each accumulator has exactly one opening chain, and there are
+//! `rows · cols_per_invocation` of them. Every module passes `spirv-val` with and without the
+//! three float-control modes, and every `OpFAdd`, `OpFSub` and `OpFMul` is `NoContraction`.
 #![cfg(feature = "vulkan")]
 
 #[allow(dead_code)]
@@ -28,6 +28,8 @@ const FIXTURE: &str = include_str!(concat!(
     "/tests/fixtures/rtx3090.device.json"
 ));
 
+const OP_EXT_INST: u32 = 12;
+const GLSL_FMA: u32 = 50;
 const OP_CONSTANT: u32 = 43;
 const OP_LOAD: u32 = 61;
 const OP_STORE: u32 = 62;
@@ -117,6 +119,7 @@ fn order_breaks(module: &[u32], tile: &MatMulTile) -> (Vec<String>, usize) {
             OP_F_MUL,
         ]
         .contains(op)
+            || (*op == OP_EXT_INST && w[4] == GLSL_FMA)
         {
             defs.insert(w[2], (*op, w.to_vec()));
         }
@@ -134,19 +137,19 @@ fn order_breaks(module: &[u32], tile: &MatMulTile) -> (Vec<String>, usize) {
             continue;
         }
         let (var, value) = (w[1], w[2]);
-        if !matches!(defs.get(&value), Some((OP_F_ADD | OP_F_MUL, _))) {
+        if !matches!(defs.get(&value), Some((OP_EXT_INST | OP_F_MUL, _))) {
             continue;
         }
         accumulators.insert(var);
         let mut products = Vec::new();
         let mut at = value;
-        while let Some((OP_F_ADD, add)) = defs.get(&at) {
-            products.push(add[4]);
-            at = add[3];
+        while let Some((OP_EXT_INST, fma)) = defs.get(&at) {
+            products.push((fma[5], fma[6]));
+            at = fma[7];
         }
         match defs.get(&at) {
-            Some((OP_F_MUL, _)) => {
-                products.push(at);
+            Some((OP_F_MUL, mul)) => {
+                products.push((mul[3], mul[4]));
                 *openings.entry(var).or_default() += 1;
             }
             Some((OP_LOAD, load)) if load[3] == var => {}
@@ -161,20 +164,10 @@ fn order_breaks(module: &[u32], tile: &MatMulTile) -> (Vec<String>, usize) {
         }
         products.reverse();
         let mut reads = Vec::new();
-        for &product in &products {
-            match defs.get(&product) {
-                Some((OP_F_MUL, mul)) => {
-                    match (shared_read(&defs, mul[3]), shared_read(&defs, mul[4])) {
-                        (Ok(a), Ok(b)) => reads.push((a, b)),
-                        (a, b) => {
-                            wrong.push(format!("chain of %{var}: product %{product}: {a:?} {b:?}"))
-                        }
-                    }
-                }
-                other => wrong.push(format!(
-                    "chain of %{var}: the term %{product} is op {:?}, not a product",
-                    other.map(|(op, _)| op)
-                )),
+        for (p, &(x, y)) in products.iter().enumerate() {
+            match (shared_read(&defs, x), shared_read(&defs, y)) {
+                (Ok(a), Ok(b)) => reads.push((a, b)),
+                (a, b) => wrong.push(format!("chain of %{var}: product {p}: {a:?} {b:?}")),
             }
         }
         if let Some(&((a_start, a0), (b_start, b0))) = reads.first() {

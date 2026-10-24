@@ -1,0 +1,14 @@
+{
+  "at": "2026-10-24T21:17:23Z",
+  "actor": "human:timo",
+  "artifact": "story:bert-tokenizer",
+  "kind": "story",
+  "revision": 5,
+  "change": {
+    "change": "evidence",
+    "kind": "review_outcome",
+    "source": "fix pass 1: D25 frequency merges, 381 runtime and 327 cli cases green",
+    "review": "review-result:adversary-bert-tokenizer-pass-1",
+    "outcome": "fixed"
+  }
+}

@@ -7,7 +7,9 @@
 //!    tile changed, on the same device. `tests/fixtures/matmul_same_bits.txt` holds those bits
 //!    as one FNV-1a digest per written view, recorded at the base commit with
 //!    `MODELSPEC_SAME_BITS_RECORD=1`, under a header naming the device and driver it ran on; a
-//!    run on another device or driver fails rather than comparing.
+//!    run on another device or driver fails rather than comparing. Re-recorded once at the tree of
+//!    story:deterministic-fma, whose fused multiply-add changed every view (DESIGN.md § 12
+//!    ADR-009).
 //! 2. `register-blocked`: on inputs of normal magnitude each written view of a register-blocked
 //!    tile is bit for bit the CPU interpreter's, with and without the `relu` epilogue, and the
 //!    guard words after each view stay unchanged.

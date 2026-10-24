@@ -38,14 +38,15 @@ fn the_public_element_avx2_hook_panics_when_the_element_counts_overflow() {
     let _ = f64::matmul_avx2(&mut out, &[], Lhs::Transposed, &[], WRAP, WRAP, WRAP);
 }
 
-/// The 0.1.1 loop: `i`, `j`, then the `K` products in ascending `k` from the first term.
+/// The ADR-009 loop: `i`, `j`, then the `K` products in ascending `k` from the `k = 0` product,
+/// each later product fused into the sum with `mul_add` (DESIGN.md § 12 ADR-009).
 fn reference<T: Element>(a: &[T], b: &[T], m: usize, k: usize, n: usize) -> Vec<T> {
     let mut out = Vec::with_capacity(m * n);
     for i in 0..m {
         for j in 0..n {
-            let mut terms = (0..k).map(|p| a[i * k + p] * b[p * n + j]);
+            let mut terms = (0..k).map(|p| (a[i * k + p], b[p * n + j]));
             let acc = match terms.next() {
-                Some(first) => terms.fold(first, |acc, x| acc + x),
+                Some((x, y)) => terms.fold(x * y, |acc, (x, y)| x.mul_add(y, acc)),
                 None => T::ZERO,
             };
             out.push(acc);
@@ -202,13 +203,13 @@ fn directed<T: Bits>() -> Vec<String> {
 }
 
 #[test]
-fn each_kernel_equals_the_0_1_1_loop_on_directed_edge_values_in_f32() {
+fn each_kernel_equals_the_fused_loop_on_directed_edge_values_in_f32() {
     let bad = directed::<f32>();
     assert!(bad.is_empty(), "{} differ:\n{}", bad.len(), bad.join("\n"));
 }
 
 #[test]
-fn each_kernel_equals_the_0_1_1_loop_on_directed_edge_values_in_f64() {
+fn each_kernel_equals_the_fused_loop_on_directed_edge_values_in_f64() {
     let bad = directed::<f64>();
     assert!(bad.is_empty(), "{} differ:\n{}", bad.len(), bad.join("\n"));
 }

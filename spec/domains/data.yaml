@@ -88,11 +88,35 @@ types:
         type: List<String>
       - name: mask_token_id
         type: Integer
+      - name: pad_token_id
+        type: Integer
+        summary: The id of `[PAD]`, the token that fills a sequence up to its length (coordinator decision D19, 2026-10-24, `.engineering/waves/bert-1.md`).
+      - name: unk_token_id
+        type: Integer
+        summary: The id of `[UNK]`, the token a word stands for when the vocabulary cannot encode it (coordinator decision D19, 2026-10-24, `.engineering/waves/bert-1.md`).
+      - name: cls_token_id
+        type: Integer
+        summary: The id of `[CLS]`, the token that opens a sequence (coordinator decision D19, 2026-10-24, `.engineering/waves/bert-1.md`).
+      - name: sep_token_id
+        type: Integer
+        summary: The id of `[SEP]`, the token that closes a sequence (coordinator decision D19, 2026-10-24, `.engineering/waves/bert-1.md`).
     invariants:
       - distinct: {in: tokens, as: token}
       - mask_token_id >= 0
       - mask_token_id < tokens.count
       - mask_token_id == 4
+      - pad_token_id >= 0
+      - pad_token_id < tokens.count
+      - pad_token_id == 0
+      - unk_token_id >= 0
+      - unk_token_id < tokens.count
+      - unk_token_id == 1
+      - cls_token_id >= 0
+      - cls_token_id < tokens.count
+      - cls_token_id == 2
+      - sep_token_id >= 0
+      - sep_token_id < tokens.count
+      - sep_token_id == 3
 
   - name: modelspec.data.DatasetId
     kind: newtype
@@ -165,7 +189,7 @@ entities:
 
   - name: modelspec.data.Tokenizer
     naming:
-      summary: A tokenizer and the vocabulary it maps text to (epic:bert-from-scratch).
+      summary: A tokenizer and the vocabulary it maps text to (epic:bert-from-scratch). `modelspec data tokenizer --dataset <dir> --vocab-size <n> --out <file>` trains one on the Train split of a Dataset, never on its HeldOut split, and writes this record as JSON to `<file>`. Normalization lowercases the text with Unicode's lowercase mapping (`str::to_lowercase`), drops control characters, separates words at whitespace and makes every character that is neither alphanumeric nor whitespace a word of its own, as BERT's BasicTokenizer does without accent stripping, except that format characters such as the zero-width joiner and the soft hyphen are words of their own here, where BERT's BasicTokenizer drops them; no normalization crate is used. The alphabet is the 1,000 most frequent characters of the Train split's words, ties broken by the character's byte order, or the (n - 5) / 2 most frequent when the vocabulary size leaves no room for two tokens per character, and after the five special tokens each alphabet character enters the vocabulary twice, as `c` and then as the continuation `##c`. Training is WordPiece as the published trainer of the `tokenizers` library, which wraps that library's BPE trainer and ranks merges by pair frequency (coordinator decision D25, 2026-10-24, `.engineering/waves/bert-1.md`, replacing the likelihood score of D23); it counts the words of the Train split once and, on that word table (a word with a character outside the alphabet or over 100 characters takes no part), repeatedly merges the adjacent pair (a, b) with the highest count(ab), ties broken by the byte order of the merged token, which is a followed by b without its `##` and is not added a second time when the vocabulary already holds it, until the vocabulary has exactly n tokens; when no pair is left first, the command exits 1 naming the size reached. A size below the special tokens plus two tokens per character of the full alphabet trains only while some word is spelled wholly in the shortened alphabet, and otherwise is refused with exit 1 naming the size reached and the number of tokens the alphabet alone needs. Encoding matches each word greedily, longest match first, against the vocabulary, as BERT's WordpieceTokenizer does, and a word over 100 characters or with a remainder no token matches encodes to `[UNK]` whole; `encode` adds no `[CLS]` and `[SEP]` frame (story:bert-mlm-batches adds it). Decoding joins the pieces of a word without a space, their `##` removed, and the words with one space, so `decode(encode(t))` equals the normalized form of t wherever no word encoded to `[UNK]`. The record's tokenizer_id is the leading 16 bytes, as a version-8 UUID, of the blake3 hash over the token list in id order, each token followed by a newline, and its vocabulary lists the tokens in id order with the ids of the special tokens. The vocabulary size of the real run is 8,192, coordinator decision D19 (coordinator decision D23, 2026-10-24, `.engineering/waves/bert-1.md`).
     identity:
       name: tokenizer_id
       type: modelspec.data.TokenizerId

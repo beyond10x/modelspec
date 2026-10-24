@@ -6,7 +6,9 @@
 //!
 //! `tests/fixtures/untransposed_modules.txt` holds one line per kernel signature of those plans
 //! at the base commit, with the blake3 of the words `emit` gives, recorded with
-//! `MODELSPEC_SAME_BITS_RECORD=1`. Needs no device.
+//! `MODELSPEC_SAME_BITS_RECORD=1`. The hashes of the signatures that still occur were re-recorded
+//! once at story:deterministic-fma, whose fused multiply-add changed the matmul and loss-sum
+//! words (DESIGN.md § 12 ADR-009). Needs no device.
 #![cfg(feature = "vulkan")]
 
 use std::collections::{BTreeMap, BTreeSet};

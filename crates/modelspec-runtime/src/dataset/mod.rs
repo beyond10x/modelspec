@@ -4,8 +4,12 @@
 //! [`prepare`] turns a directory holding the WikiText-103 raw release's files into the `Train`
 //! and `HeldOut` splits and a [`Dataset`] record of them, `dataset.json`. Everything is derived
 //! from the bytes read: two runs on the same files write byte-identical output.
+//!
+//! [`tokenizer`] trains the WordPiece tokenizer of a run on the `Train` split of a prepared
+//! dataset and encodes and decodes text with it (story:bert-tokenizer).
 
 mod corpus;
+pub mod tokenizer;
 
 use std::fmt;
 use std::fs;

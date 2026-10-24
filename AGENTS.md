@@ -14,7 +14,7 @@ A Rust compiler and runtime for `.mspec` tensor-program specifications. Humans s
 Milestone M0 implemented (DESIGN.md revision 0.6, § 1 and § 11, iteration 1; wave `m0` closed);
 M1 (`epic:m1-vulkan-execution`) is in progress, latest release 0.9.0. A Cargo workspace of five crates: `modelspec-core`
 (parser, checker, Tensor IR, autodiff, lowering, DCE; no Vulkan), `modelspec-runtime` (CPU oracle,
-SGD training and the corpus preparation `dataset`; the `vulkan` feature holds Vulkan device discovery, negotiation, SPIR-V
+SGD training and the corpus preparation and WordPiece tokenizer `dataset`; the `vulkan` feature holds Vulkan device discovery, negotiation, SPIR-V
 emission and the training runner `vulkan::runner` through `ash` and `rspirv`; the JSON Schema of
 the records it writes under `schema/` is `ess generate` output), `modelspec-observatory` (the typed
 `RunEvent`s of a run and their Server-Sent Events stream; its JSON Schema under `schema/` is
@@ -36,6 +36,11 @@ file and `observe <path>` replays one; with `--ui ui/dist` either also serves th
 and `wiki.valid.raw` into the `Train` and `HeldOut` splits and writes their `Dataset` record
 `dataset.json` (`spec/domains/data.yaml`); nothing is downloaded, and its tests use the original
 text of `crates/modelspec-runtime/tests/fixtures/corpus/`, never corpus text.
+`data tokenizer --dataset <dir> --vocab-size <n> --out <file>` trains the WordPiece tokenizer on the
+`Train` split of such a dataset, never its `HeldOut` split, to exactly `n` tokens and writes its
+`Tokenizer` record (`spec/domains/data.yaml`, coordinator decision D23); `dataset::tokenizer`'s
+`Codec::encode` and `Codec::decode` are the library calls of later data steps. Its tests also use
+`crates/modelspec-runtime/tests/fixtures/corpus-tokenizer/`, original text too.
 CI: `check.yml` runs `task ci`; `shared-gates.yml` runs the
 common source gates; `pages.yml` and `b10x-docs-site.yml` build and publish the documentation site.
 

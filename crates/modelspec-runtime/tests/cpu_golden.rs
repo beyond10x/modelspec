@@ -328,17 +328,17 @@ fn matmul_accumulation_starts_from_the_first_product<T: Real>() {
     assert_bits(&got, &[1, 1], &[-0.0]);
 }
 
-/// The second product `(1 + 2^-12)^2 = 1 + 2^-11 + 2^-24` rounds to `1 + 2^-11` in `f32` before
-/// it is added, so the sum is 0 there; a fused multiply-add would give `2^-24`. In `f64` the
-/// product is exact.
-fn matmul_rounds_each_product_before_adding_it<T: Real>() {
+/// DESIGN.md § 12 ADR-009: the second product `(1 + 2^-12)^2 = 1 + 2^-11 + 2^-24` is fused into
+/// the sum `-(1 + 2^-11)`, one rounding, so the sum is `2^-24` in both types; rounding the product
+/// first would give 0 in `f32`. In `f64` the product is exact either way.
+fn matmul_fuses_each_later_product_into_its_sum<T: Real>() {
     let e = 1.0 + 2f64.powi(-12);
     let got = eval_binary::<T>(
         (&[1, 2], &[-(1.0 + 2f64.powi(-11)), e]),
         (&[2, 1], &[1.0, e]),
         |b, x, y| b.matmul(x, y).unwrap(),
     );
-    assert_bits(&got, &[1, 1], &[T::pick(0.0, 2f64.powi(-24))]);
+    assert_bits(&got, &[1, 1], &[2f64.powi(-24)]);
 }
 
 // ---- reductions ----
@@ -498,7 +498,7 @@ in_both_types!(
     matmul_non_square_2x3_by_3x4,
     matmul_accumulates_over_the_contracting_index_ascending,
     matmul_accumulation_starts_from_the_first_product,
-    matmul_rounds_each_product_before_adding_it,
+    matmul_fuses_each_later_product_into_its_sum,
     reduce_sum_of_every_element,
     reduce_sum_accumulates_sequentially_in_row_major_order,
     reduce_sum_starts_from_the_first_term,

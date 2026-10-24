@@ -1,0 +1,22 @@
+# gpu-apps-before [] 2026-10-24T20:37:27Z
+# command: mlp_sweep --bench --point 8192:4096 --point 8192:1024 --point 1000:1024 --min-seconds 6
+mlp_sweep: warning: not a clean checkout: Build { version: Some("0.9.0"), commit: Some("79c58f7a0e05806b6b04121b37e4a6781b41215d"), dirty: Some(true) }
+mlp_sweep: batch 8192 hidden 4096: 107239964672 FLOP per step
+mlp_sweep:   calibration: 381 steps in 4.171 s
+mlp_sweep:   calibration: 658 steps in 6.183 s
+mlp_sweep:   timed: 658 steps in 6.222 s, 9455.478 us per step
+mlp_sweep:   timed: 658 steps in 6.159 s, 9359.950 us per step
+mlp_sweep:   timed: 658 steps in 6.388 s, 9707.856 us per step
+mlp_sweep: batch 8192 hidden 1024: 26809991168 FLOP per step
+mlp_sweep:   calibration: 1208 steps in 4.033 s
+mlp_sweep:   calibration: 2157 steps in 5.457 s
+mlp_sweep:   calibration: 2847 steps in 7.239 s
+mlp_sweep:   timed: 2847 steps in 7.360 s, 2585.191 us per step
+mlp_sweep:   timed: 2847 steps in 7.303 s, 2565.190 us per step
+mlp_sweep:   timed: 2847 steps in 7.374 s, 2590.034 us per step
+mlp_sweep: batch 1000 hidden 1024: 3272704000 FLOP per step
+mlp_sweep:   calibration: 16670 steps in 6.951 s
+mlp_sweep:   timed: 16670 steps in 6.130 s, 367.730 us per step
+mlp_sweep:   timed: 16670 steps in 6.154 s, 369.165 us per step
+mlp_sweep:   timed: 16670 steps in 6.138 s, 368.207 us per step
+# exit 0

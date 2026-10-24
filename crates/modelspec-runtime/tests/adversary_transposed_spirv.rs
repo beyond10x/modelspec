@@ -6,11 +6,12 @@
 //!
 //! For every shape, tile family and flag combination:
 //!
-//! - the arithmetic of the two modules is the same sequence: every `OpFMul` and `OpFAdd` in
-//!   module order, each with the kind of instruction that defines each operand (a workgroup
-//!   memory load, a function-variable load, an `OpFMul`, an `OpFAdd`), and the workgroup
-//!   memory loads the products read use the same address expression shapes;
-//! - every `OpFMul` and `OpFAdd` result is decorated `NoContraction` in both;
+//! - the arithmetic of the two modules is the same sequence: every `OpFMul`, `OpFAdd` and
+//!   `GLSL.std.450 Fma` (DESIGN.md § 12 ADR-009) in module order, each with the kind of
+//!   instruction that defines each operand (a workgroup memory load, a function-variable load, an
+//!   `OpFMul`, an `OpFAdd`, an `Fma`), and the workgroup memory loads the products read use the
+//!   same address expression shapes;
+//! - every `OpFMul`, `OpFAdd` and `Fma` result is decorated `NoContraction` in both;
 //! - the workgroup memory array of the plain module has the length of the tile's unpadded
 //!   layout, and that of the transposed module the length of the tile's layout for its flags
 //!   on the profile ([`MatMulTile::layout_within`], its strides padded against bank conflicts
@@ -33,6 +34,8 @@ const FIXTURE: &str = include_str!(concat!(
     "/tests/fixtures/rtx3090.device.json"
 ));
 
+const OP_EXT_INST: u32 = 12;
+const GLSL_FMA: u32 = 50;
 const OP_TYPE_ARRAY: u32 = 28;
 const OP_TYPE_POINTER: u32 = 32;
 const OP_CONSTANT: u32 = 43;
@@ -113,8 +116,9 @@ fn instructions(module: &[u32]) -> Vec<(u32, &[u32])> {
 /// What one module's arithmetic and workgroup memory look like.
 #[derive(Debug, PartialEq, Eq)]
 struct Shape {
-    /// Per `OpFMul` / `OpFAdd` in module order: the opcode and the kind of each operand.
-    arithmetic: Vec<(u32, String, String)>,
+    /// Per `OpFMul` / `OpFAdd` / `Fma` in module order: the opcode (`OpExtInst` for `Fma`) and
+    /// the kind of each operand.
+    arithmetic: Vec<(u32, Vec<String>)>,
     /// The lengths of the workgroup memory arrays.
     shared: Vec<u32>,
 }
@@ -148,6 +152,9 @@ fn shape_of(module: &[u32]) -> (Shape, usize, usize) {
             OP_LOAD | OP_ACCESS_CHAIN | OP_F_ADD | OP_F_MUL => {
                 defined.insert(words[1], (op, words));
             }
+            OP_EXT_INST if words[3] == GLSL_FMA => {
+                defined.insert(words[1], (op, words));
+            }
             _ => {}
         }
     }
@@ -155,6 +162,7 @@ fn shape_of(module: &[u32]) -> (Shape, usize, usize) {
         match defined.get(&id) {
             Some((OP_F_MUL, _)) => "fmul".to_owned(),
             Some((OP_F_ADD, _)) => "fadd".to_owned(),
+            Some((OP_EXT_INST, _)) => "fma".to_owned(),
             Some((OP_LOAD, words)) => {
                 let pointer = words[2];
                 match defined.get(&pointer) {
@@ -182,13 +190,16 @@ fn shape_of(module: &[u32]) -> (Shape, usize, usize) {
     let mut arithmetic = Vec::new();
     let (mut ops, mut decorated) = (0, 0);
     for &(op, words) in &instructions {
-        if op == OP_F_ADD || op == OP_F_MUL {
-            ops += 1;
-            if no_contraction.contains(&words[1]) {
-                decorated += 1;
-            }
-            arithmetic.push((op, kind(words[2]), kind(words[3])));
+        let operands = match op {
+            OP_F_ADD | OP_F_MUL => &words[2..4],
+            OP_EXT_INST if words[3] == GLSL_FMA => &words[4..7],
+            _ => continue,
+        };
+        ops += 1;
+        if no_contraction.contains(&words[1]) {
+            decorated += 1;
         }
+        arithmetic.push((op, operands.iter().map(|&id| kind(id)).collect()));
     }
     let mut shared = Vec::new();
     for &(op, words) in &instructions {
@@ -229,10 +240,11 @@ fn a_transposed_operand_changes_no_arithmetic_and_stages_into_the_layout_of_its_
             let products = want
                 .arithmetic
                 .iter()
-                .filter(|(op, a, b)| {
-                    *op == OP_F_MUL
-                        && a.starts_with("load workgroup")
-                        && b.starts_with("load workgroup")
+                .filter(|(op, operands)| {
+                    (*op == OP_F_MUL || *op == OP_EXT_INST)
+                        && operands[..2]
+                            .iter()
+                            .all(|kind| kind.starts_with("load workgroup"))
                 })
                 .count();
             assert!(

@@ -9,10 +9,10 @@
 //! - the `fast_math` module has no `OpDecorate ... NoContraction`;
 //! - its execution modes, capabilities and the count of every opcode equal the deterministic
 //!   module's, `OpDecorate` less exactly the deterministic module's `NoContraction` count;
-//! - in the deterministic module every `NoContraction` names an `OpFAdd`, `OpFSub` or `OpFMul`,
-//!   every float add, subtract and multiply of a non-elementwise module and of a three-operand SGD
-//!   update carries one, and an elementwise module other than that SGD update carries none
-//!   (the default the base emitted);
+//! - in the deterministic module every `NoContraction` names an `OpFAdd`, `OpFSub`, `OpFMul` or
+//!   `GLSL.std.450 Fma` (DESIGN.md § 12 ADR-009), every float add, subtract, multiply and fused
+//!   multiply-add of a non-elementwise module and of a three-operand SGD update carries one, and
+//!   an elementwise module other than that SGD update carries none (the default the base emitted);
 //! - the two cache keys are equal but for `fast_math`, and the module ids equal.
 #![cfg(feature = "vulkan")]
 
@@ -121,10 +121,16 @@ fn no_contraction_targets(module: &[u32]) -> Vec<u32> {
 }
 
 /// The result ids of every `OpFAdd`, `OpFSub` and `OpFMul`.
+/// `OpExtInst`, and `Fma` in `GLSL.std.450`, the only instruction set a module imports.
+const OP_EXT_INST: u32 = 12;
+const GLSL_FMA: u32 = 50;
+
 fn float_arithmetic(module: &[u32]) -> BTreeSet<u32> {
     instructions(module)
         .into_iter()
-        .filter(|(op, _)| [OP_F_ADD, OP_F_SUB, OP_F_MUL].contains(op))
+        .filter(|(op, w)| {
+            [OP_F_ADD, OP_F_SUB, OP_F_MUL].contains(op) || (*op == OP_EXT_INST && w[4] == GLSL_FMA)
+        })
         .map(|(_, w)| w[2])
         .collect()
 }

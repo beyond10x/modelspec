@@ -727,9 +727,15 @@ fn a_matmul_module_runs_its_tile_with_one_barrier_per_tile_of_k() {
                 let emitted_k =
                     k - (looped.saturating_sub(TILE_LOOP_BODY) as u64) * u64::from(tile.depth);
                 let (missing, all) = common::words::uncontracted_arithmetic(&module.spirv);
+                let (missing_fma, fma) = common::words::uncontracted_fma(&module.spirv);
+                let rows = u64::from(tile.rows);
                 assert!(
-                    all as u64 == u64::from(tile.rows) * (2 * emitted_k - 1) && missing.is_empty(),
-                    "{what}: {all} arithmetic, one chain per row, no NoContraction on {missing:?}"
+                    all as u64 == rows
+                        && fma as u64 == rows * (emitted_k - 1)
+                        && missing.is_empty()
+                        && missing_fma.is_empty(),
+                    "{what}: {all} arithmetic and {fma} Fma, one chain per row, no NoContraction \
+                     on {missing:?} {missing_fma:?}"
                 );
                 total += 1;
             }

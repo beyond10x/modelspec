@@ -1,0 +1,2 @@
+fma bench <worktree>/target/release/deps/mlp_sweep-9fb6b8e357cfbac8
+probe bench <scratch>/tree/target/release/deps/mlp_sweep-9fb6b8e357cfbac8 (emit.rs f_fma returns the Fma id undecorated)

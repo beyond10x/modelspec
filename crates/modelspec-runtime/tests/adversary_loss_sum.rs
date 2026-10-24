@@ -3,8 +3,10 @@
 //! profiles whose workgroup memory gives chunks of 1, 2, 63, 64, 65, 12,287 and 12,288 terms and
 //! an odd byte count.
 //!
-//! The device case asserts the row-major order exactly. `OpFAdd`, `OpFSub` and `OpFMul` are
-//! correctly rounded and decorated `NoContraction`, and the inputs have no subnormal, so on a
+//! The device case asserts the row-major order exactly. `OpFSub` and `OpFMul` are correctly
+//! rounded, each later square is one `GLSL.std.450 Fma` (DESIGN.md § 12 ADR-009) that the CPU
+//! computes with `mul_add`, all are decorated `NoContraction`, and the inputs have no
+//! subnormal, so on a
 //! device that rounds them to nearest even the one admissible result of the row-major order is
 //! the CPU's, bit for bit. The inputs spread the terms over 2^46 in magnitude, so moving one term
 //! changes the bits. The module declares `RoundingModeRTE` only in the bit-for-bit class
@@ -96,14 +98,12 @@ fn spread(draw: &mut Draw, n: usize) -> (Vec<f32>, Vec<f32>) {
     (a, b)
 }
 
-/// The CPU interpreter's sum: the first term, then each next one in row-major order.
+/// The CPU interpreter's sum: the first term, then each next one in row-major order, its square
+/// fused into the sum (DESIGN.md § 12 ADR-009).
 fn cpu_sum(a: &[f32], b: &[f32]) -> f32 {
-    let mut terms = a.iter().zip(b).map(|(&x, &y)| {
-        let d = x - y;
-        d * d
-    });
-    let first = terms.next().expect("one term at least");
-    terms.fold(first, |acc, term| acc + term)
+    let mut diffs = a.iter().zip(b).map(|(&x, &y)| x - y);
+    let first = diffs.next().expect("one term at least");
+    diffs.fold(first * first, |acc, d| d.mul_add(d, acc))
 }
 
 #[test]
