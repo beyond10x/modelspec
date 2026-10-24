@@ -43,7 +43,7 @@ use std::collections::{BTreeMap, VecDeque};
 use modelspec_core::artifact::{CompiledArtifact, ContentHash};
 use modelspec_core::device::DeviceProfile;
 use modelspec_core::ir::kernel::{
-    Epilogue, Kernel, KernelKind, KernelModuleId, MatMulTile, Operand,
+    Epilogue, Kernel, KernelKind, KernelModuleId, MatMulLayout, MatMulTile, Operand,
 };
 use modelspec_core::ir::tensor::{DType, Dim, TensorType};
 use rspirv::binary::Assemble;
@@ -323,6 +323,8 @@ enum Body {
         tile: MatMulTile,
         /// Whether `a` and `b` are bound transposed ([`Kernel::transposed`]).
         transposed: [bool; 2],
+        /// Where the tile's values lie in workgroup memory ([`MatMulTile::layout_within`]).
+        layout: MatMulLayout,
     },
 }
 
@@ -430,7 +432,7 @@ fn body_of(kernel: &Kernel, variant: Variant, shared_bytes: u32) -> Result<Body,
                 result.as_slice(),
             ) {
                 ([m, k], [k2, n], [rm, rn]) if k == k2 && m == rm && n == rn && *k > 0 => {
-                    let tile = MatMulTile::of(*m, *k, *n);
+                    let tile = MatMulTile::of_invocations(*m, *k, *n, kernel.workgroup_size);
                     let covered = kernel
                         .workgroups
                         .iter()
@@ -448,10 +450,12 @@ fn body_of(kernel: &Kernel, variant: Variant, shared_bytes: u32) -> Result<Body,
                             ),
                         ));
                     }
-                    if tile.shared_bytes() > shared_bytes {
+                    let layout = tile.layout_within(kernel.transposed, shared_bytes);
+                    let needs = layout.shared_bytes();
+                    if needs > shared_bytes {
                         return Err(EmitError::SharedMemory {
                             op: kernel.op,
-                            needs: tile.shared_bytes(),
+                            needs,
                             provides: shared_bytes,
                         });
                     }
@@ -463,6 +467,7 @@ fn body_of(kernel: &Kernel, variant: Variant, shared_bytes: u32) -> Result<Body,
                         epilogue: kernel.epilogue,
                         tile,
                         transposed: kernel.transposed,
+                        layout,
                     }
                 }
                 _ => {
@@ -597,7 +602,7 @@ fn build(
     let shared = match body {
         Body::Stage1 | Body::Stage2 { .. } => Some(TREE),
         Body::LossSum { chunk, .. } => Some(chunk),
-        Body::MatMul { tile, .. } => Some(tile.shared_values()),
+        Body::MatMul { layout, .. } => Some(layout.shared_values()),
         _ => None,
     };
     let matmul_vars = match body {
@@ -644,7 +649,8 @@ fn build(
             epilogue,
             tile,
             transposed,
-        } => m.matmul(rows, k, n, epilogue, tile, transposed)?,
+            layout,
+        } => m.matmul([rows, k, n], epilogue, tile, transposed, layout)?,
     }
     m.finish()
 }
@@ -702,8 +708,9 @@ const TRANSPOSED_A_RUN: u32 = 8;
 /// spans the tile's whole extent of that index. An operand bound transposed is contiguous along
 /// the other index: a transposed `b` along `k`, in runs of the tile's depth, and a transposed
 /// `a` across the block's rows, in runs of [`TRANSPOSED_A_RUN`] rows, then `k`, then the next
-/// run of rows, so that the workgroup memory it fills, laid out as for an `a` read as is, takes
-/// few stores into one bank at a time.
+/// run of rows. Workgroup memory is filled in the order of the operand read as is, a transposed
+/// operand's lines at the padded stride of [`MatMulTile::layout`], so that the 32 stores of a
+/// subgroup fall into 32 different banks when the device has the memory for it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Staging {
     /// The consecutive elements that read consecutive addresses.
@@ -1509,17 +1516,18 @@ impl Shell {
     /// An operand bound transposed (`transposed`, [`Kernel::transposed`]) is read in place from
     /// its row-major transpose, `[k, m]` for `a` and `[n, k]` for `b`, in the [`Staging`] order
     /// that gives consecutive invocations consecutive addresses, and staged in workgroup memory
-    /// where the operand bound as is would be, so the products read the same values from the
-    /// same places; every product and sum is that of the operand bound as is, and the
-    /// instructions for an operand bound as is are unchanged.
+    /// in the order of the operand bound as is, each line of the `a` block or of a `k`-major `b`
+    /// block at the stride of `layout` ([`MatMulTile::layout_within`]), padded against bank
+    /// conflicts when the device has the workgroup memory for it, so the products read the same
+    /// values as for the operand bound as is; every product and sum is that of the operand bound
+    /// as is, and the instructions for an operand bound as is are unchanged.
     fn matmul(
         &mut self,
-        m: u32,
-        k: u32,
-        n: u32,
+        [m, k, n]: [u32; 3],
         epilogue: Option<Epilogue>,
         tile: MatMulTile,
         transposed: [bool; 2],
+        layout: MatMulLayout,
     ) -> Result<(), EmitError> {
         let local = self.local.expect("a module with workgroup memory");
         let u32_ty = self.u32_ty;
@@ -1530,8 +1538,8 @@ impl Shell {
         let transposed = per == 1;
         let block_rows = tile.rows_per_workgroup();
         let thread_rows = size / lanes;
-        let a_stride = depth;
-        let b_offset = block_rows * a_stride;
+        let a_stride = layout.a_stride;
+        let b_offset = layout.b_offset;
 
         let index = self.index;
         let size_c = self.uint(size);
@@ -1552,7 +1560,7 @@ impl Shell {
         self.uint(depth);
         let a_stride_c = self.uint(a_stride);
         let b_offset_c = self.uint(b_offset);
-        let b_stride_c = self.uint(tile.b_stride());
+        let b_stride_c = self.uint(layout.b_stride);
         // Per column `c` of the invocation's block: its output column `j`, and where its `b`
         // values start in a buffer, at `k` 0 of the tile.
         let mut local_cols = Vec::new();
@@ -1729,7 +1737,7 @@ impl Shell {
         };
 
         let accumulators = matmul_accumulators(&tile);
-        let b_line = tile.b_stride();
+        let b_line = layout.b_stride;
         // Adds the products of the first `len` values of the tile staged in the buffer at
         // `buffer` to the accumulators, the first product starting the sum when `opening`. Per
         // `k`, the invocation reads its `b` value of each of its columns into registers, then
@@ -1781,8 +1789,8 @@ impl Shell {
                 }
                 Ok(())
             };
-        let buffer_values = tile.buffer_values();
-        let buffers = tile.buffers;
+        let buffer_values = layout.buffer_values;
+        let buffers = layout.buffers;
         let buffer_of =
             |s: &mut Self, tile_index: u32| s.uint((tile_index % buffers) * buffer_values);
 
@@ -1924,7 +1932,7 @@ impl Shell {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeMap, BTreeSet};
 
     use super::*;
 
@@ -2014,6 +2022,134 @@ mod tests {
             let b = Staging::of(&tile, m, k, n, false, false);
             assert_eq!((b.run, b.along_first), (tile.cols, false));
             assert_eq!((b.along_stride, b.across_stride), (n, 1));
+        }
+    }
+
+    /// The workgroup memory of the RTX 3090 profile, in bytes.
+    const RTX3090_SHARED_BYTES: u32 = 49_152;
+
+    /// The workgroup memory address that staging element `e` of operand `a` (`is_a`) or `b`
+    /// stores to in `layout`, as [`Shell::matmul`] computes it.
+    fn staged_at(tile: &MatMulTile, layout: &MatMulLayout, is_a: bool, at: (u32, u32)) -> u32 {
+        let (along, across) = at;
+        if is_a {
+            across * layout.a_stride + along
+        } else if tile.cols_per_invocation == 1 {
+            layout.b_offset + across * layout.b_stride + along
+        } else {
+            layout.b_offset + along * layout.b_stride + across
+        }
+    }
+
+    /// The bank conflicts of staging operand `a` (`is_a`) or `b` of `tile`, bound transposed,
+    /// into `layout`: over every store of 32 consecutive staging elements, the elements of the
+    /// 32 invocations of one subgroup, the most distinct addresses one of 32 banks of 4 bytes
+    /// takes. 1 is a store without conflicts.
+    fn conflicts(
+        tile: &MatMulTile,
+        layout: &MatMulLayout,
+        (m, k, n): (u32, u32, u32),
+        is_a: bool,
+    ) -> u32 {
+        let staging = Staging::of(tile, m, k, n, is_a, true);
+        let total = total(tile, is_a);
+        (0..total)
+            .step_by(32)
+            .map(|first| {
+                let mut banks: BTreeMap<u32, BTreeSet<u32>> = BTreeMap::new();
+                for e in first..(first + 32).min(total) {
+                    let at = staged_at(tile, layout, is_a, staging.split(e));
+                    banks.entry(at % 32).or_default().insert(at);
+                }
+                banks.values().map(|a| a.len() as u32).max().unwrap_or(0)
+            })
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// The flags of a matmul that reads only `a` (`is_a`) or only `b` transposed.
+    fn only(is_a: bool) -> [bool; 2] {
+        [is_a, !is_a]
+    }
+
+    /// Whether the padded layout of the tile removes the bank conflicts of the operand: a
+    /// transposed `a` whose depth is a multiple of 4, staged 8 rows by 4 values of `k` per
+    /// subgroup, and a transposed `b` of a register-blocked tile whose depth of 2 to 16 divides
+    /// 32, staged `k`-major, 32 / depth columns per subgroup. A transposed `b` of a one-column
+    /// tile is staged column-major at the stride it had before.
+    fn padded(tile: &MatMulTile, is_a: bool) -> bool {
+        if is_a {
+            tile.depth >= 4 && tile.depth.is_multiple_of(4)
+        } else {
+            tile.cols_per_invocation > 1 && tile.depth > 1 && 32 % tile.depth == 0
+        }
+    }
+
+    /// Acceptance `transposed-staging-padded`: the staging stores of a transposed `a` and of a
+    /// transposed `b` of a register-blocked tile take one address per bank per subgroup store on
+    /// a device with the workgroup memory of the RTX 3090, for the tiles of 128 invocations, the
+    /// block of 256 and the `mlp_sweep` and MNIST shapes; unpadded they take 2 to 16.
+    #[test]
+    fn a_transposed_operand_is_staged_into_workgroup_memory_without_bank_conflicts() {
+        let shapes = SHAPES.iter().map(|&s| (s, 128)).chain([
+            ((8192, 784, 4096), 256),
+            ((784, 8192, 4096), 256),
+            ((784, 8192, 1024), 128),
+            ((784, 8192, 256), 128),
+            ((256, 8192, 784), 128),
+        ]);
+        let mut checked = 0;
+        for ((m, k, n), limit) in shapes {
+            let tile = MatMulTile::of_invocations(m.into(), k.into(), n.into(), limit);
+            for is_a in [true, false] {
+                if !padded(&tile, is_a) {
+                    continue;
+                }
+                let case = format!("[{m}, {k}] x [{k}, {n}] {tile} a {is_a}");
+                let layout = tile.layout_within(only(is_a), RTX3090_SHARED_BYTES);
+                let before = conflicts(&tile, &tile.layout([false, false]), (m, k, n), is_a);
+                let after = conflicts(&tile, &layout, (m, k, n), is_a);
+                assert_eq!(after, 1, "{case}: {before} unpadded, {after} padded");
+                checked += 1;
+            }
+        }
+        assert!(checked >= 10, "{checked} operands checked");
+    }
+
+    /// The padding never adds conflicts and never moves an operand read as is: over sampled
+    /// shapes and both invocation limits, a padded operand stores without conflicts, any other
+    /// transposed operand stores as unpadded, and the strides of a matmul reading neither
+    /// operand transposed are those of the tile before the change.
+    #[test]
+    fn the_padding_removes_conflicts_and_leaves_an_operand_read_as_is_where_it_was() {
+        let mut state = 0x5eed_u64;
+        let mut next = |bound: u64| {
+            state = state.wrapping_add(0x9e37_79b9_7f4a_7c15);
+            let mut z = state;
+            z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+            1 + (z ^ (z >> 31)) % bound
+        };
+        for _ in 0..4000 {
+            let (m, k, n) = (next(9000) as u32, next(9000) as u32, next(9000) as u32);
+            for limit in [128, 256] {
+                let tile = MatMulTile::of_invocations(m.into(), k.into(), n.into(), limit);
+                let plain = tile.layout([false, false]);
+                assert_eq!(plain.a_stride, tile.depth, "{tile}");
+                assert_eq!(plain.b_stride, tile.b_stride(), "{tile}");
+                for is_a in [true, false] {
+                    let case = format!("[{m}, {k}] x [{k}, {n}] {tile} a {is_a}");
+                    let layout = tile.layout_within(only(is_a), RTX3090_SHARED_BYTES);
+                    let before = conflicts(&tile, &plain, (m, k, n), is_a);
+                    let after = conflicts(&tile, &layout, (m, k, n), is_a);
+                    if padded(&tile, is_a) {
+                        assert_eq!(after, 1, "{case}: {before} unpadded");
+                    } else {
+                        assert_eq!(layout, plain, "{case}");
+                    }
+                    assert!(after <= before, "{case}: {before} unpadded, {after} padded");
+                }
+            }
         }
     }
 }

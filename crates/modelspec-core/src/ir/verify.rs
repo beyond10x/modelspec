@@ -8,8 +8,9 @@ use std::fmt;
 
 use thiserror::Error;
 
+use crate::device::DeviceProfile;
 use crate::ir::kernel::{
-    BufferView, ExecutionPlan, Kernel, KernelKind, KernelModuleId, PlanOp, PlanStep,
+    BufferView, ExecutionPlan, Kernel, KernelKind, KernelModuleId, MatMulLimits, PlanOp, PlanStep,
 };
 use crate::ir::tensor::{Dim, ParamId, TensorOp, TensorProgram, TensorType, ValueId};
 use crate::ir::training::{
@@ -813,7 +814,9 @@ fn params_read_by(program: &TensorProgram, value: ValueId) -> BTreeSet<ParamId> 
     params
 }
 
-/// The most invocations of one workgroup that every Vulkan device supports.
+/// The most invocations of one workgroup that every Vulkan device supports: the bound of a plan
+/// checked without a device profile ([`verify_plan`]), and the invocation limit of
+/// [`crate::ir::kernel::MatMulTile::of`].
 pub const MAX_WORKGROUP_INVOCATIONS: u32 = 128;
 
 /// Which plan of an [`ExecutionPlan`] a step belongs to.
@@ -850,8 +853,12 @@ pub enum PlanVerifyError {
     },
     #[error("a view of buffer b{buffer} is empty, misaligned or not its element count's size")]
     MalformedView { buffer: u32 },
-    #[error("kernel {kernel} has {size} invocations per workgroup, outside 1..=128")]
-    WorkgroupTooLarge { kernel: KernelModuleId, size: u32 },
+    #[error("kernel {kernel} has {size} invocations per workgroup, outside 1..={max}")]
+    WorkgroupTooLarge {
+        kernel: KernelModuleId,
+        size: u32,
+        max: u32,
+    },
     #[error("{plan} step {step} depends on step {on}, which is not before it")]
     DependencyNotEarlier {
         plan: PlanName,
@@ -951,7 +958,8 @@ pub enum PlanVerifyError {
 /// Order: each parameter has one or two views; every view (parameter, data, loss, prediction
 /// and each step's) is well formed and lies inside its buffer; each parameter and data view holds
 /// its declared type's element count and dtype; no data, loss or prediction view lies in a
-/// parameter buffer; every kernel has 1 to 128 invocations per workgroup. Then for the step plan
+/// parameter buffer; every kernel has 1 to [`MAX_WORKGROUP_INVOCATIONS`] invocations per
+/// workgroup ([`verify_plan_for`] takes the bound from a device profile). Then for the step plan
 /// and the forward plan, each a pass over every step: no completion point, dependencies on earlier
 /// steps only, a Dispatch names a kernel of the plan and 1 to 65,535 workgroups per dimension,
 /// equal to its kernel's, and no other step names either, an `Allocate` makes a buffer no earlier
@@ -968,7 +976,27 @@ pub enum PlanVerifyError {
 /// one recording, so it has exactly one fence, its last step; [`verify_recorded_back_to_back`]
 /// checks the same plan recorded several times in a row.
 pub fn verify_plan(plan: &ExecutionPlan) -> Result<(), PlanVerifyError> {
-    verify_execution(plan, false)
+    verify_plan_for(plan, None)
+}
+
+/// [`verify_plan`] for a plan scheduled for the device `profile` describes: every kernel has
+/// from 1 to [`max_workgroup_invocations`] of `profile` invocations per workgroup, from 1 to
+/// [`MAX_WORKGROUP_INVOCATIONS`] without a profile, and is refused past it with
+/// [`PlanVerifyError::WorkgroupTooLarge`].
+pub fn verify_plan_for(
+    plan: &ExecutionPlan,
+    profile: Option<&DeviceProfile>,
+) -> Result<(), PlanVerifyError> {
+    verify_execution(plan, false, max_workgroup_invocations(profile))
+}
+
+/// The most invocations of one workgroup of a plan for `profile`: the smaller of its
+/// `max_workgroup_invocations` and `max_workgroup_size.x`, the two bounds of a workgroup whose
+/// `LocalSize` is `(size, 1, 1)`; without a profile, [`MAX_WORKGROUP_INVOCATIONS`].
+pub fn max_workgroup_invocations(profile: Option<&DeviceProfile>) -> u32 {
+    profile.map_or(MAX_WORKGROUP_INVOCATIONS, |profile| {
+        MatMulLimits::of(profile).invocations
+    })
 }
 
 /// Checks that `plan` verifies and stays race-free when each of its plans is recorded `n` times
@@ -978,7 +1006,17 @@ pub fn verify_plan(plan: &ExecutionPlan) -> Result<(), PlanVerifyError> {
 /// no dependencies after a fence is ordered after it, and the `Allocate`, partials and
 /// read-after-update checks look only inside a step's own recording.
 pub fn verify_recorded_back_to_back(plan: &ExecutionPlan, n: usize) -> Result<(), PlanVerifyError> {
-    verify_plan(plan)?;
+    verify_recorded_back_to_back_for(plan, n, None)
+}
+
+/// [`verify_recorded_back_to_back`] for a plan scheduled for the device `profile` describes,
+/// with the workgroup bound of [`verify_plan_for`].
+pub fn verify_recorded_back_to_back_for(
+    plan: &ExecutionPlan,
+    n: usize,
+    profile: Option<&DeviceProfile>,
+) -> Result<(), PlanVerifyError> {
+    verify_plan_for(plan, profile)?;
     if n < 2 {
         return Ok(());
     }
@@ -998,12 +1036,17 @@ pub fn verify_recorded_back_to_back(plan: &ExecutionPlan, n: usize) -> Result<()
     let mut joined = plan.clone();
     joined.step = repeat(&plan.step);
     joined.forward = repeat(&plan.forward);
-    verify_execution(&joined, true)
+    verify_execution(&joined, true, max_workgroup_invocations(profile))
 }
 
-/// [`verify_plan`], or with `back_to_back` the check of [`verify_recorded_back_to_back`] on the
-/// joined plan.
-fn verify_execution(plan: &ExecutionPlan, back_to_back: bool) -> Result<(), PlanVerifyError> {
+/// [`verify_plan_for`], or with `back_to_back` the check of
+/// [`verify_recorded_back_to_back_for`] on the joined plan, with kernels of at most
+/// `max_invocations` invocations per workgroup.
+fn verify_execution(
+    plan: &ExecutionPlan,
+    back_to_back: bool,
+    max_invocations: u32,
+) -> Result<(), PlanVerifyError> {
     for parameter in &plan.parameters {
         match parameter.views.len() {
             0 => {
@@ -1076,10 +1119,11 @@ fn verify_execution(plan: &ExecutionPlan, back_to_back: bool) -> Result<(), Plan
     }
 
     for kernel in &plan.kernels {
-        if !(1..=MAX_WORKGROUP_INVOCATIONS).contains(&kernel.workgroup_size) {
+        if !(1..=max_invocations).contains(&kernel.workgroup_size) {
             return Err(PlanVerifyError::WorkgroupTooLarge {
                 kernel: kernel.id,
                 size: kernel.workgroup_size,
+                max: max_invocations,
             });
         }
     }

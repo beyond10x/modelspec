@@ -40,8 +40,11 @@
 //! A buffer over [`MAX_BUFFER_BYTES`] or a dispatch over
 //! [`MAX_INVOCATIONS`] is refused as a target limit. The prediction has its own view: a forward that returns an
 //! input or a parameter copies it there with a `Copy` step, and one that returns a literal fills
-//! it with a Broadcast dispatch. The workgroup sizes are the constants of [`KernelKind`]; nothing
-//! here reads a device.
+//! it with a Broadcast dispatch. The workgroup sizes are the constants of [`KernelKind`], except a
+//! matmul's, its tile's: [`schedule`] gives every matmul [`MatMulTile::of`], the tile of every
+//! Vulkan device, and [`schedule_for`] with the limits of a device profile ([`MatMulLimits`])
+//! [`MatMulTile::for_limits`], which takes its invocation limit and workgroup memory (DESIGN.md
+//! § 3.1, § 5.2). Nothing here opens a device.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -49,7 +52,8 @@ use thiserror::Error;
 
 use crate::artifact::{DataRole, DataSpec, ParameterSpec, canonical_parameter_id};
 use crate::ir::kernel::{
-    BufferView, Epilogue, ExecutionPlan, Kernel, KernelKind, MatMulTile, Operand, PlanOp, PlanStep,
+    BufferView, Epilogue, ExecutionPlan, Kernel, KernelKind, MatMulLimits, MatMulTile, Operand,
+    PlanOp, PlanStep,
 };
 use crate::ir::tensor::{DType, Dim, ParamId, TensorNode, TensorOp, TensorType, ValueId};
 use crate::ir::training::{TrainConfig, TrainingStep};
@@ -293,12 +297,25 @@ fn fusions(
 }
 
 /// Schedules `step`, whose forward prediction is `prediction`, with the data declarations of
-/// `config`. The result has one view per parameter and passes
-/// [`crate::ir::verify::verify_plan`].
+/// `config`, for every Vulkan device: [`schedule_for`] without device limits. The result has one view
+/// per parameter and passes [`crate::ir::verify::verify_plan`].
 pub fn schedule(
     step: &TrainingStep,
     prediction: ValueId,
     config: &TrainConfig,
+) -> Result<ExecutionPlan, ScheduleError> {
+    schedule_for(step, prediction, config, None)
+}
+
+/// [`schedule`] within the `limits` of a device ([`MatMulLimits::of`] its profile): each matmul takes
+/// [`MatMulTile::for_limits`] of its shape and transposed operands, and without limits
+/// [`MatMulTile::of`]. Limits at the Vulkan minimum of 128 invocations give the plan of
+/// [`schedule`]. The result passes [`crate::ir::verify::verify_plan_for`] with the profile of the limits.
+pub fn schedule_for(
+    step: &TrainingStep,
+    prediction: ValueId,
+    config: &TrainConfig,
+    limits: Option<MatMulLimits>,
 ) -> Result<ExecutionPlan, ScheduleError> {
     let program = &step.training.program;
     let mut buffers = Vec::new();
@@ -512,7 +529,9 @@ pub fn schedule(
         let output = elements(&node.ty).ok_or_else(shape_error)?;
         let one = |kind: KernelKind, operands: Vec<Operand>| -> Result<Kernel, ScheduleError> {
             let tile = match kind {
-                KernelKind::MatMul => Some(matmul_tile(&operands).ok_or_else(shape_error)?),
+                KernelKind::MatMul => {
+                    Some(matmul_tile(&operands, transposed, limits).ok_or_else(shape_error)?)
+                }
                 _ => None,
             };
             let workgroups = match (kind, tile) {
@@ -716,10 +735,20 @@ fn spread(node: &TensorNode, groups: u64) -> Result<[u32; 3], ScheduleError> {
     Ok([x as u32, y as u32, z as u32])
 }
 
-/// The tile of a matmul over `operands` `[m, k]` and `[k, n]`, with `m` and `n`.
-fn matmul_tile(operands: &[Operand]) -> Option<(MatMulTile, u64, u64)> {
+/// The tile of a matmul over `operands` `[m, k]` and `[k, n]`, reading the operands marked in
+/// `transposed`, within the `limits` of a device or, without them, for every Vulkan device;
+/// with `m` and `n`.
+fn matmul_tile(
+    operands: &[Operand],
+    transposed: [bool; 2],
+    limits: Option<MatMulLimits>,
+) -> Option<(MatMulTile, u64, u64)> {
     let (m, k, n) = Kernel::matmul_shape(operands)?;
-    Some((MatMulTile::of(m, k, n), m, n))
+    let tile = match limits {
+        Some(limits) => MatMulTile::for_limits(m, k, n, transposed, limits),
+        None => MatMulTile::of(m, k, n),
+    };
+    Some((tile, m, n))
 }
 
 fn kernel(

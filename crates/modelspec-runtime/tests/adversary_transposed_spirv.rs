@@ -1,8 +1,8 @@
 //! Adversary cases for story:matmul-reads-transposed-operand, without a device: the module of a
 //! matmul that reads an operand transposed against the module of the same shape that reads it
-//! as is (DESIGN.md § 5.2: "each value goes where the operand read as is puts it in workgroup
-//! memory, so the products read the same values from the same places, and every product and the
-//! order of each sum are those of the stored transpose").
+//! as is (DESIGN.md § 5.2: "each value goes to the line and place in its line where the operand
+//! read as is puts it in workgroup memory, so the products read the same values, and every
+//! product and the order of each sum are those of the stored transpose").
 //!
 //! For every shape, tile family and flag combination:
 //!
@@ -11,8 +11,10 @@
 //!   memory load, a function-variable load, an `OpFMul`, an `OpFAdd`), and the workgroup
 //!   memory loads the products read use the same address expression shapes;
 //! - every `OpFMul` and `OpFAdd` result is decorated `NoContraction` in both;
-//! - the workgroup memory arrays have the same lengths, so the transposed staging asks for no
-//!   more shared memory than the tile it was sized for;
+//! - the workgroup memory array of the plain module has the length of the tile's unpadded
+//!   layout, and that of the transposed module the length of the tile's layout for its flags
+//!   on the profile ([`MatMulTile::layout_within`], its strides padded against bank conflicts
+//!   when the padded layout fits), within the profile's workgroup memory;
 //! - the transposed module passes `spirv-val`.
 #![cfg(feature = "vulkan")]
 
@@ -203,7 +205,7 @@ fn shape_of(module: &[u32]) -> (Shape, usize, usize) {
 }
 
 #[test]
-fn a_transposed_operand_changes_no_arithmetic_and_no_workgroup_memory_of_its_module() {
+fn a_transposed_operand_changes_no_arithmetic_and_stages_into_the_layout_of_its_flags() {
     let profile = profile();
     let mut wrong = Vec::new();
     let mut families = BTreeSet::new();
@@ -257,9 +259,14 @@ fn a_transposed_operand_changes_no_arithmetic_and_no_workgroup_memory_of_its_mod
                         "{case}: {decorated} of {ops} arithmetic results NoContraction"
                     ));
                 }
-                if got.shared != want.shared {
+                let plain_values = tile.layout([false, false]).shared_values();
+                let layout = tile.layout_within(transposed, profile.max_shared_memory_bytes);
+                if want.shared != [plain_values]
+                    || got.shared != [layout.shared_values()]
+                    || layout.shared_bytes() > profile.max_shared_memory_bytes
+                {
                     wrong.push(format!(
-                        "{case}: workgroup memory {:?} against {:?}",
+                        "{case}: workgroup memory {:?} against {:?}, layout {layout:?}",
                         got.shared, want.shared
                     ));
                 }

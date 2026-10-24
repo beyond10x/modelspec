@@ -203,7 +203,7 @@ entities:
         summary: Recorded in the artifact hash (DESIGN.md § 3.3).
       - name: deterministic
         type: Boolean
-        summary: A compile setting; every floating-point reduction runs in an order fixed by the shape alone, workgroup sizes are compile-time constants never read from a DeviceProfile, and the CPU order is one admissible order, so it is recorded in the artifact hash (DESIGN.md § 3.3, § 5.2, § 6.1).
+        summary: A compile setting; every floating-point reduction runs in an order fixed by the shape alone, the workgroup sizes of reductions are compile-time constants never read from a DeviceProfile, and the CPU order is one admissible order, so it is recorded in the artifact hash (DESIGN.md § 3.3, § 5.2, § 6.1).
       - name: compiler_version
         type: String
         summary: Manifest; recorded for reproducibility (DESIGN.md § 6.1).

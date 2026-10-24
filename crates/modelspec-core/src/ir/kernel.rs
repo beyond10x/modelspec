@@ -7,13 +7,16 @@
 //! prediction alone. [`crate::ir::verify::verify_plan`] checks it; [`crate::ir::print::print_kernel`]
 //! prints it.
 //!
-//! The workgroup size of a kernel is the constant of its [`KernelKind`], never read from a device
-//! (DESIGN.md § 5.3, the fixed safe schedule of M1).
+//! The workgroup size of a kernel is the constant of its [`KernelKind`], except a matmul's, which
+//! is its [`MatMulTile`]'s: a function of its shape and of the invocation limit of the device
+//! profile its plan is scheduled for, 128 without one (DESIGN.md § 3.1, § 5.2).
 
 use std::fmt;
 
 use crate::artifact::{DataSpec, ParameterSpec};
+use crate::device::DeviceProfile;
 use crate::ir::tensor::{DType, Dim, TensorType, ValueId};
+use crate::ir::verify::MAX_WORKGROUP_INVOCATIONS;
 
 /// The identity of a kernel module, a UUID printed in its hyphenated form. It is derived from the
 /// content of the kernel ([`Kernel::module_id`]), so two compiles of one file give equal ids.
@@ -115,7 +118,8 @@ pub struct PlanStep {
 }
 
 /// What a kernel computes. Its workgroup size is a constant of the kind
-/// ([`KernelKind::workgroup_size`]), except a matmul's, which is its [`MatMulTile`]'s.
+/// ([`KernelKind::workgroup_size`]), except a matmul's, which is its [`MatMulTile`]'s
+/// ([`Kernel::matmul_tile`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum KernelKind {
     /// `Add`, `Sub`, `Mul`, `Relu` or `ReluGrad`, one invocation per output element.
@@ -177,6 +181,21 @@ pub struct MatMulBlock {
     pub from_k: u64,
     pub from_workgroups: u64,
 }
+
+/// The block register-blocked tile: 256 invocations of 8 rows by 8 columns, a block of 128 rows
+/// by 128 columns, tiles of 8 values of `k`. Each staged value of `a` serves 128 columns, as in
+/// [`MATMUL_WIDE_BLOCK`], and each staged value of `b` 128 rows instead of 64, so a workgroup
+/// reads half the operand values per product the wide tile reads. Only a device profile that
+/// allows 256 invocations takes it ([`MatMulTile::for_profile`]); `from_k` is the wide tile's.
+pub const MATMUL_LARGE_BLOCK: MatMulBlock = MatMulBlock {
+    workgroup_size: 256,
+    cols: 128,
+    rows: 8,
+    cols_per_invocation: 8,
+    depth: 8,
+    from_k: 64,
+    from_workgroups: 128,
+};
 
 /// The wide register-blocked tile: 128 invocations of 8 rows by 8 columns, a block of 64 rows by
 /// 128 columns, tiles of 8 values of `k`. On the RTX 3090 it takes the forward matmul of
@@ -241,16 +260,30 @@ pub struct MatMulTile {
 }
 
 impl MatMulTile {
-    /// The tile of a `[m, k] x [k, n]` matmul, a function of its shape alone: the first of
-    /// [`MATMUL_WIDE_BLOCK`] and [`MATMUL_SQUARE_BLOCK`] the shape takes, read 1 tile ahead with
-    /// `b` unpadded. Otherwise 128 invocations of one column each, 16 columns (fewer, a power of
-    /// two, when `n` is smaller), one row per invocation, or two when one row needs at least
-    /// [`MATMUL_TWO_ROWS_FROM_WORKGROUPS`] workgroups, tiles of up to 64 values read 6 tiles
-    /// ahead for one row and of up to 16 values read 2 tiles ahead for two
-    /// ([`MATMUL_TWO_ROW_TILE`]), and the transposed `b` padded by 4. In every tile the depth is
-    /// clamped to `k`, then halved until the staged values fit in [`MIN_SHARED_MEMORY_BYTES`].
+    /// The tile of a `[m, k] x [k, n]` matmul on every Vulkan device: [`MatMulTile::of_invocations`]
+    /// at [`MAX_WORKGROUP_INVOCATIONS`], the Vulkan minimum of `maxComputeWorkGroupInvocations`.
+    /// A plan scheduled without a device profile runs it.
     pub fn of(m: u64, k: u64, n: u64) -> Self {
-        for block in [MATMUL_WIDE_BLOCK, MATMUL_SQUARE_BLOCK] {
+        Self::of_invocations(m, k, n, MAX_WORKGROUP_INVOCATIONS)
+    }
+
+    /// The tile of a `[m, k] x [k, n]` matmul whose workgroups may hold `max_invocations`
+    /// invocations, a function of the shape and the limit: the first of [`MATMUL_LARGE_BLOCK`],
+    /// [`MATMUL_WIDE_BLOCK`] and [`MATMUL_SQUARE_BLOCK`] whose workgroup size is within the limit
+    /// and which the shape takes, read 1 tile ahead with `b` unpadded. Otherwise 128 invocations
+    /// of one column each, 16 columns (fewer, a power of two, when `n` is smaller), one row per
+    /// invocation, or two when one row needs at least [`MATMUL_TWO_ROWS_FROM_WORKGROUPS`]
+    /// workgroups, tiles of up to 64 values read 6 tiles ahead for one row and of up to 16 values
+    /// read 2 tiles ahead for two ([`MATMUL_TWO_ROW_TILE`]), and the transposed `b` padded by 4.
+    /// In every tile the depth is clamped to `k`, then halved until the staged values fit in
+    /// [`MIN_SHARED_MEMORY_BYTES`]. A limit below [`MAX_WORKGROUP_INVOCATIONS`] counts as that
+    /// minimum, so every limit up to 255 gives the tiles of [`MatMulTile::of`].
+    pub fn of_invocations(m: u64, k: u64, n: u64, max_invocations: u32) -> Self {
+        let limit = max_invocations.max(MAX_WORKGROUP_INVOCATIONS);
+        for block in [MATMUL_LARGE_BLOCK, MATMUL_WIDE_BLOCK, MATMUL_SQUARE_BLOCK] {
+            if block.workgroup_size > limit {
+                continue;
+            }
             let tile = Self {
                 workgroup_size: block.workgroup_size,
                 cols: block.cols,
@@ -287,6 +320,96 @@ impl MatMulTile {
             b_pad: 4,
         }
         .fitted(k)
+    }
+
+    /// The tile of a `[m, k] x [k, n]` matmul reading the operands marked in `transposed`
+    /// ([`Kernel::transposed`]) on a device with `profile`: [`MatMulTile::for_limits`] of
+    /// [`MatMulLimits::of`] the profile.
+    pub fn for_profile(
+        m: u64,
+        k: u64,
+        n: u64,
+        transposed: [bool; 2],
+        profile: &DeviceProfile,
+    ) -> Self {
+        Self::for_limits(m, k, n, transposed, MatMulLimits::of(profile))
+    }
+
+    /// The tile of a `[m, k] x [k, n]` matmul reading the operands marked in `transposed`
+    /// within `limits`: [`MatMulTile::of_invocations`] at `limits.invocations`, then the next
+    /// smaller tile while one of more than [`MAX_WORKGROUP_INVOCATIONS`] invocations stages
+    /// more bytes ([`MatMulTile::layout`]) than `limits.shared_bytes`. A tile of the Vulkan
+    /// minimum is returned as it is: the emitter refuses one that does not fit.
+    pub fn for_limits(m: u64, k: u64, n: u64, transposed: [bool; 2], limits: MatMulLimits) -> Self {
+        let mut limit = limits.invocations;
+        loop {
+            let tile = Self::of_invocations(m, k, n, limit);
+            if tile.workgroup_size <= MAX_WORKGROUP_INVOCATIONS
+                || tile.layout(transposed).shared_bytes() <= limits.shared_bytes
+            {
+                return tile;
+            }
+            limit = tile.workgroup_size - 1;
+        }
+    }
+
+    /// Where the tile's values lie in workgroup memory for a matmul reading the operands marked
+    /// in `transposed`: the `a` block, one line of [`MatMulLayout::a_stride`] per output row,
+    /// then the `b` block, `cols` lines of [`MatMulLayout::b_stride`] transposed or `depth`
+    /// lines as read, in each of `buffers` buffers.
+    ///
+    /// An operand read as is keeps the strides of the tile, `depth` and
+    /// [`MatMulTile::b_stride`]. A transposed operand is staged in other runs (DESIGN.md
+    /// § 5.2), and its stride is padded so that the 32 stores of a subgroup fall into 32
+    /// different banks of 4 bytes. A transposed `a` stores 8 rows by 4 values of `k` per
+    /// subgroup: with a depth that is a multiple of 4, its stride is the smallest one of at
+    /// least `depth` that leaves 4 modulo 8, so the 8 rows start in 8 different groups of 4
+    /// banks. A transposed `b` of a register-blocked tile stores `32 / depth` columns by `depth`
+    /// values of `k`, `k`-major: with a depth of 2 or more that divides 32, its stride is
+    /// `cols + 32 / depth`. A transposed `b` of a one-column tile already has the padded
+    /// stride of [`MatMulTile::b_pad`].
+    pub fn layout(&self, transposed: [bool; 2]) -> MatMulLayout {
+        let [a_transposed, b_transposed] = transposed;
+        let depth = self.depth;
+        let a_stride = if a_transposed && depth >= 4 && depth.is_multiple_of(4) {
+            depth + (12 - depth % 8) % 8
+        } else {
+            depth
+        };
+        let b_stride = if b_transposed
+            && self.cols_per_invocation > 1
+            && depth > 1
+            && 32u32.is_multiple_of(depth)
+        {
+            self.b_stride() + 32 / depth
+        } else {
+            self.b_stride()
+        };
+        let lines = if self.cols_per_invocation == 1 {
+            self.cols
+        } else {
+            self.depth
+        };
+        let b_offset = self.rows_per_workgroup() * a_stride;
+        MatMulLayout {
+            a_stride,
+            b_stride,
+            b_offset,
+            buffer_values: b_offset + lines * b_stride,
+            buffers: self.buffers,
+        }
+    }
+
+    /// The layout a device with `shared_bytes` of workgroup memory stages the tile in:
+    /// [`MatMulTile::layout`] when it fits, and otherwise that of a matmul reading neither
+    /// operand transposed.
+    pub fn layout_within(&self, transposed: [bool; 2], shared_bytes: u32) -> MatMulLayout {
+        let padded = self.layout(transposed);
+        if padded.shared_bytes() <= shared_bytes {
+            padded
+        } else {
+            self.layout([false, false])
+        }
     }
 
     /// The tile with its depth clamped to `k`, then halved until the staged values fit in
@@ -349,6 +472,57 @@ impl MatMulTile {
     /// The workgroups that cover `[m, n]`: row blocks times column blocks.
     pub fn workgroups(&self, m: u64, n: u64) -> u64 {
         m.div_ceil(u64::from(self.rows_per_workgroup())) * n.div_ceil(u64::from(self.cols))
+    }
+}
+
+/// The two device limits a matmul tile is chosen within ([`MatMulTile::for_limits`]): the
+/// invocations of one workgroup of `LocalSize` x and the bytes of workgroup memory.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct MatMulLimits {
+    pub invocations: u32,
+    pub shared_bytes: u32,
+}
+
+impl MatMulLimits {
+    /// The limits of the device `profile` describes: the smaller of its
+    /// `max_workgroup_invocations` and `max_workgroup_size.x`, the two bounds of a workgroup of
+    /// `LocalSize` x, and its `max_shared_memory_bytes`.
+    pub fn of(profile: &DeviceProfile) -> Self {
+        Self {
+            invocations: profile
+                .max_workgroup_invocations
+                .min(profile.max_workgroup_size.x),
+            shared_bytes: profile.max_shared_memory_bytes,
+        }
+    }
+}
+
+/// The workgroup memory of a [`MatMulTile`] for a matmul with given `transposed` flags
+/// ([`MatMulTile::layout`]), in `f32` values: what the emitter stages and where.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct MatMulLayout {
+    /// The distance between two rows of the staged `a` block.
+    pub a_stride: u32,
+    /// The distance in the staged `b` block between two columns, when it is transposed
+    /// (`cols_per_invocation` 1), or between two values of `k`.
+    pub b_stride: u32,
+    /// Where the `b` block starts in a buffer, after the `a` block.
+    pub b_offset: u32,
+    /// The values of one buffer.
+    pub buffer_values: u32,
+    /// The buffers, the tile's [`MatMulTile::buffers`].
+    pub buffers: u32,
+}
+
+impl MatMulLayout {
+    /// The `f32` values staged, every buffer.
+    pub fn shared_values(&self) -> u32 {
+        self.buffers * self.buffer_values
+    }
+
+    /// The workgroup memory staged, in bytes.
+    pub fn shared_bytes(&self) -> u32 {
+        self.shared_values() * 4
     }
 }
 
@@ -530,13 +704,20 @@ impl Kernel {
     /// reads transposed is followed by ` transposed`; a kernel that reads none has the text it
     /// had before the flag existed.
     pub fn signature(&self) -> String {
-        let tile = match self.kind {
-            KernelKind::MatMul => {
-                Kernel::matmul_shape(&self.operands).map(|(m, k, n)| MatMulTile::of(m, k, n))
-            }
+        self.signature_with(self.matmul_tile())
+    }
+
+    /// The tile a matmul kernel runs: [`MatMulTile::of_invocations`] of its shape at its own
+    /// workgroup size, so a kernel of 128 invocations has the tile of [`MatMulTile::of`] and one
+    /// the schedule gave a block of 256 has that block. A kernel whose workgroup size is not its
+    /// tile's is refused by the emitter. `None` on every other kind and on a shape that is not
+    /// two static matrices.
+    pub fn matmul_tile(&self) -> Option<MatMulTile> {
+        match self.kind {
+            KernelKind::MatMul => Kernel::matmul_shape(&self.operands)
+                .map(|(m, k, n)| MatMulTile::of_invocations(m, k, n, self.workgroup_size)),
             _ => None,
-        };
-        self.signature_with(tile)
+        }
     }
 
     fn signature_with(&self, tile: Option<MatMulTile>) -> String {
