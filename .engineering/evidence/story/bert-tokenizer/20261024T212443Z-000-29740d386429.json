@@ -1,0 +1,13 @@
+{
+  "at": "2026-10-24T21:24:43Z",
+  "actor": "human:timo",
+  "artifact": "story:bert-tokenizer",
+  "kind": "story",
+  "revision": 5,
+  "change": {
+    "change": "evidence",
+    "kind": "test_result",
+    "source": "task ci",
+    "reference": "de21f4529b0794f0fe52c91f7dd1692485b927de"
+  }
+}

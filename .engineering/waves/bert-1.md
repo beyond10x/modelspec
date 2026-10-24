@@ -32,7 +32,7 @@ me" (`approval-record:perf-wave-1`).
 | # | unit | branch | tree | build dir | scratch | commit | state |
 |---|---|---|---|---|---|---|---|
 | 1 | bert-corpus-splits | impl/bert-corpus-splits | wt-80e4bdccf4f3 | `target/` in the tree | `~/.cache/modelspec-wave-bert-1/corpus/scratch/` | 674c351, d4d3ccd | implemented: task ci exit 0 (1,736 passed, 0 failed, 168 ignored); adversary pass 1 red on the heading rule (29,444 against 28,475 on the real release), fixed by D22, 13 adversary cases green; ADV-CORPUS-2 drafted as story:content-hash-schema-constrained |
-| 2 | bert-tokenizer | impl/bert-tokenizer | wt-a9a168f6af78 | `target/` in the tree | `~/.cache/modelspec-wave-bert-1/tokenizer/scratch/` | | implemented on its own branch (676→688 cases, red 7 first); real release `--vocab-size 8192` 24.4 s wall, 143 MB peak RSS, byte-identical twice; adversary pass 1 dispatched |
+| 2 | bert-tokenizer | impl/bert-tokenizer | wt-a9a168f6af78 | `target/` in the tree | `~/.cache/modelspec-wave-bert-1/tokenizer/scratch/` | | implemented on its own branch (676→688 cases, red 7 first); adversary pass 1 red (ADV-TOK-2: the D23 score rule gave a character-level English vocabulary), fixed by D25 in de21f45; real release `--vocab-size 8192` 11.8 s wall, 1.32 ids per held-out word, byte-identical twice; 17 adversary cases kept |
 
 ## Decisions taken by the coordinator
 
