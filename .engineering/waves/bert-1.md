@@ -32,7 +32,7 @@ me" (`approval-record:perf-wave-1`).
 | # | unit | branch | tree | build dir | scratch | commit | state |
 |---|---|---|---|---|---|---|---|
 | 1 | bert-corpus-splits | impl/bert-corpus-splits | wt-80e4bdccf4f3 | `target/` in the tree | `~/.cache/modelspec-wave-bert-1/corpus/scratch/` | 674c351, d4d3ccd | implemented: task ci exit 0 (1,736 passed, 0 failed, 168 ignored); adversary pass 1 red on the heading rule (29,444 against 28,475 on the real release), fixed by D22, 13 adversary cases green; ADV-CORPUS-2 drafted as story:content-hash-schema-constrained |
-| 3 | bert-embedding-lookup (operator chain, beside the data chain; decision D24) | impl/bert-embedding-lookup | wt-dd1e45b09112 | `target/` in the tree | `~/.cache/modelspec-wave-bert-1/embedding/scratch/` | | implemented on its own branch (1,164→1,193 cases, red 30 first); codes E-TYPE-018 and E-DATA-004; DESIGN.md 0.36; no Vulkan kernel (E-INTERNAL-002 names it); adversary pass 1 dispatched |
+| 3 | bert-embedding-lookup (operator chain, beside the data chain; decision D24) | impl/bert-embedding-lookup | wt-dd1e45b09112 | `target/` in the tree | `~/.cache/modelspec-wave-bert-1/embedding/scratch/` | | implemented on its own branch (1,164→1,193 cases, red 30 first); codes E-TYPE-018 and E-DATA-004; DESIGN.md 0.36; no Vulkan kernel (E-TARGET-011 names it since the fix pass af3aba9); adversary pass 1 red on two warnings (a CPU artifact refused by the Vulkan schedule; a compiler-bug code for a missing kernel), both fixed, 19 adversary cases kept; task ci exit 0 (1,833 passed, 0 failed, 174 ignored) |
 
 ## Decisions taken by the coordinator
 

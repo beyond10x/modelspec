@@ -2,7 +2,7 @@
 format: aep.planning-md/3
 id: story:bert-embedding-lookup
 kind: story
-status: active
+status: implemented
 title: Integer token inputs and the embedding lookup, gradient-checked on the CPU
 summary: Adds the i32 element type, restricted to ids and labels, and embedding with a deterministic scatter-add gradient on the CPU interpreter, with an f64 finite-difference check.
 relations:
@@ -69,10 +69,11 @@ scope:
   path: website/docs/reference/diagnostics.md
 - confidence: cited
   path: website/docs/reference/operators.md
-revision: 5
+revision: 6
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-24T20:22:51Z", actor: "human:timo", revision: 4}
 - {from: "proposed", to: "active", at: "2026-10-24T20:22:51Z", actor: "human:timo", revision: 5}
+- {from: "active", to: "implemented", at: "2026-10-24T22:02:35Z", actor: "human:timo", revision: 6, decided_on: {"recorded":{"test_result":1,"review_outcome":1}}}
 ---
 # Integer token inputs and the embedding lookup, gradient-checked on the CPU
 
