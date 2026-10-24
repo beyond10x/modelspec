@@ -1,0 +1,942 @@
+{
+  "format_version": 1,
+  "artifact_id": "23cb168a-ea42-8941-8bb8-43cd379283a7",
+  "backend": "Vulkan",
+  "artifact_hash": "23cb168aea426941cbb843cd379283a76510f4cc29490a98381350fed3d26ca8",
+  "source_hash": "4afac35fdab6f31175a1bd16ba6d63f6362fefdbfd840d5f1b62102a8b09109d",
+  "ir_hash": "84b42026bf9b34acda2576ba079637bc2118546f9bb65926c157a5d08e34e05a",
+  "fast_math": false,
+  "deterministic": true,
+  "compiler_version": "0.8.0",
+  "schema_hash": "a3c150bea8dcd814ba09eeea6f77739aa6bb61ccd311cbf19669b3edb53e4868",
+  "parameters": [
+    {
+      "param": 0,
+      "path": "LinearReg.w",
+      "canonical_parameter_id": 12353389185446351671,
+      "dtype": "f32",
+      "shape": [
+        4,
+        1
+      ],
+      "views": [
+        {
+          "buffer": 2,
+          "dtype": "f32",
+          "element_count": 4,
+          "offset": 0,
+          "size_bytes": 16,
+          "alignment": 4
+        }
+      ]
+    }
+  ],
+  "data": [
+    {
+      "name": "x",
+      "role": "Input",
+      "dtype": "f32",
+      "shape": [
+        8,
+        4
+      ],
+      "view": {
+        "buffer": 0,
+        "dtype": "f32",
+        "element_count": 32,
+        "offset": 0,
+        "size_bytes": 128,
+        "alignment": 4
+      }
+    },
+    {
+      "name": "y",
+      "role": "Target",
+      "dtype": "f32",
+      "shape": [
+        8,
+        1
+      ],
+      "view": {
+        "buffer": 1,
+        "dtype": "f32",
+        "element_count": 8,
+        "offset": 0,
+        "size_bytes": 32,
+        "alignment": 4
+      }
+    }
+  ],
+  "kernels": [
+    {
+      "kernel_module_id": "4501e933-dcca-8bee-bcc3-bebbd25aa29a",
+      "entry_point": "main",
+      "cache_key": {
+        "ir_hash": "7b2e0c561080bc55e4d6db2678da5a15aedf1b590a24f9a6c54b27ac655d9da5",
+        "shapes": [
+          [
+            8,
+            4
+          ],
+          [
+            4,
+            1
+          ],
+          [
+            8,
+            1
+          ]
+        ],
+        "dtype": "f32",
+        "fast_math": false,
+        "deterministic": true,
+        "vendor_id": 4318,
+        "device_id": 8708,
+        "driver_version": 2559459584,
+        "capabilities": [
+          "Shader"
+        ]
+      },
+      "byte_length": 4344,
+      "blake3": "245f04e287236d067c6c7d5001630ae9850aed0443424664a1544ede6386cdde",
+      "kind": "matmul",
+      "op": "MatMul",
+      "dtype": "f32",
+      "operands": [
+        {
+          "buffer": {
+            "dtype": "f32",
+            "shape": [
+              8,
+              4
+            ]
+          }
+        },
+        {
+          "buffer": {
+            "dtype": "f32",
+            "shape": [
+              4,
+              1
+            ]
+          }
+        }
+      ],
+      "result": {
+        "dtype": "f32",
+        "shape": [
+          8,
+          1
+        ]
+      },
+      "reduces": null,
+      "epilogue": null,
+      "workgroup_size": 128,
+      "workgroups": [
+        1,
+        1,
+        1
+      ]
+    },
+    {
+      "kernel_module_id": "7e1cc13b-1653-84b9-98f1-ae1d5736d4a9",
+      "entry_point": "main",
+      "cache_key": {
+        "ir_hash": "7a629554fbad4984e14f5b31506854c67a207724dc199ccba57c4e155cf7b6b7",
+        "shapes": [
+          [
+            8,
+            1
+          ],
+          [
+            8,
+            1
+          ],
+          []
+        ],
+        "dtype": "f32",
+        "fast_math": false,
+        "deterministic": true,
+        "vendor_id": 4318,
+        "device_id": 8708,
+        "driver_version": 2559459584,
+        "capabilities": [
+          "Shader"
+        ]
+      },
+      "byte_length": 2776,
+      "blake3": "08a492057f7b6ecae94e0941998a1dcead123d7813d05018bda420799ecc2ab8",
+      "kind": "loss_sum",
+      "op": "Mse",
+      "dtype": "f32",
+      "operands": [
+        {
+          "buffer": {
+            "dtype": "f32",
+            "shape": [
+              8,
+              1
+            ]
+          }
+        },
+        {
+          "buffer": {
+            "dtype": "f32",
+            "shape": [
+              8,
+              1
+            ]
+          }
+        }
+      ],
+      "result": {
+        "dtype": "f32",
+        "shape": []
+      },
+      "reduces": null,
+      "epilogue": null,
+      "workgroup_size": 64,
+      "workgroups": [
+        1,
+        1,
+        1
+      ]
+    },
+    {
+      "kernel_module_id": "b4a1988c-2bba-81d1-8468-6200fea8b1fc",
+      "entry_point": "main",
+      "cache_key": {
+        "ir_hash": "db2eef4f0205eca16f25cb79a2ef3c7db5e18abe549ffb61da14fb2436cf92e4",
+        "shapes": [
+          [
+            8,
+            1
+          ],
+          [
+            8,
+            1
+          ],
+          [
+            8,
+            1
+          ]
+        ],
+        "dtype": "f32",
+        "fast_math": false,
+        "deterministic": true,
+        "vendor_id": 4318,
+        "device_id": 8708,
+        "driver_version": 2559459584,
+        "capabilities": [
+          "Shader"
+        ]
+      },
+      "byte_length": 1352,
+      "blake3": "ef3599b7112b7a6a98c8dc737fd4c527cb8434e5c212cc0487fb16cbfe4218df",
+      "kind": "elementwise",
+      "op": "Sub",
+      "dtype": "f32",
+      "operands": [
+        {
+          "buffer": {
+            "dtype": "f32",
+            "shape": [
+              8,
+              1
+            ]
+          }
+        },
+        {
+          "buffer": {
+            "dtype": "f32",
+            "shape": [
+              8,
+              1
+            ]
+          }
+        }
+      ],
+      "result": {
+        "dtype": "f32",
+        "shape": [
+          8,
+          1
+        ]
+      },
+      "reduces": null,
+      "epilogue": null,
+      "workgroup_size": 64,
+      "workgroups": [
+        1,
+        1,
+        1
+      ]
+    },
+    {
+      "kernel_module_id": "18b867e4-8cd4-8546-be4e-431348a565f6",
+      "entry_point": "main",
+      "cache_key": {
+        "ir_hash": "12ec1d6f57506815457b54f8def6446bc11baa703863b02e313b74abe648a0ae",
+        "shapes": [
+          [
+            8,
+            1
+          ],
+          [
+            8,
+            1
+          ]
+        ],
+        "dtype": "f32",
+        "fast_math": false,
+        "deterministic": true,
+        "vendor_id": 4318,
+        "device_id": 8708,
+        "driver_version": 2559459584,
+        "capabilities": [
+          "Shader"
+        ]
+      },
+      "byte_length": 1276,
+      "blake3": "2ca77059136a2ea2c0055fb552605202ea5fdb167526099295caed5cd4a36bd3",
+      "kind": "elementwise",
+      "op": "Mul",
+      "dtype": "f32",
+      "operands": [
+        {
+          "buffer": {
+            "dtype": "f32",
+            "shape": [
+              8,
+              1
+            ]
+          }
+        },
+        {
+          "immediate_f32_bits": 1048576000
+        }
+      ],
+      "result": {
+        "dtype": "f32",
+        "shape": [
+          8,
+          1
+        ]
+      },
+      "reduces": null,
+      "epilogue": null,
+      "workgroup_size": 64,
+      "workgroups": [
+        1,
+        1,
+        1
+      ]
+    },
+    {
+      "kernel_module_id": "c0c09bbb-0a44-8001-8723-4b18ae5f2ad1",
+      "entry_point": "main",
+      "cache_key": {
+        "ir_hash": "e6e3179daa3948c6e9cff53344cf5ab27c85ddc755ac029a6302be5a67ac3a06",
+        "shapes": [
+          [
+            8,
+            4
+          ],
+          [
+            4,
+            8
+          ]
+        ],
+        "dtype": "f32",
+        "fast_math": false,
+        "deterministic": true,
+        "vendor_id": 4318,
+        "device_id": 8708,
+        "driver_version": 2559459584,
+        "capabilities": [
+          "Shader"
+        ]
+      },
+      "byte_length": 1336,
+      "blake3": "be0d4ba2b8e22b501dca6d8a3f68195678478465ac019d3cb81506ec955069a4",
+      "kind": "transpose",
+      "op": "Transpose",
+      "dtype": "f32",
+      "operands": [
+        {
+          "buffer": {
+            "dtype": "f32",
+            "shape": [
+              8,
+              4
+            ]
+          }
+        }
+      ],
+      "result": {
+        "dtype": "f32",
+        "shape": [
+          4,
+          8
+        ]
+      },
+      "reduces": null,
+      "epilogue": null,
+      "workgroup_size": 64,
+      "workgroups": [
+        1,
+        1,
+        1
+      ]
+    },
+    {
+      "kernel_module_id": "41f4754a-7a48-8db1-aa8c-7f524666b098",
+      "entry_point": "main",
+      "cache_key": {
+        "ir_hash": "f0f01901218ac46bf33e36f55bc3474e9ea711a312974f56cffcec0ed0ba8a15",
+        "shapes": [
+          [
+            4,
+            8
+          ],
+          [
+            8,
+            1
+          ],
+          [
+            4,
+            1
+          ]
+        ],
+        "dtype": "f32",
+        "fast_math": false,
+        "deterministic": true,
+        "vendor_id": 4318,
+        "device_id": 8708,
+        "driver_version": 2559459584,
+        "capabilities": [
+          "Shader"
+        ]
+      },
+      "byte_length": 6440,
+      "blake3": "23d9b85a105592ee24e1f1617d4e7caabba11412a48d54c44fd60340724a8fe3",
+      "kind": "matmul",
+      "op": "MatMul",
+      "dtype": "f32",
+      "operands": [
+        {
+          "buffer": {
+            "dtype": "f32",
+            "shape": [
+              4,
+              8
+            ]
+          }
+        },
+        {
+          "buffer": {
+            "dtype": "f32",
+            "shape": [
+              8,
+              1
+            ]
+          }
+        }
+      ],
+      "result": {
+        "dtype": "f32",
+        "shape": [
+          4,
+          1
+        ]
+      },
+      "reduces": null,
+      "epilogue": null,
+      "workgroup_size": 128,
+      "workgroups": [
+        1,
+        1,
+        1
+      ]
+    },
+    {
+      "kernel_module_id": "9f6cbbcb-5d7b-8317-ad40-528c99bde2cc",
+      "entry_point": "main",
+      "cache_key": {
+        "ir_hash": "97cf5e52ca73ae4d2ba38351fa2217f41a95d7dd5444b3fb56b8d8290be51653",
+        "shapes": [
+          [
+            4,
+            1
+          ],
+          [
+            4,
+            1
+          ],
+          [
+            4,
+            1
+          ]
+        ],
+        "dtype": "f32",
+        "fast_math": false,
+        "deterministic": true,
+        "vendor_id": 4318,
+        "device_id": 8708,
+        "driver_version": 2559459584,
+        "capabilities": [
+          "Shader"
+        ]
+      },
+      "byte_length": 1412,
+      "blake3": "a6159ca6b52e74f96c3c3ec4e0d70179b117ed9147a04346baaf8c13498afe27",
+      "kind": "sgd_update",
+      "op": "Sub",
+      "dtype": "f32",
+      "operands": [
+        {
+          "buffer": {
+            "dtype": "f32",
+            "shape": [
+              4,
+              1
+            ]
+          }
+        },
+        {
+          "immediate_f32_bits": 1036831949
+        },
+        {
+          "buffer": {
+            "dtype": "f32",
+            "shape": [
+              4,
+              1
+            ]
+          }
+        }
+      ],
+      "result": {
+        "dtype": "f32",
+        "shape": [
+          4,
+          1
+        ]
+      },
+      "reduces": null,
+      "epilogue": null,
+      "workgroup_size": 64,
+      "workgroups": [
+        1,
+        1,
+        1
+      ]
+    }
+  ],
+  "plan": [
+    {
+      "op": "Dispatch",
+      "kernel_module_id": "4501e933-dcca-8bee-bcc3-bebbd25aa29a",
+      "workgroups": [
+        1,
+        1,
+        1
+      ],
+      "reads": [
+        {
+          "buffer": 0,
+          "dtype": "f32",
+          "element_count": 32,
+          "offset": 0,
+          "size_bytes": 128,
+          "alignment": 4
+        },
+        {
+          "buffer": 2,
+          "dtype": "f32",
+          "element_count": 4,
+          "offset": 0,
+          "size_bytes": 16,
+          "alignment": 4
+        }
+      ],
+      "writes": [
+        {
+          "buffer": 3,
+          "dtype": "f32",
+          "element_count": 8,
+          "offset": 0,
+          "size_bytes": 32,
+          "alignment": 4
+        }
+      ],
+      "depends_on": [],
+      "value": 3
+    },
+    {
+      "op": "Barrier",
+      "kernel_module_id": null,
+      "workgroups": null,
+      "reads": [],
+      "writes": [],
+      "depends_on": [
+        0
+      ],
+      "value": null
+    },
+    {
+      "op": "Dispatch",
+      "kernel_module_id": "7e1cc13b-1653-84b9-98f1-ae1d5736d4a9",
+      "workgroups": [
+        1,
+        1,
+        1
+      ],
+      "reads": [
+        {
+          "buffer": 3,
+          "dtype": "f32",
+          "element_count": 8,
+          "offset": 0,
+          "size_bytes": 32,
+          "alignment": 4
+        },
+        {
+          "buffer": 1,
+          "dtype": "f32",
+          "element_count": 8,
+          "offset": 0,
+          "size_bytes": 32,
+          "alignment": 4
+        }
+      ],
+      "writes": [
+        {
+          "buffer": 4,
+          "dtype": "f32",
+          "element_count": 1,
+          "offset": 0,
+          "size_bytes": 4,
+          "alignment": 4
+        }
+      ],
+      "depends_on": [
+        1
+      ],
+      "value": 4
+    },
+    {
+      "op": "Dispatch",
+      "kernel_module_id": "b4a1988c-2bba-81d1-8468-6200fea8b1fc",
+      "workgroups": [
+        1,
+        1,
+        1
+      ],
+      "reads": [
+        {
+          "buffer": 3,
+          "dtype": "f32",
+          "element_count": 8,
+          "offset": 0,
+          "size_bytes": 32,
+          "alignment": 4
+        },
+        {
+          "buffer": 1,
+          "dtype": "f32",
+          "element_count": 8,
+          "offset": 0,
+          "size_bytes": 32,
+          "alignment": 4
+        }
+      ],
+      "writes": [
+        {
+          "buffer": 5,
+          "dtype": "f32",
+          "element_count": 8,
+          "offset": 0,
+          "size_bytes": 32,
+          "alignment": 4
+        }
+      ],
+      "depends_on": [
+        1
+      ],
+      "value": 6
+    },
+    {
+      "op": "Barrier",
+      "kernel_module_id": null,
+      "workgroups": null,
+      "reads": [],
+      "writes": [],
+      "depends_on": [
+        1,
+        2,
+        3
+      ],
+      "value": null
+    },
+    {
+      "op": "Dispatch",
+      "kernel_module_id": "18b867e4-8cd4-8546-be4e-431348a565f6",
+      "workgroups": [
+        1,
+        1,
+        1
+      ],
+      "reads": [
+        {
+          "buffer": 5,
+          "dtype": "f32",
+          "element_count": 8,
+          "offset": 0,
+          "size_bytes": 32,
+          "alignment": 4
+        }
+      ],
+      "writes": [
+        {
+          "buffer": 6,
+          "dtype": "f32",
+          "element_count": 8,
+          "offset": 0,
+          "size_bytes": 32,
+          "alignment": 4
+        }
+      ],
+      "depends_on": [
+        4
+      ],
+      "value": 9
+    },
+    {
+      "op": "Dispatch",
+      "kernel_module_id": "c0c09bbb-0a44-8001-8723-4b18ae5f2ad1",
+      "workgroups": [
+        1,
+        1,
+        1
+      ],
+      "reads": [
+        {
+          "buffer": 0,
+          "dtype": "f32",
+          "element_count": 32,
+          "offset": 0,
+          "size_bytes": 128,
+          "alignment": 4
+        }
+      ],
+      "writes": [
+        {
+          "buffer": 7,
+          "dtype": "f32",
+          "element_count": 32,
+          "offset": 0,
+          "size_bytes": 128,
+          "alignment": 4
+        }
+      ],
+      "depends_on": [
+        4
+      ],
+      "value": 10
+    },
+    {
+      "op": "Barrier",
+      "kernel_module_id": null,
+      "workgroups": null,
+      "reads": [],
+      "writes": [],
+      "depends_on": [
+        4,
+        5,
+        6
+      ],
+      "value": null
+    },
+    {
+      "op": "Dispatch",
+      "kernel_module_id": "41f4754a-7a48-8db1-aa8c-7f524666b098",
+      "workgroups": [
+        1,
+        1,
+        1
+      ],
+      "reads": [
+        {
+          "buffer": 7,
+          "dtype": "f32",
+          "element_count": 32,
+          "offset": 0,
+          "size_bytes": 128,
+          "alignment": 4
+        },
+        {
+          "buffer": 6,
+          "dtype": "f32",
+          "element_count": 8,
+          "offset": 0,
+          "size_bytes": 32,
+          "alignment": 4
+        }
+      ],
+      "writes": [
+        {
+          "buffer": 8,
+          "dtype": "f32",
+          "element_count": 4,
+          "offset": 0,
+          "size_bytes": 16,
+          "alignment": 4
+        }
+      ],
+      "depends_on": [
+        7
+      ],
+      "value": 11
+    },
+    {
+      "op": "Barrier",
+      "kernel_module_id": null,
+      "workgroups": null,
+      "reads": [],
+      "writes": [],
+      "depends_on": [
+        7,
+        8
+      ],
+      "value": null
+    },
+    {
+      "op": "Dispatch",
+      "kernel_module_id": "9f6cbbcb-5d7b-8317-ad40-528c99bde2cc",
+      "workgroups": [
+        1,
+        1,
+        1
+      ],
+      "reads": [
+        {
+          "buffer": 2,
+          "dtype": "f32",
+          "element_count": 4,
+          "offset": 0,
+          "size_bytes": 16,
+          "alignment": 4
+        },
+        {
+          "buffer": 8,
+          "dtype": "f32",
+          "element_count": 4,
+          "offset": 0,
+          "size_bytes": 16,
+          "alignment": 4
+        }
+      ],
+      "writes": [
+        {
+          "buffer": 2,
+          "dtype": "f32",
+          "element_count": 4,
+          "offset": 0,
+          "size_bytes": 16,
+          "alignment": 4
+        }
+      ],
+      "depends_on": [
+        9
+      ],
+      "value": 14
+    },
+    {
+      "op": "Barrier",
+      "kernel_module_id": null,
+      "workgroups": null,
+      "reads": [],
+      "writes": [],
+      "depends_on": [],
+      "value": null
+    }
+  ],
+  "forward_plan": [
+    {
+      "op": "Dispatch",
+      "kernel_module_id": "4501e933-dcca-8bee-bcc3-bebbd25aa29a",
+      "workgroups": [
+        1,
+        1,
+        1
+      ],
+      "reads": [
+        {
+          "buffer": 0,
+          "dtype": "f32",
+          "element_count": 32,
+          "offset": 0,
+          "size_bytes": 128,
+          "alignment": 4
+        },
+        {
+          "buffer": 2,
+          "dtype": "f32",
+          "element_count": 4,
+          "offset": 0,
+          "size_bytes": 16,
+          "alignment": 4
+        }
+      ],
+      "writes": [
+        {
+          "buffer": 3,
+          "dtype": "f32",
+          "element_count": 8,
+          "offset": 0,
+          "size_bytes": 32,
+          "alignment": 4
+        }
+      ],
+      "depends_on": [],
+      "value": 3
+    },
+    {
+      "op": "Barrier",
+      "kernel_module_id": null,
+      "workgroups": null,
+      "reads": [],
+      "writes": [],
+      "depends_on": [],
+      "value": null
+    }
+  ],
+  "buffers": [
+    128,
+    32,
+    16,
+    32,
+    4,
+    32,
+    32,
+    128,
+    16
+  ],
+  "loss_view": {
+    "buffer": 4,
+    "dtype": "f32",
+    "element_count": 1,
+    "offset": 0,
+    "size_bytes": 4,
+    "alignment": 4
+  },
+  "prediction_view": {
+    "buffer": 3,
+    "dtype": "f32",
+    "element_count": 8,
+    "offset": 0,
+    "size_bytes": 32,
+    "alignment": 4
+  }
+}
