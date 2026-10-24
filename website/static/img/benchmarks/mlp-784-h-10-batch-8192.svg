@@ -27,11 +27,11 @@
 <text x="758.8" y="407.0" text-anchor="middle" fill="#374151">4096</text>
 <text x="467.0" y="428.0" text-anchor="middle" fill="#111827">hidden width H</text>
 <text transform="translate(18 218.0) rotate(-90)" text-anchor="middle" fill="#111827">µs per step, log scale</text>
-<polyline points="175.2,286.3 369.8,246.0 564.2,185.3 758.8,105.5" fill="none" stroke="#1d4ed8" stroke-width="2.5"/>
-<circle cx="175.2" cy="286.3" r="4.5" fill="#1d4ed8"/>
-<circle cx="369.8" cy="246.0" r="4.5" fill="#1d4ed8"/>
-<circle cx="564.2" cy="185.3" r="4.5" fill="#1d4ed8"/>
-<circle cx="758.8" cy="105.5" r="4.5" fill="#1d4ed8"/>
+<polyline points="175.2,295.9 369.8,256.6 564.2,213.6 758.8,150.3" fill="none" stroke="#1d4ed8" stroke-width="2.5"/>
+<circle cx="175.2" cy="295.9" r="4.5" fill="#1d4ed8"/>
+<circle cx="369.8" cy="256.6" r="4.5" fill="#1d4ed8"/>
+<circle cx="564.2" cy="213.6" r="4.5" fill="#1d4ed8"/>
+<circle cx="758.8" cy="150.3" r="4.5" fill="#1d4ed8"/>
 <polyline points="175.2,308.1 369.8,297.8 564.2,242.2 758.8,176.9" fill="none" stroke="#dc2626" stroke-width="1.8" stroke-dasharray="6 4"/>
 <rect x="171.2" y="304.1" width="8" height="8" fill="#ffffff" stroke="#dc2626" stroke-width="2"/>
 <rect x="365.8" y="293.8" width="8" height="8" fill="#ffffff" stroke="#dc2626" stroke-width="2"/>

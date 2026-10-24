@@ -1086,3 +1086,279 @@ runs:
     note: the opponent's record says dirty, the tree then held uncommitted planning-store files only
     source: verification-report:mlp-size-sweep-2026-10-23, raw records benchmarks/raw/2026-10-23-mlp-sweep/pytorch.jsonl
     state: Recorded
+  - run_id: sweep-b100-h64-modelspec-vulkan-0.9.0
+    date: "2026-10-24"
+    workload: mlp-784-H-10
+    side: ModelSpecVulkan
+    modelspec_version: "0.9.0"
+    commit: 974780b67a941051d652236fff8fed09d9b78985
+    mode: Timed
+    batch: 100
+    hidden: 64
+    flop_per_step: 20454400
+    flop_rule: MatmulOnly
+    timed_steps: 174780
+    repeat_count: 3
+    repeats_us_per_step:
+      - 33.65393719533127
+      - 31.84061228401419
+      - 33.04433734408971
+    median_us_per_step: 33.04433734408971
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1305–1665 (median 1560, n=69) in the 3 timed spans"
+    source: verification-report:mlp-size-sweep-2026-10-24, raw records benchmarks/raw/2026-10-24-sweep-0.9.0/modelspec.jsonl
+    state: Recorded
+  - run_id: sweep-b100-h256-modelspec-vulkan-0.9.0
+    date: "2026-10-24"
+    workload: mlp-784-H-10
+    side: ModelSpecVulkan
+    modelspec_version: "0.9.0"
+    commit: 974780b67a941051d652236fff8fed09d9b78985
+    mode: Timed
+    batch: 100
+    hidden: 256
+    flop_per_step: 81817600
+    flop_rule: MatmulOnly
+    timed_steps: 137400
+    repeat_count: 3
+    repeats_us_per_step:
+      - 46.969882962154294
+      - 52.6612350363901
+      - 46.07818540029112
+    median_us_per_step: 46.969882962154294
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1050–1950 (median 1935, n=80) in the 3 timed spans"
+    source: verification-report:mlp-size-sweep-2026-10-24, raw records benchmarks/raw/2026-10-24-sweep-0.9.0/modelspec.jsonl
+    state: Recorded
+  - run_id: sweep-b100-h1024-modelspec-vulkan-0.9.0
+    date: "2026-10-24"
+    workload: mlp-784-H-10
+    side: ModelSpecVulkan
+    modelspec_version: "0.9.0"
+    commit: 974780b67a941051d652236fff8fed09d9b78985
+    mode: Timed
+    batch: 100
+    hidden: 1024
+    flop_per_step: 327270400
+    flop_rule: MatmulOnly
+    timed_steps: 69020
+    repeat_count: 3
+    repeats_us_per_step:
+      - 102.22564295856274
+      - 102.4556383656911
+      - 99.61715866415533
+    median_us_per_step: 102.22564295856274
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1380–1935 (median 1920, n=84) in the 3 timed spans"
+    source: verification-report:mlp-size-sweep-2026-10-24, raw records benchmarks/raw/2026-10-24-sweep-0.9.0/modelspec.jsonl
+    state: Recorded
+  - run_id: sweep-b100-h4096-modelspec-vulkan-0.9.0
+    date: "2026-10-24"
+    workload: mlp-784-H-10
+    side: ModelSpecVulkan
+    modelspec_version: "0.9.0"
+    commit: 974780b67a941051d652236fff8fed09d9b78985
+    mode: Timed
+    batch: 100
+    hidden: 4096
+    flop_per_step: 1309081600
+    flop_rule: MatmulOnly
+    timed_steps: 19562
+    repeat_count: 3
+    repeats_us_per_step:
+      - 332.4926340353747
+      - 324.264341529496
+      - 316.1093463347306
+    median_us_per_step: 324.264341529496
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 840–1920 (median 1890, n=77) in the 3 timed spans"
+    source: verification-report:mlp-size-sweep-2026-10-24, raw records benchmarks/raw/2026-10-24-sweep-0.9.0/modelspec.jsonl
+    state: Recorded
+  - run_id: sweep-b1000-h64-modelspec-vulkan-0.9.0
+    date: "2026-10-24"
+    workload: mlp-784-H-10
+    side: ModelSpecVulkan
+    modelspec_version: "0.9.0"
+    commit: 974780b67a941051d652236fff8fed09d9b78985
+    mode: Timed
+    batch: 1000
+    hidden: 64
+    flop_per_step: 204544000
+    flop_rule: MatmulOnly
+    timed_steps: 66381
+    repeat_count: 3
+    repeats_us_per_step:
+      - 106.60231915759027
+      - 106.24689340323286
+      - 101.84782876124193
+    median_us_per_step: 106.24689340323286
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1305–1920 (median 1920, n=83) in the 3 timed spans"
+    source: verification-report:mlp-size-sweep-2026-10-24, raw records benchmarks/raw/2026-10-24-sweep-0.9.0/modelspec.jsonl
+    state: Recorded
+  - run_id: sweep-b1000-h256-modelspec-vulkan-0.9.0
+    date: "2026-10-24"
+    workload: mlp-784-H-10
+    side: ModelSpecVulkan
+    modelspec_version: "0.9.0"
+    commit: 974780b67a941051d652236fff8fed09d9b78985
+    mode: Timed
+    batch: 1000
+    hidden: 256
+    flop_per_step: 818176000
+    flop_rule: MatmulOnly
+    timed_steps: 32453
+    repeat_count: 3
+    repeats_us_per_step:
+      - 223.52415597941638
+      - 223.7856371675962
+      - 223.24777015992356
+    median_us_per_step: 223.52415597941638
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1725–1875 (median 1845, n=87) in the 3 timed spans"
+    source: verification-report:mlp-size-sweep-2026-10-24, raw records benchmarks/raw/2026-10-24-sweep-0.9.0/modelspec.jsonl
+    state: Recorded
+  - run_id: sweep-b1000-h1024-modelspec-vulkan-0.9.0
+    date: "2026-10-24"
+    workload: mlp-784-H-10
+    side: ModelSpecVulkan
+    modelspec_version: "0.9.0"
+    commit: 974780b67a941051d652236fff8fed09d9b78985
+    mode: Timed
+    batch: 1000
+    hidden: 1024
+    flop_per_step: 3272704000
+    flop_rule: MatmulOnly
+    timed_steps: 14689
+    repeat_count: 3
+    repeats_us_per_step:
+      - 489.50813248008717
+      - 492.32366777860983
+      - 493.05299571107633
+    median_us_per_step: 492.32366777860983
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1590–1890 (median 1875, n=85) in the 3 timed spans"
+    source: verification-report:mlp-size-sweep-2026-10-24, raw records benchmarks/raw/2026-10-24-sweep-0.9.0/modelspec.jsonl
+    state: Recorded
+  - run_id: sweep-b1000-h4096-modelspec-vulkan-0.9.0
+    date: "2026-10-24"
+    workload: mlp-784-H-10
+    side: ModelSpecVulkan
+    modelspec_version: "0.9.0"
+    commit: 974780b67a941051d652236fff8fed09d9b78985
+    mode: Timed
+    batch: 1000
+    hidden: 4096
+    flop_per_step: 13090816000
+    flop_rule: MatmulOnly
+    timed_steps: 3913
+    repeat_count: 3
+    repeats_us_per_step:
+      - 1694.3644738052644
+      - 1623.9906074623052
+      - 1693.3286940966013
+    median_us_per_step: 1693.3286940966013
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 975–1875 (median 1770, n=78) in the 3 timed spans"
+    source: verification-report:mlp-size-sweep-2026-10-24, raw records benchmarks/raw/2026-10-24-sweep-0.9.0/modelspec.jsonl
+    state: Recorded
+  - run_id: sweep-b8192-h64-modelspec-vulkan-0.9.0
+    date: "2026-10-24"
+    workload: mlp-784-H-10
+    side: ModelSpecVulkan
+    modelspec_version: "0.9.0"
+    commit: 974780b67a941051d652236fff8fed09d9b78985
+    mode: Timed
+    batch: 8192
+    hidden: 64
+    flop_per_step: 1675624448
+    flop_rule: MatmulOnly
+    timed_steps: 10995
+    repeat_count: 3
+    repeats_us_per_step:
+      - 642.3533920873124
+      - 649.4294698499317
+      - 665.3082479308777
+    median_us_per_step: 649.4294698499317
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1335–1920 (median 1920, n=86) in the 3 timed spans"
+    source: verification-report:mlp-size-sweep-2026-10-24, raw records benchmarks/raw/2026-10-24-sweep-0.9.0/modelspec.jsonl
+    state: Recorded
+  - run_id: sweep-b8192-h256-modelspec-vulkan-0.9.0
+    date: "2026-10-24"
+    workload: mlp-784-H-10
+    side: ModelSpecVulkan
+    modelspec_version: "0.9.0"
+    commit: 974780b67a941051d652236fff8fed09d9b78985
+    mode: Timed
+    batch: 8192
+    hidden: 256
+    flop_per_step: 6702497792
+    flop_rule: MatmulOnly
+    timed_steps: 4104
+    repeat_count: 3
+    repeats_us_per_step:
+      - 1595.404156920078
+      - 1424.100677631579
+      - 1442.549687865497
+    median_us_per_step: 1442.549687865497
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 945–1845 (median 1830, n=73) in the 3 timed spans"
+    source: verification-report:mlp-size-sweep-2026-10-24, raw records benchmarks/raw/2026-10-24-sweep-0.9.0/modelspec.jsonl
+    state: Recorded
+  - run_id: sweep-b8192-h1024-modelspec-vulkan-0.9.0
+    date: "2026-10-24"
+    workload: mlp-784-H-10
+    side: ModelSpecVulkan
+    modelspec_version: "0.9.0"
+    commit: 974780b67a941051d652236fff8fed09d9b78985
+    mode: Timed
+    batch: 8192
+    hidden: 1024
+    flop_per_step: 26809991168
+    flop_rule: MatmulOnly
+    timed_steps: 1874
+    repeat_count: 3
+    repeats_us_per_step:
+      - 3441.858132870864
+      - 3459.1455554962645
+      - 3473.7025112059764
+    median_us_per_step: 3459.1455554962645
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1350–1890 (median 1800, n=78) in the 3 timed spans"
+    source: verification-report:mlp-size-sweep-2026-10-24, raw records benchmarks/raw/2026-10-24-sweep-0.9.0/modelspec.jsonl
+    state: Recorded
+  - run_id: sweep-b8192-h4096-modelspec-vulkan-0.9.0
+    date: "2026-10-24"
+    workload: mlp-784-H-10
+    side: ModelSpecVulkan
+    modelspec_version: "0.9.0"
+    commit: 974780b67a941051d652236fff8fed09d9b78985
+    mode: Timed
+    batch: 8192
+    hidden: 4096
+    flop_per_step: 107239964672
+    flop_rule: MatmulOnly
+    timed_steps: 487
+    repeat_count: 3
+    repeats_us_per_step:
+      - 12487.056199178645
+      - 12507.182373716632
+      - 12690.047398357288
+    median_us_per_step: 12507.182373716632
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 780–1815 (median 1702, n=72) in the 3 timed spans"
+    source: verification-report:mlp-size-sweep-2026-10-24, raw records benchmarks/raw/2026-10-24-sweep-0.9.0/modelspec.jsonl
+    state: Recorded
