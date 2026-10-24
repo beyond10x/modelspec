@@ -1,0 +1,14 @@
+{
+  "at": "2026-10-24T15:45:00Z",
+  "actor": "human:timo",
+  "artifact": "story:matmul-reads-transposed-operand",
+  "kind": "story",
+  "revision": 4,
+  "change": {
+    "change": "evidence",
+    "kind": "review_outcome",
+    "source": "review-result:adversary-transposed-pass-1",
+    "review": "review-result:adversary-transposed-pass-1",
+    "outcome": "no-op"
+  }
+}

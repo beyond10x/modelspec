@@ -2,7 +2,7 @@
 format: aep.planning-md/3
 id: story:matmul-reads-transposed-operand
 kind: story
-status: draft
+status: implemented
 title: A matmul reads a transposed operand in place, so a step dispatches no transpose
 relations:
 - serves: vision:modelspec
@@ -11,18 +11,128 @@ scope:
 - confidence: cited
   path: DESIGN.md
 - confidence: cited
+  path: benchmarks/raw/2026-10-24-transposed/after2-fastmath-profile-b8192-h4096.txt
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-transposed/after2-fastmath-sweep.jsonl
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-transposed/after2-fastmath-sweep.stderr.txt
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-transposed/after2-profile-b8192-h4096.txt
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-transposed/after2-profile-mnist.txt
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-transposed/after2-sweep.jsonl
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-transposed/after2-sweep.stderr.txt
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-transposed/baseline-fastmath-profile-b8192-h4096.txt
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-transposed/baseline-fastmath-sweep.jsonl
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-transposed/baseline-fastmath-sweep.stderr.txt
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-transposed/baseline-profile-b8192-h4096.txt
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-transposed/baseline-profile-mnist.txt
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-transposed/baseline-r2-fastmath-sweep.jsonl
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-transposed/baseline-r2-fastmath-sweep.stderr.txt
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-transposed/baseline-r2-sweep.jsonl
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-transposed/baseline-r2-sweep.stderr.txt
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-transposed/baseline-sweep.jsonl
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-transposed/baseline-sweep.stderr.txt
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-transposed/same-bits-train-stdout-sha256.txt
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-transposed/superseded-kmajor-fastmath-profile-b8192-h4096.txt
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-transposed/superseded-kmajor-fastmath-sweep.jsonl
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-transposed/superseded-kmajor-fastmath-sweep.stderr.txt
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-transposed/superseded-kmajor-profile-b8192-h4096.txt
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-transposed/superseded-kmajor-profile-mnist.txt
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-transposed/superseded-kmajor-sweep.jsonl
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-transposed/superseded-kmajor-sweep.stderr.txt
+- confidence: cited
+  path: crates/modelspec-cli/tests/adversary_step_counters.rs
+- confidence: cited
+  path: crates/modelspec-cli/tests/compile.rs
+- confidence: cited
+  path: crates/modelspec-cli/tests/golden/linear_regression.kernel.ir
+- confidence: cited
   path: crates/modelspec-cli/tests/golden/mnist_mlp.kernel.ir
+- confidence: cited
+  path: crates/modelspec-cli/tests/ir_kernel.rs
+- confidence: cited
+  path: crates/modelspec-cli/tests/matmul_transposed_artifact.rs
+- confidence: cited
+  path: crates/modelspec-core/src/artifact.rs
 - confidence: cited
   path: crates/modelspec-core/src/ir/kernel.rs
 - confidence: cited
+  path: crates/modelspec-core/src/ir/print.rs
+- confidence: cited
   path: crates/modelspec-core/src/schedule.rs
+- confidence: cited
+  path: crates/modelspec-core/tests/adversary_dispatch_count.rs
+- confidence: cited
+  path: crates/modelspec-core/tests/adversary_fuse.rs
+- confidence: cited
+  path: crates/modelspec-core/tests/kernel_plan.rs
+- confidence: cited
+  path: crates/modelspec-core/tests/matmul_transposed_flag.rs
+- confidence: cited
+  path: crates/modelspec-core/tests/matmul_transposed_operand.rs
 - confidence: cited
   path: crates/modelspec-runtime/src/spirv/emit.rs
 - confidence: cited
   path: crates/modelspec-runtime/src/vulkan/dispatch.rs
 - confidence: cited
+  path: crates/modelspec-runtime/src/vulkan/pipeline.rs
+- confidence: cited
+  path: crates/modelspec-runtime/src/vulkan/runner.rs
+- confidence: cited
+  path: crates/modelspec-runtime/tests/adversary_fastmath_emission.rs
+- confidence: cited
+  path: crates/modelspec-runtime/tests/adversary_loss_sum.rs
+- confidence: cited
+  path: crates/modelspec-runtime/tests/adversary_step_counters.rs
+- confidence: cited
+  path: crates/modelspec-runtime/tests/common/mod.rs
+- confidence: cited
+  path: crates/modelspec-runtime/tests/fixtures/matmul_plan_sites_same_bits.txt
+- confidence: cited
+  path: crates/modelspec-runtime/tests/fixtures/untransposed_modules.txt
+- confidence: cited
+  path: crates/modelspec-runtime/tests/matmul_untransposed_modules_unchanged.rs
+- confidence: cited
+  path: crates/modelspec-runtime/tests/spirv_val.rs
+- confidence: cited
+  path: crates/modelspec-runtime/tests/vulkan_matmul_plan_sites_same_bits.rs
+- confidence: cited
+  path: crates/modelspec-runtime/tests/vulkan_matmul_transposed.rs
+- confidence: cited
+  path: crates/modelspec-runtime/tests/vulkan_profile.rs
+- confidence: cited
+  path: crates/modelspec-runtime/tests/vulkan_train.rs
+- confidence: cited
+  path: spec/domains/artifact.yaml
+- confidence: cited
   path: website/docs/guides/inspect-a-run.md
-revision: 2
+revision: 7
+transitions:
+- {from: "draft", to: "proposed", at: "2026-10-24T13:20:29Z", actor: "human:timo", revision: 3}
+- {from: "proposed", to: "active", at: "2026-10-24T13:20:29Z", actor: "human:timo", revision: 4}
+- {from: "active", to: "implemented", at: "2026-10-24T15:49:26Z", actor: "human:timo", revision: 7, decided_on: {"recorded":{"test_result":1,"review_outcome":2,"verification":1}}}
 ---
 # A matmul reads a transposed operand in place, so a step dispatches no transpose
 
@@ -83,10 +193,63 @@ element keeps its order: one invocation, ascending `k` from the `k = 0` product,
 
 ## Scope
 
-- `crates/modelspec-core/src/ir/kernel.rs`
-- `crates/modelspec-core/src/schedule.rs`
-- `crates/modelspec-runtime/src/spirv/emit.rs`
-- `crates/modelspec-runtime/src/vulkan/dispatch.rs`
+- `benchmarks/raw/2026-10-24-transposed/after2-fastmath-profile-b8192-h4096.txt`
+- `benchmarks/raw/2026-10-24-transposed/after2-fastmath-sweep.jsonl`
+- `benchmarks/raw/2026-10-24-transposed/after2-fastmath-sweep.stderr.txt`
+- `benchmarks/raw/2026-10-24-transposed/after2-profile-b8192-h4096.txt`
+- `benchmarks/raw/2026-10-24-transposed/after2-profile-mnist.txt`
+- `benchmarks/raw/2026-10-24-transposed/after2-sweep.jsonl`
+- `benchmarks/raw/2026-10-24-transposed/after2-sweep.stderr.txt`
+- `benchmarks/raw/2026-10-24-transposed/baseline-fastmath-profile-b8192-h4096.txt`
+- `benchmarks/raw/2026-10-24-transposed/baseline-fastmath-sweep.jsonl`
+- `benchmarks/raw/2026-10-24-transposed/baseline-fastmath-sweep.stderr.txt`
+- `benchmarks/raw/2026-10-24-transposed/baseline-profile-b8192-h4096.txt`
+- `benchmarks/raw/2026-10-24-transposed/baseline-profile-mnist.txt`
+- `benchmarks/raw/2026-10-24-transposed/baseline-r2-fastmath-sweep.jsonl`
+- `benchmarks/raw/2026-10-24-transposed/baseline-r2-fastmath-sweep.stderr.txt`
+- `benchmarks/raw/2026-10-24-transposed/baseline-r2-sweep.jsonl`
+- `benchmarks/raw/2026-10-24-transposed/baseline-r2-sweep.stderr.txt`
+- `benchmarks/raw/2026-10-24-transposed/baseline-sweep.jsonl`
+- `benchmarks/raw/2026-10-24-transposed/baseline-sweep.stderr.txt`
+- `benchmarks/raw/2026-10-24-transposed/same-bits-train-stdout-sha256.txt`
+- `benchmarks/raw/2026-10-24-transposed/superseded-kmajor-fastmath-profile-b8192-h4096.txt`
+- `benchmarks/raw/2026-10-24-transposed/superseded-kmajor-fastmath-sweep.jsonl`
+- `benchmarks/raw/2026-10-24-transposed/superseded-kmajor-fastmath-sweep.stderr.txt`
+- `benchmarks/raw/2026-10-24-transposed/superseded-kmajor-profile-b8192-h4096.txt`
+- `benchmarks/raw/2026-10-24-transposed/superseded-kmajor-profile-mnist.txt`
+- `benchmarks/raw/2026-10-24-transposed/superseded-kmajor-sweep.jsonl`
+- `benchmarks/raw/2026-10-24-transposed/superseded-kmajor-sweep.stderr.txt`
+- `crates/modelspec-cli/tests/adversary_step_counters.rs`
+- `crates/modelspec-cli/tests/compile.rs`
+- `crates/modelspec-cli/tests/golden/linear_regression.kernel.ir`
 - `crates/modelspec-cli/tests/golden/mnist_mlp.kernel.ir`
-- `website/docs/guides/inspect-a-run.md`
+- `crates/modelspec-cli/tests/ir_kernel.rs`
+- `crates/modelspec-cli/tests/matmul_transposed_artifact.rs`
+- `crates/modelspec-core/src/artifact.rs`
+- `crates/modelspec-core/src/ir/kernel.rs`
+- `crates/modelspec-core/src/ir/print.rs`
+- `crates/modelspec-core/src/schedule.rs`
+- `crates/modelspec-core/tests/adversary_dispatch_count.rs`
+- `crates/modelspec-core/tests/adversary_fuse.rs`
+- `crates/modelspec-core/tests/kernel_plan.rs`
+- `crates/modelspec-core/tests/matmul_transposed_flag.rs`
+- `crates/modelspec-core/tests/matmul_transposed_operand.rs`
+- `crates/modelspec-runtime/src/spirv/emit.rs`
+- `crates/modelspec-runtime/src/vulkan/pipeline.rs`
+- `crates/modelspec-runtime/src/vulkan/runner.rs`
+- `crates/modelspec-runtime/tests/adversary_fastmath_emission.rs`
+- `crates/modelspec-runtime/tests/adversary_loss_sum.rs`
+- `crates/modelspec-runtime/tests/adversary_step_counters.rs`
+- `crates/modelspec-runtime/tests/common/mod.rs`
+- `crates/modelspec-runtime/tests/fixtures/matmul_plan_sites_same_bits.txt`
+- `crates/modelspec-runtime/tests/fixtures/untransposed_modules.txt`
+- `crates/modelspec-runtime/tests/matmul_untransposed_modules_unchanged.rs`
+- `crates/modelspec-runtime/tests/spirv_val.rs`
+- `crates/modelspec-runtime/tests/vulkan_matmul_plan_sites_same_bits.rs`
+- `crates/modelspec-runtime/tests/vulkan_matmul_transposed.rs`
+- `crates/modelspec-runtime/tests/vulkan_profile.rs`
+- `crates/modelspec-runtime/tests/vulkan_train.rs`
 - `DESIGN.md`
+- `spec/domains/artifact.yaml`
+- `website/docs/guides/inspect-a-run.md`
+

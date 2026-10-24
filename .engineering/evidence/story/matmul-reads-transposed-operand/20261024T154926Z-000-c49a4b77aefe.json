@@ -1,0 +1,13 @@
+{
+  "at": "2026-10-24T15:49:26Z",
+  "actor": "human:timo",
+  "artifact": "story:matmul-reads-transposed-operand",
+  "kind": "story",
+  "revision": 6,
+  "change": {
+    "change": "evidence",
+    "kind": "test_result",
+    "source": "task ci",
+    "reference": "impl/matmul-reads-transposed-operand 8d58780 task ci exit 0"
+  }
+}

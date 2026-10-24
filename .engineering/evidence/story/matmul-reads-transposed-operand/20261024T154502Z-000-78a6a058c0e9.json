@@ -1,0 +1,12 @@
+{
+  "at": "2026-10-24T15:45:02Z",
+  "actor": "human:timo",
+  "artifact": "story:matmul-reads-transposed-operand",
+  "kind": "story",
+  "revision": 4,
+  "change": {
+    "change": "evidence",
+    "kind": "verification",
+    "source": "adversary pass 1: 1306->1316 cases, 0 reachable defects; partial tiles 15 shapes x 4 flags same bits; arithmetic sequence equal to plain modules"
+  }
+}
