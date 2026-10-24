@@ -23,6 +23,8 @@
 //! After the first error in an item the parser skips to the end of that item, or to the start of
 //! the next item, and goes on. Argument lists nest at most [`MAX_NESTING`] deep.
 
+use std::cell::Cell;
+
 use crate::diag::{Code, Diagnostic, SourceSpan};
 
 use super::ast::{
@@ -42,26 +44,87 @@ pub(crate) fn parse(file: &str, source: &str) -> Result<Ast, Vec<Diagnostic>> {
     Parser::new(file, source).file()
 }
 
+/// Test hook: characters the span lookup scans in one parse (`long_line_span_lookup_scans`).
+#[doc(hidden)]
+pub fn span_lookup_scan_count(file: &str, source: &str) -> usize {
+    let mut parser = Parser::new(file, source);
+    let _ = parser.file();
+    parser.scanned.get()
+}
+
 struct Parser<'s> {
     file: &'s str,
     source: &'s str,
     lexemes: Vec<Lexeme>,
-    line_starts: Vec<usize>,
+    /// Line and column of offset 0, of every lexeme start and of the end of input, in source
+    /// order, computed in one pass over the source.
+    anchors: Vec<Anchor>,
+    /// Characters scanned so far to place anchors and resolve spans; see
+    /// [`span_lookup_scan_count`].
+    scanned: Cell<usize>,
     pos: usize,
     /// Argument lists open at the current position.
     nesting: usize,
 }
 
+/// A byte offset with its line and column, both counted from 1.
+#[derive(Clone, Copy)]
+struct Anchor {
+    offset: usize,
+    line: usize,
+    column: usize,
+}
+
+impl Anchor {
+    /// The anchor of `self.offset + text.len()`, where `text` is the source from `self.offset`.
+    fn advance(self, text: &str) -> Self {
+        let (mut line, mut column) = (self.line, self.column);
+        for c in text.chars() {
+            if c == '\n' {
+                line += 1;
+                column = 1;
+            } else {
+                column += 1;
+            }
+        }
+        Self {
+            offset: self.offset + text.len(),
+            line,
+            column,
+        }
+    }
+}
+
 impl<'s> Parser<'s> {
     fn new(file: &'s str, source: &'s str) -> Self {
-        let line_starts = std::iter::once(0)
-            .chain(source.match_indices('\n').map(|(i, _)| i + 1))
-            .collect();
+        let lexemes = lex(source);
+        let mut anchors = Vec::with_capacity(lexemes.len() + 2);
+        let mut last = Anchor {
+            offset: 0,
+            line: 1,
+            column: 1,
+        };
+        anchors.push(last);
+        let mut scanned = 0;
+        for offset in lexemes
+            .iter()
+            .map(|l| l.range.start)
+            .chain(std::iter::once(source.len()))
+        {
+            if offset > last.offset {
+                let walked = &source[last.offset..offset];
+                scanned += walked.chars().count();
+                last = last.advance(walked);
+                anchors.push(last);
+            }
+        }
+        let scanned = Cell::new(scanned);
         Self {
             file,
             source,
-            lexemes: lex(source),
-            line_starts,
+            lexemes,
+            anchors,
+            scanned,
             pos: 0,
             nesting: 0,
         }
@@ -71,15 +134,19 @@ impl<'s> Parser<'s> {
     // Positions and tokens.
     // -----------------------------------------------------------------------------------------
 
-    /// Line and column of a byte offset; columns count characters from 1.
+    /// Line and column of a byte offset; columns count characters from 1. The nearest anchor at
+    /// or before `offset` is found by binary search, so the cost does not grow with the column.
+    /// Every character of the slice it walks is added to `scanned`, whatever walks it.
     fn span_at(&self, offset: usize) -> SourceSpan {
-        let line = self.line_starts.partition_point(|&start| start <= offset);
-        let start = self.line_starts[line - 1];
-        let column = self.source[start..offset].chars().count() + 1;
+        let nearest = self.anchors[self.anchors.partition_point(|a| a.offset <= offset) - 1];
+        let walked = &self.source[nearest.offset..offset];
+        self.scanned
+            .set(self.scanned.get() + walked.chars().count());
+        let at = nearest.advance(walked);
         SourceSpan {
             file: self.file.to_owned(),
-            line: u32::try_from(line).unwrap_or(u32::MAX),
-            column: u32::try_from(column).unwrap_or(u32::MAX),
+            line: u32::try_from(at.line).unwrap_or(u32::MAX),
+            column: u32::try_from(at.column).unwrap_or(u32::MAX),
         }
     }
 
@@ -235,7 +302,7 @@ impl<'s> Parser<'s> {
     // Items.
     // -----------------------------------------------------------------------------------------
 
-    fn file(mut self) -> Result<Ast, Vec<Diagnostic>> {
+    fn file(&mut self) -> Result<Ast, Vec<Diagnostic>> {
         let mut diagnostics = Vec::new();
         let (mut model, mut train) = (None, None);
         let (mut seen_model, mut seen_train) = (false, false);
