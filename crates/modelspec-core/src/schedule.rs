@@ -80,6 +80,10 @@ pub enum ScheduleError {
     BufferTooLarge { buffer: u32, bytes: u64 },
     #[error("{value} dispatches {invocations} invocations, more than a 32-bit index counts")]
     TooManyInvocations { value: ValueId, invocations: u64 },
+    /// The op has no Vulkan kernel yet: `Embedding` and `EmbeddingGrad` run on the CPU
+    /// interpreter only.
+    #[error("{value} is {op}, which has no Vulkan kernel")]
+    NoKernel { value: ValueId, op: &'static str },
 }
 
 /// The most bytes one storage buffer binding addresses: Vulkan's `maxStorageBufferRange` is a
@@ -593,6 +597,12 @@ pub fn schedule_for(
                     [1, 1, 1],
                 );
                 (vec![stage1, stage2], Some(partials))
+            }
+            TensorOp::Embedding | TensorOp::EmbeddingGrad { .. } => {
+                return Err(ScheduleError::NoKernel {
+                    value: node.id,
+                    op: node.op.name(),
+                });
             }
             TensorOp::Input { .. } | TensorOp::ParamRead { .. } | TensorOp::Scalar(_) => {
                 unreachable!("handled above")

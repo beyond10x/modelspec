@@ -12,7 +12,7 @@ use crate::device::DeviceProfile;
 use crate::ir::kernel::{
     BufferView, ExecutionPlan, Kernel, KernelKind, KernelModuleId, MatMulLimits, PlanOp, PlanStep,
 };
-use crate::ir::tensor::{Dim, ParamId, TensorOp, TensorProgram, TensorType, ValueId};
+use crate::ir::tensor::{DType, Dim, ParamId, TensorOp, TensorProgram, TensorType, ValueId};
 use crate::ir::training::{
     Access, Effect, EffectToken, StateVersion, Subgraph, TrainingProgram, TrainingStep,
 };
@@ -85,6 +85,10 @@ pub enum VerifyError {
     },
     #[error("output {output} is not defined")]
     UndefinedOutput { output: ValueId },
+    #[error("parameter {param} has type {ty}; parameters are f32")]
+    ParamDType { param: ParamId, ty: TensorType },
+    #[error("output {output} is not f32; an i32 value is read only as ids")]
+    IntegerOutput { output: ValueId },
 }
 
 /// Per-thread counts of the verifier's work, for the tests of a runtime that verifies once per
@@ -125,15 +129,21 @@ pub mod counters {
 /// Every invariant [`crate::ir::tensor::TensorProgramBuilder`] enforces is checked here too, so a
 /// program made or changed by other means is held to the same rules.
 ///
-/// Order: the parameter table (concrete types, unique canonical paths), then value uniqueness,
+/// Order: the parameter table (concrete f32 types, unique canonical paths), then value uniqueness,
 /// then each node in definition order (operands defined earlier, parameter declared, concrete
 /// type, registry rule), then the input list (exactly the Input nodes, each once, in node order,
-/// names unique) and the output list.
+/// names unique) and the output list (each defined, each f32).
 pub fn verify(program: &TensorProgram) -> Result<(), VerifyError> {
     counters::bump(&counters::VERIFY);
     let mut paths: BTreeMap<&str, ParamId> = BTreeMap::new();
     for (&id, param) in &program.params {
         check_concrete(Site::Param(id), &param.ty)?;
+        if param.ty.dtype != DType::F32 {
+            return Err(VerifyError::ParamDType {
+                param: id,
+                ty: param.ty.clone(),
+            });
+        }
         if let Some(&first) = paths.get(param.path.as_str()) {
             return Err(VerifyError::DuplicateParamPath {
                 path: param.path.clone(),
@@ -202,8 +212,11 @@ pub fn verify(program: &TensorProgram) -> Result<(), VerifyError> {
 
     check_inputs(program)?;
     for &output in &program.outputs {
-        if !position.contains_key(&output) {
+        let Some(&i) = position.get(&output) else {
             return Err(VerifyError::UndefinedOutput { output });
+        };
+        if program.nodes[i].ty.dtype != DType::F32 {
+            return Err(VerifyError::IntegerOutput { output });
         }
     }
     Ok(())
@@ -2108,5 +2121,54 @@ mod tests {
             counters::effects_in_order(),
         ];
         assert_eq!(after, [before[0] + 1, before[1] + 1, before[2] + 1]);
+    }
+
+    /// `embedding(table, ids)` over an `i32` input verifies; its one output is the rows.
+    fn lookup() -> TensorProgram {
+        let mut b = crate::ir::tensor::TensorProgramBuilder::new();
+        let table = b.input("table", TensorType::f32(&[7, 3])).unwrap();
+        let ids = b.input("ids", TensorType::i32(&[10])).unwrap();
+        let rows = b.embedding(table, ids).unwrap();
+        b.output(rows).unwrap();
+        b.finish()
+    }
+
+    #[test]
+    fn an_embedding_over_i32_ids_verifies() {
+        assert_eq!(verify(&lookup()), Ok(()));
+    }
+
+    /// A parameter is `f32`, read or not.
+    #[test]
+    fn an_i32_parameter_is_refused() {
+        let mut program = lookup();
+        let ty = TensorType::i32(&[4, 1]);
+        program.params.insert(
+            ParamId(0),
+            crate::ir::tensor::ParamDecl {
+                path: "M.w".into(),
+                ty: ty.clone(),
+                init: crate::ir::tensor::Initializer::XavierUniform,
+            },
+        );
+        assert_eq!(
+            verify(&program),
+            Err(VerifyError::ParamDType {
+                param: ParamId(0),
+                ty
+            })
+        );
+    }
+
+    /// Outputs are `f32`: an `i32` input is read only as ids.
+    #[test]
+    fn an_i32_output_is_refused() {
+        let mut program = lookup();
+        let ids = program.inputs[1];
+        program.outputs.push(ids);
+        assert_eq!(
+            verify(&program),
+            Err(VerifyError::IntegerOutput { output: ids })
+        );
     }
 }

@@ -4,8 +4,8 @@
   "x-ess-provenance": {
     "system": "modelspec",
     "specification_version": "v1",
-    "source_digest": "d57780f89393692e702455921c814f30e7a438698e861d98b534c775b25ea13e",
-    "contract_digest": "slice-sha256/2:9de96e520ab5fcde7c9a4d4d15cddf9c538a4282d51f34874d2326402da0e698",
+    "source_digest": "a54c69a2e48c376a69c052c276bf350350a22e98128ab16acad92c1e7d3c089a",
+    "contract_digest": "slice-sha256/2:1a026b2973cf2dfca937641e193b43a0933a94f5ee86b5e25037392d3a814b00",
     "regenerate": "ess generate"
   },
   "$defs": {
@@ -83,12 +83,13 @@
     },
     "modelspec.checkpoint.DType": {
       "title": "DType",
-      "description": "A tensor element type and its size in bytes; `f32` is the only M0/M1 dtype (DESIGN.md § 2.2).",
+      "description": "A tensor element type and its size in bytes; `f32` for every value, `i32` only for row ids an `embedding` reads, never a parameter or a checkpoint tensor (DESIGN.md § 2.2).",
       "x-ess-name": "modelspec.checkpoint.DType",
       "x-ess-kind": "enum",
       "type": "string",
       "enum": [
-        "F32"
+        "F32",
+        "I32"
       ],
       "x-ess-attributes": [
         {
@@ -96,7 +97,8 @@
           "name": "size_bytes",
           "type": "Integer",
           "values": {
-            "F32": 4
+            "F32": 4,
+            "I32": 4
           }
         }
       ]

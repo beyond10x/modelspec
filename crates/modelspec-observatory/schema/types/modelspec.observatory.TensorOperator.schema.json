@@ -4,14 +4,14 @@
   "x-ess-provenance": {
     "system": "modelspec",
     "specification_version": "v1",
-    "source_digest": "d57780f89393692e702455921c814f30e7a438698e861d98b534c775b25ea13e",
-    "contract_digest": "slice-sha256/2:bfd2f1d4fe92ce8623623710a8d877065f03f1cbed1d9c7bce121dc9841cff2d",
+    "source_digest": "a54c69a2e48c376a69c052c276bf350350a22e98128ab16acad92c1e7d3c089a",
+    "contract_digest": "slice-sha256/2:002043460f9a6d6297e33611bcdb6d5ca95062b7e9f2e723e0753eff358a4795",
     "regenerate": "ess generate"
   },
   "$defs": {
     "modelspec.observatory.TensorOperator": {
       "title": "TensorOperator",
-      "description": "The Tensor IR operations, ReluGrad and BroadcastScalar being internal gradient ops (DESIGN.md § 3.1, § 4; `TensorOp` in `modelspec-core/src/ir/tensor.rs`). The operators of epic:bert-from-scratch join as the compiler gains them.",
+      "description": "The Tensor IR operations, ReluGrad, BroadcastScalar and EmbeddingGrad being internal gradient ops (DESIGN.md § 3.1, § 4; `TensorOp` in `modelspec-core/src/ir/tensor.rs`). The operators of epic:bert-from-scratch join as the compiler gains them.",
       "x-ess-name": "modelspec.observatory.TensorOperator",
       "x-ess-kind": "enum",
       "type": "string",
@@ -29,7 +29,9 @@
         "ReduceMean",
         "Mse",
         "ReluGrad",
-        "BroadcastScalar"
+        "BroadcastScalar",
+        "Embedding",
+        "EmbeddingGrad"
       ]
     }
   }

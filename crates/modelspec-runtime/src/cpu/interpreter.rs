@@ -22,7 +22,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use modelspec_core::ir::tensor::{Dim, ParamId, TensorOp, TensorProgram, TensorType, ValueId};
+use modelspec_core::ir::tensor::{
+    DType, Dim, ParamId, TensorOp, TensorProgram, TensorType, ValueId,
+};
 use modelspec_core::ir::verify::{VerifyError, verify};
 use thiserror::Error;
 
@@ -61,14 +63,32 @@ pub enum RuntimeError {
     /// backend limits are hard errors"; § 8.1, "runtime allocation failure").
     #[error("cannot allocate {bytes} bytes for {value}")]
     Allocation { value: ValueId, bytes: u128 },
+    /// A tensor supplied among the values of the other element type: an `f32` tensor for an
+    /// `i32` input, or ids for an `f32` input.
+    #[error("input `{name}` is declared {declared}; it is supplied as the other element type")]
+    InputDType { name: String, declared: TensorType },
+    /// A row id outside the table an `embedding` or its gradient reads (DESIGN.md § 4).
+    #[error(
+        "input `{name}` holds id {id} at position {index}, outside the {rows} rows of its table"
+    )]
+    IdOutOfRange {
+        name: String,
+        index: usize,
+        id: i32,
+        rows: u64,
+    },
 }
+
+/// No ids, for the programs that read none.
+static NO_IDS: BTreeMap<String, HostTensor<i32>> = BTreeMap::new();
 
 /// The result of [`evaluate_all`]: the program outputs and the value of every node.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Evaluation<T> {
     /// In the order of [`TensorProgram::outputs`]; a value listed twice appears twice.
     pub outputs: Vec<HostTensor<T>>,
-    /// Every node's value, keyed by the value it defines.
+    /// Every node's value, keyed by the value it defines, except the `i32` inputs: their values
+    /// are the supplied ids.
     pub values: BTreeMap<ValueId, HostTensor<T>>,
 }
 
@@ -98,14 +118,28 @@ pub mod counters {
 
 /// Evaluates `program` and returns its outputs, in the order of [`TensorProgram::outputs`].
 ///
-/// `inputs` holds a tensor for exactly the program's inputs, by name, and `params` one for
-/// exactly the entries of its parameter table; each has its declared shape.
+/// `inputs` holds a tensor for exactly the program's `f32` inputs, by name, and `params` one for
+/// exactly the entries of its parameter table; each has its declared shape. A program with an
+/// `i32` input runs through [`evaluate_with_ids`].
 pub fn evaluate<T: Element>(
     program: &TensorProgram,
     inputs: &BTreeMap<String, HostTensor<T>>,
     params: &BTreeMap<ParamId, HostTensor<T>>,
 ) -> Result<Vec<HostTensor<T>>, RuntimeError> {
-    Prepared::new(program)?.run(inputs, params)
+    evaluate_with_ids(program, inputs, &NO_IDS, params)
+}
+
+/// [`evaluate`] with `ids`, a tensor for exactly the program's `i32` inputs, by name, each of
+/// its declared shape. Every id an `embedding` or its gradient reads is checked against the rows
+/// of its table before the first node runs: an id outside them is
+/// [`RuntimeError::IdOutOfRange`].
+pub fn evaluate_with_ids<T: Element>(
+    program: &TensorProgram,
+    inputs: &BTreeMap<String, HostTensor<T>>,
+    ids: &BTreeMap<String, HostTensor<i32>>,
+    params: &BTreeMap<ParamId, HostTensor<T>>,
+) -> Result<Vec<HostTensor<T>>, RuntimeError> {
+    Prepared::new(program)?.run_with_ids(inputs, ids, params)
 }
 
 /// [`evaluate`], also returning every intermediate value.
@@ -114,23 +148,37 @@ pub fn evaluate_all<T: Element>(
     inputs: &BTreeMap<String, HostTensor<T>>,
     params: &BTreeMap<ParamId, HostTensor<T>>,
 ) -> Result<Evaluation<T>, RuntimeError> {
+    evaluate_all_with_ids(program, inputs, &NO_IDS, params)
+}
+
+/// [`evaluate_with_ids`], also returning every intermediate value.
+pub fn evaluate_all_with_ids<T: Element>(
+    program: &TensorProgram,
+    inputs: &BTreeMap<String, HostTensor<T>>,
+    ids: &BTreeMap<String, HostTensor<i32>>,
+    params: &BTreeMap<ParamId, HostTensor<T>>,
+) -> Result<Evaluation<T>, RuntimeError> {
     verify(program)?;
     let mut prepared = Prepared::planned(program, Keep::Every);
-    prepared.execute(inputs, params)?;
+    prepared.execute(inputs, ids, params)?;
     let mut outputs = Vec::new();
     prepared.outputs_into(inputs, params, &mut outputs)?;
     let values = program
         .nodes
         .iter()
         .enumerate()
-        .map(|(i, node)| {
-            let Hold::Stored(slot) = prepared.plan.hold[i] else {
-                unreachable!("a plan that keeps every value stores every node")
+        .filter_map(|(i, node)| {
+            let slot = match prepared.plan.hold[i] {
+                Hold::Stored(slot) => slot,
+                Hold::Ids => return None,
+                Hold::Supplied | Hold::InPlace(_) => {
+                    unreachable!("a plan that keeps every value stores every f32 node")
+                }
             };
             let value = prepared.storage[slot]
                 .take()
                 .expect("a finished run holds every stored value");
-            (node.id, value)
+            Some((node.id, value))
         })
         .collect();
     Ok(Evaluation { outputs, values })
@@ -157,6 +205,9 @@ enum Hold {
     InPlace(usize),
     /// Computed into this storage slot.
     Stored(usize),
+    /// The supplied ids of an `i32` input, read only by `Embedding` and `EmbeddingGrad`, under
+    /// either [`Keep`].
+    Ids,
 }
 
 /// What every run of a program does, decided once from the program alone.
@@ -175,6 +226,9 @@ struct Plan {
     moves: Vec<bool>,
     /// The number of storage slots.
     slots: usize,
+    /// Each read of ids, in node order: the `i32` input node and the rows of the table it
+    /// indexes.
+    id_reads: Vec<(usize, u64)>,
 }
 
 impl Plan {
@@ -208,6 +262,21 @@ impl Plan {
                 }
             }
         }
+        for (node, hold) in program.nodes.iter().zip(&mut hold) {
+            if node.ty.dtype == DType::I32 {
+                *hold = Hold::Ids;
+            }
+        }
+        let id_reads = program
+            .nodes
+            .iter()
+            .enumerate()
+            .filter_map(|(i, node)| match node.op {
+                TensorOp::Embedding => Some((operands[i][1], shapes[operands[i][0]][0])),
+                TensorOp::EmbeddingGrad { .. } => Some((operands[i][0], shapes[i][0])),
+                _ => None,
+            })
+            .collect();
 
         // The last consumer of each value; a `matmul` reading an in-place transpose consumes
         // the transposed value. A value nothing reads is freed after its own node.
@@ -272,6 +341,7 @@ impl Plan {
             outputs,
             moves,
             slots,
+            id_reads,
         }
     }
 }
@@ -348,8 +418,20 @@ impl<'p, T: Element> Prepared<'p, T> {
         inputs: &BTreeMap<String, HostTensor<T>>,
         params: &BTreeMap<ParamId, HostTensor<T>>,
     ) -> Result<Vec<HostTensor<T>>, RuntimeError> {
+        self.run_with_ids(inputs, &NO_IDS, params)
+    }
+
+    /// [`Prepared::run`] with `ids`, a tensor for exactly the program's `i32` inputs, as
+    /// [`evaluate_with_ids`] takes them.
+    pub fn run_with_ids(
+        &mut self,
+        inputs: &BTreeMap<String, HostTensor<T>>,
+        ids: &BTreeMap<String, HostTensor<i32>>,
+        params: &BTreeMap<ParamId, HostTensor<T>>,
+    ) -> Result<Vec<HostTensor<T>>, RuntimeError> {
         let mut outputs = Vec::new();
-        self.run_into(inputs, params, &mut outputs)?;
+        self.execute(inputs, ids, params)?;
+        self.outputs_into(inputs, params, &mut outputs)?;
         Ok(outputs)
     }
 
@@ -360,7 +442,7 @@ impl<'p, T: Element> Prepared<'p, T> {
         params: &BTreeMap<ParamId, HostTensor<T>>,
         outputs: &mut Vec<HostTensor<T>>,
     ) -> Result<(), RuntimeError> {
-        self.execute(inputs, params)?;
+        self.execute(inputs, &NO_IDS, params)?;
         self.outputs_into(inputs, params, outputs)
     }
 
@@ -408,19 +490,37 @@ impl<'p, T: Element> Prepared<'p, T> {
         self.plan.shapes[node].iter().product()
     }
 
-    /// Checks the supplied tensors, then evaluates every node in definition order.
+    /// Checks the supplied tensors and every id read, then evaluates every node in definition
+    /// order.
     fn execute(
         &mut self,
         inputs: &BTreeMap<String, HostTensor<T>>,
+        ids: &BTreeMap<String, HostTensor<i32>>,
         params: &BTreeMap<ParamId, HostTensor<T>>,
     ) -> Result<(), RuntimeError> {
-        check_inputs(self.program, inputs)?;
+        check_inputs(self.program, inputs, ids)?;
         check_params(self.program, params)?;
+        for &(node, rows) in &self.plan.id_reads {
+            let name = input_name(self.program, node);
+            let outside = ids[name]
+                .data()
+                .iter()
+                .enumerate()
+                .find(|&(_, &id)| u64::try_from(id).map_or(true, |id| id >= rows));
+            if let Some((index, &id)) = outside {
+                return Err(RuntimeError::IdOutOfRange {
+                    name: name.to_owned(),
+                    index,
+                    id,
+                    rows,
+                });
+            }
+        }
         let (mut live, mut peak) = (0usize, 0usize);
         for i in 0..self.program.nodes.len() {
             match self.plan.hold[i] {
                 Hold::InPlace(_) => continue,
-                Hold::Supplied => {}
+                Hold::Supplied | Hold::Ids => {}
                 Hold::Stored(slot) => {
                     // A slot only ever holds values of one element count, so a tensor it holds
                     // has room for this one: refilling it allocates nothing, and copies the
@@ -429,14 +529,14 @@ impl<'p, T: Element> Prepared<'p, T> {
                         Some(mut value) => {
                             value.refill(&self.plan.shapes[i], |data| {
                                 data.clear();
-                                self.eval_node(i, data, inputs, params);
+                                self.eval_node(i, data, inputs, ids, params);
                             });
                             value
                         }
                         None => {
                             let id = self.program.nodes[i].id;
                             let (mut data, _) = allocate(id, self.count(i))?;
-                            self.eval_node(i, &mut data, inputs, params);
+                            self.eval_node(i, &mut data, inputs, ids, params);
                             HostTensor::from_parts(self.plan.shapes[i].clone(), data)
                         }
                     };
@@ -498,17 +598,24 @@ impl<'p, T: Element> Prepared<'p, T> {
                 _ => unreachable!("only an input or a parameter read is supplied"),
             },
             Hold::InPlace(_) => unreachable!("an in-place transpose is read only by a matmul"),
+            Hold::Ids => unreachable!("ids are read only as the ids of an embedding"),
         }
     }
 
+    /// The ids of the `i32` input node `i`.
+    fn ids<'v>(&self, i: usize, ids: &'v BTreeMap<String, HostTensor<i32>>) -> &'v [i32] {
+        ids[input_name(self.program, i)].data()
+    }
+
     /// Evaluates node `i` into `data`, which it empties first and which has room for the value's
-    /// elements already, so this allocates nothing and cannot fail: the run checked the inputs
-    /// and parameters before its first node.
+    /// elements already, so this allocates nothing and cannot fail: the run checked the inputs,
+    /// the parameters and every id read before its first node.
     fn eval_node(
         &self,
         i: usize,
         data: &mut Vec<T>,
         inputs: &BTreeMap<String, HostTensor<T>>,
+        ids: &BTreeMap<String, HostTensor<i32>>,
         params: &BTreeMap<ParamId, HostTensor<T>>,
     ) {
         let node = &self.program.nodes[i];
@@ -555,6 +662,25 @@ impl<'p, T: Element> Prepared<'p, T> {
                 data.extend(a.data.iter().zip(g.data).map(|(&a, &g)| relu_where(a, g)));
             }
             TensorOp::BroadcastScalar { .. } => data.resize(n, arg(0).data[0]),
+            TensorOp::Embedding => {
+                let table = arg(0);
+                let h = table.shape[1] as usize;
+                for &id in self.ids(operands[1], ids) {
+                    let row = id as usize * h;
+                    data.extend_from_slice(&table.data[row..row + h]);
+                }
+            }
+            TensorOp::EmbeddingGrad { .. } => {
+                let g = arg(1);
+                let h = g.shape[1] as usize;
+                data.resize(n, T::ZERO);
+                for (k, &id) in self.ids(operands[0], ids).iter().enumerate() {
+                    let row = id as usize * h;
+                    for (out, &x) in data[row..row + h].iter_mut().zip(&g.data[k * h..]) {
+                        *out = *out + x;
+                    }
+                }
+            }
         }
     }
 }
@@ -581,28 +707,61 @@ fn in_place_transposes(program: &TensorProgram) -> BTreeMap<ValueId, ValueId> {
         .collect()
 }
 
-/// Every Input node has a supplied tensor of its declared shape, and nothing else is supplied.
+/// The name of the Input node `i`.
+fn input_name(program: &TensorProgram, i: usize) -> &str {
+    match &program.nodes[i].op {
+        TensorOp::Input { name } => name,
+        _ => unreachable!("only an Input node is i32"),
+    }
+}
+
+/// Every Input node has a supplied tensor of its declared shape, an `f32` one among `inputs` and
+/// an `i32` one among `ids`, and nothing else is supplied. A name supplied among the tensors of
+/// the other element type is [`RuntimeError::InputDType`].
 fn check_inputs<T: Element>(
     program: &TensorProgram,
     inputs: &BTreeMap<String, HostTensor<T>>,
+    ids: &BTreeMap<String, HostTensor<i32>>,
 ) -> Result<(), RuntimeError> {
-    let mut declared = 0;
+    let (mut floats, mut integers) = (0, 0);
     for node in &program.nodes {
         if let TensorOp::Input { name } = &node.op {
-            let value = input(inputs, name)?;
-            if !has_shape(value, &node.ty) {
+            let integer = node.ty.dtype == DType::I32;
+            let (shape, elsewhere) = if integer {
+                (
+                    ids.get(name).map(HostTensor::shape),
+                    inputs.contains_key(name),
+                )
+            } else {
+                (
+                    inputs.get(name).map(HostTensor::shape),
+                    ids.contains_key(name),
+                )
+            };
+            if elsewhere {
+                return Err(RuntimeError::InputDType {
+                    name: name.clone(),
+                    declared: node.ty.clone(),
+                });
+            }
+            let shape = shape.ok_or_else(|| RuntimeError::MissingInput { name: name.clone() })?;
+            if !has_shape(shape, &node.ty) {
                 return Err(RuntimeError::InputShape {
                     name: name.clone(),
                     declared: node.ty.clone(),
-                    got: value.shape().to_vec(),
+                    got: shape.to_vec(),
                 });
             }
-            declared += 1;
+            if integer {
+                integers += 1;
+            } else {
+                floats += 1;
+            }
         }
     }
-    // Input names are unique (the verifier refuses a repeated one) and each was found above, so
-    // a supplied tensor is unexpected exactly when there are more of them.
-    if inputs.len() == declared {
+    // Input names are unique (the verifier refuses a repeated one) and each was found above in
+    // its own map only, so a supplied tensor is unexpected exactly when there are more of them.
+    if inputs.len() == floats && ids.len() == integers {
         return Ok(());
     }
     let names: BTreeSet<&str> = program
@@ -613,7 +772,11 @@ fn check_inputs<T: Element>(
             _ => None,
         })
         .collect();
-    match inputs.keys().find(|name| !names.contains(name.as_str())) {
+    match inputs
+        .keys()
+        .chain(ids.keys())
+        .find(|name| !names.contains(name.as_str()))
+    {
         Some(name) => Err(RuntimeError::UnexpectedInput { name: name.clone() }),
         None => Ok(()),
     }
@@ -627,7 +790,7 @@ fn check_params<T: Element>(
 ) -> Result<(), RuntimeError> {
     for (&id, decl) in &program.params {
         let value = param(program, params, id)?;
-        if !has_shape(value, &decl.ty) {
+        if !has_shape(value.shape(), &decl.ty) {
             return Err(RuntimeError::ParamShape {
                 param: id,
                 path: decl.path.clone(),
@@ -640,15 +803,6 @@ fn check_params<T: Element>(
         Some(&param) => Err(RuntimeError::UndeclaredParam { param }),
         None => Ok(()),
     }
-}
-
-fn input<'a, T>(
-    inputs: &'a BTreeMap<String, HostTensor<T>>,
-    name: &str,
-) -> Result<&'a HostTensor<T>, RuntimeError> {
-    inputs.get(name).ok_or_else(|| RuntimeError::MissingInput {
-        name: name.to_string(),
-    })
 }
 
 fn param<'a, T>(
@@ -666,12 +820,12 @@ fn param<'a, T>(
     })
 }
 
-fn has_shape<T: Element>(value: &HostTensor<T>, ty: &TensorType) -> bool {
-    value.rank() == ty.rank()
+fn has_shape(shape: &[u64], ty: &TensorType) -> bool {
+    shape.len() == ty.rank()
         && ty
             .shape
             .iter()
-            .zip(value.shape())
+            .zip(shape)
             .all(|(dim, &n)| *dim == Dim::Static(n))
 }
 
