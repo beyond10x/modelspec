@@ -1,0 +1,113 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Dataset",
+  "description": "The pre-training corpus, a small public one, and its splits (epic:bert-from-scratch \"corpus/dataset\"). Its data order in a run is deterministic from the run seed (DESIGN.md § 2.3). The corpus is WikiText-103 in its raw (non-tokenized) release `wikitext-103-raw-v1` (Merity, Xiong, Bradbury, Socher 2016, \"Pointer Sentinel Mixture Models\"), licensed CC BY-SA 3.0. The operator obtains the release's files `wiki.train.raw`, `wiki.valid.raw` and `wiki.test.raw` and passes their directory to `modelspec data prepare <corpus-dir> --out <dir>`, which reads only local files and writes the splits and this record as `dataset.json` in `<dir>`. A Dataset holds raw text, its splits being files of documents identified by content. Packed token sequences are a later entity, written by story:bert-mlm-batches, that references a Dataset and a Tokenizer, so a Dataset has no relation to Tokenizer and a tokenizer change does not rewrite the splits. dataset_id is the leading 16 bytes, as a version-8 UUID, of the blake3 hash over the 32-byte blake3 digests of the splits, Train then HeldOut. name is the file name of the corpus directory. Two runs on the same files write byte-identical output (coordinator decision D19, 2026-10-24, `.engineering/waves/bert-1.md`).",
+  "x-ess-name": "modelspec.data.Dataset",
+  "x-ess-kind": "entity",
+  "type": "object",
+  "properties": {
+    "dataset_id": {
+      "$ref": "#/$defs/modelspec.data.DatasetId"
+    },
+    "name": {
+      "type": "string"
+    },
+    "splits": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/modelspec.data.DatasetSplit"
+      }
+    },
+    "state": {
+      "$ref": "#/$defs/modelspec.data.Dataset.State"
+    }
+  },
+  "required": [
+    "dataset_id",
+    "name",
+    "splits",
+    "state"
+  ],
+  "additionalProperties": false,
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "a5c9aa0cb5c62fb600e6e23d99795113986a393a7a166f7b941d561385c45021",
+    "contract_digest": "slice-sha256/2:5e392323fcdeedcf1cf473c63052a7b09dd6a1b5e93671cf536fe79ee38d15c6",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.artifact.ContentHash": {
+      "title": "ContentHash",
+      "description": "A blake3 digest under explicit serialization and version rules (DESIGN.md § 7).",
+      "x-ess-name": "modelspec.artifact.ContentHash",
+      "x-ess-kind": "newtype",
+      "type": "string"
+    },
+    "modelspec.data.Dataset.State": {
+      "title": "State",
+      "x-ess-name": "modelspec.data.Dataset.State",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "Recorded"
+      ]
+    },
+    "modelspec.data.DatasetId": {
+      "title": "DatasetId",
+      "x-ess-name": "modelspec.data.DatasetId",
+      "x-ess-kind": "newtype",
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    },
+    "modelspec.data.DatasetSplit": {
+      "title": "DatasetSplit",
+      "description": "One split of a corpus, made from one file of the release, not by a fraction or a shuffle, so the held-out set is the one every published WikiText-103 number uses. Train is `wiki.train.raw` and HeldOut is `wiki.valid.raw`; `wiki.test.raw` is not read. `modelspec data prepare` copies the file byte for byte to `train.raw` or `heldout.raw` in its output directory. A split is identified by role, content_hash, document_count and byte_count (coordinator decision D19, 2026-10-24, `.engineering/waves/bert-1.md`).",
+      "x-ess-name": "modelspec.data.DatasetSplit",
+      "x-ess-kind": "struct",
+      "type": "object",
+      "properties": {
+        "role": {
+          "$ref": "#/$defs/modelspec.data.SplitRole"
+        },
+        "content_hash": {
+          "$ref": "#/$defs/modelspec.artifact.ContentHash",
+          "description": "The blake3 hash of the split file's bytes, 64 lowercase hexadecimal digits (coordinator decision D19, 2026-10-24, `.engineering/waves/bert-1.md`)."
+        },
+        "document_count": {
+          "description": "The number of documents in the split. A document is one article of the release. It starts at a top-level heading line `= <title> =` (one `=` on each side, surrounding whitespace ignored, `= = <section> = =` is not one), and any non-blank text before the first heading is one document too (coordinator decision D19, 2026-10-24, `.engineering/waves/bert-1.md`).",
+          "type": "integer",
+          "minimum": 1
+        },
+        "byte_count": {
+          "description": "The length of the split file in bytes; the file is UTF-8 (coordinator decision D19, 2026-10-24, `.engineering/waves/bert-1.md`).",
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "role",
+        "content_hash",
+        "document_count",
+        "byte_count"
+      ],
+      "additionalProperties": false,
+      "x-ess-invariants": [
+        "document_count > 0",
+        "byte_count > 0"
+      ]
+    },
+    "modelspec.data.SplitRole": {
+      "title": "SplitRole",
+      "description": "What a split is used for; MLM loss and accuracy are evaluated on the held-out split (epic:bert-from-scratch).",
+      "x-ess-name": "modelspec.data.SplitRole",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "Train",
+        "HeldOut"
+      ]
+    }
+  }
+}

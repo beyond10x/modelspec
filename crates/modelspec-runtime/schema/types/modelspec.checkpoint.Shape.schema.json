@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/modelspec.checkpoint.Shape",
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "a5c9aa0cb5c62fb600e6e23d99795113986a393a7a166f7b941d561385c45021",
+    "contract_digest": "slice-sha256/2:6ab6b307d9d18bd2630b1a4e0567d88882b96f677ae24d2fe3334b19e60890f2",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.checkpoint.Shape": {
+      "title": "Shape",
+      "description": "A tensor shape; each dimension is a positive integer and rank 0 is a scalar (DESIGN.md § 2.2).",
+      "x-ess-name": "modelspec.checkpoint.Shape",
+      "x-ess-kind": "newtype",
+      "type": "array",
+      "items": {
+        "type": "integer"
+      },
+      "x-ess-invariants": [
+        "forall dim in value: (dim > 0)"
+      ]
+    }
+  }
+}

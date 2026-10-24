@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/modelspec.data.DenseDataDirectory",
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "a5c9aa0cb5c62fb600e6e23d99795113986a393a7a166f7b941d561385c45021",
+    "contract_digest": "slice-sha256/2:70367aaa925b1c3b3d488ac029444d6039843deeb82e441a54796024f9b7d31d",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.data.DenseDataDirectory": {
+      "title": "DenseDataDirectory",
+      "description": "The directory `modelspec train --data <dir>` or `--eval <dir>` names (DESIGN.md § 8). It holds one DenseTensorFile per `input` and `target` declaration of the train block, all with the same samples count N, and for `--data` an optional SampleOrder. Under `--eval` the order is not read and N must be a multiple of B, else E-DATA-009 before the first step.",
+      "x-ess-name": "modelspec.data.DenseDataDirectory",
+      "x-ess-kind": "struct",
+      "type": "object",
+      "properties": {
+        "tensors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/modelspec.data.DenseTensorFile"
+          }
+        },
+        "order": {
+          "$ref": "#/$defs/modelspec.data.SampleOrder"
+        }
+      },
+      "required": [
+        "tensors"
+      ],
+      "additionalProperties": false,
+      "x-ess-invariants": [
+        "tensors.count > 0",
+        "distinct tensor in tensors by tensor.name"
+      ]
+    },
+    "modelspec.data.DenseTensorFile": {
+      "title": "DenseTensorFile",
+      "description": "One file `<name>.f32` of a dense data directory, read by `modelspec train --data` and `--eval` (DESIGN.md § 8). name is the name of an `input` or `target` declaration `name Tensor<f32, [B, d1, ...]>` of the train block; the file is row-major little-endian f32 with no header, one sample per sample_elements = d1 × ... values, so samples is the file length in bytes divided by 4 × sample_elements. A length that is not a whole number of samples, no sample at all, or a value that is NaN or infinite is refused with E-DATA-007 before the first step.",
+      "x-ess-name": "modelspec.data.DenseTensorFile",
+      "x-ess-kind": "struct",
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "sample_elements": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "samples": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "name",
+        "sample_elements",
+        "samples"
+      ],
+      "additionalProperties": false,
+      "x-ess-invariants": [
+        "sample_elements > 0",
+        "samples > 0"
+      ]
+    },
+    "modelspec.data.SampleOrder": {
+      "title": "SampleOrder",
+      "description": "The optional file `order.u32` of a dense data directory, little-endian u32 sample indices with no header. Training step k feeds the samples indices[k·B .. (k+1)·B]; without the file it feeds the samples (k·B + i) mod N. The loss after the last update reads the batch of step `steps`, its positions taken modulo the count of indices. Fewer than steps · B indices, or an index not below the directory's sample count N, is refused with E-DATA-008 before the first step.",
+      "x-ess-name": "modelspec.data.SampleOrder",
+      "x-ess-kind": "struct",
+      "type": "object",
+      "properties": {
+        "indices": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          }
+        }
+      },
+      "required": [
+        "indices"
+      ],
+      "additionalProperties": false,
+      "x-ess-invariants": [
+        "indices.count > 0"
+      ]
+    }
+  }
+}

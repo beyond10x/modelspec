@@ -1,0 +1,96 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Tokenizer",
+  "description": "A tokenizer and the vocabulary it maps text to (epic:bert-from-scratch).",
+  "x-ess-name": "modelspec.data.Tokenizer",
+  "x-ess-kind": "entity",
+  "type": "object",
+  "properties": {
+    "tokenizer_id": {
+      "$ref": "#/$defs/modelspec.data.TokenizerId"
+    },
+    "kind": {
+      "$ref": "#/$defs/modelspec.data.TokenizerKind"
+    },
+    "vocabulary": {
+      "$ref": "#/$defs/modelspec.data.Vocabulary"
+    },
+    "state": {
+      "$ref": "#/$defs/modelspec.data.Tokenizer.State"
+    }
+  },
+  "required": [
+    "tokenizer_id",
+    "kind",
+    "vocabulary",
+    "state"
+  ],
+  "additionalProperties": false,
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "a5c9aa0cb5c62fb600e6e23d99795113986a393a7a166f7b941d561385c45021",
+    "contract_digest": "slice-sha256/2:ef390341ed799f7fc5c9aa701700bef696c44c1b88f5192a14ace3d6d15c48ae",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.data.Tokenizer.State": {
+      "title": "State",
+      "x-ess-name": "modelspec.data.Tokenizer.State",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "Recorded"
+      ]
+    },
+    "modelspec.data.TokenizerId": {
+      "title": "TokenizerId",
+      "x-ess-name": "modelspec.data.TokenizerId",
+      "x-ess-kind": "newtype",
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    },
+    "modelspec.data.TokenizerKind": {
+      "title": "TokenizerKind",
+      "description": "The tokenization algorithm (epic:bert-from-scratch, \"a WordPiece (or byte-level) tokenizer\"). WordPiece, on lowercased text, as BERT (Devlin, Chang, Lee, Toutanova 2018), with a vocabulary of 8,192 tokens trained on the Train split of the Dataset (story:bert-tokenizer implements it); byte-level is not used (coordinator decision D19, 2026-10-24, `.engineering/waves/bert-1.md`).",
+      "x-ess-name": "modelspec.data.TokenizerKind",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "WordPiece"
+      ]
+    },
+    "modelspec.data.Vocabulary": {
+      "title": "Vocabulary",
+      "description": "The tokens a tokenizer maps text to; a token's id is its position in tokens (about 30k for BERT-tiny in the epic; 8,192 for the WordPiece tokenizer of TokenizerKind). mask_token_id names the token 80/10/10 masking substitutes. The special tokens are BERT's, at fixed ids at the head of tokens, in this order, `[PAD]` 0, `[UNK]` 1, `[CLS]` 2, `[SEP]` 3, `[MASK]` 4, so a batch record can be read without the vocabulary (coordinator decision D19, 2026-10-24, `.engineering/waves/bert-1.md`).",
+      "x-ess-name": "modelspec.data.Vocabulary",
+      "x-ess-kind": "struct",
+      "type": "object",
+      "properties": {
+        "tokens": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "mask_token_id": {
+          "type": "integer",
+          "minimum": 0,
+          "const": 4
+        }
+      },
+      "required": [
+        "tokens",
+        "mask_token_id"
+      ],
+      "additionalProperties": false,
+      "x-ess-invariants": [
+        "distinct token in tokens",
+        "mask_token_id >= 0",
+        "mask_token_id < tokens.count",
+        "mask_token_id == 4"
+      ]
+    }
+  }
+}

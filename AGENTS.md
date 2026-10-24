@@ -13,9 +13,10 @@ A Rust compiler and runtime for `.mspec` tensor-program specifications. Humans s
 
 Milestone M0 implemented (DESIGN.md revision 0.6, § 1 and § 11, iteration 1; wave `m0` closed);
 M1 (`epic:m1-vulkan-execution`) is in progress, latest release 0.9.0. A Cargo workspace of five crates: `modelspec-core`
-(parser, checker, Tensor IR, autodiff, lowering, DCE; no Vulkan), `modelspec-runtime` (CPU oracle
-and SGD training; the `vulkan` feature holds Vulkan device discovery, negotiation, SPIR-V
-emission and the training runner `vulkan::runner` through `ash` and `rspirv`), `modelspec-observatory` (the typed
+(parser, checker, Tensor IR, autodiff, lowering, DCE; no Vulkan), `modelspec-runtime` (CPU oracle,
+SGD training and the corpus preparation `dataset`; the `vulkan` feature holds Vulkan device discovery, negotiation, SPIR-V
+emission and the training runner `vulkan::runner` through `ash` and `rspirv`; the JSON Schema of
+the records it writes under `schema/` is `ess generate` output), `modelspec-observatory` (the typed
 `RunEvent`s of a run and their Server-Sent Events stream; its JSON Schema under `schema/` is
 `ess generate` output), `modelspec-cli` (binary `modelspec`) and `modelspec-docs` (repository
 tooling: the derived pages of the documentation site).
@@ -31,6 +32,10 @@ prints each device's profile and negotiation verdict; the device tests run on a 
 `--ignored`. `train --serve <addr>` streams a run's `RunEvent`s, `--record <path>` writes them to a
 file and `observe <path>` replays one; with `--ui ui/dist` either also serves the observatory UI at
 `/`, the Vue 3 + TypeScript app in `ui/` (Vite, pnpm) that draws the loss and every metric per step.
+`data prepare <corpus-dir> --out <dir>` copies a local WikiText-103 raw release's `wiki.train.raw`
+and `wiki.valid.raw` into the `Train` and `HeldOut` splits and writes their `Dataset` record
+`dataset.json` (`spec/domains/data.yaml`); nothing is downloaded, and its tests use the original
+text of `crates/modelspec-runtime/tests/fixtures/corpus/`, never corpus text.
 CI: `check.yml` runs `task ci`; `shared-gates.yml` runs the
 common source gates; `pages.yml` and `b10x-docs-site.yml` build and publish the documentation site.
 
@@ -64,8 +69,9 @@ Entry points are the `Taskfile.yml` tasks (go-task):
   documentation site differs from what the code produces now; `task docs-generate` rewrites them.
 - `task spec-validate`: `ess specify validate --path .` from inside `spec/`.
 - `task schema-check`: `ess generate --kind schema --check` from inside `spec/`, which fails when
-  a file the specification generates under `crates/modelspec-observatory/schema/` differs from it
-  or is missing; an extra file there passes. `task schema-generate` rewrites them. A change to any file under `spec/` changes the schema's
+  a file the specification generates under `crates/modelspec-observatory/schema/` or
+  `crates/modelspec-runtime/schema/` differs from it or is missing; an extra file there passes.
+  `task schema-generate` rewrites both. A change to any file under `spec/` changes the schema's
   provenance digest, so run `task schema-generate` in the same change.
 - `task ui-types-check`: `modelspec-ui-types --check`, which fails when
   `ui/src/generated/observatory.ts` differs from the TypeScript the Rust types of

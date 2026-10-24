@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/modelspec.benchmark.PositiveInteger",
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "a5c9aa0cb5c62fb600e6e23d99795113986a393a7a166f7b941d561385c45021",
+    "contract_digest": "slice-sha256/2:d44a8cecbcfc1f3e40faabee35887a439949a140d8429f0774f92b1f0a89f73b",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.benchmark.PositiveInteger": {
+      "title": "PositiveInteger",
+      "description": "A whole number of at least 1, the type of every count and size of a BenchmarkRun (threads, batch, hidden, flop_per_step, timed_steps, repeat_count); the generated JSON Schema carries it as `minimum` 1.",
+      "x-ess-name": "modelspec.benchmark.PositiveInteger",
+      "x-ess-kind": "newtype",
+      "type": "integer",
+      "minimum": 1,
+      "x-ess-invariants": [
+        "value >= 1"
+      ]
+    }
+  }
+}

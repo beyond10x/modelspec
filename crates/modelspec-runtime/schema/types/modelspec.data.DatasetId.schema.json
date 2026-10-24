@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/modelspec.data.DatasetId",
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "a5c9aa0cb5c62fb600e6e23d99795113986a393a7a166f7b941d561385c45021",
+    "contract_digest": "slice-sha256/2:567db3f28d765547d279c87d20afca84b12ca0aa50367c9364b6a7b8041fe7fd",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.data.DatasetId": {
+      "title": "DatasetId",
+      "x-ess-name": "modelspec.data.DatasetId",
+      "x-ess-kind": "newtype",
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    }
+  }
+}

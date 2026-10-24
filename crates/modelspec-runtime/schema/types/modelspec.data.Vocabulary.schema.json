@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/modelspec.data.Vocabulary",
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "a5c9aa0cb5c62fb600e6e23d99795113986a393a7a166f7b941d561385c45021",
+    "contract_digest": "slice-sha256/2:5a7f52bd8a942fd3d74dd96e9285e5be7007c5a309e7ccc56b702247927072aa",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.data.Vocabulary": {
+      "title": "Vocabulary",
+      "description": "The tokens a tokenizer maps text to; a token's id is its position in tokens (about 30k for BERT-tiny in the epic; 8,192 for the WordPiece tokenizer of TokenizerKind). mask_token_id names the token 80/10/10 masking substitutes. The special tokens are BERT's, at fixed ids at the head of tokens, in this order, `[PAD]` 0, `[UNK]` 1, `[CLS]` 2, `[SEP]` 3, `[MASK]` 4, so a batch record can be read without the vocabulary (coordinator decision D19, 2026-10-24, `.engineering/waves/bert-1.md`).",
+      "x-ess-name": "modelspec.data.Vocabulary",
+      "x-ess-kind": "struct",
+      "type": "object",
+      "properties": {
+        "tokens": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "mask_token_id": {
+          "type": "integer",
+          "minimum": 0,
+          "const": 4
+        }
+      },
+      "required": [
+        "tokens",
+        "mask_token_id"
+      ],
+      "additionalProperties": false,
+      "x-ess-invariants": [
+        "distinct token in tokens",
+        "mask_token_id >= 0",
+        "mask_token_id < tokens.count",
+        "mask_token_id == 4"
+      ]
+    }
+  }
+}

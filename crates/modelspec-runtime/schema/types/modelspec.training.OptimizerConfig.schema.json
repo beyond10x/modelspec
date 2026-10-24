@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/modelspec.training.OptimizerConfig",
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "a5c9aa0cb5c62fb600e6e23d99795113986a393a7a166f7b941d561385c45021",
+    "contract_digest": "slice-sha256/2:023bfd740a8d2cebfb6ca1b6117e71ab9a72a7ee0c2c0b6435528108eb580f6f",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.training.LearningRateSchedule": {
+      "title": "LearningRateSchedule",
+      "description": "How the learning rate varies over steps; a linear warmup over the first warmup_steps steps up to OptimizerConfig.learning_rate (epic:bert-from-scratch, AdamW with warmup).",
+      "x-ess-name": "modelspec.training.LearningRateSchedule",
+      "x-ess-kind": "struct",
+      "type": "object",
+      "properties": {
+        "warmup_steps": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "warmup_steps"
+      ],
+      "additionalProperties": false,
+      "x-ess-invariants": [
+        "warmup_steps >= 0"
+      ]
+    },
+    "modelspec.training.OptimizerConfig": {
+      "title": "OptimizerConfig",
+      "description": "Optimizer hyperparameters, recorded for reproducibility (DESIGN.md § 6.1). The AdamW fields are present exactly when kind is AdamW (Loshchilov and Hutter, decoupled weight decay); its first and second moments are a checkpoint's optimizer slots (DESIGN.md § 6.2).",
+      "x-ess-name": "modelspec.training.OptimizerConfig",
+      "x-ess-kind": "struct",
+      "type": "object",
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/modelspec.training.OptimizerKind"
+        },
+        "learning_rate": {
+          "description": "The base learning rate; the peak rate when a schedule is present.",
+          "type": "number"
+        },
+        "weight_decay": {
+          "description": "AdamW decoupled weight decay coefficient (epic:bert-from-scratch).",
+          "type": "number"
+        },
+        "beta1": {
+          "description": "AdamW first-moment decay rate.",
+          "type": "number"
+        },
+        "beta2": {
+          "description": "AdamW second-moment decay rate.",
+          "type": "number"
+        },
+        "epsilon": {
+          "description": "AdamW denominator term.",
+          "type": "number"
+        },
+        "schedule": {
+          "$ref": "#/$defs/modelspec.training.LearningRateSchedule",
+          "description": "Absent means a constant learning rate, as M0 SGD has."
+        }
+      },
+      "required": [
+        "kind",
+        "learning_rate"
+      ],
+      "additionalProperties": false,
+      "x-ess-invariants": [
+        "((kind == Sgd and not (defined(weight_decay)) and not (defined(beta1)) and not (defined(beta2)) and not (defined(epsilon))) or (kind == AdamW and defined(weight_decay) and defined(beta1) and defined(beta2) and defined(epsilon)))"
+      ]
+    },
+    "modelspec.training.OptimizerKind": {
+      "title": "OptimizerKind",
+      "description": "SGD from M0; AdamW with weight decay joins at M3 (DESIGN.md § 1, § 11 iteration 4; epic:bert-from-scratch). The CLI accepts only `sgd` until then.",
+      "x-ess-name": "modelspec.training.OptimizerKind",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "Sgd",
+        "AdamW"
+      ]
+    }
+  }
+}

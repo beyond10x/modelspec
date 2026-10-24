@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/modelspec.artifact.DataRole",
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "a5c9aa0cb5c62fb600e6e23d99795113986a393a7a166f7b941d561385c45021",
+    "contract_digest": "slice-sha256/2:e98529aebd504f14707f9a76f533b873e768193505de73a08e5ab75055185dad",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.artifact.DataRole": {
+      "title": "DataRole",
+      "description": "Whether a bound tensor is a training input or a target (DESIGN.md § 2 `input`, `target`).",
+      "x-ess-name": "modelspec.artifact.DataRole",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "Input",
+        "Target"
+      ]
+    }
+  }
+}

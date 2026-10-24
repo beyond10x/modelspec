@@ -1,0 +1,100 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/modelspec.checkpoint.OptimizerSlot",
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "a5c9aa0cb5c62fb600e6e23d99795113986a393a7a166f7b941d561385c45021",
+    "contract_digest": "slice-sha256/2:8a534cfbb5f73dab6bd1dd998cfd47b5e346ac7af8bfc1395538536033b0d74d",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.checkpoint.DType": {
+      "title": "DType",
+      "description": "A tensor element type and its size in bytes; `f32` is the only M0/M1 dtype (DESIGN.md § 2.2).",
+      "x-ess-name": "modelspec.checkpoint.DType",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "F32"
+      ],
+      "x-ess-attributes": [
+        {
+          "kind": "integer",
+          "name": "size_bytes",
+          "type": "Integer",
+          "values": {
+            "F32": 4
+          }
+        }
+      ]
+    },
+    "modelspec.checkpoint.OptimizerSlot": {
+      "title": "OptimizerSlot",
+      "description": "One optimizer state tensor of one parameter, addressed in the payload like a parameter (DESIGN.md § 6.2). Its offset and length are bounded by the file size and aligned like a ParameterRecord's, and the pair (path, slot) is unique in a checkpoint; ESS states neither here.",
+      "x-ess-name": "modelspec.checkpoint.OptimizerSlot",
+      "x-ess-kind": "struct",
+      "type": "object",
+      "properties": {
+        "path": {
+          "$ref": "#/$defs/modelspec.checkpoint.ParameterPath"
+        },
+        "slot": {
+          "type": "string"
+        },
+        "dtype": {
+          "$ref": "#/$defs/modelspec.checkpoint.DType",
+          "description": "Element type of the state tensor (DESIGN.md § 6.2 dtypes, § 6.2 never reinterpret tensor bytes)."
+        },
+        "shape": {
+          "$ref": "#/$defs/modelspec.checkpoint.Shape",
+          "description": "Shape of the state tensor (DESIGN.md § 6.2 shapes)."
+        },
+        "offset": {
+          "description": "Absolute byte offset of the tensor from the start of the file, a multiple of the checkpoint's alignment (DESIGN.md § 6.2).",
+          "type": "integer",
+          "minimum": 0
+        },
+        "length": {
+          "description": "Length in bytes, equal to the product of `shape` times `dtype.size_bytes`; offset + length <= the checkpoint's file_size (DESIGN.md § 6.2).",
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "path",
+        "slot",
+        "dtype",
+        "shape",
+        "offset",
+        "length"
+      ],
+      "additionalProperties": false,
+      "x-ess-invariants": [
+        "offset >= 0",
+        "length > 0",
+        "length >= dtype.size_bytes"
+      ]
+    },
+    "modelspec.checkpoint.ParameterPath": {
+      "title": "ParameterPath",
+      "description": "A stable canonical parameter path such as `TinyMLP.fc1.weight` (DESIGN.md § 2.3).",
+      "x-ess-name": "modelspec.checkpoint.ParameterPath",
+      "x-ess-kind": "newtype",
+      "type": "string"
+    },
+    "modelspec.checkpoint.Shape": {
+      "title": "Shape",
+      "description": "A tensor shape; each dimension is a positive integer and rank 0 is a scalar (DESIGN.md § 2.2).",
+      "x-ess-name": "modelspec.checkpoint.Shape",
+      "x-ess-kind": "newtype",
+      "type": "array",
+      "items": {
+        "type": "integer"
+      },
+      "x-ess-invariants": [
+        "forall dim in value: (dim > 0)"
+      ]
+    }
+  }
+}

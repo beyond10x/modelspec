@@ -27,6 +27,8 @@ Generated from the clap definition of the `modelspec` command line in [`crates/m
 |---|---|
 | [`modelspec check`](#modelspec-check) | Parse and type-check a `.mspec` file |
 | [`modelspec compile`](#modelspec-compile) | Compile a `.mspec` file into an artifact directory: artifact.json and, for Vulkan, its SPIR-V kernel modules |
+| [`modelspec data`](#modelspec-data) | Prepare the training data of a masked-language-model run |
+| [`modelspec data prepare`](#modelspec-data-prepare) | Copy a WikiText-103 raw release's wiki.train.raw and wiki.valid.raw into the Train and HeldOut splits and write their record, dataset.json |
 | [`modelspec infer`](#modelspec-infer) | Run the forward program of a `.mspec` model with the parameters of a checkpoint |
 | [`modelspec inspect-device`](#modelspec-inspect-device) | Print the profile and negotiation verdict of each Vulkan physical device |
 | [`modelspec ir`](#modelspec-ir) | Print the IR of a `.mspec` file at a stage |
@@ -62,6 +64,29 @@ Usage: modelspec compile [OPTIONS] --backend <BACKEND> --output <DIR> <PATH>
 | `--output <DIR>` | yes | none | The artifact directory to write, created with its parents; files of an earlier artifact in it are overwritten. |
 | `--device-profile <PATH>` | no | none | With --backend vulkan, build the kernel modules for the DeviceProfile JSON file PATH (the form `inspect-device --format json` prints) instead of probing device 0. |
 | `--fast-math` | no | `false` | With --backend vulkan, compile with fast_math (DESIGN.md ADR-008): the manifest and every kernel cache key record it, and the float multiplies, adds and subtracts of the matmul, reduction, loss-sum and SGD kernels carry no NoContraction, so a driver may contract them into fused multiply-adds. |
+
+## `modelspec data`
+
+Prepare the training data of a masked-language-model run
+
+```text
+Usage: modelspec data <COMMAND>
+```
+
+## `modelspec data prepare`
+
+Copy a WikiText-103 raw release's wiki.train.raw and wiki.valid.raw into the Train and HeldOut splits and write their record, dataset.json
+
+```text
+Usage: modelspec data prepare --out <DIR> <CORPUS>
+```
+
+Every argument is required and has no default.
+
+| Argument | Meaning |
+|---|---|
+| `<CORPUS>` | The directory holding the release's wiki.train.raw and wiki.valid.raw; nothing is downloaded. |
+| `--out <DIR>` | The directory to write train.raw, heldout.raw and dataset.json into; created when missing. |
 
 ## `modelspec infer`
 

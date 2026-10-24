@@ -76,16 +76,13 @@ types:
   - name: modelspec.data.TokenizerKind
     kind: enum
     naming:
-      summary: The tokenization algorithm (epic:bert-from-scratch, "a WordPiece (or byte-level) tokenizer").
-    # UNMAPPED: the epic leaves WordPiece or byte-level open; both are listed until it is settled.
-    variants: [WordPiece, ByteLevel]
+      summary: The tokenization algorithm (epic:bert-from-scratch, "a WordPiece (or byte-level) tokenizer"). WordPiece, on lowercased text, as BERT (Devlin, Chang, Lee, Toutanova 2018), with a vocabulary of 8,192 tokens trained on the Train split of the Dataset (story:bert-tokenizer implements it); byte-level is not used (coordinator decision D19, 2026-10-24, `.engineering/waves/bert-1.md`).
+    variants: [WordPiece]
 
   - name: modelspec.data.Vocabulary
     kind: struct
     naming:
-      summary: The tokens a tokenizer maps text to; a token's id is its position in tokens (about 30k for BERT-tiny, epic:bert-from-scratch). mask_token_id names the token 80/10/10 masking substitutes.
-    # UNMAPPED: special tokens beyond the mask token (classification, separator, padding, unknown)
-    # are not named by the epic. Open question.
+      summary: The tokens a tokenizer maps text to; a token's id is its position in tokens (about 30k for BERT-tiny in the epic; 8,192 for the WordPiece tokenizer of TokenizerKind). mask_token_id names the token 80/10/10 masking substitutes. The special tokens are BERT's, at fixed ids at the head of tokens, in this order, `[PAD]` 0, `[UNK]` 1, `[CLS]` 2, `[SEP]` 3, `[MASK]` 4, so a batch record can be read without the vocabulary (coordinator decision D19, 2026-10-24, `.engineering/waves/bert-1.md`).
     fields:
       - name: tokens
         type: List<String>
@@ -95,6 +92,7 @@ types:
       - distinct: {in: tokens, as: token}
       - mask_token_id >= 0
       - mask_token_id < tokens.count
+      - mask_token_id == 4
 
   - name: modelspec.data.DatasetId
     kind: newtype
@@ -109,20 +107,27 @@ types:
   - name: modelspec.data.DatasetSplit
     kind: struct
     naming:
-      summary: One split of a corpus.
-    # UNMAPPED: how a split is made and identified (a fraction, a file, a content hash, a sequence
-    # count) is not settled by the epic. Open question.
+      summary: One split of a corpus, made from one file of the release, not by a fraction or a shuffle, so the held-out set is the one every published WikiText-103 number uses. Train is `wiki.train.raw` and HeldOut is `wiki.valid.raw`; `wiki.test.raw` is not read. `modelspec data prepare` copies the file byte for byte to `train.raw` or `heldout.raw` in its output directory. A split is identified by role, content_hash, document_count and byte_count (coordinator decision D19, 2026-10-24, `.engineering/waves/bert-1.md`).
     fields:
       - name: role
         type: modelspec.data.SplitRole
+      - name: content_hash
+        type: modelspec.artifact.ContentHash
+        summary: The blake3 hash of the split file's bytes, 64 lowercase hexadecimal digits (coordinator decision D19, 2026-10-24, `.engineering/waves/bert-1.md`).
+      - name: document_count
+        type: Integer
+        summary: The number of documents in the split. A document is one article of the release. It starts at a top-level heading line `= <title> =` (one `=` on each side, surrounding whitespace ignored, `= = <section> = =` is not one), and any non-blank text before the first heading is one document too (coordinator decision D19, 2026-10-24, `.engineering/waves/bert-1.md`).
+      - name: byte_count
+        type: Integer
+        summary: The length of the split file in bytes; the file is UTF-8 (coordinator decision D19, 2026-10-24, `.engineering/waves/bert-1.md`).
+    invariants:
+      - document_count > 0
+      - byte_count > 0
 
   - name: modelspec.data.MaskingPolicy
     kind: struct
     naming:
-      summary: The masked-language-modelling policy; of the selected tokens a fraction is replaced by the vocabulary's mask token, a fraction by a random token and the rest kept, 80/10/10 (epic:bert-from-scratch). The three fractions sum to 1, which ESS does not state here. Draws use the Philox key/counter derivation (DESIGN.md § 2.3).
-    # UNMAPPED: the selection rate (the share of tokens selected for prediction) is not stated by the
-    # epic, nor the Philox stream tag masking draws from (DESIGN.md § 2.3 defines tags 0 to 2 only).
-    # Open question.
+      summary: The masked-language-modelling policy; of the selected tokens a fraction is replaced by the vocabulary's mask token, a fraction by a random token and the rest kept, 80/10/10 (epic:bert-from-scratch). The three fractions sum to 1, which ESS does not state here. Draws use the Philox key/counter derivation (DESIGN.md § 2.3) with stream tag 3, the next after the tags 0 to 2 of DESIGN.md § 2.3 (story:bert-mlm-batches adds it there). The values are BERT's (Devlin, Chang, Lee, Toutanova 2018, § 3.1) — selection_rate 0.15, mask_fraction 0.8, random_fraction 0.1, keep_fraction 0.1 (coordinator decision D19, 2026-10-24, `.engineering/waves/bert-1.md`).
     fields:
       - name: selection_rate
         type: Binary64
@@ -142,10 +147,7 @@ types:
 entities:
   - name: modelspec.data.Dataset
     naming:
-      summary: The pre-training corpus, a small public one, and its splits (epic:bert-from-scratch "corpus/dataset"). Its data order in a run is deterministic from the run seed (DESIGN.md § 2.3).
-    # UNMAPPED: which public corpus, and whether a dataset holds raw text or token sequences packed
-    # by one tokenizer (then a relation to Tokenizer, whose ownership is also open), is not settled.
-    # Open question.
+      summary: The pre-training corpus, a small public one, and its splits (epic:bert-from-scratch "corpus/dataset"). Its data order in a run is deterministic from the run seed (DESIGN.md § 2.3). The corpus is WikiText-103 in its raw (non-tokenized) release `wikitext-103-raw-v1` (Merity, Xiong, Bradbury, Socher 2016, "Pointer Sentinel Mixture Models"), licensed CC BY-SA 3.0. The operator obtains the release's files `wiki.train.raw`, `wiki.valid.raw` and `wiki.test.raw` and passes their directory to `modelspec data prepare <corpus-dir> --out <dir>`, which reads only local files and writes the splits and this record as `dataset.json` in `<dir>`. A Dataset holds raw text, its splits being files of documents identified by content. Packed token sequences are a later entity, written by story:bert-mlm-batches, that references a Dataset and a Tokenizer, so a Dataset has no relation to Tokenizer and a tokenizer change does not rewrite the splits. dataset_id is the leading 16 bytes, as a version-8 UUID, of the blake3 hash over the 32-byte blake3 digests of the splits, Train then HeldOut. name is the file name of the corpus directory. Two runs on the same files write byte-identical output (coordinator decision D19, 2026-10-24, `.engineering/waves/bert-1.md`).
     identity:
       name: dataset_id
       type: modelspec.data.DatasetId

@@ -6,6 +6,7 @@
 
 pub mod check;
 pub mod compile;
+pub mod data;
 pub mod infer;
 pub mod inspect_device;
 pub mod ir;
@@ -44,6 +45,8 @@ pub enum Command {
     /// Compile a `.mspec` file into an artifact directory: artifact.json and, for Vulkan, its
     /// SPIR-V kernel modules.
     Compile(compile::Args),
+    /// Prepare the training data of a masked-language-model run.
+    Data(data::Args),
     /// Run the forward program of a `.mspec` model with the parameters of a checkpoint.
     Infer(infer::Args),
     /// Print the profile and negotiation verdict of each Vulkan physical device.
@@ -82,6 +85,7 @@ pub fn dispatch(command: Command, stdout: &mut dyn Write, stderr: &mut dyn Write
     match command {
         Command::Check(args) => check::run(args, stderr),
         Command::Compile(args) => compile::run(args, stdout, stderr),
+        Command::Data(args) => data::run(args, stdout, stderr),
         Command::Infer(args) => infer::run(args, stdout, stderr),
         Command::InspectDevice(args) => inspect_device::run(args, stdout, stderr),
         Command::Ir(args) => ir::run(args, stdout, stderr),

@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/modelspec.benchmark.Mode",
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "a5c9aa0cb5c62fb600e6e23d99795113986a393a7a166f7b941d561385c45021",
+    "contract_digest": "slice-sha256/2:96a2b6a297deef87ee9db104910adedc773a9153959054fe20003b1514018f26",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.benchmark.Mode": {
+      "title": "Mode",
+      "description": "Timed is a run measured end to end over its timed span; Profiled is the steady µs per step of `modelspec train --backend vulkan --profile`, with timestamp queries in the run.",
+      "x-ess-name": "modelspec.benchmark.Mode",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "Timed",
+        "Profiled"
+      ]
+    }
+  }
+}

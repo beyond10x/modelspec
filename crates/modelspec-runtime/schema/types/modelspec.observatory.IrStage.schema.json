@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/modelspec.observatory.IrStage",
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "a5c9aa0cb5c62fb600e6e23d99795113986a393a7a166f7b941d561385c45021",
+    "contract_digest": "slice-sha256/2:a48dd0e08503712716ecf7d2cdcea281cb8471a3b91c8e97ae9f1de030bd1102",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.observatory.IrStage": {
+      "title": "IrStage",
+      "description": "The IR level a graph is drawn from, as `modelspec ir --stage tensor|training` prints it (DESIGN.md § 3.1, § 8).",
+      "x-ess-name": "modelspec.observatory.IrStage",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "Tensor",
+        "Training"
+      ]
+    }
+  }
+}

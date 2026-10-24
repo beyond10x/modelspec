@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/modelspec.data.TokenizerId",
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "a5c9aa0cb5c62fb600e6e23d99795113986a393a7a166f7b941d561385c45021",
+    "contract_digest": "slice-sha256/2:ff69a1ba3c74725b50af3f04a073a4adc40e2e6fbcb6cf0eaeff5ee0c5b98004",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.data.TokenizerId": {
+      "title": "TokenizerId",
+      "x-ess-name": "modelspec.data.TokenizerId",
+      "x-ess-kind": "newtype",
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    }
+  }
+}
