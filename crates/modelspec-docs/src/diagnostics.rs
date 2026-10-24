@@ -132,7 +132,10 @@ fn stages() -> Vec<Stage> {
             title: "Target",
             file: "crates/modelspec-core/src/compile.rs",
             about: "",
-            codes: vec![compile::codes::TOO_LARGE_FOR_TARGET],
+            codes: vec![
+                compile::codes::TOO_LARGE_FOR_TARGET,
+                compile::codes::NO_KERNEL,
+            ],
         },
         Stage {
             title: "Compiler bugs",
@@ -354,6 +357,7 @@ mod tests {
             "E-TARGET-003",
             "E-TARGET-004",
             "E-TARGET-010",
+            "E-TARGET-011",
             "E-CKPT-001",
             "E-CKPT-002",
             "E-CKPT-003",

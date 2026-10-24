@@ -12,12 +12,13 @@ use crate::artifact::{Backend, CompiledArtifact};
 use crate::autodiff::differentiate;
 use crate::diag::Diagnostic;
 use crate::hir::Hir;
-use crate::ir::tensor::TensorProgram;
+use crate::ir::tensor::{TensorProgram, ValueId};
 use crate::ir::training::{TrainConfig, TrainingStep, attach_sgd};
 use crate::ir::verify::{verify, verify_plan, verify_step};
 use crate::lower::{self, LoweredProgram};
 use crate::passes::dce;
-use crate::schedule;
+use crate::resolve::OPERATORS;
+use crate::schedule::{self, ScheduleError};
 
 /// Compiler-bug diagnostic codes.
 pub mod codes {
@@ -35,6 +36,11 @@ pub mod codes {
     /// buffer binding), or its byte count does not fit in 64 bits (DESIGN.md § 8.1). The file
     /// checks; reduce the shape.
     pub const TOO_LARGE_FOR_TARGET: Code = Code::new("E-TARGET-010");
+
+    /// An operator of the training step has no Vulkan kernel yet: `embedding`, whose lookup and
+    /// gradient run on the CPU interpreter only (DESIGN.md § 8.1). The file checks; use
+    /// `--backend cpu`.
+    pub const NO_KERNEL: Code = Code::new("E-TARGET-011");
 }
 
 /// A `.mspec` file compiled for training.
@@ -65,14 +71,20 @@ pub fn compile_training(path: &str, source: &str) -> Result<CompiledTraining, Ve
 
 /// [`compile_training`], then the fixed safe schedule ([`schedule::schedule`]) and
 /// [`verify_plan`]: Kernel IR, the step plan and the forward plan, in an artifact for `backend`.
-/// A Cpu artifact keeps the views and has no kernels and empty plans.
+/// A Cpu artifact keeps the views and has no kernels and empty plans: it takes the views of
+/// [`schedule::schedule_views`], so an op with no Vulkan kernel does not refuse it. For Vulkan,
+/// such an op is [`codes::NO_KERNEL`] at the op's source span.
 pub fn compile_artifact(
     path: &str,
     source: &str,
     backend: Backend,
 ) -> Result<CompiledArtifact, Vec<Diagnostic>> {
     let compiled = compile_training(path, source)?;
-    let plan = schedule::schedule(
+    let scheduled = match backend {
+        Backend::Cpu => schedule::schedule_views,
+        Backend::Vulkan => schedule::schedule,
+    };
+    let plan = scheduled(
         &compiled.training,
         compiled.forward.prediction,
         &compiled.config,
@@ -86,6 +98,8 @@ pub fn compile_artifact(
                 )
                 .with("error", error.to_string()),
             ]
+        } else if let ScheduleError::NoKernel { value, op } = error {
+            vec![no_kernel(&compiled.training.training.program, value, op)]
         } else {
             vec![compiler_bug(
                 "the schedule refused the training step",
@@ -164,6 +178,30 @@ fn tensor_stage(
         prediction: lowered.prediction,
         declared_inputs: lowered.declared_inputs,
     })
+}
+
+/// [`codes::NO_KERNEL`] for the node `value` of `program`, whose op `op` has no Vulkan kernel:
+/// named by its source operator, at the node's source span when it has one.
+fn no_kernel(program: &TensorProgram, value: ValueId, op: &str) -> Diagnostic {
+    let operator = OPERATORS
+        .iter()
+        .find(|(_, registered)| registered.name() == op)
+        .map_or_else(
+            || format!("the internal op `{op}`"),
+            |(name, _)| format!("operator `{name}`"),
+        );
+    let diagnostic = Diagnostic::new(
+        codes::NO_KERNEL,
+        format!("{operator} has no Vulkan kernel yet"),
+    )
+    .note("compile and train it with `--backend cpu`");
+    match program
+        .node(value)
+        .and_then(|node| node.source_span.clone())
+    {
+        Some(span) => diagnostic.at(span),
+        None => diagnostic,
+    }
 }
 
 fn compiler_bug(what: &str, error: &dyn std::fmt::Display) -> Diagnostic {

@@ -80,8 +80,8 @@ pub enum ScheduleError {
     BufferTooLarge { buffer: u32, bytes: u64 },
     #[error("{value} dispatches {invocations} invocations, more than a 32-bit index counts")]
     TooManyInvocations { value: ValueId, invocations: u64 },
-    /// The op has no Vulkan kernel yet: `Embedding` and `EmbeddingGrad` run on the CPU
-    /// interpreter only.
+    /// The op has no Vulkan kernel yet (`E-TARGET-011`): `Embedding` and `EmbeddingGrad` run on
+    /// the CPU interpreter only.
     #[error("{value} is {op}, which has no Vulkan kernel")]
     NoKernel { value: ValueId, op: &'static str },
 }
@@ -322,6 +322,40 @@ pub fn schedule_for(
     prediction: ValueId,
     config: &TrainConfig,
     limits: Option<MatMulLimits>,
+) -> Result<ExecutionPlan, ScheduleError> {
+    schedule_with(step, prediction, config, limits, Kernels::Vulkan)
+}
+
+/// The views of [`schedule`] alone, for an artifact with no kernels (a Cpu artifact): its
+/// buffers, parameters, data, loss view and prediction view, with no kernels and empty plans.
+/// An op with no Vulkan kernel ([`ScheduleError::NoKernel`] under [`schedule`]) takes the buffer
+/// of its value like any other op, so a program without such an op has the views of
+/// [`schedule`] exactly; every other refusal of [`schedule`] stays.
+pub fn schedule_views(
+    step: &TrainingStep,
+    prediction: ValueId,
+    config: &TrainConfig,
+) -> Result<ExecutionPlan, ScheduleError> {
+    let mut plan = schedule_with(step, prediction, config, None, Kernels::None)?;
+    plan.kernels.clear();
+    plan.step.clear();
+    plan.forward.clear();
+    Ok(plan)
+}
+
+/// Whether a schedule builds the Vulkan kernels of every op, or only the views.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Kernels {
+    Vulkan,
+    None,
+}
+
+fn schedule_with(
+    step: &TrainingStep,
+    prediction: ValueId,
+    config: &TrainConfig,
+    limits: Option<MatMulLimits>,
+    built: Kernels,
 ) -> Result<ExecutionPlan, ScheduleError> {
     let program = &step.training.program;
     let mut buffers = Vec::new();
@@ -598,12 +632,15 @@ pub fn schedule_for(
                 );
                 (vec![stage1, stage2], Some(partials))
             }
-            TensorOp::Embedding | TensorOp::EmbeddingGrad { .. } => {
-                return Err(ScheduleError::NoKernel {
-                    value: node.id,
-                    op: node.op.name(),
-                });
-            }
+            TensorOp::Embedding | TensorOp::EmbeddingGrad { .. } => match built {
+                Kernels::None => continue,
+                Kernels::Vulkan => {
+                    return Err(ScheduleError::NoKernel {
+                        value: node.id,
+                        op: node.op.name(),
+                    });
+                }
+            },
             TensorOp::Input { .. } | TensorOp::ParamRead { .. } | TensorOp::Scalar(_) => {
                 unreachable!("handled above")
             }

@@ -1,0 +1,14 @@
+{
+  "at": "2026-10-24T21:51:24Z",
+  "actor": "human:timo",
+  "artifact": "story:bert-embedding-lookup",
+  "kind": "story",
+  "revision": 5,
+  "change": {
+    "change": "evidence",
+    "kind": "review_outcome",
+    "source": "fix pass 1: CPU artifact schedule_views, E-TARGET-011, 1251 cases green",
+    "review": "review-result:adversary-bert-embedding-pass-1",
+    "outcome": "fixed"
+  }
+}
