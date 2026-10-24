@@ -3,9 +3,10 @@
 //!
 //! - Every module of those plans passes `spirv-val --target-env vulkan1.2`; a 128 by 128 block
 //!   declares `LocalSize` 256 and decorates every `OpFAdd` and `OpFMul` `NoContraction`.
-//! - `default-unchanged`: the artifact of a plan scheduled for a profile of 128 invocations is
-//!   the artifact `compile_artifact` builds, and `emit_kernels` gives it the same modules and
-//!   cache keys, so `compile` with such a profile writes the same artifact.
+//! - `default-unchanged`: in this build, the artifact of a plan scheduled for a profile of 128
+//!   invocations is the artifact `compile_artifact` builds without a profile, and `emit_kernels`
+//!   gives both the same modules and cache keys. Both sides are compiled by the same build; the
+//!   case says nothing about the artifact a build before this story wrote.
 //! - `workgroup-memory-bounded`: a block whose staged bytes pass the profile's workgroup memory is
 //!   refused by the emitter with `EmitError::SharedMemory`; the plan never holds one, because the
 //!   schedule gives such a profile the tile of 128 invocations.
@@ -143,6 +144,9 @@ fn every_module_of_the_rtx3090_plans_passes_spirv_val_and_a_block_runs_256_invoc
     assert_eq!(blocks, 3);
 }
 
+/// Compile without a profile (`compile_artifact`) against compile with a profile of 128
+/// invocations, at 48 and 16 KiB of workgroup memory, both in this build: the same artifact, and
+/// for the RTX 3090 the same modules, cache keys and module ids.
 #[test]
 fn a_profile_of_128_invocations_gives_the_artifact_and_the_modules_of_compile_artifact() {
     for (name, source) in sources() {

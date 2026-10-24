@@ -310,7 +310,9 @@ pub fn schedule(
 /// [`schedule`] within the `limits` of a device ([`MatMulLimits::of`] its profile): each matmul takes
 /// [`MatMulTile::for_limits`] of its shape and transposed operands, and without limits
 /// [`MatMulTile::of`]. Limits at the Vulkan minimum of 128 invocations give the plan of
-/// [`schedule`]. The result passes [`crate::ir::verify::verify_plan_for`] with the profile of the limits.
+/// [`schedule`]. The result passes [`crate::ir::verify::verify_plan_for`] with the profile of the limits
+/// when that profile reports at least 128 invocations, as every conformant device does; under a
+/// profile below 128 it does not, since every tile has at least 128 invocations.
 pub fn schedule_for(
     step: &TrainingStep,
     prediction: ValueId,

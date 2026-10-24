@@ -541,7 +541,7 @@ fn design_and_spec_state_the_reduction_rule_the_orders_and_the_bit_class() {
     );
     for phrase in [
         "an order fixed by the shape alone",
-        "compile-time constants",
+        "fixed in the plan at compile time",
         "one admissible order",
         "artifact hash",
     ] {

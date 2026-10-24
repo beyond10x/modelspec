@@ -7,7 +7,7 @@ title: 'The matmul tile takes its invocation budget from the device profile: 128
 relations:
 - serves: vision:modelspec
 - depends_on: story:matmul-reads-transposed-operand
-revision: 4
+revision: 5
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-24T16:15:11Z", actor: "human:timo", revision: 3}
 - {from: "proposed", to: "active", at: "2026-10-24T16:15:11Z", actor: "human:timo", revision: 4}
@@ -49,7 +49,7 @@ today, so `ir --stage kernel` without a profile and the goldens are unchanged.
 - **tile-from-profile**: `MatMulTile::of` takes the invocation limit; with 128 it returns the
   tiles of today for every shape (a property test over `(m, k, n)` in `1..=10_000` compares
   against the rule before the change); with 1024 and an output of at least 128 blocks of 128
-  rows and `n >= 128` it returns a 128×128 block at 8×8 with 256 invocations; the printed tile
+  rows, `n >= 128` and `k >= 64` it returns a 128×128 block at 8×8 with 256 invocations; the printed tile
   text, the kernel signature and the module id show the block.
 - **verifier-cap-from-profile**: the plan verifier refuses a kernel whose workgroup size exceeds
   the profile's `max_workgroup_invocations` with the existing code, and accepts 256 under a
@@ -65,7 +65,8 @@ today, so `ir --stage kernel` without a profile and the goldens are unchanged.
   four sources.
 - **default-unchanged**: `ir --stage kernel` without a device profile, the goldens, and
   `adversary_guide_kernel_lines.rs` are unchanged; a `compile` with a 128-invocation profile
-  writes the same artifact hash as before.
+  writes the plan and the kernel modules of a `compile` without a profile (the artifact hash
+  changes with the staging layout of a transposed matmul; coordinator decision D16).
 - **throughput-reported** (reported, not gated): `mlp_sweep` medians at b8192 h4096, b8192 h1024
   and b1000 h1024 and per-site GFLOP/s of the two large sites from `--profile`, deterministic
   and `--fast-math`, before and after, beside the PyTorch eager CUDA medians of
@@ -94,3 +95,16 @@ today, so `ir --stage kernel` without a profile and the goldens are unchanged.
 - Cooperative matrices (story:fast-math-cooperative-matrix).
 - The weight-gradient sites' in-place transposed read layout (a later story if the 128×128
   block does not lift them).
+
+## Closing note (coordinator, 2026-10-24)
+
+The 128×128 block of 256 invocations measured slower than the 64×128 tile at the forward site
+`[8192, 784] x [784, 4096]` (6,052 against 5,774 µs deterministic, 5,024 against 4,707 µs under
+`fast_math`, medians of 3 profiled runs of 220 steps, `benchmarks/raw/2026-10-24-tile256/`), so no
+command passes a profile to `schedule_for` and every shipped plan takes the tiles of 128
+invocations; story:matmul-block-kernel-throughput diagnoses the block. The padded staging
+lands: site `[4096, 8192]ᵀ x [8192, 10]` 432 → 394 µs; `mlp_sweep` b8192 h4096 12,414 → 12,314 µs
+deterministic and 9,305 → 9,226 µs under `--fast-math`, within the 5 % run-to-run spread.
+Adversary pass 1 (review-result:adversary-tile256-pass-1): 0 reachable defects; ADV-T256-1 and
+-4 amended this acceptance (`k >= 64`; the hash clause), ADV-T256-2, -3, -5, -6, -7, -9, -10
+fixed in the unit, ADV-T256-8 (the block is reached only from tests) stands by decision.

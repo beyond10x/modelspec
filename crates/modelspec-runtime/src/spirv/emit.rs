@@ -199,6 +199,13 @@ fn module_for(
     let body = body_of(kernel, variant, profile.max_shared_memory_bytes)?;
     let chunk = match body {
         Body::LossSum { chunk, .. } => format!(" chunk {chunk}"),
+        // The padded staging is taken only when it fits the profile's workgroup memory, so a
+        // module that takes it records its strides: the unpadded layout follows from the
+        // signature, and two modules never share a cache key.
+        Body::MatMul { tile, layout, .. } if layout != tile.layout([false, false]) => format!(
+            " staging a_stride {} b_stride {}",
+            layout.a_stride, layout.b_stride
+        ),
         _ => String::new(),
     };
     let spirv = build(
