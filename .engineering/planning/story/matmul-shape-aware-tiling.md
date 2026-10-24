@@ -2,11 +2,12 @@
 format: aep.planning-md/3
 id: story:matmul-shape-aware-tiling
 kind: story
-status: draft
+status: active
 title: Matmul tiling chosen by shape, deterministic
 relations:
 - depends_on: story:profile-begin-stamp-after-barrier
 - blocks: story:weight-grad-matmul-structural
+- serves: vision:modelspec
 scope:
 - confidence: inferred
   path: DESIGN.md
@@ -18,7 +19,10 @@ scope:
   path: crates/modelspec-runtime/src/spirv/emit.rs
 - confidence: cited
   path: website/docs/guides/inspect-a-run.md
-revision: 7
+revision: 9
+transitions:
+- {from: "draft", to: "proposed", at: "2026-10-24T10:10:23Z", actor: "human:timo", revision: 8, decided_on: {"recorded":{"review_outcome":6}}}
+- {from: "proposed", to: "active", at: "2026-10-24T10:10:23Z", actor: "human:timo", revision: 9, decided_on: {"recorded":{"review_outcome":6}}}
 ---
 # Matmul tiling chosen by shape, deterministic
 

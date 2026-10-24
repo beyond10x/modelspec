@@ -6,7 +6,7 @@ description: Milestones M0 to M4 from DESIGN.md § 1. M0 is built; M1, GPU execu
 # Roadmap
 
 The milestones are those of [DESIGN.md § 1](https://github.com/beyond10x/modelspec/blob/main/DESIGN.md#1-scope-and-milestones).
-M0 is built and released as 0.1.0. M1 is in progress; the latest release is 0.7.1. M2 to M4 are
+M0 is built and released as 0.1.0. M1 is in progress; the latest release is 0.8.0. M2 to M4 are
 design, apart from the M2 items M1 did early.
 
 ## M0: semantic core

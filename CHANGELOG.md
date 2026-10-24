@@ -9,6 +9,10 @@ history.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-24
+
+Faster CPU steps and per-step device counters, from five performance stories of the 0.5.0 and 0.7.1 reviews: a CPU training run prepares its step once (verifier calls over 5 steps 5 -> 1, peak live values on the MNIST step 23 -> 10, allocations in the second step 170 -> 4), refills its dense batch tensors in place (104.125 allocations per runner step where there were 111.125) and writes matmul outputs without a zero fill first; the parser resolves a diagnostic's span by binary search from lexeme anchors (309,257 characters scanned on a 20,000-`let` one-line program where it scanned 9,087,562,188); and `train --backend vulkan --stats` and `--profile` print the step's pipeline barriers, device allocations and peak device bytes (7 barriers and 12 allocations per step on `examples/mnist_mlp.mspec`). The MNIST CPU bench measured 0.384 ms per step after the prepared step against 0.383 ms before, inside that host's noise. No new timed Vulkan step time was measured for this release: the latest MNIST figure is 0.6.0's 27.14 µs per step and the MLP sweep's figures are 0.7.1's, PyTorch eager CUDA up to 4.26 times faster at batch 8192; ADR-007's accuracy and final-weight conditions were not measured.
+
 ### Added
 
 - `benchmarks/runs.yaml` holds every benchmark run measured so far (51: the MNIST 784-64-10 runs of ModelSpec CPU and Vulkan and of the PyTorch CPU and CUDA opponents, and the 36 points of the MLP sweep), typed by the ESS domain `modelspec.benchmark`; `modelspec-docs` checks it and generates the page Benchmarks (`website/docs/benchmarks.md`) with a chart per workload of µs per step over time, ModelSpec beside the opponents.
@@ -174,7 +178,8 @@ with `E-TARGET-001`.
 - `examples/linear_regression.mspec` checks and trains; `task check-examples` runs `modelspec check` on it
 - ESS contracts for the compiled artifact, checkpoint, device profile and training run in `spec/`
 
-[Unreleased]: https://github.com/beyond10x/modelspec/compare/0.7.1...HEAD
+[Unreleased]: https://github.com/beyond10x/modelspec/compare/0.8.0...HEAD
+[0.8.0]: https://github.com/beyond10x/modelspec/compare/0.7.1...0.8.0
 [0.7.1]: https://github.com/beyond10x/modelspec/compare/0.7.0...0.7.1
 [0.7.0]: https://github.com/beyond10x/modelspec/compare/0.6.0...0.7.0
 [0.6.0]: https://github.com/beyond10x/modelspec/compare/0.5.0...0.6.0
