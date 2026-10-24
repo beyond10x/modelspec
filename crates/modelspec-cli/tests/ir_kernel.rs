@@ -93,7 +93,10 @@ fn ir_stage_kernel_of_mnist_shows_the_fused_step_plan() {
     let step = plan_lines(&printed, "step");
     let dispatches = step.iter().filter(|l| l.contains(": dispatch ")).count();
     let barriers = step.iter().filter(|l| l.contains(": barrier")).count();
-    assert_eq!((dispatches, barriers), (14, 8), "{printed}");
+    assert_eq!((dispatches, barriers), (11, 8), "{printed}");
+    // Each transpose of the step is read only by matmuls, which read it in place (DESIGN.md § 3.1).
+    assert!(!printed.contains(" transpose Transpose "), "{printed}");
+    assert_eq!(printed.matches("> transposed").count(), 3, "{printed}");
 
     for line in printed.lines().filter(|l| l.starts_with("kernel ")) {
         let operands = line

@@ -1,0 +1,25 @@
+device vulkan 10de:2204 driver_version 2559459584
+mnist_mlp matmul 0 100 784 64 relu-keep view 0 52ee7f6c6a73764d
+mnist_mlp matmul 0 100 784 64 relu-keep view 1 96f65fff63c2db1f
+mnist_mlp matmul 1 100 64 10 none view 0 a05e51d36c36cc32
+mnist_mlp matmul 2 100 10 64 none view 0 835073d98f58614e
+mnist_mlp matmul 3 64 100 10 none view 0 8704e3889cc514a8
+mnist_mlp matmul 4 784 100 64 none view 0 e54cd061c30ae3ee
+sweep_b1000_h1024 matmul 0 1000 784 1024 relu-keep view 0 fc7249b0476787ba
+sweep_b1000_h1024 matmul 0 1000 784 1024 relu-keep view 1 4499a60c8d3589fe
+sweep_b1000_h1024 matmul 1 1000 1024 10 none view 0 cb43f6db872f8056
+sweep_b1000_h1024 matmul 2 1000 10 1024 none view 0 b7b04861c81994de
+sweep_b1000_h1024 matmul 3 1024 1000 10 none view 0 e2ad9c46c5e82861
+sweep_b1000_h1024 matmul 4 784 1000 1024 none view 0 3f5c2e81ce83b7ce
+sweep_b8192_h1024 matmul 0 8192 784 1024 relu-keep view 0 347cd1c13737611e
+sweep_b8192_h1024 matmul 0 8192 784 1024 relu-keep view 1 c29b6948b82d3575
+sweep_b8192_h1024 matmul 1 8192 1024 10 none view 0 c66fdbedb8aac372
+sweep_b8192_h1024 matmul 2 8192 10 1024 none view 0 6e8586879a934050
+sweep_b8192_h1024 matmul 3 1024 8192 10 none view 0 9c7b3a39c4adec78
+sweep_b8192_h1024 matmul 4 784 8192 1024 none view 0 63dadaed2835abfb
+sweep_b8192_h4096 matmul 0 8192 784 4096 relu-keep view 0 91263ae3827cf9ac
+sweep_b8192_h4096 matmul 0 8192 784 4096 relu-keep view 1 58adbc0baada1234
+sweep_b8192_h4096 matmul 1 8192 4096 10 none view 0 115d3195bf729a40
+sweep_b8192_h4096 matmul 2 8192 10 4096 none view 0 22ba4bcd3c75bf7d
+sweep_b8192_h4096 matmul 3 4096 8192 10 none view 0 a0f6d74502d8d6d1
+sweep_b8192_h4096 matmul 4 784 8192 4096 none view 0 beac4bcc2ab1e87a

@@ -574,10 +574,10 @@ fn allocation_bytes(device: &Device<'_>, device_local: &[u64], staging: &[u64]) 
 /// story:vulkan-step-counters: the counters of a run of `linear_regression`, each known from its
 /// plan (`crates/modelspec-cli/tests/golden/linear_regression.kernel.ir`). A step records the 5
 /// barriers of the step plan and the 2 around the copy of its loss: 7. The run allocates one
-/// device-local buffer per plan buffer, 9, the loss buffer and two staging buffers, one for the
-/// upload and one for the read-back: 12. All 12 are live from setup to the end, so the peak is
-/// the sum of their allocation sizes, which the device may round up from the 4,620 bytes asked
-/// for.
+/// device-local buffer per plan buffer, 8 (the transpose of `x` is read in place, DESIGN.md
+/// § 3.1), the loss buffer and two staging buffers, one for the upload and one for the
+/// read-back: 11. All 11 are live from setup to the end, so the peak is the sum of their
+/// allocation sizes, which the device may round up from the 4,492 bytes asked for.
 #[test]
 #[ignore = "needs a Vulkan device"]
 fn linear_regression_counts_its_barriers_allocations_and_peak_device_bytes() {
@@ -593,14 +593,14 @@ fn linear_regression_counts_its_barriers_allocations_and_peak_device_bytes() {
     assert_eq!(steps, 500);
     let ops = |op: PlanOp| plan.step.iter().filter(|step| step.op == op).count();
     assert_eq!((ops(PlanOp::Barrier), ops(PlanOp::Copy)), (5, 0));
-    assert_eq!(plan.buffers.len(), 9);
+    assert_eq!(plan.buffers.len(), 8);
     let param_bytes: u64 = plan.parameters.iter().map(|p| p.views[0].size_bytes).sum();
     let data_bytes: u64 = plan.data.iter().map(|d| d.view.size_bytes).sum();
     let loss_bytes = 4 * (steps + 1);
     let device_local: Vec<u64> = plan.buffers.iter().copied().chain([loss_bytes]).collect();
     let staging = [param_bytes + data_bytes, param_bytes + loss_bytes];
     let asked: u64 = device_local.iter().chain(&staging).sum();
-    assert_eq!(asked, 4620);
+    assert_eq!(asked, 4492);
 
     let vulkan = Vulkan::load().expect("the Vulkan loader opens");
     let candidates = vulkan.candidates().expect("the devices are probed");
@@ -622,7 +622,7 @@ fn linear_regression_counts_its_barriers_allocations_and_peak_device_bytes() {
     eprintln!("{LINEAR_REGRESSION}: {asked} bytes asked for, {allocated} allocated\n{stats}");
 
     assert_eq!(stats.barriers_per_step, 7);
-    assert_eq!(stats.device_allocations, 12);
+    assert_eq!(stats.device_allocations, 11);
     assert!(allocated >= asked, "{allocated} < {asked}");
     assert_eq!(stats.peak_device_bytes, allocated);
 }

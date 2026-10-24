@@ -447,6 +447,13 @@ pub struct Kernel {
     /// What a matmul kernel applies to each output element before storing it; `None` on every
     /// other kind.
     pub epilogue: Option<Epilogue>,
+    /// Whether a matmul kernel reads each of its two operands transposed (DESIGN.md § 3.1,
+    /// § 5.2). Operand `i` keeps its logical type, `[m, k]` or `[k, n]`, so
+    /// [`Kernel::matmul_shape`] and the tile do not change; with `transposed[i]` its binding
+    /// holds the row-major transpose of that type, `[k, m]` or `[n, k]`, the view of the tensor
+    /// a folded `transpose` read, and the kernel reads it in place. `[false, false]` on every
+    /// other kind.
+    pub transposed: [bool; 2],
     pub workgroup_size: u32,
     pub workgroups: [u32; 3],
 }
@@ -519,7 +526,9 @@ impl Kernel {
     }
 
     /// The text the module id is derived from: every field but the id, and a matmul's
-    /// [`MatMulTile`], so that a module the tile changes gets a new id.
+    /// [`MatMulTile`], so that a module the tile changes gets a new id. An operand the kernel
+    /// reads transposed is followed by ` transposed`; a kernel that reads none has the text it
+    /// had before the flag existed.
     pub fn signature(&self) -> String {
         let tile = match self.kind {
             KernelKind::MatMul => {
@@ -537,6 +546,9 @@ impl Kernel {
                 text.push_str(", ");
             }
             text.push_str(&operand.to_string());
+            if self.transposed.get(i) == Some(&true) {
+                text.push_str(" transposed");
+            }
         }
         text.push_str(&format!(") -> {}", self.result));
         if let Some(reduces) = &self.reduces {
@@ -657,6 +669,7 @@ mod tests {
             result: TensorType::f32(&[100, 64]),
             reduces: None,
             epilogue: None,
+            transposed: [false, false],
             workgroup_size: tile.workgroup_size,
             workgroups: [tile.workgroups(100, 64) as u32, 1, 1],
         };
@@ -810,6 +823,7 @@ mod tests {
             result,
             reduces,
             epilogue: None,
+            transposed: [false, false],
             workgroup_size: kind.workgroup_size(),
             workgroups: [1, 1, 1],
         };

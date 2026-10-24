@@ -5,8 +5,7 @@ buffer b3: 32 bytes
 buffer b4: 4 bytes
 buffer b5: 32 bytes
 buffer b6: 32 bytes
-buffer b7: 128 bytes
-buffer b8: 16 bytes
+buffer b7: 16 bytes
 input x: Tensor<f32, [8, 4]> view b0[f32 x 32, bytes 0..128, align 4]
 target y: Tensor<f32, [8, 1]> view b1[f32 x 8, bytes 0..32, align 4]
 param @LinearReg.w: Tensor<f32, [4, 1]> views b2[f32 x 4, bytes 0..16, align 4]
@@ -16,9 +15,8 @@ kernel k0 4501e933-dcca-8bee-bcc3-bebbd25aa29a matmul MatMul f32 (Tensor<f32, [8
 kernel k1 7e1cc13b-1653-84b9-98f1-ae1d5736d4a9 loss_sum Mse f32 (Tensor<f32, [8, 1]>, Tensor<f32, [8, 1]>) -> Tensor<f32, []> workgroup_size 64 workgroups [1, 1, 1]
 kernel k2 b4a1988c-2bba-81d1-8468-6200fea8b1fc elementwise Sub f32 (Tensor<f32, [8, 1]>, Tensor<f32, [8, 1]>) -> Tensor<f32, [8, 1]> workgroup_size 64 workgroups [1, 1, 1]
 kernel k3 18b867e4-8cd4-8546-be4e-431348a565f6 elementwise Mul f32 (Tensor<f32, [8, 1]>, 0.25) -> Tensor<f32, [8, 1]> workgroup_size 64 workgroups [1, 1, 1]
-kernel k4 c0c09bbb-0a44-8001-8723-4b18ae5f2ad1 transpose Transpose f32 (Tensor<f32, [8, 4]>) -> Tensor<f32, [4, 8]> workgroup_size 64 workgroups [1, 1, 1]
-kernel k5 41f4754a-7a48-8db1-aa8c-7f524666b098 matmul MatMul f32 (Tensor<f32, [4, 8]>, Tensor<f32, [8, 1]>) -> Tensor<f32, [4, 1]> workgroup_size 128 workgroups [1, 1, 1] tile workgroup_size 128 cols 1 rows 1 cols_per_invocation 1 depth 8 ahead 6 buffers 1 b_pad 4
-kernel k6 9f6cbbcb-5d7b-8317-ad40-528c99bde2cc sgd_update Sub f32 (Tensor<f32, [4, 1]>, 0.1, Tensor<f32, [4, 1]>) -> Tensor<f32, [4, 1]> workgroup_size 64 workgroups [1, 1, 1]
+kernel k4 0e8355e6-f89a-837b-9727-1d2311c74864 matmul MatMul f32 (Tensor<f32, [4, 8]> transposed, Tensor<f32, [8, 1]>) -> Tensor<f32, [4, 1]> workgroup_size 128 workgroups [1, 1, 1] tile workgroup_size 128 cols 1 rows 1 cols_per_invocation 1 depth 8 ahead 6 buffers 1 b_pad 4
+kernel k5 9f6cbbcb-5d7b-8317-ad40-528c99bde2cc sgd_update Sub f32 (Tensor<f32, [4, 1]>, 0.1, Tensor<f32, [4, 1]>) -> Tensor<f32, [4, 1]> workgroup_size 64 workgroups [1, 1, 1]
 plan step
   0: dispatch k0 %3 reads b0[f32 x 32, bytes 0..128, align 4], b2[f32 x 4, bytes 0..16, align 4] writes b3[f32 x 8, bytes 0..32, align 4] workgroups [1, 1, 1] flop 64 bytes 176
   1: barrier after [0]
@@ -26,12 +24,11 @@ plan step
   3: dispatch k2 %6 reads b3[f32 x 8, bytes 0..32, align 4], b1[f32 x 8, bytes 0..32, align 4] writes b5[f32 x 8, bytes 0..32, align 4] workgroups [1, 1, 1] flop 8 bytes 96 after [1]
   4: barrier after [1, 2, 3]
   5: dispatch k3 %9 reads b5[f32 x 8, bytes 0..32, align 4] writes b6[f32 x 8, bytes 0..32, align 4] workgroups [1, 1, 1] flop 8 bytes 64 after [4]
-  6: dispatch k4 %10 reads b0[f32 x 32, bytes 0..128, align 4] writes b7[f32 x 32, bytes 0..128, align 4] workgroups [1, 1, 1] flop 0 bytes 256 after [4]
-  7: barrier after [4, 5, 6]
-  8: dispatch k5 %11 reads b7[f32 x 32, bytes 0..128, align 4], b6[f32 x 8, bytes 0..32, align 4] writes b8[f32 x 4, bytes 0..16, align 4] workgroups [1, 1, 1] flop 64 bytes 176 after [7]
-  9: barrier after [7, 8]
-  10: dispatch k6 %14 reads b2[f32 x 4, bytes 0..16, align 4], b8[f32 x 4, bytes 0..16, align 4] writes b2[f32 x 4, bytes 0..16, align 4] workgroups [1, 1, 1] flop 8 bytes 48 after [9]
-  11: barrier
+  6: barrier after [4, 5]
+  7: dispatch k4 %11 reads b0[f32 x 32, bytes 0..128, align 4], b6[f32 x 8, bytes 0..32, align 4] writes b7[f32 x 4, bytes 0..16, align 4] workgroups [1, 1, 1] flop 64 bytes 176 after [6]
+  8: barrier after [6, 7]
+  9: dispatch k5 %14 reads b2[f32 x 4, bytes 0..16, align 4], b7[f32 x 4, bytes 0..16, align 4] writes b2[f32 x 4, bytes 0..16, align 4] workgroups [1, 1, 1] flop 8 bytes 48 after [8]
+  10: barrier
 plan forward
   0: dispatch k0 %3 reads b0[f32 x 32, bytes 0..128, align 4], b2[f32 x 4, bytes 0..16, align 4] writes b3[f32 x 8, bytes 0..32, align 4] workgroups [1, 1, 1] flop 64 bytes 176
   1: barrier

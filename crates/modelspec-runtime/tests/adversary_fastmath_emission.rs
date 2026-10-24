@@ -2,9 +2,9 @@
 //!
 //! Attacks 1 and 2 of the pass, over every kernel kind the plan emits and not only the four the
 //! story names: the MNIST and linear-regression examples, the `mlp_sweep` sources of the three
-//! story points (b8192 h4096, b8192 h1024, b1000 h4096, whose large matmuls are register-blocked)
-//! and two-stage `sum` and `mean` reductions, each against the RTX 3090 fixture and the same
-//! profile reporting the three float controls. For every kernel:
+//! story points (b8192 h4096, b8192 h1024, b1000 h4096, whose large matmuls are register-blocked),
+//! two-stage `sum` and `mean` reductions and a transpose read elementwise, each against the
+//! RTX 3090 fixture and the same profile reporting the three float controls. For every kernel:
 //!
 //! - the `fast_math` module has no `OpDecorate ... NoContraction`;
 //! - its execution modes, capabilities and the count of every opcode equal the deterministic
@@ -81,6 +81,20 @@ fn reduction(n: u64, op: &str) -> CompiledArtifact {
     compile_artifact("reduction.mspec", &source, Backend::Vulkan).expect("the source compiles")
 }
 
+/// A program whose forward multiplies the transpose of its input by a parameter, elementwise: a
+/// transpose that a kernel other than a matmul reads stays a `Transpose` dispatch (DESIGN.md § 3.1).
+fn elementwise_transpose(n: u64) -> CompiledArtifact {
+    let source = format!(
+        "model T {{\n    param w: Tensor<f32, [{n}, {n}]> = xavier_uniform();\n\n    \
+         fn forward(x: Tensor<f32, [{n}, {n}]>)\n        -> Tensor<f32, [{n}, {n}]> {{\n        \
+         return mul(transpose(x), w);\n    }}\n}}\n\ntrain Fit {{\n    model = T;\n    \
+         input x: Tensor<f32, [{n}, {n}]>;\n    target y: Tensor<f32, [{n}, {n}]>;\n    \
+         loss = mse(model.forward(x), y);\n    optimizer = sgd(lr = 0.1);\n    \
+         steps = 1;\n    seed = 42;\n    device = vulkan(0);\n}}\n"
+    );
+    compile_artifact("transpose.mspec", &source, Backend::Vulkan).expect("the source compiles")
+}
+
 fn opcode_counts(module: &[u32]) -> BTreeMap<u32, usize> {
     let mut counts = BTreeMap::new();
     for (op, _) in instructions(module) {
@@ -139,6 +153,7 @@ fn every_kernel_kind_of_a_fast_math_artifact_is_its_deterministic_module_less_no
         ("sweep b1000 h4096", sweep(1000, 4096)),
         ("sum over 65", reduction(65, "sum")),
         ("mean over 78400", reduction(78_400, "mean")),
+        ("transpose read elementwise", elementwise_transpose(24)),
     ];
     let mut seen = BTreeMap::<String, usize>::new();
     let mut removed_total = 0usize;
@@ -220,6 +235,9 @@ fn every_kernel_kind_of_a_fast_math_artifact_is_its_deterministic_module_less_no
                 if is_scaled_sub(kernel) {
                     *seen.entry("SgdUpdate scaled".into()).or_default() += 1;
                 }
+                if kernel.transposed.contains(&true) {
+                    *seen.entry("MatMul transposed".into()).or_default() += 1;
+                }
             }
         }
     }
@@ -236,6 +254,7 @@ fn every_kernel_kind_of_a_fast_math_artifact_is_its_deterministic_module_less_no
         "MatMul+epilogue",
         "MatMul register-blocked",
         "SgdUpdate scaled",
+        "MatMul transposed",
     ] {
         assert!(
             seen.contains_key(kind),

@@ -145,6 +145,7 @@ fn kernel(
         result,
         reduces: None,
         epilogue: None,
+        transposed: [false, false],
         workgroup_size: kind.workgroup_size(),
         workgroups: [1, 1, 1],
     };

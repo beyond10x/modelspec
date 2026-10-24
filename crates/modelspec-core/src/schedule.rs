@@ -22,14 +22,22 @@
 //! An SGD update `p - m` whose `m` is `lr * g`, with one scalar factor and no other reader, is
 //! one `SgdUpdate` dispatch over `(p, lr, g)` in the factors' order, and `m` has no buffer.
 //!
+//! A `Transpose` whose every reader is a `MatMul` is folded into its readers: it dispatches
+//! nothing and has no buffer, and each matmul reads the transpose's operand in place, its view
+//! bound where the transpose's output was and the operand marked in [`Kernel::transposed`]. It
+//! stays a dispatch when another op reads it, when it is the loss or the prediction, or when its
+//! operand is a parameter whose in-place update comes before one of its readers. A matmul that
+//! reads a folded transpose computes every output element as before (DESIGN.md § 3.1, § 5.2).
+//!
 //! There is no buffer reuse: every stored value has its own buffer, except that each SGD update
 //! writes its parameter's one view in place, a folded scalar is an immediate, the `lr * g` of a
-//! fused update has no buffer, and a pre-activation that nothing but its epilogue `Relu` reads
-//! has none either. A `Barrier` precedes any Dispatch that reads a buffer an earlier Dispatch wrote
-//! since the last barrier, or writes one an earlier Dispatch read or wrote since then; it depends
-//! on the previous barrier and on every Dispatch since, so a step after it is ordered after
-//! everything before it. Each plan ends with its one fence, a `Barrier` with no dependencies, so
-//! a runner may record it back to back. A buffer over [`MAX_BUFFER_BYTES`] or a dispatch over
+//! fused update has no buffer, a pre-activation that nothing but its epilogue `Relu` reads
+//! has none either, and neither has a folded transpose. A `Barrier` precedes any Dispatch that
+//! reads a buffer an earlier Dispatch wrote since the last barrier, or writes one an earlier
+//! Dispatch read or wrote since then; it depends on the previous barrier and on every Dispatch
+//! since, so a step after it is ordered after everything before it. Each plan ends with its one
+//! fence, a `Barrier` with no dependencies, so a runner may record it back to back.
+//! A buffer over [`MAX_BUFFER_BYTES`] or a dispatch over
 //! [`MAX_INVOCATIONS`] is refused as a target limit. The prediction has its own view: a forward that returns an
 //! input or a parameter copies it there with a `Copy` step, and one that returns a literal fills
 //! it with a Broadcast dispatch. The workgroup sizes are the constants of [`KernelKind`]; nothing
@@ -43,7 +51,7 @@ use crate::artifact::{DataRole, DataSpec, ParameterSpec, canonical_parameter_id}
 use crate::ir::kernel::{
     BufferView, Epilogue, ExecutionPlan, Kernel, KernelKind, MatMulTile, Operand, PlanOp, PlanStep,
 };
-use crate::ir::tensor::{DType, Dim, TensorNode, TensorOp, TensorType, ValueId};
+use crate::ir::tensor::{DType, Dim, ParamId, TensorNode, TensorOp, TensorType, ValueId};
 use crate::ir::training::{TrainConfig, TrainingStep};
 
 /// The most workgroups in one dimension of a dispatch on every Vulkan device.
@@ -128,6 +136,8 @@ struct Fusions {
     scaled: BTreeMap<ValueId, ValueId>,
     /// The ops computed inside another op's kernel.
     absorbed: BTreeSet<ValueId>,
+    /// Each folded transpose: the operand its matmul readers read in place.
+    transposed: BTreeMap<ValueId, ValueId>,
 }
 
 /// Whether `op` reads an immediate operand in its kernel.
@@ -156,11 +166,12 @@ fn fold(op: &TensorOp, operands: &[f32]) -> Option<f32> {
     (operands.iter().all(|&x| exact(x)) && exact(value)).then_some(value)
 }
 
-/// The fusions of `nodes`, whose updates are `updates` and whose loss and prediction are
-/// `bound`.
+/// The fusions of `nodes`, whose updates are `updates`, the update of each parameter
+/// `update_of`, and whose loss and prediction are `bound`.
 fn fusions(
     nodes: &[TensorNode],
     updates: &BTreeMap<ValueId, usize>,
+    update_of: &BTreeMap<ParamId, ValueId>,
     bound: [ValueId; 2],
 ) -> Fusions {
     let mut readers: BTreeMap<ValueId, Vec<&TensorNode>> = BTreeMap::new();
@@ -243,11 +254,41 @@ fn fusions(
         }
     }
 
+    let position: BTreeMap<ValueId, usize> =
+        nodes.iter().enumerate().map(|(i, n)| (n.id, i)).collect();
+    let mut transposed = BTreeMap::new();
+    for node in nodes {
+        let [operand] = node.operands[..] else {
+            continue;
+        };
+        let readers = readers_of(node.id);
+        if node.op != TensorOp::Transpose
+            || bound.contains(&node.id)
+            || updates.contains_key(&node.id)
+            || readers.is_empty()
+            || readers.iter().any(|r| r.op != TensorOp::MatMul)
+        {
+            continue;
+        }
+        let updated_at = match op_of(operand) {
+            Some(TensorOp::ParamRead { param }) => update_of
+                .get(param)
+                .and_then(|update| position.get(update))
+                .copied(),
+            _ => None,
+        };
+        if updated_at.is_some_and(|at| readers.iter().any(|r| position[&r.id] > at)) {
+            continue;
+        }
+        transposed.insert(node.id, operand);
+    }
+
     Fusions {
         folded,
         relu_of,
         scaled,
         absorbed,
+        transposed,
     }
 }
 
@@ -306,7 +347,12 @@ pub fn schedule(
         })
         .collect();
 
-    let fused = fusions(&program.nodes, &updates, [step.training.loss, prediction]);
+    let fused = fusions(
+        &program.nodes,
+        &updates,
+        &step.optimizer.updates,
+        [step.training.loss, prediction],
+    );
     let mut places: BTreeMap<ValueId, Place> = BTreeMap::new();
     let mut works: Vec<Work> = Vec::new();
     let mut prediction_view = None;
@@ -374,6 +420,17 @@ pub fn schedule(
         if fused.absorbed.contains(&node.id) {
             continue;
         }
+        if let Some(operand) = fused.transposed.get(&node.id) {
+            let place = places
+                .get(operand)
+                .copied()
+                .ok_or(ScheduleError::UndefinedOperand {
+                    value: node.id,
+                    operand: *operand,
+                })?;
+            places.insert(node.id, place);
+            continue;
+        }
 
         let scaled = fused.scaled.get(&node.id).copied();
         let sources = match scaled {
@@ -392,6 +449,12 @@ pub fn schedule(
         };
         let mut operands = Vec::new();
         let mut reads = Vec::new();
+        let mut transposed = [false, false];
+        if node.op == TensorOp::MatMul {
+            for (flag, operand) in transposed.iter_mut().zip(&sources) {
+                *flag = fused.transposed.contains_key(operand);
+            }
+        }
         for &operand in &sources {
             let place = places
                 .get(&operand)
@@ -461,6 +524,7 @@ pub fn schedule(
             if let Some((tile, _, _)) = tile {
                 built.workgroup_size = tile.workgroup_size;
                 built.epilogue = epilogue;
+                built.transposed = transposed;
                 built.id = Kernel::module_id(&built.signature());
             }
             Ok(built)
@@ -675,6 +739,7 @@ fn kernel(
         result,
         reduces,
         epilogue: None,
+        transposed: [false, false],
         workgroup_size: kind.workgroup_size(),
         workgroups,
     };

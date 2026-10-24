@@ -204,6 +204,33 @@ fn mean_loss_source() -> String {
     replaced
 }
 
+/// A program whose forward multiplies the transpose of its input by a parameter, elementwise: its
+/// transpose is read by an elementwise kernel, so it stays a `Transpose` dispatch, where every
+/// transpose of the examples is read only by matmuls, which read it in place (DESIGN.md § 3.1).
+fn elementwise_transpose_source() -> String {
+    "model T {
+    param w: Tensor<f32, [24, 24]> = xavier_uniform();
+
+    fn forward(x: Tensor<f32, [24, 24]>)
+        -> Tensor<f32, [24, 24]> {
+        return mul(transpose(x), w);
+    }
+}
+
+train Fit {
+    model = T;
+    input x: Tensor<f32, [24, 24]>;
+    target y: Tensor<f32, [24, 24]>;
+    loss = mse(model.forward(x), y);
+    optimizer = sgd(lr = 0.1);
+    steps = 1;
+    seed = 42;
+    device = vulkan(0);
+}
+"
+    .to_owned()
+}
+
 /// The Vulkan artifacts of acceptance 2, by name.
 fn acceptance_artifacts() -> Vec<(String, CompiledArtifact)> {
     let mut artifacts = Vec::new();
@@ -220,6 +247,13 @@ fn acceptance_artifacts() -> Vec<(String, CompiledArtifact)> {
     let artifact = compile_artifact("mean_loss.mspec", &mean_loss_source(), Backend::Vulkan)
         .expect("the mean source compiles");
     artifacts.push(("mean_loss.mspec".to_owned(), artifact));
+    let artifact = compile_artifact(
+        "elementwise_transpose.mspec",
+        &elementwise_transpose_source(),
+        Backend::Vulkan,
+    )
+    .expect("the transpose source compiles");
+    artifacts.push(("elementwise_transpose.mspec".to_owned(), artifact));
     artifacts
 }
 
@@ -233,6 +267,7 @@ fn emit_kernels_gives_one_valid_module_per_kernel_of_every_acceptance_artifact()
     let mut kinds = BTreeSet::new();
     let mut total = 0;
     let mut checked_arithmetic = 0;
+    let mut transposed = 0;
     for (name, artifact) in acceptance_artifacts() {
         let modules = emit_kernels(&artifact, &profile).unwrap_or_else(|e| panic!("{name}: {e}"));
         let kernels = &artifact.execution.kernels;
@@ -259,6 +294,7 @@ fn emit_kernels_gives_one_valid_module_per_kernel_of_every_acceptance_artifact()
                 checked_arithmetic += all;
             }
             kinds.insert(kernel.kind);
+            transposed += usize::from(kernel.transposed.contains(&true));
         }
         total += modules.len();
     }
@@ -273,8 +309,10 @@ fn emit_kernels_gives_one_valid_module_per_kernel_of_every_acceptance_artifact()
     ] {
         assert!(kinds.contains(&kind), "the artifacts have a {kind} kernel");
     }
+    assert!(transposed > 0, "a matmul reads an operand transposed");
     eprintln!(
-        "spirv_val: emit_kernels gave {total} modules over 4 artifacts, kinds {kinds:?}, all pass \
+        "spirv_val: emit_kernels gave {total} modules over 5 artifacts, kinds {kinds:?}, {transposed} matmuls reading an \
+         operand transposed, all pass \
          spirv-val --target-env {TARGET_ENV}; {checked_arithmetic} OpFAdd/OpFSub/OpFMul of \
          loss-sum and matmul modules carry NoContraction"
     );

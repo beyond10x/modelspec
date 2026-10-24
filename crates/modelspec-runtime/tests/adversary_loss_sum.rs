@@ -65,6 +65,7 @@ fn mse_kernel(shape: &[u64]) -> Kernel {
         result: TensorType::f32_scalar(),
         reduces: None,
         epilogue: None,
+        transposed: [false, false],
         workgroup_size: KernelKind::LossSum.workgroup_size(),
         workgroups: [1, 1, 1],
     };

@@ -59,10 +59,9 @@ fn stats_lines(text: &str) -> BTreeMap<String, String> {
         .collect()
 }
 
-/// The guide's section 5 quotes a `--profile` run and says its three new counter lines "are from
-/// a later run of the same command, whose other counters equal the ones above; none of the three
-/// depends on timing". Run the command the guide names and compare every counter that does not
-/// depend on timing with the block it quotes.
+/// The guide's section 5 quotes a `--profile` run and says "None of the counters depends on
+/// timing". Run the command the guide names and compare every counter that does not depend on
+/// timing with the block it quotes.
 #[test]
 #[ignore = "needs a Vulkan device"]
 fn the_guides_counter_block_is_what_its_command_prints() {
@@ -130,7 +129,7 @@ fn stats_and_profile_print_the_same_three_counters() {
         assert_eq!(profile_only.get(counter), Some(value), "{counter}");
     }
     assert_eq!(stats_only["barriers per step"], "7");
-    assert_eq!(stats_only["device allocations"], "12");
+    assert_eq!(stats_only["device allocations"], "11");
 }
 
 /// A run that writes checkpoints on the way, and a run resumed from one, record the same step,

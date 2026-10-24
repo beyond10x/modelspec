@@ -210,8 +210,8 @@ fn mnist_mlp_trains_on_the_device_with_one_host_wait() {
     );
     assert_eq!(stats.bytes_downloaded, 210_468);
     assert_eq!(
-        stats.dispatches_per_step, 14,
-        "the fused step plan of story m1-fuse-elementwise"
+        stats.dispatches_per_step, 11,
+        "the fused step plan of story m1-fuse-elementwise, its transposes read in place"
     );
     eprintln!(
         "{MNIST_MLP}: steady state {:.3} us/step, {} dispatches/step",

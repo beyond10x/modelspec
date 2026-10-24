@@ -321,6 +321,8 @@ enum Body {
         n: u32,
         epilogue: Option<Epilogue>,
         tile: MatMulTile,
+        /// Whether `a` and `b` are bound transposed ([`Kernel::transposed`]).
+        transposed: [bool; 2],
     },
 }
 
@@ -460,6 +462,7 @@ fn body_of(kernel: &Kernel, variant: Variant, shared_bytes: u32) -> Result<Body,
                         n: u32_of(kernel, *n)?,
                         epilogue: kernel.epilogue,
                         tile,
+                        transposed: kernel.transposed,
                     }
                 }
                 _ => {
@@ -640,7 +643,8 @@ fn build(
             n,
             epilogue,
             tile,
-        } => m.matmul(rows, k, n, epilogue, tile)?,
+            transposed,
+        } => m.matmul(rows, k, n, epilogue, tile, transposed)?,
     }
     m.finish()
 }
@@ -678,6 +682,111 @@ fn matmul_carried(k: u32, tile: &MatMulTile) -> usize {
         return 0;
     }
     (tile.ahead.max(1) as usize - 1) * matmul_slots(tile)
+}
+
+/// The values of the block's rows a transposed `a` stages from one value of `k` before the next:
+/// 8 values of `f32`, one 32-byte sector of its binding.
+const TRANSPOSED_A_RUN: u32 = 8;
+
+/// The order in which a workgroup stages one operand's tile, and where each staged value lies
+/// in the operand's binding (DESIGN.md § 5.2). Staging element `e`, `0 ≤ e <` the tile's cells,
+/// is element `e / size` of invocation `e % size`'s slots, so consecutive invocations take
+/// consecutive elements. Element `e` has an index `along` the contracting index, within the
+/// tile, and an index `across` the block's rows (`a`) or columns (`b`); the binding holds its
+/// value at `across · across_stride + along · along_stride`, with `across` counted from the
+/// block's first row or column and `along` from the tile's first `k`. Runs of `run` consecutive
+/// elements take consecutive values of the binding's contiguous index, so they read consecutive
+/// addresses.
+///
+/// An operand read as is is contiguous along `k` (`a`) or across the columns (`b`), and a run
+/// spans the tile's whole extent of that index. An operand bound transposed is contiguous along
+/// the other index: a transposed `b` along `k`, in runs of the tile's depth, and a transposed
+/// `a` across the block's rows, in runs of [`TRANSPOSED_A_RUN`] rows, then `k`, then the next
+/// run of rows, so that the workgroup memory it fills, laid out as for an `a` read as is, takes
+/// few stores into one bank at a time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Staging {
+    /// The consecutive elements that read consecutive addresses.
+    run: u32,
+    /// Whether the contiguous index is `along` rather than `across`.
+    along_first: bool,
+    /// The values of `along` in the tile: its depth.
+    depth: u32,
+    /// The values of `across` in the tile: the block's rows (`a`) or columns (`b`).
+    across: u32,
+    /// The binding's distance between two consecutive values of `k`.
+    along_stride: u32,
+    /// The binding's distance between two consecutive rows (`a`) or columns (`b`).
+    across_stride: u32,
+}
+
+impl Staging {
+    /// The staging of operand `a` (`is_a`) or `b` of the `[m, k] x [k, n]` matmul with `tile`,
+    /// bound as is or `transposed`: `a` as `[m, k]` or `[k, m]`, `b` as `[k, n]` or `[n, k]`.
+    fn of(tile: &MatMulTile, m: u32, k: u32, n: u32, is_a: bool, transposed: bool) -> Self {
+        let depth = tile.depth;
+        let rows = tile.rows_per_workgroup();
+        match (is_a, transposed) {
+            (true, false) => Self {
+                run: depth,
+                along_first: true,
+                depth,
+                across: rows,
+                along_stride: 1,
+                across_stride: k,
+            },
+            (true, true) => Self {
+                run: if rows.is_multiple_of(TRANSPOSED_A_RUN) {
+                    TRANSPOSED_A_RUN
+                } else {
+                    rows
+                },
+                along_first: false,
+                depth,
+                across: rows,
+                along_stride: m,
+                across_stride: 1,
+            },
+            (false, false) => Self {
+                run: tile.cols,
+                along_first: false,
+                depth,
+                across: tile.cols,
+                along_stride: n,
+                across_stride: 1,
+            },
+            (false, true) => Self {
+                run: depth,
+                along_first: true,
+                depth,
+                across: tile.cols,
+                along_stride: 1,
+                across_stride: k,
+            },
+        }
+    }
+
+    /// `(along, across)` of staging element `e`.
+    #[cfg(test)]
+    fn split(&self, e: u32) -> (u32, u32) {
+        let (slow, fast) = (e / self.run, e % self.run);
+        if self.along_first {
+            (fast, slow)
+        } else if self.run == self.across {
+            (slow, fast)
+        } else {
+            (slow % self.depth, slow / self.depth * self.run + fast)
+        }
+    }
+
+    /// The binding element staging element `e` reads in the block whose first row or column
+    /// is `origin`, for the tile whose first `k` is `base`.
+    #[cfg(test)]
+    fn element(&self, e: u32, origin: u32, base: u32) -> u64 {
+        let (along, across) = self.split(e);
+        u64::from(origin + across) * u64::from(self.across_stride)
+            + u64::from(base + along) * u64::from(self.along_stride)
+    }
 }
 
 /// A module under construction, inside the entry block of `main` once [`Shell::new`] returns.
@@ -1396,6 +1505,13 @@ impl Shell {
     /// product added in ascending `k`, as the CPU computes it. With an [`Epilogue`] the rounded
     /// sum is written to the pre-activation binding when the kernel keeps it, and its `relu` to
     /// the result.
+    ///
+    /// An operand bound transposed (`transposed`, [`Kernel::transposed`]) is read in place from
+    /// its row-major transpose, `[k, m]` for `a` and `[n, k]` for `b`, in the [`Staging`] order
+    /// that gives consecutive invocations consecutive addresses, and staged in workgroup memory
+    /// where the operand bound as is would be, so the products read the same values from the
+    /// same places; every product and sum is that of the operand bound as is, and the
+    /// instructions for an operand bound as is are unchanged.
     fn matmul(
         &mut self,
         m: u32,
@@ -1403,11 +1519,13 @@ impl Shell {
         n: u32,
         epilogue: Option<Epilogue>,
         tile: MatMulTile,
+        transposed: [bool; 2],
     ) -> Result<(), EmitError> {
         let local = self.local.expect("a module with workgroup memory");
         let u32_ty = self.u32_ty;
         let (size, cols, depth) = (tile.workgroup_size, tile.cols, tile.depth);
         let (lanes, per) = (tile.lanes(), tile.cols_per_invocation);
+        let [a_transposed, b_transposed] = transposed;
         // `b` staged transposed, one column per stride, or as read, one `k` per stride.
         let transposed = per == 1;
         let block_rows = tile.rows_per_workgroup();
@@ -1428,8 +1546,10 @@ impl Shell {
         let lanes_c = self.uint(lanes);
         let thread_col = self.b.u_mod(u32_ty, None, local, lanes_c)?;
         let thread_row = self.b.u_div(u32_ty, None, local, lanes_c)?;
-        let (m_c, k_c, n_c) = (self.uint(m), self.uint(k), self.uint(n));
-        let depth_c = self.uint(depth);
+        // `k` and `depth` are declared here, before the constants below, though the staging
+        // takes them by value (`Staging`): the module of an operand bound as is keeps its order.
+        let (m_c, _, n_c) = (self.uint(m), self.uint(k), self.uint(n));
+        self.uint(depth);
         let a_stride_c = self.uint(a_stride);
         let b_offset_c = self.uint(b_offset);
         let b_stride_c = self.uint(tile.b_stride());
@@ -1470,6 +1590,9 @@ impl Shell {
             to: Word,
             /// The slot's index along the contracting index, within the tile.
             along: Word,
+            /// The binding's distance between two consecutive values of `k`
+            /// ([`Staging::along_stride`]).
+            along_stride: u32,
             /// Whether the slot lies inside the matrices.
             valid: Word,
             /// On a last step that not every invocation takes, whether this one takes it.
@@ -1487,24 +1610,48 @@ impl Shell {
                 } else {
                     None
                 };
-                let (along, to, at, valid) = if is_a {
-                    let r = self.b.u_div(u32_ty, None, e, depth_c)?;
-                    let c = self.b.u_mod(u32_ty, None, e, depth_c)?;
-                    let row = self.add(row0, r)?;
-                    let valid = self.less(row, m_c)?;
-                    let row_at = self.mul(row, k_c)?;
-                    let at = self.add(row_at, c)?;
-                    let r_at = self.mul(r, a_stride_c)?;
-                    let to = self.add(r_at, c)?;
-                    (c, to, at, valid)
+                // Element `e` of the operand's tile: its `along` and `across` indices, its row
+                // or column, and the element of the binding it reads (`Staging`).
+                let staging = Staging::of(
+                    &tile,
+                    m,
+                    k,
+                    n,
+                    is_a,
+                    if is_a { a_transposed } else { b_transposed },
+                );
+                let run_c = self.uint(staging.run);
+                let slow = self.b.u_div(u32_ty, None, e, run_c)?;
+                let fast = self.b.u_mod(u32_ty, None, e, run_c)?;
+                let (along, across) = if staging.along_first {
+                    (fast, slow)
+                } else if staging.run == staging.across {
+                    (slow, fast)
                 } else {
-                    let p = self.b.u_div(u32_ty, None, e, cols_c)?;
-                    let c = self.b.u_mod(u32_ty, None, e, cols_c)?;
-                    let col = self.add(col0, c)?;
-                    let valid = self.less(col, n_c)?;
-                    let p_at = self.mul(p, n_c)?;
-                    let at = self.add(p_at, col)?;
-                    let to = if transposed {
+                    let depth_c = self.uint(staging.depth);
+                    let along = self.b.u_mod(u32_ty, None, slow, depth_c)?;
+                    let runs = self.b.u_div(u32_ty, None, slow, depth_c)?;
+                    let runs_at = self.mul(runs, run_c)?;
+                    (along, self.add(runs_at, fast)?)
+                };
+                let (origin, limit) = if is_a { (row0, m_c) } else { (col0, n_c) };
+                let line = self.add(origin, across)?;
+                let valid = self.less(line, limit)?;
+                let at = if staging.along_first {
+                    let stride = self.uint(staging.across_stride);
+                    let line_at = self.mul(line, stride)?;
+                    self.add(line_at, along)?
+                } else {
+                    let stride = self.uint(staging.along_stride);
+                    let along_at = self.mul(along, stride)?;
+                    self.add(along_at, line)?
+                };
+                let to = if is_a {
+                    let r_at = self.mul(across, a_stride_c)?;
+                    self.add(r_at, along)?
+                } else {
+                    let (p, c) = (along, across);
+                    if transposed {
                         let c_at = self.mul(c, b_stride_c)?;
                         let c_at = self.add(b_offset_c, c_at)?;
                         self.add(c_at, p)?
@@ -1512,8 +1659,7 @@ impl Shell {
                         let p_at = self.mul(p, b_stride_c)?;
                         let p_at = self.add(b_offset_c, p_at)?;
                         self.add(p_at, c)?
-                    };
-                    (p, to, at, valid)
+                    }
                 };
                 let valid = match taken {
                     Some(taken) => self.and(valid, taken)?,
@@ -1525,6 +1671,7 @@ impl Shell {
                     at,
                     to,
                     along,
+                    along_stride: staging.along_stride,
                     valid,
                     taken,
                 });
@@ -1545,7 +1692,7 @@ impl Shell {
             let mut fetched = Vec::new();
             for slot in &slots {
                 let offset = match start {
-                    Start::At(base) => s.uint(if slot.is_a { base } else { base * n }),
+                    Start::At(base) => s.uint(base * slot.along_stride),
                     Start::Looped { a, b } => {
                         if slot.is_a {
                             a
@@ -1710,8 +1857,12 @@ impl Shell {
             };
             spill(self, &mut fetched)?;
             let (zero, one, end) = (self.uint(0), self.uint(1), self.uint(passes));
-            let pass_a = self.uint(MATMUL_UNROLL * depth);
-            let pass_b = self.uint(MATMUL_UNROLL * depth * n);
+            let along = |is_a: bool, transposed: bool| {
+                Staging::of(&tile, m, k, n, is_a, transposed).along_stride
+            };
+            let (a_along, b_along) = (along(true, a_transposed), along(false, b_transposed));
+            let pass_a = self.uint(MATMUL_UNROLL * depth * a_along);
+            let pass_b = self.uint(MATMUL_UNROLL * depth * b_along);
             let var = self.u32_vars[0];
             self.counted(var, zero, end, one, |s, pass| {
                 let mut queue = VecDeque::new();
@@ -1723,9 +1874,9 @@ impl Shell {
                 for p in 0..MATMUL_UNROLL as usize {
                     let i = 1 + p;
                     let base = (i + ahead) as u32 * depth;
-                    let a_c = s.uint(base);
+                    let a_c = s.uint(base * a_along);
                     let a = s.add(a0, a_c)?;
-                    let b_c = s.uint(base * n);
+                    let b_c = s.uint(base * b_along);
                     let b = s.add(b0, b_c)?;
                     step(s, &mut queue, i, Some((Start::Looped { a, b }, depth)))?;
                 }
@@ -1768,5 +1919,101 @@ impl Shell {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+
+    use super::*;
+
+    /// `(m, k, n)` of each tile: wide, square, one row and two rows per invocation, the
+    /// `mlp_sweep` b8192 h4096 and MNIST matmuls that read an operand transposed among them.
+    const SHAPES: [(u32, u32, u32); 8] = [
+        (784, 8192, 4096),
+        (8192, 784, 4096),
+        (8192, 10, 4096),
+        (1031, 7, 1029),
+        (100, 10, 64),
+        (64, 100, 10),
+        (784, 100, 64),
+        (4096, 8192, 10),
+    ];
+
+    /// The staging elements of one operand's tile.
+    fn total(tile: &MatMulTile, is_a: bool) -> u32 {
+        if is_a {
+            tile.rows_per_workgroup() * tile.depth
+        } else {
+            tile.depth * tile.cols
+        }
+    }
+
+    /// Acceptance `staged-reads-coalesced`: consecutive staging elements, the elements of
+    /// consecutive invocations, read consecutive addresses of the bound view of a transposed
+    /// operand, in runs of [`TRANSPOSED_A_RUN`] of the block's rows (`a`, one 32-byte sector) or of
+    /// the tile's depth (`b`), and the elements cover the tile once.
+    #[test]
+    fn a_transposed_operand_is_staged_from_consecutive_addresses_of_its_bound_view() {
+        for (m, k, n) in SHAPES {
+            let tile = MatMulTile::of(m.into(), k.into(), n.into());
+            for is_a in [true, false] {
+                let case = format!("[{m}, {k}] x [{k}, {n}] {tile} a {is_a}");
+                let staging = Staging::of(&tile, m, k, n, is_a, true);
+                let run = if is_a {
+                    assert!(
+                        tile.rows_per_workgroup().is_multiple_of(TRANSPOSED_A_RUN),
+                        "{case}"
+                    );
+                    TRANSPOSED_A_RUN
+                } else {
+                    tile.depth
+                };
+                assert_eq!(staging.run, run, "{case}");
+                assert!(staging.run >= 8.min(if is_a { m } else { k }), "{case}");
+                let total = total(&tile, is_a);
+                for e in 0..total - 1 {
+                    if (e + 1) % staging.run == 0 {
+                        continue;
+                    }
+                    for (origin, base) in [(0, 0), (64, tile.depth)] {
+                        assert_eq!(
+                            staging.element(e + 1, origin, base),
+                            staging.element(e, origin, base) + 1,
+                            "{case}: element {e} at origin {origin} base {base}"
+                        );
+                    }
+                }
+                let cells: BTreeSet<(u32, u32)> = (0..total).map(|e| staging.split(e)).collect();
+                assert_eq!(cells.len(), total as usize, "{case}: each cell once");
+                let across = if is_a {
+                    tile.rows_per_workgroup()
+                } else {
+                    tile.cols
+                };
+                assert!(
+                    cells
+                        .iter()
+                        .all(|&(along, a)| along < tile.depth && a < across),
+                    "{case}: inside the tile"
+                );
+            }
+        }
+    }
+
+    /// An operand read as is keeps the staging order of the plan before the change: `a` along
+    /// the contracting index, `b` across the block's columns, each contiguous in its view.
+    #[test]
+    fn an_operand_read_as_is_keeps_its_staging_order() {
+        for (m, k, n) in SHAPES {
+            let tile = MatMulTile::of(m.into(), k.into(), n.into());
+            let a = Staging::of(&tile, m, k, n, true, false);
+            assert_eq!((a.run, a.along_first), (tile.depth, true));
+            assert_eq!((a.along_stride, a.across_stride), (1, k));
+            let b = Staging::of(&tile, m, k, n, false, false);
+            assert_eq!((b.run, b.along_first), (tile.cols, false));
+            assert_eq!((b.along_stride, b.across_stride), (n, 1));
+        }
     }
 }

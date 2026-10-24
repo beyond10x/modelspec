@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use modelspec_core::artifact::{Backend, CompiledArtifact};
 use modelspec_core::compile::{self, CompiledTraining};
 use modelspec_core::ir::kernel::{
-    Epilogue, ExecutionPlan, Kernel, KernelKind, MATMUL_TWO_ROWS_FROM_WORKGROUPS,
+    BufferView, Epilogue, ExecutionPlan, Kernel, KernelKind, MATMUL_TWO_ROWS_FROM_WORKGROUPS,
     MIN_SHARED_MEMORY_BYTES, MatMulTile, Operand, PlanOp, PlanStep,
 };
 use modelspec_core::ir::print::print_kernel;
@@ -99,6 +99,9 @@ enum Cover {
     /// A rank-0 op of compile-time scalars, an immediate equal to its `f32` value in every
     /// kernel that reads it.
     Folded,
+    /// A `transpose` that only matmuls read, each of whose Dispatches reads its operand in place,
+    /// flagged in [`Kernel::transposed`] (DESIGN.md § 3.1).
+    Transposed,
 }
 
 fn node_of(training: &CompiledTraining, value: ValueId) -> &TensorNode {
@@ -161,6 +164,24 @@ fn coverage(plan: &ExecutionPlan, training: &CompiledTraining, node: &TensorNode
         if kernel.kind == KernelKind::MatMul && kernel.epilogue.is_some() {
             covers.push(Cover::Epilogue);
         }
+    }
+    let matmul_readers = readers(training, node.id);
+    if node.op == TensorOp::Transpose
+        && !matmul_readers.is_empty()
+        && matmul_readers.iter().all(|reader| {
+            reader.op == TensorOp::MatMul
+                && matches!(dispatches_of(&plan.step, reader.id)[..], [at] if {
+                    let kernel = kernel_of(plan, &plan.step[at]);
+                    reader
+                        .operands
+                        .iter()
+                        .zip(kernel.transposed)
+                        .filter(|(operand, _)| **operand == node.id)
+                        .all(|(_, transposed)| transposed)
+                })
+        })
+    {
+        covers.push(Cover::Transposed);
     }
     let updates: BTreeSet<ValueId> = training
         .training
@@ -645,6 +666,22 @@ fn only_dispatch(plan: &ExecutionPlan, value: ValueId) -> &PlanStep {
     &plan.step[at]
 }
 
+/// The views the dispatch of `reader` reads, or, for a transpose folded into the matmuls that read
+/// it (DESIGN.md § 3.1), the views their dispatches read.
+fn reads_of(
+    plan: &ExecutionPlan,
+    training: &CompiledTraining,
+    reader: &TensorNode,
+) -> Vec<BufferView> {
+    if reader.op == TensorOp::Transpose && dispatches_of(&plan.step, reader.id).is_empty() {
+        return readers(training, reader.id)
+            .iter()
+            .flat_map(|r| only_dispatch(plan, r.id).reads.clone())
+            .collect();
+    }
+    only_dispatch(plan, reader.id).reads.clone()
+}
+
 /// The first node of `op` in the step.
 fn first<'a>(training: &'a CompiledTraining, op: &TensorOp) -> &'a TensorNode {
     training
@@ -658,11 +695,11 @@ fn first<'a>(training: &'a CompiledTraining, op: &TensorOp) -> &'a TensorNode {
 }
 
 #[test]
-fn the_mnist_step_plan_is_14_dispatches_in_8_barrier_groups() {
+fn the_mnist_step_plan_is_11_dispatches_in_8_barrier_groups() {
     let plan = artifact(&source(MNIST), Backend::Vulkan).execution;
     verify_plan(&plan).expect("the plan verifies");
     let count = |op: PlanOp| plan.step.iter().filter(|s| s.op == op).count();
-    assert_eq!(count(PlanOp::Dispatch), 14, "{}", print_kernel(&plan));
+    assert_eq!(count(PlanOp::Dispatch), 11, "{}", print_kernel(&plan));
     assert_eq!(count(PlanOp::Barrier), 8, "{}", print_kernel(&plan));
 }
 
@@ -721,7 +758,7 @@ fn a_relu_whose_matmul_has_a_second_reader_is_an_epilogue_writing_both() {
     );
     for reader in readers(&training, relu.id) {
         assert!(
-            only_dispatch(&plan, reader.id).reads.contains(&activation),
+            reads_of(&plan, &training, reader).contains(&activation),
             "{} reads the activation",
             reader.id
         );
@@ -780,7 +817,7 @@ fn a_relu_whose_matmul_has_no_other_reader_writes_only_the_activation() {
         panic!("the kernel writes the activation alone: {:?}", step.writes);
     };
     for reader in readers(&training, relu.id) {
-        assert!(only_dispatch(&plan, reader.id).reads.contains(&activation));
+        assert!(reads_of(&plan, &training, reader).contains(&activation));
     }
 
     let named: BTreeSet<u32> = plan

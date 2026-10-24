@@ -1,0 +1,6 @@
+# command: modelspec train <source> --backend vulkan > <source>.stdout, with the base binary (ecabada) and the after binary, then sha256 of each stdout
+gpu-apps-before []
+mnist_mlp exit 0 base b9bb028a6d25cec5829f76919e5e478abc4d71098227a859403bdf84b6826904 after b9bb028a6d25cec5829f76919e5e478abc4d71098227a859403bdf84b6826904 EQUAL
+mlp_sweep_b1000_h1024 exit 0 base d7e5746d193852d5e3341a66a6a5195f2544248ad43f256d7ec691ec57d6364f after d7e5746d193852d5e3341a66a6a5195f2544248ad43f256d7ec691ec57d6364f EQUAL
+mlp_sweep_b8192_h1024 exit 0 base d3cd977ab5a87aef7a458e9e76065e3aba55a4bb00c04ea3e022936fdbc75504 after d3cd977ab5a87aef7a458e9e76065e3aba55a4bb00c04ea3e022936fdbc75504 EQUAL
+mlp_sweep_b8192_h4096 exit 0 base ab91357c52f40dbf61a800131857811f3e5e6fd15f7069a65cb1a957391d896a after ab91357c52f40dbf61a800131857811f3e5e6fd15f7069a65cb1a957391d896a EQUAL

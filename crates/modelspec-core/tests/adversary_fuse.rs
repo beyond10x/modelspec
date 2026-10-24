@@ -288,9 +288,11 @@ fn no_barrier_group_holds_a_hazard_on_any_model() {
 }
 
 /// `spec/domains/artifact.yaml`, `ExecutionPlan.buffers`: "In M1 each stored value has its own
-/// buffer, with four exceptions": an SGD update writes its parameter's buffer in place, a folded
-/// scalar has no buffer, the `lr * g` of a fused update has none, and a matmul pre-activation that
-/// no op but its ReLU epilogue reads, and that is not the loss or the prediction, has none. So the
+/// buffer, with five exceptions": an SGD update writes its parameter's buffer in place, a folded
+/// scalar has no buffer, the `lr * g` of a fused update has none, a matmul pre-activation that
+/// no op but its ReLU epilogue reads, and that is not the loss or the prediction, has none, and a
+/// transpose that no op but matmuls reads, and that is not the loss or the prediction, has none
+/// (no MNIST transpose reads a parameter after its update). So the
 /// plan has at least one buffer per data declaration, per parameter, and per stored (non-`Scalar`)
 /// computing value of the step outside those exceptions, plus the loss.
 #[test]
@@ -298,7 +300,7 @@ fn every_value_has_its_own_buffer_as_the_artifact_spec_states() {
     let spec = std::fs::read_to_string(repo_root().join("spec/domains/artifact.yaml"))
         .expect("the spec reads");
     assert!(
-        spec.contains("In M1 each stored value has its own buffer, with four exceptions."),
+        spec.contains("In M1 each stored value has its own buffer, with five exceptions."),
         "the sentence this case drives from is in the spec"
     );
     let source = std::fs::read_to_string(repo_root().join("examples/mnist_mlp.mspec"))
@@ -334,6 +336,13 @@ fn every_value_has_its_own_buffer_as_the_artifact_spec_states() {
             && !bound.contains(&n.id)
             && matches!(readers(n.id)[..], [r] if r.op == TensorOp::Relu)
     };
+    let folded_transpose = |n: &TensorNode| {
+        let readers = readers(n.id);
+        n.op == TensorOp::Transpose
+            && !bound.contains(&n.id)
+            && !readers.is_empty()
+            && readers.iter().all(|r| r.op == TensorOp::MatMul)
+    };
     let stored = all
         .iter()
         .filter(|n| {
@@ -344,6 +353,7 @@ fn every_value_has_its_own_buffer_as_the_artifact_spec_states() {
                 && !updates.contains(&n.id)
                 && !scaled_product(n)
                 && !epilogue_only(n)
+                && !folded_transpose(n)
         })
         .count();
     let plan = &artifact.execution;

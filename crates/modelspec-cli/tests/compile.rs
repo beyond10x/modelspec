@@ -133,15 +133,19 @@ fn a_vulkan_compile_writes_one_valid_module_per_kernel_entry_and_the_reader_acce
         .iter()
         .map(|k| k["kind"].as_str().unwrap())
         .collect();
-    for kind in [
-        "elementwise",
-        "loss_sum",
-        "transpose",
-        "matmul",
-        "sgd_update",
-    ] {
+    for kind in ["elementwise", "loss_sum", "matmul", "sgd_update"] {
         assert!(kinds.contains(kind), "no {kind} kernel in {kinds:?}");
     }
+    // Every transpose of the MNIST step is read only by matmuls, which read it in place
+    // (DESIGN.md § 3.1): no transpose kernel, and matmul entries that read an operand transposed.
+    assert!(
+        !kinds.contains("transpose"),
+        "a transpose kernel in {kinds:?}"
+    );
+    assert!(
+        kernels.iter().any(|k| k["transposed"].is_array()),
+        "no matmul reads an operand transposed"
+    );
     for file in &files {
         let path = dir.join("kernels").join(file);
         let output = Command::new("spirv-val")

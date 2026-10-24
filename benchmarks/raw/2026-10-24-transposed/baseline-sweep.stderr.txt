@@ -1,0 +1,38 @@
+gpu-apps-before []
+command: b10x-build-slot cargo bench -p modelspec-runtime --features vulkan --bench mlp_sweep -- --point 8192:4096 --point 8192:1024 --point 1000:1024 
+b10x-build-slot: slot 1 of 3, 131G free
+   Compiling libc v0.2.191
+   Compiling syn v2.0.119
+   Compiling getrandom v0.4.3
+   Compiling uuid v1.28.0
+   Compiling logos-codegen v0.16.1
+   Compiling logos-derive v0.16.1
+   Compiling logos v0.16.1
+   Compiling modelspec-core v0.8.0 (<worktree>/crates/modelspec-core)
+   Compiling modelspec-runtime v0.8.0 (<worktree>/crates/modelspec-runtime)
+    Finished `bench` profile [optimized] target(s) in 7.92s
+     Running benches/mlp_sweep.rs (target/release/deps/mlp_sweep-6c09fa7629455d42)
+mlp_sweep: warning: not a clean checkout: Build { version: Some("0.8.0"), commit: Some("ecabada6a9929c9a8c54acee28bf283ac891ed08"), dirty: Some(true) }
+mlp_sweep: batch 8192 hidden 4096: 107239964672 FLOP per step
+mlp_sweep:   calibration: 228 steps in 3.705 s
+mlp_sweep:   calibration: 370 steps in 5.031 s
+mlp_sweep:   timed: 370 steps in 4.916 s, 13287.232 us per step
+mlp_sweep:   warning: the run was shorter than 5 s
+mlp_sweep:   timed: 370 steps in 4.837 s, 13072.850 us per step
+mlp_sweep:   warning: the run was shorter than 5 s
+mlp_sweep:   timed: 370 steps in 4.946 s, 13368.129 us per step
+mlp_sweep:   warning: the run was shorter than 5 s
+mlp_sweep: batch 8192 hidden 1024: 26809991168 FLOP per step
+mlp_sweep:   calibration: 718 steps in 3.632 s
+mlp_sweep:   calibration: 1187 steps in 4.364 s
+mlp_sweep:   calibration: 1632 steps in 5.943 s
+mlp_sweep:   timed: 1632 steps in 5.969 s, 3657.263 us per step
+mlp_sweep:   timed: 1632 steps in 5.967 s, 3656.041 us per step
+mlp_sweep:   timed: 1632 steps in 5.998 s, 3675.121 us per step
+mlp_sweep: batch 1000 hidden 1024: 3272704000 FLOP per step
+mlp_sweep:   calibration: 4789 steps in 3.500 s
+mlp_sweep:   calibration: 8210 steps in 4.131 s
+mlp_sweep:   calibration: 11926 steps in 5.867 s
+mlp_sweep:   timed: 11926 steps in 5.898 s, 494.522 us per step
+mlp_sweep:   timed: 11926 steps in 5.899 s, 494.625 us per step
+mlp_sweep:   timed: 11926 steps in 5.903 s, 494.938 us per step

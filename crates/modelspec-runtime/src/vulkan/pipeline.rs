@@ -261,6 +261,7 @@ mod tests {
             result: TensorType::f32(&[5]),
             reduces: None,
             epilogue: None,
+            transposed: [false, false],
             workgroup_size: 64,
             workgroups: [1, 1, 1],
         };

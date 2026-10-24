@@ -1183,8 +1183,8 @@ mod tests {
         }
     }
 
-    /// The pool holds one descriptor per view each set binds: 14 dispatches of `mnist_mlp`
-    /// bind 39, the fused matmul and ReLU of step 0 two reads and two writes
+    /// The pool holds one descriptor per view each set binds: 11 dispatches of `mnist_mlp`
+    /// bind 33, the fused matmul and ReLU of step 0 two reads and two writes
     /// (`crates/modelspec-cli/tests/golden/mnist_mlp.kernel.ir`).
     #[test]
     fn the_pool_counts_every_read_and_write_of_the_mnist_plan() {
@@ -1195,11 +1195,11 @@ mod tests {
         let first = &plan.step[0];
         assert_eq!(first.op, PlanOp::Dispatch);
         assert_eq!((first.reads.len(), first.writes.len()), (2, 2));
-        assert_eq!(descriptors(&plan), 39);
+        assert_eq!(descriptors(&plan), 33);
     }
 
     /// The sets of the MNIST plan's dispatches, taken in plan order from a pool's room as the
-    /// arena binds them: the pool of 38 the runner made before refuses the last set by name,
+    /// arena binds them: a pool one descriptor short, 32, refuses the last set by name,
     /// the pool of [`descriptors`] holds them all.
     #[test]
     fn a_pool_short_of_the_mnist_plan_refuses_its_last_set() {
@@ -1216,33 +1216,33 @@ mod tests {
             .filter(|step| step.op == PlanOp::Dispatch)
             .map(|step| step.reads.len() + step.writes.len())
             .collect();
-        assert_eq!(sets.len(), 14);
+        assert_eq!(sets.len(), 11);
         let take_all = |room: &PoolRoom| {
             sets.iter()
                 .try_for_each(|&needed| admit(room, needed).map(drop))
         };
 
-        let short = PoolRoom::new(14, 38);
+        let short = PoolRoom::new(11, 32);
         match take_all(&short) {
             Err(ExecError::DescriptorPoolFull {
-                sets: 14,
-                descriptors: 38,
-                bound_sets: 13,
-                bound: 36,
+                sets: 11,
+                descriptors: 32,
+                bound_sets: 10,
+                bound: 30,
                 needed: 3,
             }) => {}
-            other => panic!("the pool of 38 refuses the 14th set of 3, got {other:?}"),
+            other => panic!("the pool of 32 refuses the 11th set of 3, got {other:?}"),
         }
-        let sized = PoolRoom::new(14, count_u32(descriptors(&plan)).unwrap());
-        take_all(&sized).expect("the pool of 39 holds every set");
+        let sized = PoolRoom::new(11, count_u32(descriptors(&plan)).unwrap());
+        take_all(&sized).expect("the pool of 33 holds every set");
     }
 
-    /// The 7 dispatches of `linear_regression` bind 19 views, each writing one; a second write on
+    /// The 6 dispatches of `linear_regression` bind 17 views, each writing one; a second write on
     /// one dispatch takes one more descriptor, and a copy takes none.
     #[test]
     fn a_two_write_step_takes_a_descriptor_per_write() {
         let mut plan = vulkan_plan("fit.mspec", EXAMPLE);
-        assert_eq!(descriptors(&plan), 19);
+        assert_eq!(descriptors(&plan), 17);
         let at = plan
             .step
             .iter()
@@ -1250,7 +1250,7 @@ mod tests {
             .expect("a dispatch writes one view");
         let written = plan.step[at].writes[0];
         plan.step[at].writes.push(written);
-        assert_eq!(descriptors(&plan), 20);
+        assert_eq!(descriptors(&plan), 18);
         let copy = PlanStep {
             op: PlanOp::Copy,
             kernel_module_id: None,
@@ -1261,7 +1261,7 @@ mod tests {
             value: None,
         };
         plan.step.push(copy);
-        assert_eq!(descriptors(&plan), 20);
+        assert_eq!(descriptors(&plan), 18);
     }
 
     #[test]

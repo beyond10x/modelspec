@@ -1106,8 +1106,16 @@ struct WireKernel {
     result: WireType,
     reduces: Option<WireType>,
     epilogue: Option<WireEpilogue>,
+    /// [`Kernel::transposed`], absent when neither operand is bound transposed.
+    #[serde(default, skip_serializing_if = "neither_transposed")]
+    transposed: [bool; 2],
     workgroup_size: u32,
     workgroups: [u32; 3],
+}
+
+/// Whether a kernel reads neither operand transposed, so its entry omits `transposed`.
+fn neither_transposed(transposed: &[bool; 2]) -> bool {
+    *transposed == [false, false]
 }
 
 /// `artifact.json`: `modelspec.artifact.CompiledArtifact` and its kernel modules' entries.
@@ -1240,6 +1248,7 @@ impl WireKernel {
                     writes_pre_activation: true,
                 } => WireEpilogue::ReluWritesPreActivation,
             }),
+            transposed: kernel.transposed,
             workgroup_size: kernel.workgroup_size,
             workgroups: kernel.workgroups,
         })
@@ -1276,6 +1285,7 @@ impl WireKernel {
             epilogue: self.epilogue.map(|epilogue| Epilogue::Relu {
                 writes_pre_activation: epilogue == WireEpilogue::ReluWritesPreActivation,
             }),
+            transposed: self.transposed,
             workgroup_size: self.workgroup_size,
             workgroups: self.workgroups,
         };
