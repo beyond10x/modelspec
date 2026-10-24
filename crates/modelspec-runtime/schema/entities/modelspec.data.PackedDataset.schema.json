@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "PackedDataset",
-  "description": "The token sequences of a Dataset under a Tokenizer, the input of masked-language-model batches (epic:bert-from-scratch, \"sequence packing\"). `modelspec data pack --dataset <dir> --tokenizer <file> --seq-len <S> --out <dir>` encodes the documents of each split in order (a document as DatasetSplit.document_count defines it), joins them with `[SEP]` (id 3) between two documents and no `[CLS]`, and cuts the stream into sequences of S consecutive ids with no regard to document boundaries, the partial tail dropped, so no sequence needs padding. It writes `train.tokens`, `heldout.tokens` (PackedSplit), the TrainingDataBinding as `binding.json` and this record as `packed.json` in `<dir>`; two runs on the same inputs write byte-identical output. packed_id is the leading 16 bytes, as a version-8 UUID, of the blake3 hash over the 32-byte blake3 digests of the packed files, Train then HeldOut, as Dataset's id is made. Data order of a run with seed s and batch size B over the n Train sequences - epoch e visits them ascending by the 64-bit key w1 × 2^32 + w0 of the Philox block of counter [i, 5, e as u32, (e >> 32) as u32] under seed s for sequence i, ties by i (stream tag 5, DESIGN.md § 2.3); step k is batch k mod ⌊n / B⌋ of epoch ⌊k / ⌊n / B⌋⌋, batch b taking positions b × B to (b + 1) × B - 1 of the order, so an incomplete last batch is never used. The HeldOut split is read in stored order, step k taking batch k mod ⌊n / B⌋ (coordinator decision D26, 2026-10-24, `.engineering/waves/bert-1.md`).",
+  "description": "The token sequences of a Dataset under a Tokenizer, the input of masked-language-model batches (epic:bert-from-scratch, \"sequence packing\"). `modelspec data pack --dataset <dir> --tokenizer <file> --seq-len <S> --out <dir>` encodes the documents of each split in order (a document as DatasetSplit.document_count defines it), joins them with `[SEP]` (id 3) between two documents and no `[CLS]`, and cuts the stream into sequences of S consecutive ids with no regard to document boundaries, the partial tail dropped, so no sequence needs padding. It writes `train.tokens`, `heldout.tokens` (PackedSplit), the TrainingDataBinding as `binding.json` and this record as `packed.json` in `<dir>`; two runs on the same inputs write byte-identical output. packed_id is the leading 16 bytes, as a version-8 UUID, of the blake3 hash over the 32-byte blake3 digests of the packed files, Train then HeldOut, and seq_len as 8 little-endian bytes, in that order, so two sequence lengths that cut the same ids give two ids (coordinator decision D29, 2026-10-25, `.engineering/waves/bert-1.md`, amending D26). Data order of a run with seed s and batch size B over the n Train sequences - epoch e visits them ascending by the 64-bit key w1 × 2^32 + w0 of the Philox block of counter [i, 5, e as u32, (e >> 32) as u32] under seed s for sequence i, ties by i (stream tag 5, DESIGN.md § 2.3); step k is batch k mod ⌊n / B⌋ of epoch ⌊k / ⌊n / B⌋⌋, batch b taking positions b × B to (b + 1) × B - 1 of the order, so an incomplete last batch is never used. The HeldOut split is read in stored order, step k taking batch k mod ⌊n / B⌋ (coordinator decision D26, 2026-10-24, `.engineering/waves/bert-1.md`).",
   "x-ess-name": "modelspec.data.PackedDataset",
   "x-ess-kind": "entity",
   "type": "object",
@@ -55,8 +55,8 @@
   "x-ess-provenance": {
     "system": "modelspec",
     "specification_version": "v1",
-    "source_digest": "671a81285f4c6346e829568c7913bba90ed36d773c26a87b9343a4cbb071a1ae",
-    "contract_digest": "slice-sha256/2:bd162f8fbd379c094838a883601e4b31f8950c2ba868ba5285e99c85bb5a711c",
+    "source_digest": "a66c3bf7aeed95100db740416c606f57275d9e60d5734855a28516d2ea94a4a9",
+    "contract_digest": "slice-sha256/2:450a8a86da81e59dddcc3a1fc30db08e05f919177ad5b97d1f64fbb2a3c0b5de",
     "regenerate": "ess generate"
   },
   "$defs": {

@@ -45,6 +45,9 @@ pub enum DataCommand {
     Tokenizer(TokenizerArgs),
     /// Encode both splits of a prepared dataset with a tokenizer into sequences of an exact
     /// length and write them, their binding and their record with the held-out unigram baseline.
+    ///
+    /// The record's packed_id is the version-8 UUID of the blake3 hash over the Train and the
+    /// HeldOut content hashes and the sequence length as 8 little-endian bytes, in that order.
     Pack(PackArgs),
 }
 

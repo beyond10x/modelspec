@@ -499,7 +499,7 @@ pub fn pack(
             state: BindingState::Recorded,
         };
         let packed = PackedDataset {
-            packed_id: uuid_of(id.finalize().as_bytes()),
+            packed_id: uuid_of(id.update(&seq_len.to_le_bytes()).finalize().as_bytes()),
             binding_id: binding_id.clone(),
             seq_len,
             vocabulary_size,
@@ -593,6 +593,18 @@ pub fn load(dir: &Path) -> Result<Packed, PackError> {
         return Err(PackError::new(
             &record_path,
             "not a record of a Train and a HeldOut split of a positive sequence length",
+        ));
+    }
+    // `vocabulary_size > 5` (spec/domains/data.yaml, coordinator decision D29): a batch draws
+    // its random tokens from [5, V), and an `i32` id addresses at most 2^31 tokens.
+    if record.vocabulary_size <= u64::from(SPECIALS) || record.vocabulary_size > 1 << 31 {
+        return Err(PackError::new(
+            &record_path,
+            format!(
+                "vocabulary_size {} is not between {} and 2^31",
+                record.vocabulary_size,
+                SPECIALS + 1
+            ),
         ));
     }
     let mut ids = Vec::new();

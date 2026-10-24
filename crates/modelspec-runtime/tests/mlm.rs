@@ -250,6 +250,36 @@ fn derivation() {
         "another seed, another selection"
     );
 
+    // Every row of a batch of four sequences: row r draws the block of index r (never the
+    // position within its sequence), word 0 selects, word 1 picks the substitution and word 2
+    // the random token.
+    let mut random_rows = 0;
+    for step in 0..64u64 {
+        let b = mlm::mlm_batch(&packed, SplitRole::Train, &policy, seed, step, 4).unwrap();
+        assert_eq!(b.ids.len(), 4 * SEQ_LEN);
+        for r in 0..4 * SEQ_LEN {
+            let [w0, w1, w2, _] = philox4x32_10(
+                [r as u32, 3, step as u32, (step >> 32) as u32],
+                [seed as u32, (seed >> 32) as u32],
+            );
+            let label = b.labels[r];
+            let selected = label >= SPECIALS && uniform(w0) < policy.selection_rate;
+            let id = if !selected {
+                label
+            } else if uniform(w1) < policy.mask_fraction {
+                MASK
+            } else if uniform(w1) < policy.mask_fraction + policy.random_fraction {
+                random_rows += 1;
+                SPECIALS + ((u64::from(w2) * (VOCAB as u64 - 5)) >> 32) as i32
+            } else {
+                label
+            };
+            assert_eq!(b.weights[r] == 1.0, selected, "step {step} row {r}");
+            assert_eq!(b.ids[r], id, "step {step} row {r}");
+        }
+    }
+    assert!(random_rows > 0, "some row takes a random token");
+
     // The held-out split draws on the id k + 2^63.
     for step in 0..64u64 {
         let b = mlm::mlm_batch(&packed, SplitRole::HeldOut, &policy, seed, step, 1).unwrap();
@@ -325,6 +355,10 @@ fn epoch_order() {
     assert_eq!(order(seed, 1, 0), derived(0), "epoch 0 is the tag-5 order");
     assert_eq!(order(seed, 1, 1), derived(1), "epoch 1 is the tag-5 order");
     assert_ne!(derived(0), derived(1), "each epoch has its own order");
+    // Epoch 2^32, reached at step ⌊n / B⌋ · 2^32, reads the epoch's high counter word.
+    let high = order(seed, 1, 1 << 32);
+    assert_eq!(high, derived(1 << 32), "epoch 2^32 is the tag-5 order");
+    assert_ne!(high, order(seed, 1, 0), "epoch 2^32 is not epoch 0");
     assert_eq!(
         mlm::epoch_order(seed, 0, n as u32),
         derived(0).iter().map(|&i| i as u32).collect::<Vec<_>>()
@@ -374,11 +408,18 @@ fn record_hashes_and_refusals() {
     }
     assert_eq!(record.splits[0].role, SplitRole::Train);
     assert_eq!(record.splits[1].role, SplitRole::HeldOut);
+    // packed_id: blake3 over the Train digest, the HeldOut digest and seq_len as 8
+    // little-endian bytes (coordinator decision D29).
+    digests.update(&(SEQ_LEN as u64).to_le_bytes());
     let id = &record.packed_id;
     assert_eq!(&id[14..15], "8", "{id} is a version-8 UUID");
     let hex: String = id.chars().filter(|c| *c != '-').collect();
     let leading = &digests.finalize().to_hex()[..32];
-    assert_eq!(hex[..12], leading[..12], "packed_id over the split digests");
+    assert_eq!(
+        hex[..12],
+        leading[..12],
+        "packed_id over the split digests and seq_len"
+    );
 
     let policy = MaskingPolicy::BERT;
     let train = record.splits[0].sequence_count as usize;
@@ -386,12 +427,50 @@ fn record_hashes_and_refusals() {
     assert!(mlm::mlm_batch(&packed, SplitRole::Train, &policy, 1, 0, train + 1).is_err());
     assert!(mlm::mlm_batch(&packed, SplitRole::Train, &policy, 1, 0, train).is_ok());
 
-    fs::write(dir.join(mlm::TRAIN_TOKENS), [0u8; 4 * SEQ_LEN]).unwrap();
+    // One flipped bit, the length unchanged and every id still in the vocabulary: only the
+    // blake3 check refuses it.
+    let path = dir.join(mlm::TRAIN_TOKENS);
+    let original = fs::read(&path).unwrap();
+    let mut flipped = original.clone();
+    flipped[0] ^= 1;
+    fs::write(&path, &flipped).unwrap();
     let error = mlm::load(&dir)
         .err()
-        .expect("an altered packed file is refused");
+        .expect("a packed file with one flipped bit is refused");
+    let message = error.to_string();
+    assert!(
+        message.contains(mlm::TRAIN_TOKENS) && message.contains("blake3"),
+        "names the file and its hash: {message}"
+    );
+
+    fs::write(&path, [0u8; 4 * SEQ_LEN]).unwrap();
+    let error = mlm::load(&dir)
+        .err()
+        .expect("a shortened packed file is refused");
     assert!(
         error.to_string().contains(mlm::TRAIN_TOKENS),
         "names the file: {error}"
     );
+
+    // A record whose vocabulary_size breaks `vocabulary_size > 5` is refused, naming the field
+    // and the file (coordinator decision D29).
+    fs::write(&path, &original).unwrap();
+    let record_path = dir.join(mlm::PACKED_FILE);
+    let text = fs::read_to_string(&record_path).unwrap();
+    let field = format!("\"vocabulary_size\": {VOCAB}");
+    assert!(text.contains(&field));
+    for size in [5, 0] {
+        let altered = text.replace(&field, &format!("\"vocabulary_size\": {size}"));
+        fs::write(&record_path, altered).unwrap();
+        let message = mlm::load(&dir)
+            .err()
+            .expect("a vocabulary_size below 6 is refused")
+            .to_string();
+        assert!(
+            message.contains("vocabulary_size") && message.contains(mlm::PACKED_FILE),
+            "names the field and the file: {message}"
+        );
+    }
+    fs::write(&record_path, text).unwrap();
+    assert!(mlm::load(&dir).is_ok(), "the restored directory loads");
 }

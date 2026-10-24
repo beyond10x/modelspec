@@ -48,7 +48,7 @@ scope:
   path: ui/src/generated/
 - confidence: cited
   path: website/docs/reference/operators.md
-revision: 3
+revision: 4
 ---
 # Weighted cross-entropy over integer labels for the MLM loss, gradient-checked on the CPU
 
@@ -65,8 +65,11 @@ loss is weighted per position: weight 1 at a selected position, 0 elsewhere.
   `labels: Tensor<i32, [N]>`, `weights: Tensor<f32, [N]>`, result rank 0:
   `sum_n weights[n] * (logsumexp(logits[n]) - logits[n, labels[n]]) / sum_n weights[n]`, the
   log-sum-exp max-subtracted, the sums in ascending `n`. `labels` is the second permitted use of an
-  `i32` tensor (the rule of `story:bert-embedding-lookup`). A weight sum of 0, a negative weight or
-  a label outside `[0, V)` is a `RuntimeError`, exit 1.
+  `i32` tensor (the rule of `story:bert-embedding-lookup`). A weight sum of 0 (a batch in which no position is selected, which `story:bert-mlm-batches`
+  produces with probability `0.85^(non-special positions)`; 71 of 1,000 batches at `S = 16`,
+  `B = 1` in its adversary pass) gives loss 0 and a zero gradient, the batch contributing
+  nothing (coordinator decision D30, 2026-10-25); a negative weight or a label outside `[0, V)`
+  is a `RuntimeError`, exit 1.
 - The gradient with respect to `logits` is an internal op `CrossEntropyGrad(logits, labels,
   weights, g)`, `g * weights[n] * (softmax(logits[n]) - onehot(labels[n])) / sum(weights)`;
   `labels` and `weights` have none.
