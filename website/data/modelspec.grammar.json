@@ -13,6 +13,8 @@
     "add_rows",
     "gelu",
     "xavier_uniform",
+    "zeros",
+    "ones",
     "sgd",
     "cpu",
     "vulkan"

@@ -1,6 +1,6 @@
-// expect E-TYPE-013 3:36 initializer `zeros(...)` is not supported; M0 has `xavier_uniform()`
+// expect E-TYPE-013 3:36 initializer `normal(...)` is not supported; the initializers are `xavier_uniform()`, `zeros()` and `ones()`
 model LinearReg {
-    param w: Tensor<f32, [4, 1]> = zeros();
+    param w: Tensor<f32, [4, 1]> = normal();
 
     fn forward(x: Tensor<f32, [8, 4]>) -> Tensor<f32, [8, 1]> {
         return matmul(x, w);

@@ -598,7 +598,7 @@ mod tests {
             .declare_param("w", TensorType::f32(&[4, 3]), Initializer::XavierUniform)
             .unwrap();
         let bias = b
-            .declare_param("b", TensorType::f32(&[3]), Initializer::XavierUniform)
+            .declare_param("b", TensorType::f32(&[3]), Initializer::Zeros)
             .unwrap();
         let x = b.input("x", TensorType::f32(&[5, 4])).unwrap();
         let w = b.param_read(w).unwrap();

@@ -209,13 +209,14 @@ fn gelu_values_match_the_tanh_form_in_f64() {
     }
 }
 
-/// Between the pinned points too: at every multiple of `1/64` in `[-3, 3]` (385 points, each an
-/// exact `f32`), the `f32` value of `gelu` is within `1e-6` relative of the tanh form in `f64`,
-/// and `GeluGrad(x, 1)` within `1e-6` absolute of its derivative (absolute, because the
-/// derivative crosses 0 near `x = -0.75`, where no relative bound holds; it lies in
-/// `[-0.13, 1.13]` on this range).
+/// At every multiple of `1/64` in `[-3, 3]` (385 points, each an exact `f32`), the `f32` value
+/// of `gelu` is within `1e-6` relative of the tanh form in `f64`, and `GeluGrad(x, 1)` within
+/// `1e-6` absolute of its derivative (absolute, because the derivative crosses 0 near
+/// `x = -0.75`, where no relative bound holds; it lies in `[-0.13, 1.13]` on this range). The
+/// bound is a property of this grid, not of every `f32` in the range: DESIGN.md § 4 states the
+/// largest error over every `f32` in `[-3, -1]`, slightly above `1e-6`.
 #[test]
-fn gelu_values_between_minus_3_and_3_stay_within_1e_6_relative() {
+fn gelu_values_on_the_1_over_64_grid_in_minus_3_to_3_stay_within_1e_6_relative() {
     let points: Vec<f32> = (-192..=192).map(|k| k as f32 / 64.0).collect();
     let n = points.len() as u64;
     let mut b = TensorProgramBuilder::new();
@@ -289,6 +290,38 @@ fn gelu_grad_values_are_the_derivative_of_the_tanh_form_times_g() {
             "GeluGrad({x}, {g}): {got:e}, want {want:e}"
         );
     }
+}
+
+/// In the right tail `s` rounds towards 1 and `1 - s` keeps few correct bits, so `GeluGrad`
+/// takes `r` from its own exponential (DESIGN.md § 4). At `x = 4.625` the `f32` value of
+/// `GeluGrad(x, 1)` is within `2e-7` relative of the derivative in `f64`; `r = 1 - s` is off by
+/// about `1.65e-6` there.
+#[test]
+fn gelu_grad_in_the_right_tail_takes_r_from_its_own_exponential() {
+    let mut b = TensorProgramBuilder::new();
+    let x = b.input("x", TensorType::f32(&[1])).unwrap();
+    let g = b.input("g", TensorType::f32(&[1])).unwrap();
+    let dx = b.gelu_grad(x, g).unwrap();
+    b.output(dx).unwrap();
+    let program = b.finish();
+    let inputs = BTreeMap::from([
+        (
+            "x".to_owned(),
+            HostTensor::new(vec![1], vec![4.625f32]).unwrap(),
+        ),
+        (
+            "g".to_owned(),
+            HostTensor::new(vec![1], vec![1.0f32]).unwrap(),
+        ),
+    ]);
+    let out = evaluate(&program, &inputs, &BTreeMap::new()).unwrap();
+    let want = gelu_derivative_f64(4.625);
+    let got = f64::from(out[0].data()[0]);
+    let error = ((got - want) / want).abs();
+    assert!(
+        error <= 2e-7,
+        "GeluGrad(4.625, 1): {got:e}, want {want:e}, relative error {error:e}"
+    );
 }
 
 /// The name of the GELU gradient case, its seed.

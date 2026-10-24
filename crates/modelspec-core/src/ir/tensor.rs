@@ -216,17 +216,43 @@ pub struct TensorNode {
     pub source_span: Option<SourceSpan>,
 }
 
-/// How a parameter's initial value is drawn (DESIGN.md § 2.3).
+/// How a parameter's initial value is set (DESIGN.md § 2.3).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Initializer {
+    /// Drawn from the parameter stream; a rank-2 parameter only.
     XavierUniform,
+    /// Every element `+0.0`, no draw; a parameter of any rank from 1.
+    Zeros,
+    /// Every element `1.0`, no draw; a parameter of any rank from 1.
+    Ones,
+}
+
+impl Initializer {
+    /// Every initializer, in the order the language documents them.
+    pub const ALL: [Initializer; 3] = [
+        Initializer::XavierUniform,
+        Initializer::Zeros,
+        Initializer::Ones,
+    ];
+
+    /// The initializer whose source name, the name it prints with, is `name`.
+    pub fn from_name(name: &str) -> Option<Initializer> {
+        Self::ALL.into_iter().find(|init| init.name() == name)
+    }
+
+    /// Its source name: `xavier_uniform`, `zeros` or `ones`.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Initializer::XavierUniform => "xavier_uniform",
+            Initializer::Zeros => "zeros",
+            Initializer::Ones => "ones",
+        }
+    }
 }
 
 impl fmt::Display for Initializer {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Initializer::XavierUniform => f.write_str("xavier_uniform"),
-        }
+        f.write_str(self.name())
     }
 }
 

@@ -74,10 +74,36 @@ fn add_rows_with_a_bias_of_h_plus_1_is_e_type_003_at_the_call() {
     );
 }
 
-/// An `x` of rank 1.
+/// An `x` of rank 1: the message states the rank of each operand and names `x`.
 #[test]
 fn add_rows_with_an_x_of_rank_1_is_e_type_004_at_the_call() {
     refused_at("add_rows_rank1_x.mspec", "E-TYPE-004", 5, 16);
+    let (output, _) = modelspec("check", "add_rows_rank1_x.mspec", &[]);
+    let stderr = text(&output.stderr);
+    assert_eq!(
+        stderr.lines().next(),
+        Some(
+            "E-TYPE-004: `add_rows` needs `x` of rank 2 and `b` of rank 1; \
+             `x` has type Tensor<f32, [3]>"
+        ),
+        "{stderr}"
+    );
+}
+
+/// A `b` of shape `[1, H]`: the message names `b`, and does not ask for rank-1 operands.
+#[test]
+fn add_rows_with_a_bias_of_rank_2_is_e_type_004_naming_b() {
+    refused_at("add_rows_bias_rank2.mspec", "E-TYPE-004", 5, 16);
+    let (output, _) = modelspec("check", "add_rows_bias_rank2.mspec", &[]);
+    let stderr = text(&output.stderr);
+    assert_eq!(
+        stderr.lines().next(),
+        Some(
+            "E-TYPE-004: `add_rows` needs `x` of rank 2 and `b` of rank 1; \
+             `b` has type Tensor<f32, [1, 3]>"
+        ),
+        "{stderr}"
+    );
 }
 
 #[test]
@@ -89,10 +115,9 @@ fn dense_gelu_checks_clean() {
     assert_eq!(stderr, "", "a clean check prints nothing");
 }
 
-/// `gelu(add_rows(matmul(v, w), b))` lowers, differentiates and runs on the CPU interpreter: the
-/// run exits 0 and prints a finite loss for step 0 and for its last step. M0 synthetic data
-/// supplies exactly one input and a parameter is rank 2 (`xavier_uniform`), so the fixture's one
-/// input is the bias row `b` and both matmul operands are parameters.
+/// The dense layer `gelu(add_rows(matmul(x, w), b))` with its bias `b: [3] = zeros()` a
+/// parameter (coordinator decision D33) trains on synthetic data on the CPU interpreter: `b`
+/// starts at `[0, 0, 0]`, every loss is finite and the last is below the first.
 #[test]
 fn dense_gelu_trains_on_the_cpu() {
     let (output, _) = modelspec("train", "dense_gelu_train.mspec", &["--backend", "cpu"]);
@@ -102,6 +127,12 @@ fn dense_gelu_trains_on_the_cpu() {
         Some(0),
         "{stdout}\n{}",
         text(&output.stderr)
+    );
+    assert!(
+        stdout
+            .lines()
+            .any(|line| line == "init @Dense.b: Tensor<f32, [3]> = [0, 0, 0]"),
+        "the zeros() bias starts at 0:\n{stdout}"
     );
     let losses: Vec<(u64, f32)> = stdout
         .lines()
@@ -113,11 +144,40 @@ fn dense_gelu_trains_on_the_cpu() {
         .collect();
     let steps: Vec<u64> = losses.iter().map(|&(step, _)| step).collect();
     assert_eq!(steps.first(), Some(&0), "{stdout}");
-    assert_eq!(steps.last(), Some(&3), "{stdout}");
-    assert!(
-        losses
-            .iter()
-            .all(|&(_, loss)| loss.is_finite() && loss > 0.0),
-        "{stdout}"
+    assert_eq!(steps.last(), Some(&20), "{stdout}");
+    assert!(losses.iter().all(|&(_, loss)| loss.is_finite()), "{stdout}");
+    let (first, last) = (losses[0].1, losses[losses.len() - 1].1);
+    assert!(last < first, "loss {first} -> {last}:\n{stdout}");
+    let param = stdout
+        .lines()
+        .find(|line| line.starts_with("param @Dense.b: "))
+        .unwrap_or_else(|| panic!("no final line for b:\n{stdout}"));
+    assert_ne!(
+        param, "param @Dense.b: Tensor<f32, [3]> = [0, 0, 0]",
+        "the bias was trained"
     );
+}
+
+/// The training program of the fixture differentiates the bias: its gradient is the
+/// `SumRows` of the adjoint of `add_rows`, and `ir` prints each parameter's initializer.
+#[test]
+fn the_training_ir_holds_the_bias_gradient_and_the_initializer_names() {
+    let (output, _) = modelspec("ir", "dense_gelu_train.mspec", &["--stage", "training"]);
+    let stdout = text(&output.stdout);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{stdout}\n{}",
+        text(&output.stderr)
+    );
+    assert!(stdout.contains("SumRows"), "{stdout}");
+    for line in [
+        "param @Dense.w: Tensor<f32, [4, 3]> = xavier_uniform",
+        "param @Dense.b: Tensor<f32, [3]> = zeros",
+    ] {
+        assert!(
+            stdout.lines().any(|l| l.starts_with(line)),
+            "{line}:\n{stdout}"
+        );
+    }
 }

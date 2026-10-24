@@ -1,19 +1,19 @@
 model Dense {
-    param v: Tensor<f32, [8, 4]> = xavier_uniform();
     param w: Tensor<f32, [4, 3]> = xavier_uniform();
+    param b: Tensor<f32, [3]> = zeros();
 
-    fn forward(b: Tensor<f32, [3]>) -> Tensor<f32, [8, 3]> {
-        return gelu(add_rows(matmul(v, w), b));
+    fn forward(x: Tensor<f32, [8, 4]>) -> Tensor<f32, [8, 3]> {
+        return gelu(add_rows(matmul(x, w), b));
     }
 }
 
 train Fit {
     model = Dense;
-    input b: Tensor<f32, [3]>;
+    input x: Tensor<f32, [8, 4]>;
     target y: Tensor<f32, [8, 3]>;
-    loss = mse(model.forward(b), y);
+    loss = mse(model.forward(x), y);
     optimizer = sgd(lr = 0.1);
-    steps = 3;
+    steps = 20;
     seed = 7;
     device = cpu;
 }
