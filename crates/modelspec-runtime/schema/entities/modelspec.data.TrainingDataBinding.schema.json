@@ -1,0 +1,131 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TrainingDataBinding",
+  "description": "What a masked-language-model run trains on, the record a run keeps of its corpus, tokenizer and masking policy - a Dataset, a Tokenizer, the sequence length and a MaskingPolicy. Masking is drawn per step from the run seed on stream tag 3 (MaskingPolicy, DESIGN.md § 2.3), never fixed when the corpus is prepared or packed, so the binding holds the policy and no mask. binding_id is the leading 16 bytes, as a version-8 UUID, of the blake3 hash over dataset_id, tokenizer_id, seq_len and the policy's selection_rate, mask_fraction, random_fraction and keep_fraction, in that order, each UUID as its 16 bytes, seq_len as a little-endian u64 and each rate as its little-endian IEEE binary64 bits. `modelspec data pack` writes it as `binding.json` beside its PackedDataset, with BERT's policy; modelspec.training.TrainingRun references it through data_binding_id, which story:bert-train-data-binding writes (coordinator decision D26, 2026-10-24, `.engineering/waves/bert-1.md`).",
+  "x-ess-name": "modelspec.data.TrainingDataBinding",
+  "x-ess-kind": "entity",
+  "type": "object",
+  "properties": {
+    "binding_id": {
+      "$ref": "#/$defs/modelspec.data.TrainingDataBindingId"
+    },
+    "dataset_id": {
+      "$ref": "#/$defs/modelspec.data.DatasetId",
+      "x-ess-relation": {
+        "name": "dataset",
+        "kind": "references",
+        "source": "modelspec.data.TrainingDataBinding",
+        "target": "modelspec.data.Dataset",
+        "cardinality": "one",
+        "via": "dataset_id"
+      }
+    },
+    "tokenizer_id": {
+      "$ref": "#/$defs/modelspec.data.TokenizerId",
+      "x-ess-relation": {
+        "name": "tokenizer",
+        "kind": "references",
+        "source": "modelspec.data.TrainingDataBinding",
+        "target": "modelspec.data.Tokenizer",
+        "cardinality": "one",
+        "via": "tokenizer_id"
+      }
+    },
+    "seq_len": {
+      "description": "The number of tokens of every sequence, S (coordinator decision D26, 2026-10-24, `.engineering/waves/bert-1.md`).",
+      "type": "integer"
+    },
+    "masking_policy": {
+      "$ref": "#/$defs/modelspec.data.MaskingPolicy"
+    },
+    "state": {
+      "$ref": "#/$defs/modelspec.data.TrainingDataBinding.State"
+    }
+  },
+  "required": [
+    "binding_id",
+    "dataset_id",
+    "tokenizer_id",
+    "seq_len",
+    "masking_policy",
+    "state"
+  ],
+  "additionalProperties": false,
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "671a81285f4c6346e829568c7913bba90ed36d773c26a87b9343a4cbb071a1ae",
+    "contract_digest": "slice-sha256/2:cbaadf280ae4c0c2c7606090db902f48767bb6999474eb354e3efc6493c5e885",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.data.DatasetId": {
+      "title": "DatasetId",
+      "x-ess-name": "modelspec.data.DatasetId",
+      "x-ess-kind": "newtype",
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    },
+    "modelspec.data.MaskingPolicy": {
+      "title": "MaskingPolicy",
+      "description": "The masked-language-modelling policy; of the selected tokens a fraction is replaced by the vocabulary's mask token, a fraction by a random token and the rest kept, 80/10/10 (epic:bert-from-scratch). The three fractions sum to 1, which ESS does not state here. Draws use the Philox key/counter derivation (DESIGN.md § 2.3) with stream tag 3, the next after the tags 0 to 2 of DESIGN.md § 2.3, keyed by the run seed and drawn anew at every step (coordinator decision D26, 2026-10-24, `.engineering/waves/bert-1.md`). Row n of the batch of step k, flattened to N = B × S rows, takes the block of counter [n, 3, id as u32, (id >> 32) as u32], where id is k for the Train split and k + 2^63 for the HeldOut split. The row is selected when its token is not one of the five special tokens and the uniform draw (w + 0.5) / 2^32 of word 0 is below selection_rate; a selected row becomes `[MASK]` when the uniform draw of word 1 is below mask_fraction, a random token when it is below mask_fraction + random_fraction, and keeps its token otherwise. The random token is 5 + ⌊w2 × (V − 5) / 2^32⌋ for word 2 w2 and vocabulary size V, so it is never a special token. The values are BERT's (Devlin, Chang, Lee, Toutanova 2018, § 3.1) — selection_rate 0.15, mask_fraction 0.8, random_fraction 0.1, keep_fraction 0.1 (coordinator decision D19, 2026-10-24, `.engineering/waves/bert-1.md`).",
+      "x-ess-name": "modelspec.data.MaskingPolicy",
+      "x-ess-kind": "struct",
+      "type": "object",
+      "properties": {
+        "selection_rate": {
+          "type": "number"
+        },
+        "mask_fraction": {
+          "type": "number"
+        },
+        "random_fraction": {
+          "type": "number"
+        },
+        "keep_fraction": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "selection_rate",
+        "mask_fraction",
+        "random_fraction",
+        "keep_fraction"
+      ],
+      "additionalProperties": false,
+      "x-ess-invariants": [
+        "selection_rate > 0",
+        "selection_rate <= 1",
+        "mask_fraction >= 0",
+        "random_fraction >= 0",
+        "keep_fraction >= 0"
+      ]
+    },
+    "modelspec.data.TokenizerId": {
+      "title": "TokenizerId",
+      "x-ess-name": "modelspec.data.TokenizerId",
+      "x-ess-kind": "newtype",
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    },
+    "modelspec.data.TrainingDataBinding.State": {
+      "title": "State",
+      "x-ess-name": "modelspec.data.TrainingDataBinding.State",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "Recorded"
+      ]
+    },
+    "modelspec.data.TrainingDataBindingId": {
+      "title": "TrainingDataBindingId",
+      "x-ess-name": "modelspec.data.TrainingDataBindingId",
+      "x-ess-kind": "newtype",
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    }
+  }
+}

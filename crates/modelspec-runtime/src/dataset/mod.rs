@@ -7,15 +7,19 @@
 //!
 //! [`tokenizer`] trains the WordPiece tokenizer of a run on the `Train` split of a prepared
 //! dataset and encodes and decodes text with it (story:bert-tokenizer).
+//!
+//! [`mlm`] packs both splits of a prepared dataset into token sequences with a tokenizer and
+//! draws the masked-language-model batch of each step from them (story:bert-mlm-batches).
 
 mod corpus;
+pub mod mlm;
 pub mod tokenizer;
 
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 pub use corpus::is_article_heading;
 
@@ -23,7 +27,7 @@ pub use corpus::is_article_heading;
 pub const RECORD_FILE: &str = "dataset.json";
 
 /// What a split is used for (`modelspec.data.SplitRole`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SplitRole {
     /// The split a run trains on.
     Train,
@@ -53,7 +57,7 @@ impl SplitRole {
 }
 
 /// One split of a corpus (`modelspec.data.DatasetSplit`).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DatasetSplit {
     pub role: SplitRole,
     /// blake3 of the split file's bytes, lowercase hex.
@@ -63,13 +67,13 @@ pub struct DatasetSplit {
 }
 
 /// The lifecycle state of a [`Dataset`] (`modelspec.data.Dataset.State`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DatasetState {
     Recorded,
 }
 
 /// The record of a prepared corpus (`modelspec.data.Dataset`), written as [`RECORD_FILE`].
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Dataset {
     /// The leading 16 bytes, as a version-8 UUID, of blake3 over the splits' digests in
     /// [`SplitRole::ALL`] order.

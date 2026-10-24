@@ -13,7 +13,7 @@ use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::{RECORD_FILE, SplitRole, partial_path, uuid_of};
 
@@ -37,14 +37,14 @@ pub const MAX_ALPHABET: usize = 1000;
 pub const MAX_WORD_CHARS: usize = 100;
 
 /// The tokenization algorithm (`modelspec.data.TokenizerKind`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TokenizerKind {
     WordPiece,
 }
 
 /// The tokens a tokenizer maps text to (`modelspec.data.Vocabulary`); a token's id is its
 /// position in `tokens`.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Vocabulary {
     pub tokens: Vec<String>,
     pub mask_token_id: u32,
@@ -55,13 +55,13 @@ pub struct Vocabulary {
 }
 
 /// The lifecycle state of a [`Tokenizer`] (`modelspec.data.Tokenizer.State`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TokenizerState {
     Recorded,
 }
 
 /// The record of a trained tokenizer (`modelspec.data.Tokenizer`).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Tokenizer {
     /// The leading 16 bytes, as a version-8 UUID, of blake3 over the tokens in id order, each
     /// followed by a newline.

@@ -11,12 +11,21 @@
 //! record to `<file>` (`modelspec.data.Tokenizer`; story:bert-tokenizer). It prints the tokenizer
 //! id and the token count. A path that cannot be read or written, or a split too small to yield
 //! `n` tokens, prints `modelspec data tokenizer <path>: <error>` and exits 1.
+//!
+//! `data pack --dataset <dir> --tokenizer <file> --seq-len <S> --out <dir>` encodes both splits
+//! of such a dataset with such a tokenizer, joins the documents with `[SEP]`, cuts them into
+//! sequences of exactly `S` tokens and writes `train.tokens`, `heldout.tokens`, `binding.json`
+//! and `packed.json` into `<dir>` (`modelspec.data.PackedDataset` and `TrainingDataBinding`;
+//! story:bert-mlm-batches). It prints the packed id, one line per split, the binding id and the
+//! held-out unigram baseline. A path that cannot be read or written, a split whose hash differs
+//! from its record, or a split shorter than one sequence prints
+//! `modelspec data pack <path>: <error>` and exits 1.
 
 use std::io::Write;
 use std::path::PathBuf;
 
 use clap::Subcommand;
-use modelspec_runtime::dataset::{self, tokenizer};
+use modelspec_runtime::dataset::{self, mlm, tokenizer};
 
 /// Arguments of `modelspec data`.
 #[derive(clap::Args)]
@@ -34,6 +43,27 @@ pub enum DataCommand {
     /// Train the WordPiece tokenizer on the Train split of a prepared dataset to an exact
     /// vocabulary size and write its record.
     Tokenizer(TokenizerArgs),
+    /// Encode both splits of a prepared dataset with a tokenizer into sequences of an exact
+    /// length and write them, their binding and their record with the held-out unigram baseline.
+    Pack(PackArgs),
+}
+
+/// Arguments of `modelspec data pack`.
+#[derive(clap::Args)]
+pub struct PackArgs {
+    /// The dataset directory `data prepare` wrote.
+    #[arg(long, value_name = "DIR")]
+    pub dataset: PathBuf,
+    /// The tokenizer record `data tokenizer` wrote.
+    #[arg(long, value_name = "FILE")]
+    pub tokenizer: PathBuf,
+    /// The number of tokens of every sequence; the partial tail of each split is dropped.
+    #[arg(long, value_name = "S", value_parser = clap::value_parser!(u64).range(1..))]
+    pub seq_len: u64,
+    /// The directory to write train.tokens, heldout.tokens, binding.json and packed.json into;
+    /// created when missing.
+    #[arg(long, value_name = "DIR")]
+    pub out: PathBuf,
 }
 
 /// Arguments of `modelspec data tokenizer`.
@@ -66,6 +96,41 @@ pub fn run(args: Args, stdout: &mut dyn Write, stderr: &mut dyn Write) -> u8 {
     match args.command {
         DataCommand::Prepare(args) => prepare(args, stdout, stderr),
         DataCommand::Tokenizer(args) => train_tokenizer(args, stdout, stderr),
+        DataCommand::Pack(args) => pack(args, stdout, stderr),
+    }
+}
+
+fn pack(args: PackArgs, stdout: &mut dyn Write, stderr: &mut dyn Write) -> u8 {
+    match mlm::pack(&args.dataset, &args.tokenizer, args.seq_len, &args.out) {
+        Ok((binding, packed)) => {
+            let _ = writeln!(
+                stdout,
+                "packed {} (seq_len {})",
+                packed.packed_id, packed.seq_len
+            );
+            for split in &packed.splits {
+                let _ = writeln!(
+                    stdout,
+                    "{:?} {} sequences, blake3 {}",
+                    split.role, split.sequence_count, split.content_hash
+                );
+            }
+            let _ = writeln!(
+                stdout,
+                "binding {} (dataset {}, tokenizer {})",
+                binding.binding_id, binding.dataset_id, binding.tokenizer_id
+            );
+            let _ = writeln!(
+                stdout,
+                "heldout unigram baseline {} nats",
+                packed.heldout_unigram_baseline_nats
+            );
+            crate::EXIT_SUCCESS
+        }
+        Err(error) => {
+            let _ = writeln!(stderr, "modelspec data pack {error}");
+            crate::EXIT_FAILURE
+        }
     }
 }
 

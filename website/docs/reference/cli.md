@@ -30,6 +30,7 @@ Generated from the clap definition of the `modelspec` command line in [`crates/m
 | [`modelspec data`](#modelspec-data) | Prepare the training data of a masked-language-model run |
 | [`modelspec data prepare`](#modelspec-data-prepare) | Copy a WikiText-103 raw release's wiki.train.raw and wiki.valid.raw into the Train and HeldOut splits and write their record, dataset.json |
 | [`modelspec data tokenizer`](#modelspec-data-tokenizer) | Train the WordPiece tokenizer on the Train split of a prepared dataset to an exact vocabulary size and write its record |
+| [`modelspec data pack`](#modelspec-data-pack) | Encode both splits of a prepared dataset with a tokenizer into sequences of an exact length and write them, their binding and their record with the held-out unigram baseline |
 | [`modelspec infer`](#modelspec-infer) | Run the forward program of a `.mspec` model with the parameters of a checkpoint |
 | [`modelspec inspect-device`](#modelspec-inspect-device) | Print the profile and negotiation verdict of each Vulkan physical device |
 | [`modelspec ir`](#modelspec-ir) | Print the IR of a `.mspec` file at a stage |
@@ -104,6 +105,23 @@ Every argument is required and has no default.
 | `--dataset <DIR>` | The dataset directory `data prepare` wrote; only its train.raw is read. |
 | `--vocab-size <N>` | The number of tokens of the vocabulary, the five special tokens included. |
 | `--out <FILE>` | The file to write the tokenizer record to, as JSON. |
+
+## `modelspec data pack`
+
+Encode both splits of a prepared dataset with a tokenizer into sequences of an exact length and write them, their binding and their record with the held-out unigram baseline
+
+```text
+Usage: modelspec data pack --dataset <DIR> --tokenizer <FILE> --seq-len <S> --out <DIR>
+```
+
+Every argument is required and has no default.
+
+| Argument | Meaning |
+|---|---|
+| `--dataset <DIR>` | The dataset directory `data prepare` wrote. |
+| `--tokenizer <FILE>` | The tokenizer record `data tokenizer` wrote. |
+| `--seq-len <S>` | The number of tokens of every sequence; the partial tail of each split is dropped. |
+| `--out <DIR>` | The directory to write train.tokens, heldout.tokens, binding.json and packed.json into; created when missing. |
 
 ## `modelspec infer`
 

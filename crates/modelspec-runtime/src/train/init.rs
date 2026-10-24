@@ -38,6 +38,11 @@ pub enum Stream {
     Teacher,
     /// M0 synthetic data inputs.
     Data,
+    /// Masked-language-model masking, drawn per step (`dataset::mlm`; coordinator decision D26).
+    Masking,
+    /// The epoch order of packed `Train` sequences (`dataset::mlm`; coordinator decision D26).
+    /// Tag 4, between this and [`Stream::Masking`], is reserved for dropout.
+    DataOrder,
 }
 
 impl Stream {
@@ -47,6 +52,8 @@ impl Stream {
             Stream::Init => 0,
             Stream::Teacher => 1,
             Stream::Data => 2,
+            Stream::Masking => 3,
+            Stream::DataOrder => 5,
         }
     }
 }

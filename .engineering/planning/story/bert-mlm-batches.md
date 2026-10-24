@@ -2,14 +2,13 @@
 format: aep.planning-md/3
 id: story:bert-mlm-batches
 kind: story
-status: draft
+status: active
 title: Pack token sequences and draw 80/10/10 MLM batches from Philox
 summary: Adds modelspec data pack and a pure mlm_batch function with seeded data order and the held-out unigram baseline; settles the MaskingPolicy and run-record markers.
 relations:
 - decomposes: epic:bert-from-scratch
 - serves: vision:modelspec
 - depends_on: story:bert-tokenizer
-- depends_on: story:bert-adamw-warmup
 scope:
 - confidence: cited
   path: AGENTS.md
@@ -37,7 +36,10 @@ scope:
   path: spec/domains/training.yaml
 - confidence: cited
   path: website/docs/reference/cli.md
-revision: 4
+revision: 6
+transitions:
+- {from: "draft", to: "proposed", at: "2026-10-24T21:36:58Z", actor: "human:timo", revision: 5}
+- {from: "proposed", to: "active", at: "2026-10-24T21:36:58Z", actor: "human:timo", revision: 6}
 ---
 # Pack token sequences and draw 80/10/10 MLM batches from Philox
 

@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Dataset",
-  "description": "The pre-training corpus, a small public one, and its splits (epic:bert-from-scratch \"corpus/dataset\"). Its data order in a run is deterministic from the run seed (DESIGN.md § 2.3). The corpus is WikiText-103 in its raw (non-tokenized) release `wikitext-103-raw-v1` (Merity, Xiong, Bradbury, Socher 2016, \"Pointer Sentinel Mixture Models\"), licensed CC BY-SA 3.0. The operator obtains the release's files `wiki.train.raw`, `wiki.valid.raw` and `wiki.test.raw` and passes their directory to `modelspec data prepare <corpus-dir> --out <dir>`, which reads only local files and writes the splits and this record as `dataset.json` in `<dir>`. A Dataset holds raw text, its splits being files of documents identified by content. Packed token sequences are a later entity, written by story:bert-mlm-batches, that references a Dataset and a Tokenizer, so a Dataset has no relation to Tokenizer and a tokenizer change does not rewrite the splits. dataset_id is the leading 16 bytes, as a version-8 UUID, of the blake3 hash over the 32-byte blake3 digests of the splits, Train then HeldOut. name is the file name of the corpus directory. Two runs on the same files write byte-identical output (coordinator decision D19, 2026-10-24, `.engineering/waves/bert-1.md`).",
+  "description": "The pre-training corpus, a small public one, and its splits (epic:bert-from-scratch \"corpus/dataset\"). Its data order in a run is deterministic from the run seed (DESIGN.md § 2.3). The corpus is WikiText-103 in its raw (non-tokenized) release `wikitext-103-raw-v1` (Merity, Xiong, Bradbury, Socher 2016, \"Pointer Sentinel Mixture Models\"), licensed CC BY-SA 3.0. The operator obtains the release's files `wiki.train.raw`, `wiki.valid.raw` and `wiki.test.raw` and passes their directory to `modelspec data prepare <corpus-dir> --out <dir>`, which reads only local files and writes the splits and this record as `dataset.json` in `<dir>`. A Dataset holds raw text, its splits being files of documents identified by content. Packed token sequences are a later entity, PackedDataset, written by story:bert-mlm-batches, that references a Dataset and a Tokenizer through its TrainingDataBinding, so a Dataset has no relation to Tokenizer and a tokenizer change does not rewrite the splits. dataset_id is the leading 16 bytes, as a version-8 UUID, of the blake3 hash over the 32-byte blake3 digests of the splits, Train then HeldOut. name is the file name of the corpus directory. Two runs on the same files write byte-identical output (coordinator decision D19, 2026-10-24, `.engineering/waves/bert-1.md`).",
   "x-ess-name": "modelspec.data.Dataset",
   "x-ess-kind": "entity",
   "type": "object",
@@ -32,8 +32,8 @@
   "x-ess-provenance": {
     "system": "modelspec",
     "specification_version": "v1",
-    "source_digest": "e21d7f27dcedc3d15da67f289b036202cf0168d502b1c42e60519b3ebaa0e567",
-    "contract_digest": "slice-sha256/2:046cc8cf080ac74e8a72d46c884f30d851328ab873cd12ea2a36ef2413e15bc8",
+    "source_digest": "671a81285f4c6346e829568c7913bba90ed36d773c26a87b9343a4cbb071a1ae",
+    "contract_digest": "slice-sha256/2:c9e851287a52f490d57913428bb4f1ec26e4a01424def97dd769fa7eaed43269",
     "regenerate": "ess generate"
   },
   "$defs": {

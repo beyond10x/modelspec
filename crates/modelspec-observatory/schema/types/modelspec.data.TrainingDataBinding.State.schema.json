@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/modelspec.data.TrainingDataBinding.State",
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "671a81285f4c6346e829568c7913bba90ed36d773c26a87b9343a4cbb071a1ae",
+    "contract_digest": "slice-sha256/2:5a49da611e2e824bfff8fb58a43247966136f2a165ba5d56c6c2dfd717dd7615",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.data.TrainingDataBinding.State": {
+      "title": "State",
+      "x-ess-name": "modelspec.data.TrainingDataBinding.State",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "Recorded"
+      ]
+    }
+  }
+}

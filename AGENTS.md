@@ -14,7 +14,7 @@ A Rust compiler and runtime for `.mspec` tensor-program specifications. Humans s
 Milestone M0 implemented (DESIGN.md revision 0.6, § 1 and § 11, iteration 1; wave `m0` closed);
 M1 (`epic:m1-vulkan-execution`) is in progress, latest release 0.9.0. A Cargo workspace of five crates: `modelspec-core`
 (parser, checker, Tensor IR, autodiff, lowering, DCE; no Vulkan), `modelspec-runtime` (CPU oracle,
-SGD training and the corpus preparation and WordPiece tokenizer `dataset`; the `vulkan` feature holds Vulkan device discovery, negotiation, SPIR-V
+SGD training and the corpus preparation, WordPiece tokenizer and MLM batch packing `dataset`; the `vulkan` feature holds Vulkan device discovery, negotiation, SPIR-V
 emission and the training runner `vulkan::runner` through `ash` and `rspirv`; the JSON Schema of
 the records it writes under `schema/` is `ess generate` output), `modelspec-observatory` (the typed
 `RunEvent`s of a run and their Server-Sent Events stream; its JSON Schema under `schema/` is
@@ -41,6 +41,14 @@ text of `crates/modelspec-runtime/tests/fixtures/corpus/`, never corpus text.
 `Tokenizer` record (`spec/domains/data.yaml`, coordinator decision D23); `dataset::tokenizer`'s
 `Codec::encode` and `Codec::decode` are the library calls of later data steps. Its tests also use
 `crates/modelspec-runtime/tests/fixtures/corpus-tokenizer/`, original text too.
+`data pack --dataset <dir> --tokenizer <file> --seq-len <S> --out <dir>` joins the documents of
+both splits with `[SEP]`, cuts them into sequences of exactly `S` tokens and writes
+`train.tokens`, `heldout.tokens`, the `TrainingDataBinding` `binding.json` and the `PackedDataset`
+`packed.json` with the held-out unigram baseline (`spec/domains/data.yaml`, coordinator decision
+D26); `dataset::mlm::mlm_batch` draws the 80/10/10 batch of a step from them, masking on Philox
+stream tag 3 and the epoch order on tag 5 (DESIGN.md § 2.3). Its tests are
+`cargo test -p modelspec-runtime --test mlm` and `cargo test -p modelspec-cli --test data_pack`,
+on the `corpus-tokenizer` fixture.
 CI: `check.yml` runs `task ci`; `shared-gates.yml` runs the
 common source gates; `pages.yml` and `b10x-docs-site.yml` build and publish the documentation site.
 
