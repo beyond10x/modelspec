@@ -73,7 +73,7 @@
       }
     },
     "buffers": {
-      "description": "The size in bytes of each plan buffer, indexed by BufferView.buffer; both plans and every bound view share them (DESIGN.md § 3.1 resources, § 7.1). In M1 each stored value has its own buffer, with four exceptions. An SGD update writes its parameter's buffer in place, a compile-time scalar folded into its readers' immediates has no buffer, the lr * g product of an update fused into one sgd_update kernel has no buffer, and a matmul pre-activation that no op but its ReLU epilogue reads, and that is not the loss or the prediction, has no buffer (DESIGN.md § 3.1); no data, loss or prediction view lies in a parameter buffer. No buffer exceeds 4294967295 bytes, the u32 range of a storage buffer binding.",
+      "description": "The size in bytes of each plan buffer, indexed by BufferView.buffer; both plans and every bound view share them (DESIGN.md § 3.1 resources, § 7.1). In M1 each stored value has its own buffer, with five exceptions. An SGD update writes its parameter's buffer in place, a compile-time scalar folded into its readers' immediates has no buffer, the lr * g product of an update fused into one sgd_update kernel has no buffer, a matmul pre-activation that no op but its ReLU epilogue reads, and that is not the loss or the prediction, has no buffer, and a transpose that no op but matmuls reads, that is not the loss or the prediction, and whose operand is not a parameter updated before one of those matmuls, has no buffer, each matmul reading its operand in place (DESIGN.md § 3.1); no data, loss or prediction view lies in a parameter buffer. No buffer exceeds 4294967295 bytes, the u32 range of a storage buffer binding.",
       "type": "array",
       "items": {
         "type": "integer"
@@ -115,8 +115,8 @@
   "x-ess-provenance": {
     "system": "modelspec",
     "specification_version": "v1",
-    "source_digest": "164665e925ba9a7bb5fbe1764f9ee0f8a2339c58f0c3fd86f01294b3de8c4cb2",
-    "contract_digest": "slice-sha256/2:e9ab9ee4962be43ec69976e6ae689faddf46ffd408d9b4145b2e539f8abba7d6",
+    "source_digest": "662643c627adbc837732a4f54a528ea8ea9dacf96ebd12278c0251543695a4c3",
+    "contract_digest": "slice-sha256/2:f3bf79c00ab84632d53b4fdf6e11f0e3509c3bc25584bbcdfb5c29cab4b0375f",
     "regenerate": "ess generate"
   },
   "$defs": {

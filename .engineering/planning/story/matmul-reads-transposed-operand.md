@@ -128,7 +128,7 @@ scope:
   path: spec/domains/artifact.yaml
 - confidence: cited
   path: website/docs/guides/inspect-a-run.md
-revision: 7
+revision: 8
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-24T13:20:29Z", actor: "human:timo", revision: 3}
 - {from: "proposed", to: "active", at: "2026-10-24T13:20:29Z", actor: "human:timo", revision: 4}
@@ -253,3 +253,13 @@ element keeps its order: one invocation, ascending `k` from the `k = 0` product,
 - `spec/domains/artifact.yaml`
 - `website/docs/guides/inspect-a-run.md`
 
+
+
+## Closing note (2026-10-24, coordinator)
+
+The `test_result` recorded at 15:49:26Z names "8d58780 task ci exit 0"; that run exited 201 at
+`schema-check` (the spec summary change in `spec/domains/artifact.yaml` changed the projection's
+source digest and every schema file needed regeneration). The record is wrong and stays in the
+history. The regeneration is the next commit on the branch; `task ci` steps 1 to `docs-check`
+passed in that run (237 suites ok) and `schema-check`, `ui-types-check` and `ui-browser` passed
+on the regenerated tree; the `test_result` recorded after this note names that run.
