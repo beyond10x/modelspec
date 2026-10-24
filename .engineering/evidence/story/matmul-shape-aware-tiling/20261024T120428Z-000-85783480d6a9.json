@@ -1,0 +1,13 @@
+{
+  "at": "2026-10-24T12:04:28Z",
+  "actor": "human:timo",
+  "artifact": "story:matmul-shape-aware-tiling",
+  "kind": "story",
+  "revision": 12,
+  "change": {
+    "change": "evidence",
+    "kind": "test_result",
+    "source": "task ci",
+    "reference": "impl/matmul-shape-aware-tiling c43b409 task ci exit 0, 215 test result: ok"
+  }
+}

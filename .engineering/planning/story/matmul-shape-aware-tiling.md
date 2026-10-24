@@ -2,27 +2,176 @@
 format: aep.planning-md/3
 id: story:matmul-shape-aware-tiling
 kind: story
-status: active
+status: implemented
 title: Matmul tiling chosen by shape, deterministic
 relations:
 - depends_on: story:profile-begin-stamp-after-barrier
 - blocks: story:weight-grad-matmul-structural
 - serves: vision:modelspec
 scope:
-- confidence: inferred
+- confidence: cited
   path: DESIGN.md
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-tiling/after-profile-b8192-h4096.txt
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-tiling/after-profile-mnist.txt
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-tiling/after-sweep.jsonl
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-tiling/baseline-profile-b8192-h4096.txt
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-tiling/baseline-profile-mnist.txt
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-tiling/baseline-sweep.jsonl
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-tiling/candidates/prof-A-sweep_b1000_h1024.txt
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-tiling/candidates/prof-A-sweep_b1000_h4096.txt
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-tiling/candidates/prof-A-sweep_b8192_h1024.txt
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-tiling/candidates/prof-A-sweep_b8192_h256.txt
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-tiling/candidates/prof-A-sweep_b8192_h4096.txt
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-tiling/candidates/prof-A-sweep_b8192_h64.txt
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-tiling/candidates/prof-B-sweep_b1000_h1024.txt
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-tiling/candidates/prof-B-sweep_b1000_h4096.txt
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-tiling/candidates/prof-B-sweep_b8192_h1024.txt
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-tiling/candidates/prof-B-sweep_b8192_h256.txt
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-tiling/candidates/prof-B-sweep_b8192_h4096.txt
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-tiling/candidates/prof-B-sweep_b8192_h64.txt
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-tiling/candidates/prof-C-sweep_b1000_h1024.txt
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-tiling/candidates/prof-C-sweep_b1000_h4096.txt
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-tiling/candidates/prof-C-sweep_b8192_h1024.txt
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-tiling/candidates/prof-C-sweep_b8192_h256.txt
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-tiling/candidates/prof-C-sweep_b8192_h4096.txt
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-tiling/candidates/prof-C-sweep_b8192_h64.txt
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-tiling/candidates/prof-M1-sweep_b1000_h1024.txt
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-tiling/candidates/prof-M1-sweep_b1000_h4096.txt
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-tiling/candidates/prof-M1-sweep_b8192_h1024.txt
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-tiling/candidates/prof-M1-sweep_b8192_h256.txt
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-tiling/candidates/prof-M1-sweep_b8192_h4096.txt
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-tiling/candidates/prof-M1-sweep_b8192_h64.txt
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-tiling/candidates/prof-M2-sweep_b1000_h1024.txt
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-tiling/candidates/prof-M2-sweep_b1000_h4096.txt
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-tiling/candidates/prof-M2-sweep_b8192_h1024.txt
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-tiling/candidates/prof-M2-sweep_b8192_h256.txt
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-tiling/candidates/prof-M2-sweep_b8192_h4096.txt
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-tiling/candidates/prof-M2-sweep_b8192_h64.txt
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-tiling/candidates/prof-b4x8-sweep_b8192_h4096.txt
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-tiling/candidates/prof-c2-sweep_b8192_h1024.txt
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-tiling/candidates/prof-c2-sweep_b8192_h4096.txt
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-tiling/candidates/prof-c3e-sweep_b8192_h4096.txt
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-tiling/candidates/prof-c64x128-sweep_b8192_h4096.txt
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-tiling/candidates/prof-c64x128a2-sweep_b8192_h4096.txt
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-tiling/candidates/prof-c64x64x8a2-sweep_b8192_h4096.txt
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-tiling/candidates/prof-contig64x128-sweep_b8192_h4096.txt
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-tiling/candidates/prof-d128x64-sweep_b8192_h4096.txt
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-tiling/candidates/prof-pB-probe_b1024_i8192_h4096.txt
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-tiling/candidates/prof-pC-probe_b1024_i8192_h4096.txt
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-tiling/candidates/prof-pad64x128-sweep_b8192_h4096.txt
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-tiling/candidates/prof-qB-probe_b8192_i1024_h4096.txt
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-tiling/candidates/prof-qB-probe_b8192_i832_h4096.txt
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-tiling/candidates/prof-qC-probe_b8192_i1024_h4096.txt
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-tiling/candidates/prof-qC-probe_b8192_i832_h4096.txt
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-tiling/candidates/prof-unpad64x128-sweep_b8192_h4096.txt
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-tiling/candidates/rule-A.log
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-tiling/candidates/rule-B.log
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-tiling/candidates/rule-C.log
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-tiling/candidates/rule-M1.log
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-tiling/candidates/rule-M2.log
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-tiling/candidates/sweep-M1.jsonl
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-tiling/candidates/sweep-M2.jsonl
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-tiling/padded-strides-mnist.txt
+- confidence: cited
+  path: crates/modelspec-cli/tests/golden/linear_regression.kernel.ir
 - confidence: cited
   path: crates/modelspec-cli/tests/golden/mnist_mlp.kernel.ir
 - confidence: cited
+  path: crates/modelspec-cli/tests/train_vulkan_non_finite_adversary.rs
+- confidence: cited
   path: crates/modelspec-core/src/ir/kernel.rs
+- confidence: cited
+  path: crates/modelspec-core/tests/adversary_kernel_two_row.rs
+- confidence: cited
+  path: crates/modelspec-core/tests/adversary_tiling_rule.rs
+- confidence: cited
+  path: crates/modelspec-core/tests/adversary_tiling_stale_artifact.rs
+- confidence: cited
+  path: crates/modelspec-core/tests/kernel_plan.rs
+- confidence: cited
+  path: crates/modelspec-core/tests/matmul_register_blocked.rs
 - confidence: cited
   path: crates/modelspec-runtime/src/spirv/emit.rs
 - confidence: cited
+  path: crates/modelspec-runtime/tests/adversary_tiling_device.rs
+- confidence: cited
+  path: crates/modelspec-runtime/tests/adversary_tiling_spirv.rs
+- confidence: cited
+  path: crates/modelspec-runtime/tests/fixtures/adversary_tiling_same_bits.txt
+- confidence: cited
+  path: crates/modelspec-runtime/tests/fixtures/matmul_same_bits.txt
+- confidence: cited
+  path: crates/modelspec-runtime/tests/matmul_register_blocked_spirv.rs
+- confidence: cited
+  path: crates/modelspec-runtime/tests/vulkan_matmul_same_bits.rs
+- confidence: cited
   path: website/docs/guides/inspect-a-run.md
-revision: 9
+revision: 13
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-24T10:10:23Z", actor: "human:timo", revision: 8, decided_on: {"recorded":{"review_outcome":6}}}
 - {from: "proposed", to: "active", at: "2026-10-24T10:10:23Z", actor: "human:timo", revision: 9, decided_on: {"recorded":{"review_outcome":6}}}
+- {from: "active", to: "implemented", at: "2026-10-24T12:04:28Z", actor: "human:timo", revision: 13, decided_on: {"recorded":{"test_result":1,"review_outcome":7,"verification":1}}}
 ---
 # Matmul tiling chosen by shape, deterministic
 
@@ -84,11 +233,80 @@ shapes run closer to the device's throughput, without changing a bit on the devi
 
 ## Scope
 
-- `crates/modelspec-core/src/ir/kernel.rs`
-- `crates/modelspec-runtime/src/spirv/emit.rs`
+- `benchmarks/raw/2026-10-24-tiling/after-profile-b8192-h4096.txt`
+- `benchmarks/raw/2026-10-24-tiling/after-profile-mnist.txt`
+- `benchmarks/raw/2026-10-24-tiling/after-sweep.jsonl`
+- `benchmarks/raw/2026-10-24-tiling/baseline-profile-b8192-h4096.txt`
+- `benchmarks/raw/2026-10-24-tiling/baseline-profile-mnist.txt`
+- `benchmarks/raw/2026-10-24-tiling/baseline-sweep.jsonl`
+- `benchmarks/raw/2026-10-24-tiling/candidates/prof-A-sweep_b1000_h1024.txt`
+- `benchmarks/raw/2026-10-24-tiling/candidates/prof-A-sweep_b1000_h4096.txt`
+- `benchmarks/raw/2026-10-24-tiling/candidates/prof-A-sweep_b8192_h1024.txt`
+- `benchmarks/raw/2026-10-24-tiling/candidates/prof-A-sweep_b8192_h256.txt`
+- `benchmarks/raw/2026-10-24-tiling/candidates/prof-A-sweep_b8192_h4096.txt`
+- `benchmarks/raw/2026-10-24-tiling/candidates/prof-A-sweep_b8192_h64.txt`
+- `benchmarks/raw/2026-10-24-tiling/candidates/prof-b4x8-sweep_b8192_h4096.txt`
+- `benchmarks/raw/2026-10-24-tiling/candidates/prof-B-sweep_b1000_h1024.txt`
+- `benchmarks/raw/2026-10-24-tiling/candidates/prof-B-sweep_b1000_h4096.txt`
+- `benchmarks/raw/2026-10-24-tiling/candidates/prof-B-sweep_b8192_h1024.txt`
+- `benchmarks/raw/2026-10-24-tiling/candidates/prof-B-sweep_b8192_h256.txt`
+- `benchmarks/raw/2026-10-24-tiling/candidates/prof-B-sweep_b8192_h4096.txt`
+- `benchmarks/raw/2026-10-24-tiling/candidates/prof-B-sweep_b8192_h64.txt`
+- `benchmarks/raw/2026-10-24-tiling/candidates/prof-c2-sweep_b8192_h1024.txt`
+- `benchmarks/raw/2026-10-24-tiling/candidates/prof-c2-sweep_b8192_h4096.txt`
+- `benchmarks/raw/2026-10-24-tiling/candidates/prof-c3e-sweep_b8192_h4096.txt`
+- `benchmarks/raw/2026-10-24-tiling/candidates/prof-c64x128a2-sweep_b8192_h4096.txt`
+- `benchmarks/raw/2026-10-24-tiling/candidates/prof-c64x128-sweep_b8192_h4096.txt`
+- `benchmarks/raw/2026-10-24-tiling/candidates/prof-c64x64x8a2-sweep_b8192_h4096.txt`
+- `benchmarks/raw/2026-10-24-tiling/candidates/prof-contig64x128-sweep_b8192_h4096.txt`
+- `benchmarks/raw/2026-10-24-tiling/candidates/prof-C-sweep_b1000_h1024.txt`
+- `benchmarks/raw/2026-10-24-tiling/candidates/prof-C-sweep_b1000_h4096.txt`
+- `benchmarks/raw/2026-10-24-tiling/candidates/prof-C-sweep_b8192_h1024.txt`
+- `benchmarks/raw/2026-10-24-tiling/candidates/prof-C-sweep_b8192_h256.txt`
+- `benchmarks/raw/2026-10-24-tiling/candidates/prof-C-sweep_b8192_h4096.txt`
+- `benchmarks/raw/2026-10-24-tiling/candidates/prof-C-sweep_b8192_h64.txt`
+- `benchmarks/raw/2026-10-24-tiling/candidates/prof-d128x64-sweep_b8192_h4096.txt`
+- `benchmarks/raw/2026-10-24-tiling/candidates/prof-M1-sweep_b1000_h1024.txt`
+- `benchmarks/raw/2026-10-24-tiling/candidates/prof-M1-sweep_b1000_h4096.txt`
+- `benchmarks/raw/2026-10-24-tiling/candidates/prof-M1-sweep_b8192_h1024.txt`
+- `benchmarks/raw/2026-10-24-tiling/candidates/prof-M1-sweep_b8192_h256.txt`
+- `benchmarks/raw/2026-10-24-tiling/candidates/prof-M1-sweep_b8192_h4096.txt`
+- `benchmarks/raw/2026-10-24-tiling/candidates/prof-M1-sweep_b8192_h64.txt`
+- `benchmarks/raw/2026-10-24-tiling/candidates/prof-M2-sweep_b1000_h1024.txt`
+- `benchmarks/raw/2026-10-24-tiling/candidates/prof-M2-sweep_b1000_h4096.txt`
+- `benchmarks/raw/2026-10-24-tiling/candidates/prof-M2-sweep_b8192_h1024.txt`
+- `benchmarks/raw/2026-10-24-tiling/candidates/prof-M2-sweep_b8192_h256.txt`
+- `benchmarks/raw/2026-10-24-tiling/candidates/prof-M2-sweep_b8192_h4096.txt`
+- `benchmarks/raw/2026-10-24-tiling/candidates/prof-M2-sweep_b8192_h64.txt`
+- `benchmarks/raw/2026-10-24-tiling/candidates/prof-pad64x128-sweep_b8192_h4096.txt`
+- `benchmarks/raw/2026-10-24-tiling/candidates/prof-pB-probe_b1024_i8192_h4096.txt`
+- `benchmarks/raw/2026-10-24-tiling/candidates/prof-pC-probe_b1024_i8192_h4096.txt`
+- `benchmarks/raw/2026-10-24-tiling/candidates/prof-qB-probe_b8192_i1024_h4096.txt`
+- `benchmarks/raw/2026-10-24-tiling/candidates/prof-qB-probe_b8192_i832_h4096.txt`
+- `benchmarks/raw/2026-10-24-tiling/candidates/prof-qC-probe_b8192_i1024_h4096.txt`
+- `benchmarks/raw/2026-10-24-tiling/candidates/prof-qC-probe_b8192_i832_h4096.txt`
+- `benchmarks/raw/2026-10-24-tiling/candidates/prof-unpad64x128-sweep_b8192_h4096.txt`
+- `benchmarks/raw/2026-10-24-tiling/candidates/rule-A.log`
+- `benchmarks/raw/2026-10-24-tiling/candidates/rule-B.log`
+- `benchmarks/raw/2026-10-24-tiling/candidates/rule-C.log`
+- `benchmarks/raw/2026-10-24-tiling/candidates/rule-M1.log`
+- `benchmarks/raw/2026-10-24-tiling/candidates/rule-M2.log`
+- `benchmarks/raw/2026-10-24-tiling/candidates/sweep-M1.jsonl`
+- `benchmarks/raw/2026-10-24-tiling/candidates/sweep-M2.jsonl`
+- `benchmarks/raw/2026-10-24-tiling/padded-strides-mnist.txt`
+- `crates/modelspec-cli/tests/golden/linear_regression.kernel.ir`
 - `crates/modelspec-cli/tests/golden/mnist_mlp.kernel.ir`
+- `crates/modelspec-cli/tests/train_vulkan_non_finite_adversary.rs`
+- `crates/modelspec-core/src/ir/kernel.rs`
+- `crates/modelspec-core/tests/adversary_kernel_two_row.rs`
+- `crates/modelspec-core/tests/kernel_plan.rs`
+- `crates/modelspec-core/tests/matmul_register_blocked.rs`
+- `crates/modelspec-runtime/src/spirv/emit.rs`
+- `crates/modelspec-runtime/tests/fixtures/matmul_same_bits.txt`
+- `crates/modelspec-runtime/tests/matmul_register_blocked_spirv.rs`
+- `crates/modelspec-runtime/tests/vulkan_matmul_same_bits.rs`
+- `DESIGN.md`
 - `website/docs/guides/inspect-a-run.md`
-- `DESIGN.md` (DESIGN.md:164, :275, revision line)
 
 ## Out of scope
 

@@ -1,0 +1,12 @@
+{
+  "at": "2026-10-24T11:56:50Z",
+  "actor": "human:timo",
+  "artifact": "story:matmul-shape-aware-tiling",
+  "kind": "story",
+  "revision": 9,
+  "change": {
+    "change": "evidence",
+    "kind": "verification",
+    "source": "coordinator: adversary pass 1 found nothing (7 cases, 0 red, findings []); the implementor's three coordinator patches (core test constructors, linear-regression golden, non-finite adversary rename) applied and gated: core 359 passed, cli 298, runtime 417 (+55 device), clippy 0 warnings, fmt clean; mlp_sweep b8192 h4096 32,810.6 -> 13,285.0 us per step (3 runs: 13226.6, 13531.3, 13285.0), PyTorch eager CUDA 7,290.5, ratio 1.82; b1000 h1024 493.8 vs 555.1 (0.89); same-bits 22 shapes + 34 edge shapes against base digests"
+  }
+}
