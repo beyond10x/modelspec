@@ -9,6 +9,7 @@ relations:
 - decomposes: epic:bert-from-scratch
 - serves: vision:modelspec
 - depends_on: story:bert-mlm-batches
+- depends_on: story:bert-mlm-cross-entropy
 scope:
 - confidence: cited
   path: CHANGELOG.md
