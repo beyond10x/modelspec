@@ -1,0 +1,9 @@
+RTX 3090, driver 2559459584, clocks not locked, no compute app on the GPU before each run.
+Bench: b10x-build-slot cargo bench -p modelspec-runtime --features vulkan --bench mlp_sweep -- --point 8192:4096 --point 8192:1024 --point 1000:1024 --min-seconds 6 [--fast-math]
+Profile: modelspec train mlp_sweep_b8192_h4096.mspec --backend vulkan --profile [--fast-math], 220 steps, runs r1 to r3.
+
+baseline  base 6203b9b. baseline-profile-b8192-h4096.txt and baseline-fastmath-profile-b8192-h4096.txt are a first single run; r1 to r3 were taken later with the same binary.
+block     the 256-invocation block, plans scheduled for the device profile (bench, train), no padding.
+exp-d16   block with tiles of 16 values of k instead of 8; profile only; not kept.
+padded    block and padded transposed staging, plans scheduled for the device profile.
+padonly   padded transposed staging, plans scheduled without a profile, so no block.

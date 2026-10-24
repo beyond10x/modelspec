@@ -1,0 +1,29 @@
+# gpu-apps-before []
+# command: modelspec train mlp_sweep_b8192_h4096.mspec --backend vulkan --profile 
+profile dispatch step 0 55ee7765-96e3-8fe0-a2b3-bb064c893270 main calls 220 total_us 1329306.048 mean_us 6042.300 flop 52613349376 bytes 306970624 gflop_per_s 8707.503 gb_per_s 50.804
+profile dispatch step 2 f39a0278-629b-8a45-91a6-c3bd874b89d8 main calls 220 total_us 72613.536 mean_us 330.062 flop 671088640 bytes 134709248 gflop_per_s 2033.223 gb_per_s 408.134
+profile dispatch step 4 d661a871-498f-8049-ba2d-d5fffdd46a69 main calls 220 total_us 88121.344 mean_us 400.552 flop 163840 bytes 655364 gflop_per_s 0.409 gb_per_s 1.636
+profile dispatch step 5 86ed65f2-6357-8d34-9690-26f6a20c767c main calls 220 total_us 776.192 mean_us 3.528 flop 81920 bytes 983040 gflop_per_s 23.219 gb_per_s 278.628
+profile dispatch step 7 433a67c6-745b-8d8b-b46f-08d596d7c53d main calls 220 total_us 757.760 mean_us 3.444 flop 81920 bytes 655360 gflop_per_s 23.784 gb_per_s 190.270
+profile dispatch step 9 545b0394-3c57-8ee0-b3d0-5d8e483e033a main calls 220 total_us 48941.088 mean_us 222.459 flop 671088640 bytes 134709248 gflop_per_s 3016.678 gb_per_s 605.545
+profile dispatch step 10 66d0d33c-e218-8098-a57a-4454996f06df main calls 220 total_us 88672.224 mean_us 403.056 flop 671088640 bytes 134709248 gflop_per_s 1665.003 gb_per_s 334.220
+profile dispatch step 12 9c26b26f-30a4-83fd-93a4-2f6b58a3233f main calls 220 total_us 159179.776 mean_us 723.544 flop 33554432 bytes 402653184 gflop_per_s 46.375 gb_per_s 556.501
+profile dispatch step 14 ac5b3fba-1cd9-8dd9-a98d-4d2cf349c408 main calls 220 total_us 1655666.048 mean_us 7525.755 flop 52613349376 bytes 172752896 gflop_per_s 6991.106 gb_per_s 22.955
+profile dispatch step 16 5e255200-6dd1-8e6a-b722-15b0efb04e7c main calls 220 total_us 13991.552 mean_us 63.598 flop 6422528 bytes 38535168 gflop_per_s 100.986 gb_per_s 605.918
+profile dispatch step 17 22c4c89c-aec7-8d43-be1c-a59edb97236d main calls 220 total_us 844.800 mean_us 3.840 flop 81920 bytes 491520 gflop_per_s 21.333 gb_per_s 128.000
+profile dispatch final 0 55ee7765-96e3-8fe0-a2b3-bb064c893270 main calls 1 total_us 3992.096 mean_us 3992.096 flop 52613349376 bytes 306970624 gflop_per_s 13179.380 gb_per_s 76.895
+profile dispatch final 2 f39a0278-629b-8a45-91a6-c3bd874b89d8 main calls 1 total_us 216.064 mean_us 216.064 flop 671088640 bytes 134709248 gflop_per_s 3105.972 gb_per_s 623.469
+profile dispatch final 4 d661a871-498f-8049-ba2d-d5fffdd46a69 main calls 1 total_us 267.264 mean_us 267.264 flop 163840 bytes 655364 gflop_per_s 0.613 gb_per_s 2.452
+profile dispatches 2423
+profile submits 1
+profile host_waits 1
+profile barriers_per_step 10
+profile bytes_uploaded 39026688
+profile bytes_downloaded 13009780
+profile device_allocations 17
+profile peak_device_bytes 641926928
+profile pipeline_creation_us 2698.248
+profile compile_us 40230.699
+profile steady_us_per_step 14885.593
+profile step_total flop 107280351232 bytes 1327824900 gflop_per_s 7206.992 gb_per_s 89.202 uncounted_sites 0
+# exit 0

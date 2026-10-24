@@ -13,17 +13,23 @@ use std::path::{Path, PathBuf};
 
 use modelspec_core::artifact::{Backend, CompiledArtifact};
 use modelspec_core::compile::{self, CompiledTraining};
+use modelspec_core::device::{DeviceProfile, Extent3D};
 use modelspec_core::ir::kernel::{
     BufferView, Epilogue, ExecutionPlan, Kernel, KernelKind, MATMUL_TWO_ROWS_FROM_WORKGROUPS,
-    MIN_SHARED_MEMORY_BYTES, MatMulTile, Operand, PlanOp, PlanStep,
+    MIN_SHARED_MEMORY_BYTES, MatMulLimits, MatMulTile, Operand, PlanOp, PlanStep,
 };
 use modelspec_core::ir::print::print_kernel;
 use modelspec_core::ir::tensor::{TensorNode, TensorOp, ValueId};
+use modelspec_core::ir::training::{TrainConfig, TrainingStep};
 use modelspec_core::ir::verify::verify_plan;
 use modelspec_core::schedule;
 
 const LINEAR: &str = "examples/linear_regression.mspec";
 const TWO_LAYER: &str = "crates/modelspec-docs/models/two_layer_relu.mspec";
+const RTX3090: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../modelspec-runtime/tests/fixtures/rtx3090.device.json"
+));
 
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -515,19 +521,94 @@ fn a_cpu_artifact_has_no_kernels_and_empty_plans() {
     verify_plan(&artifact.execution).expect("a Cpu plan verifies");
 }
 
+/// `schedule.rs` names no `DeviceProfile`, `schedule` gives the artifact's plan, and
+/// `schedule_for` takes a device only as a `MatMulLimits` of exactly two values: two profiles
+/// that differ in every other field but share those two values get the same plan, the plan of
+/// the two values built by hand.
 #[test]
-fn the_schedule_entry_point_takes_no_device_profile() {
-    let text = source(LINEAR);
-    let compiled = training(&text);
-    let plan: ExecutionPlan = schedule::schedule(
-        &compiled.training,
-        compiled.forward.prediction,
-        &compiled.config,
-    )
-    .expect("the step schedules");
-    assert_eq!(plan, artifact(&text, Backend::Vulkan).execution);
+fn schedule_reads_no_device_profile_and_schedule_for_reads_only_the_two_matmul_limits() {
     let code = include_str!("../src/schedule.rs");
     assert!(!code.contains("DeviceProfile"));
+    let entry: fn(
+        &TrainingStep,
+        ValueId,
+        &TrainConfig,
+        Option<MatMulLimits>,
+    ) -> Result<ExecutionPlan, schedule::ScheduleError> = schedule::schedule_for;
+    let reads = |limits: MatMulLimits| {
+        let MatMulLimits {
+            invocations,
+            shared_bytes,
+        } = limits;
+        (invocations, shared_bytes)
+    };
+
+    let one = DeviceProfile::from_json(RTX3090).expect("the fixture is a valid profile");
+    let mut other = one.clone();
+    other.vendor_id ^= 1;
+    other.device_id ^= 1;
+    other.device_uuid = None;
+    other.driver_version ^= 1;
+    other.subgroup_size = Some(64);
+    other.subgroup_stages.clear();
+    other.subgroup_operations.clear();
+    other.max_workgroup_size = Extent3D {
+        x: one.max_workgroup_invocations * 4,
+        y: 1,
+        z: 1,
+    };
+    other.max_workgroup_count = Extent3D {
+        x: 65_535,
+        y: 1,
+        z: 1,
+    };
+    other.f16_storage = Some(false);
+    other.f16_compute = Some(false);
+    other.cooperative_matrix = !one.cooperative_matrix;
+    other.timestamp_queries = !one.timestamp_queries;
+    other.memory_heaps.clear();
+    other.max_storage_buffer_range /= 2;
+    other.min_storage_buffer_offset_alignment *= 4;
+    other.cooperative_matrix_shapes.clear();
+    other.shader_rounding_mode_rte_f32 = Some(false);
+    other.shader_denorm_preserve_f32 = Some(false);
+    other.shader_signed_zero_inf_nan_preserve_f32 = Some(false);
+    let limits = MatMulLimits::of(&one);
+    assert_eq!(MatMulLimits::of(&other), limits);
+    let (invocations, shared_bytes) = reads(limits);
+    let by_hand = MatMulLimits {
+        invocations,
+        shared_bytes,
+    };
+
+    for path in [LINEAR, TWO_LAYER] {
+        let text = source(path);
+        let compiled = training(&text);
+        let plan = |limits: Option<MatMulLimits>| {
+            entry(
+                &compiled.training,
+                compiled.forward.prediction,
+                &compiled.config,
+                limits,
+            )
+            .expect("the step schedules")
+        };
+        let unlimited = schedule::schedule(
+            &compiled.training,
+            compiled.forward.prediction,
+            &compiled.config,
+        )
+        .expect("the step schedules");
+        assert_eq!(
+            unlimited,
+            artifact(&text, Backend::Vulkan).execution,
+            "{path}"
+        );
+        assert_eq!(unlimited, plan(None), "{path}");
+        let of_one = plan(Some(MatMulLimits::of(&one)));
+        assert_eq!(of_one, plan(Some(MatMulLimits::of(&other))), "{path}");
+        assert_eq!(of_one, plan(Some(by_hand)), "{path}");
+    }
 }
 
 #[test]

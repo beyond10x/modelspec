@@ -2,12 +2,14 @@
 format: aep.planning-md/3
 id: decision-blocker:cooperative-matrix-f32-operands
 kind: decision-blocker
-status: open
+status: cleared
 title: The RTX 3090 reports no f32-operand cooperative-matrix shape; ADR-008 forbids reduced-precision operands
 relations:
 - blocks: story:fast-math-cooperative-matrix
 withholds: test_result
-revision: 3
+revision: 5
+transitions:
+- {from: "open", to: "cleared", at: "2026-10-24T18:58:25Z", actor: "human:timo", revision: 5}
 ---
 # The RTX 3090 reports no f32-operand cooperative-matrix shape; ADR-008 forbids reduced-precision operands
 
@@ -33,3 +35,12 @@ Until cleared, story:fast-math-cooperative-matrix has no `test_result` to record
 Wave coordinator, 2026-10-24, decision D12 on `.engineering/waves/perf-1.md`.
 
 Decider: operator
+
+## Cleared (2026-10-24)
+
+Option A taken by the coordinator under Timo's grant of 2026-10-24 ("You have all authority now to make
+these decissions yourself"): ADR-008 amended (DESIGN.md § 12, revision 0.35): under `fast_math` a
+cooperative-matrix matmul may take `f16` or `bf16` operands with `f32` accumulation, compared within
+tolerance against an oracle computing with the same rounded operands, and benchmarked only against a
+PyTorch baseline of the same operand precision, never as the headline. Decision D17 on
+`.engineering/waves/perf-1.md`.
