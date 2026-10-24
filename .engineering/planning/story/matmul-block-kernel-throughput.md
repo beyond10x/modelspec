@@ -7,6 +7,7 @@ title: The 128x128 block kernel reaches the throughput its traffic allows
 relations:
 - serves: vision:modelspec
 - depends_on: story:matmul-tile-from-device-invocation-limit
+- depends_on: story:deterministic-fma
 revision: 1
 ---
 # The 128x128 block kernel reaches the throughput its traffic allows

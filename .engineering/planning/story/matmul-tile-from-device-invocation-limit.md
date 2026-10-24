@@ -2,15 +2,16 @@
 format: aep.planning-md/3
 id: story:matmul-tile-from-device-invocation-limit
 kind: story
-status: active
+status: implemented
 title: 'The matmul tile takes its invocation budget from the device profile: 128x128 blocks at 256 invocations'
 relations:
 - serves: vision:modelspec
 - depends_on: story:matmul-reads-transposed-operand
-revision: 5
+revision: 6
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-24T16:15:11Z", actor: "human:timo", revision: 3}
 - {from: "proposed", to: "active", at: "2026-10-24T16:15:11Z", actor: "human:timo", revision: 4}
+- {from: "active", to: "implemented", at: "2026-10-24T18:57:04Z", actor: "human:timo", revision: 6, decided_on: {"recorded":{"test_result":1,"review_outcome":1}}}
 ---
 # The matmul tile takes its invocation budget from the device profile
 

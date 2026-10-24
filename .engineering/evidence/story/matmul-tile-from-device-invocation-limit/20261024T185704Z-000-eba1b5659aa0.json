@@ -1,0 +1,13 @@
+{
+  "at": "2026-10-24T18:57:04Z",
+  "actor": "human:timo",
+  "artifact": "story:matmul-tile-from-device-invocation-limit",
+  "kind": "story",
+  "revision": 5,
+  "change": {
+    "change": "evidence",
+    "kind": "test_result",
+    "source": "task ci",
+    "reference": "5871dad8f1e80df11133872b1e2520f7831a4caf"
+  }
+}
