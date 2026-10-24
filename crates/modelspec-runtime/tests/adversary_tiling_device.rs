@@ -10,7 +10,9 @@
 //! 2. `edge_matmuls_write_the_bits_of_the_base_commit`: the same shapes, the sweep sites the
 //!    block rule takes and subnormal inputs, against digests recorded at the base commit
 //!    (269b557) in `tests/fixtures/adversary_tiling_same_bits.txt` with
-//!    `ADVERSARY_TILING_RECORD=1`; a run on another device or driver fails rather than compares.
+//!    `ADVERSARY_TILING_RECORD=1`, re-recorded once at story:deterministic-fma, whose fused
+//!    multiply-add changed every view (DESIGN.md § 12 ADR-009); a run on another device or
+//!    driver fails rather than compares.
 //!
 //! `MODELSPEC_VK_VALIDATION=1 cargo test --release -p modelspec-runtime --features vulkan --test adversary_tiling_device -- --ignored`
 #![cfg(feature = "vulkan")]

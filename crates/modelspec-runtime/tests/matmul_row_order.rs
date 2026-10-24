@@ -1,9 +1,11 @@
-//! The CPU `matmul` against the 0.1.1 loop, bit for bit (story `cpu-matmul-row-order`).
+//! The CPU `matmul` against the fused loop, bit for bit (story `cpu-matmul-row-order`).
 //!
 //! DESIGN.md § 2.2 fixes the reduction order of `matmul`: each output element sums its `K`
-//! products in ascending `k`, starting from the first term, nothing fused. The 0.1.1 interpreter
-//! computed it with loop order `i`, `j`, `k`; that loop is kept here as the reference, and the
-//! interpreter's result must equal it by bit pattern on every seeded case, in `f32` and `f64`,
+//! products in ascending `k`, starting from the `k = 0` product, and § 12 ADR-009 fuses each later
+//! product into the sum (`mul_add`, one rounding). The 0.1.1 interpreter computed the sum with
+//! loop order `i`, `j`, `k`; that loop, with each later product fused, is kept here as the
+//! reference, and the interpreter's result must equal it by bit pattern on every seeded case, in
+//! `f32` and `f64`,
 //! with signed zeros, infinities, NaN, subnormal and overflowing inputs among the operands.
 //! A NaN result compares as NaN only: Rust does not fix the sign or payload of an arithmetic NaN,
 //! and an optimized build of the same loop picks either (story `cpu-matmul-avx2-blocking`,
@@ -280,34 +282,36 @@ fn operands<T: Real>(case: &Case) -> (Vec<T>, Vec<T>) {
     (a, b)
 }
 
-/// The 0.1.1 interpreter's `matmul`, verbatim in its loop: `i`, `j`, then the `K` products in
-/// ascending `k` summed from the first term.
-fn matmul_0_1_1<T: Element>(a: &[T], b: &[T], m: usize, k: usize, n: usize) -> Vec<T> {
+/// The 0.1.1 interpreter's loop: `i`, `j`, then the `K` products in ascending `k` summed from the
+/// `k = 0` product, each later product fused into the sum (DESIGN.md § 12 ADR-009).
+fn matmul_fused<T: Element>(a: &[T], b: &[T], m: usize, k: usize, n: usize) -> Vec<T> {
     let mut data = Vec::with_capacity(m * n);
     for i in 0..m {
         for j in 0..n {
-            data.push(sum_0_1_1((0..k).map(|p| a[i * k + p] * b[p * n + j])));
+            data.push(sum_fused((0..k).map(|p| (a[i * k + p], b[p * n + j]))));
         }
     }
     data
 }
 
-/// The 0.1.1 interpreter's sequential sum, starting from the first term.
-fn sum_0_1_1<T: Element>(mut terms: impl Iterator<Item = T>) -> T {
-    match terms.next() {
-        Some(first) => terms.fold(first, |acc, x| acc + x),
+/// The sequential sum of the products of `factors`, starting from the first product, each later
+/// one fused into the sum.
+fn sum_fused<T: Element>(mut factors: impl Iterator<Item = (T, T)>) -> T {
+    match factors.next() {
+        Some((x, y)) => factors.fold(x * y, |acc, (x, y)| x.mul_add(y, acc)),
         None => T::ZERO,
     }
 }
 
-/// The planted defect: loop order `i`, `k`, `j` with the row accumulator started from `+0`.
+/// The planted defect: loop order `i`, `k`, `j` with the row accumulator started from `+0`, each
+/// product fused into it as in the reference.
 fn matmul_row_from_zero<T: Element>(a: &[T], b: &[T], m: usize, k: usize, n: usize) -> Vec<T> {
     let mut data = Vec::with_capacity(m * n);
     for i in 0..m {
         let mut row = vec![T::ZERO; n];
         for p in 0..k {
             for j in 0..n {
-                row[j] = row[j] + a[i * k + p] * b[p * n + j];
+                row[j] = a[i * k + p].mul_add(b[p * n + j], row[j]);
             }
         }
         data.extend(row);
@@ -339,7 +343,7 @@ fn interpreter<T: Element>(a: &[T], b: &[T], m: usize, k: usize, n: usize) -> Ve
     out[0].data().to_vec()
 }
 
-/// One element where `candidate` and the 0.1.1 loop differ in bits.
+/// One element where `candidate` and the fused loop differ in bits.
 struct Mismatch {
     case: Case,
     dtype: &'static str,
@@ -354,7 +358,7 @@ fn report(found: &[Mismatch]) -> String {
         .iter()
         .map(|m| {
             format!(
-                "{} {:?} element {}: 0.1.1 {:#x}, got {:#x}",
+                "{} {:?} element {}: fused {:#x}, got {:#x}",
                 m.dtype, m.case, m.index, m.expected, m.got
             )
         })
@@ -369,14 +373,14 @@ fn same<T: Real>(expected: T, got: T) -> bool {
     (nan(expected) && nan(got)) || expected.bits() == got.bits()
 }
 
-/// Every case on which `candidate` differs from the 0.1.1 loop, with its first differing element.
+/// Every case on which `candidate` differs from the fused loop, with its first differing element.
 fn mismatches<T: Real>(
     candidate: impl Fn(&[T], &[T], usize, usize, usize) -> Vec<T>,
 ) -> Vec<Mismatch> {
     let mut found = Vec::new();
     for case in cases() {
         let (a, b) = operands::<T>(&case);
-        let expected = matmul_0_1_1(&a, &b, case.m, case.k, case.n);
+        let expected = matmul_fused(&a, &b, case.m, case.k, case.n);
         let got = candidate(&a, &b, case.m, case.k, case.n);
         assert_eq!(got.len(), expected.len(), "{case:?}");
         if let Some(index) = (0..got.len()).find(|&i| !same(expected[i], got[i])) {
@@ -421,13 +425,13 @@ fn the_cases_cover_the_largest_shape_and_every_special_value() {
 }
 
 #[test]
-fn matmul_equals_the_0_1_1_loop_bit_for_bit_in_f32() {
+fn matmul_equals_the_fused_loop_bit_for_bit_in_f32() {
     let found = mismatches::<f32>(interpreter);
     assert!(found.is_empty(), "{}", report(&found));
 }
 
 #[test]
-fn matmul_equals_the_0_1_1_loop_bit_for_bit_in_f64() {
+fn matmul_equals_the_fused_loop_bit_for_bit_in_f64() {
     let found = mismatches::<f64>(interpreter);
     assert!(found.is_empty(), "{}", report(&found));
 }
@@ -462,10 +466,11 @@ fn the_cases_cross_every_block_edge() {
     );
 }
 
-/// The kernels this host can run: the portable one always, AVX2 where the CPU has it.
+/// The kernels this host can run: the portable one always, AVX2 where the CPU has AVX2 and FMA.
 fn kernels() -> Vec<Kernel> {
     #[cfg(target_arch = "x86_64")]
-    let avx2 = std::arch::is_x86_feature_detected!("avx2");
+    let avx2 =
+        std::arch::is_x86_feature_detected!("avx2") && std::arch::is_x86_feature_detected!("fma");
     #[cfg(not(target_arch = "x86_64"))]
     let avx2 = false;
     [Kernel::Portable]
@@ -485,7 +490,7 @@ fn each_kernel_is_available_exactly_where_the_cpu_has_it() {
     assert!(matmul::matmul::<f32>(Kernel::Portable, &[], Lhs::RowMajor, &[], 0, 0, 0).is_some());
 }
 
-fn kernel_equals_the_0_1_1_loop<T: Real>() {
+fn kernel_equals_the_fused_loop<T: Real>() {
     for kernel_name in kernels() {
         for lhs in [Lhs::RowMajor, Lhs::Transposed] {
             let found = mismatches::<T>(kernel(kernel_name, lhs));
@@ -499,13 +504,13 @@ fn kernel_equals_the_0_1_1_loop<T: Real>() {
 }
 
 #[test]
-fn each_kernel_equals_the_0_1_1_loop_bit_for_bit_in_f32() {
-    kernel_equals_the_0_1_1_loop::<f32>();
+fn each_kernel_equals_the_fused_loop_bit_for_bit_in_f32() {
+    kernel_equals_the_fused_loop::<f32>();
 }
 
 #[test]
-fn each_kernel_equals_the_0_1_1_loop_bit_for_bit_in_f64() {
-    kernel_equals_the_0_1_1_loop::<f64>();
+fn each_kernel_equals_the_fused_loop_bit_for_bit_in_f64() {
+    kernel_equals_the_fused_loop::<f64>();
 }
 
 /// This host runs the AVX2 kernel; on one without it the test above covers the portable kernel
@@ -540,7 +545,7 @@ fn each_kernel_handles_a_zero_dimension() {
 }
 
 #[test]
-fn a_transposed_left_operand_equals_the_0_1_1_loop_through_evaluate() {
+fn a_transposed_left_operand_equals_the_fused_loop_through_evaluate() {
     for found in [
         mismatches::<f32>(interpreter_transposed(false)),
         mismatches::<f64>(interpreter_transposed(false)),
@@ -550,7 +555,7 @@ fn a_transposed_left_operand_equals_the_0_1_1_loop_through_evaluate() {
 }
 
 /// A transpose that is also an output, or also the right operand of a `matmul`, still has its
-/// value through `evaluate`, and every product still equals the 0.1.1 loop.
+/// value through `evaluate`, and every product still equals the fused loop.
 #[test]
 fn a_transpose_read_elsewhere_keeps_its_value_through_evaluate() {
     let (m, k) = (5usize, 7usize);
@@ -573,13 +578,13 @@ fn a_transpose_read_elsewhere_keeps_its_value_through_evaluate() {
     )]);
     let out = evaluate(&program, &inputs, &BTreeMap::new()).unwrap();
     let bits = |v: &[f32]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
-    assert_eq!(bits(out[0].data()), bits(&matmul_0_1_1(&a, &at, m, k, m)));
-    assert_eq!(bits(out[1].data()), bits(&matmul_0_1_1(&at, &a, k, m, k)));
+    assert_eq!(bits(out[0].data()), bits(&matmul_fused(&a, &at, m, k, m)));
+    assert_eq!(bits(out[1].data()), bits(&matmul_fused(&at, &a, k, m, k)));
     assert_eq!(bits(out[2].data()), bits(&a));
 }
 
 #[test]
-fn a_transposed_left_operand_equals_the_0_1_1_loop_through_evaluate_all() {
+fn a_transposed_left_operand_equals_the_fused_loop_through_evaluate_all() {
     for found in [
         mismatches::<f32>(interpreter_transposed(true)),
         mismatches::<f64>(interpreter_transposed(true)),

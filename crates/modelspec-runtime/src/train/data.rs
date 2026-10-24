@@ -632,7 +632,7 @@ mod tests {
             let expected = row[1..]
                 .iter()
                 .zip(&w[1..])
-                .fold(row[0] * w[0], |acc, (&a, &b)| acc + a * b);
+                .fold(row[0] * w[0], |acc, (&a, &b)| a.mul_add(b, acc));
             assert_eq!(got, expected, "row {i}");
         }
     }

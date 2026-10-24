@@ -595,6 +595,10 @@ pub mod words {
     pub const OP_F_SUB: u32 = 131;
     pub const OP_F_MUL: u32 = 133;
     pub const DECORATION_NO_CONTRACTION: u32 = 42;
+    /// `OpExtInst`, and `Fma` of `GLSL.std.450`, the one instruction set a module imports
+    /// (DESIGN.md § 12 ADR-009).
+    pub const OP_EXT_INST: u32 = 12;
+    pub const GLSL_FMA: u32 = 50;
     pub const MODE_DENORM_PRESERVE: u32 = 4459;
     pub const MODE_SIGNED_ZERO_INF_NAN_PRESERVE: u32 = 4461;
     pub const MODE_ROUNDING_MODE_RTE: u32 = 4462;
@@ -658,5 +662,27 @@ pub mod words {
             .filter(|id| !decorated.contains(id))
             .collect();
         (missing, arithmetic.len())
+    }
+
+    /// The `GLSL.std.450 Fma` instructions of `module` without a `NoContraction` decoration, by
+    /// result id, and how many there are in all.
+    pub fn uncontracted_fma(module: &[u32]) -> (Vec<u32>, usize) {
+        let all = instructions(module);
+        let decorated: Vec<u32> = all
+            .iter()
+            .filter(|(op, w)| *op == OP_DECORATE && w[2] == DECORATION_NO_CONTRACTION)
+            .map(|(_, w)| w[1])
+            .collect();
+        let fma: Vec<u32> = all
+            .iter()
+            .filter(|(op, w)| *op == OP_EXT_INST && w[4] == GLSL_FMA)
+            .map(|(_, w)| w[2])
+            .collect();
+        let missing = fma
+            .iter()
+            .copied()
+            .filter(|id| !decorated.contains(id))
+            .collect();
+        (missing, fma.len())
     }
 }

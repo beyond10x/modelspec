@@ -1,13 +1,14 @@
 //! The CPU `matmul` kernels: `[M, K] x [K, N] -> [M, N]`, each output element the sum of its `K`
-//! products in ascending `k`, starting from the `k = 0` product, every product and partial sum
-//! rounded to the element type, nothing fused (DESIGN.md § 2.2).
+//! products in ascending `k`, starting from the `k = 0` product, every later product fused into
+//! the sum with [`Element::mul_add`], rounded once to the element type (DESIGN.md § 2.2, § 12
+//! ADR-009): the element the GPU's `Fma` chain computes.
 //!
 //! Two kernels compute the same bits. [`Kernel::Portable`] is the loop in order `i`, `k`, `j` and
-//! runs everywhere. [`Kernel::Avx2`] runs on x86-64 CPUs with AVX2, chosen at run time: it holds a
-//! block of output rows by 256-bit vectors of output columns in registers across the whole `k`
-//! loop, one output element per vector lane, with a separate multiply and add per `k`. A lane
-//! rounds as a scalar does, so each element sees the same sequence of roundings as in the portable
-//! loop.
+//! runs everywhere. [`Kernel::Avx2`] runs on x86-64 CPUs with AVX2 and FMA, chosen at run time: it
+//! holds a block of output rows by 256-bit vectors of output columns in registers across the whole
+//! `k` loop, one output element per vector lane, with one fused multiply-add per later `k`. A lane
+//! rounds as a scalar `mul_add` does, so each element sees the same sequence of roundings as in
+//! the portable loop.
 //!
 //! The left operand is read row-major, or [`Lhs::Transposed`]: as the `[K, M]` value a
 //! `transpose` would have turned into it, read in place.
@@ -41,7 +42,7 @@ pub fn output_zero_fills() -> usize {
 pub enum Kernel {
     /// The loop in order `i`, `k`, `j`; every CPU and target.
     Portable,
-    /// Register blocks of 256-bit vectors; x86-64 with AVX2, for `f32` and `f64`.
+    /// Register blocks of 256-bit vectors; x86-64 with AVX2 and FMA, for `f32` and `f64`.
     Avx2,
 }
 
@@ -54,7 +55,8 @@ impl Kernel {
         }
     }
 
-    /// The kernel the interpreter runs on this CPU: AVX2 where available, else the portable one.
+    /// The kernel the interpreter runs on this CPU: AVX2 where AVX2 and FMA are available, else
+    /// the portable one.
     pub fn detected() -> Kernel {
         if avx2_detected() {
             Kernel::Avx2
@@ -66,7 +68,7 @@ impl Kernel {
 
 #[cfg(target_arch = "x86_64")]
 fn avx2_detected() -> bool {
-    std::arch::is_x86_feature_detected!("avx2")
+    std::arch::is_x86_feature_detected!("avx2") && std::arch::is_x86_feature_detected!("fma")
 }
 
 #[cfg(not(target_arch = "x86_64"))]
@@ -167,7 +169,8 @@ pub(crate) fn matmul_into<T: Element>(
 
 /// [`Kernel::Avx2`] for `f32` and `f64`, appending the `m * n` elements to `out` without filling
 /// them first: `Some(true)` once written, `Some(false)` with `out` unchanged where the CPU has no
-/// AVX2, `None` for any other type. `m`, `k` and `n` are nonzero and the slices hold their counts.
+/// AVX2 or no FMA, `None` for any other type. `m`, `k` and `n` are nonzero and the slices hold
+/// their counts.
 #[allow(clippy::too_many_arguments)]
 fn avx2_uninit<T: Element>(
     out: &mut Vec<T>,
@@ -260,8 +263,8 @@ pub(crate) fn element_counts(m: usize, k: usize, n: usize) -> (usize, usize, usi
 
 /// Loop order `i`, `k`, `j`, so the inner loop reads a row of `b`: each output row is appended to
 /// `out` as its `k = 0` products (not `+0`, so an all-`-0` sum stays `-0`) and every later `k`
-/// adds its products in turn, the same sequence of roundings per element as summing over `k`
-/// directly. `k` and `n` are nonzero.
+/// fuses its products into the sums in turn ([`Element::mul_add`]), the same sequence of
+/// roundings per element as summing over `k` directly. `k` and `n` are nonzero.
 fn portable<T: Element>(
     out: &mut Vec<T>,
     a: &[T],
@@ -282,7 +285,7 @@ fn portable<T: Element>(
         for (p, b_row) in (1..k).zip(b_rest.chunks_exact(n)) {
             let x = a[i * rs + p * cs];
             for (acc, &y) in row.iter_mut().zip(b_row) {
-                *acc = *acc + x * y;
+                *acc = T::mul_add(x, y, *acc);
             }
         }
     }
@@ -322,11 +325,12 @@ pub(crate) mod avx2 {
         (
             $module:ident, $e:ty, $v:ty, $lanes:literal, $mask:ident,
             $setzero:ident, $set1:ident, $loadu:ident, $maskload:ident,
-            $storeu:ident, $maskstore:ident, $mul:ident, $add:ident $(,)?
+            $storeu:ident, $maskstore:ident, $mul:ident, $fmadd:ident $(,)?
         ) => {
             pub(crate) mod $module {
                 use std::arch::x86_64::{
-                    $add, $loadu, $maskload, $maskstore, $mul, $set1, $setzero, $storeu, __m256i,
+                    $fmadd, $loadu, $maskload, $maskstore, $mul, $set1, $setzero, $storeu,
+                    __m256i,
                 };
                 use std::mem::MaybeUninit;
 
@@ -349,7 +353,7 @@ pub(crate) mod avx2 {
                 }
 
                 /// `out = a x b` for the `[m, k]` left operand laid out as `lhs`; `m`, `k` and `n`
-                /// are nonzero. False, writing nothing, where the CPU has no AVX2.
+                /// are nonzero. False, writing nothing, where the CPU has no AVX2 or no FMA.
                 pub(crate) fn matmul(
                     out: &mut [$e],
                     a: &[$e],
@@ -367,7 +371,7 @@ pub(crate) mod avx2 {
 
                 /// [`matmul`] into storage that need not be initialised: true once it has
                 /// written every one of the `m * n` elements of `out`, false, writing nothing,
-                /// where the CPU has no AVX2.
+                /// where the CPU has no AVX2 or no FMA.
                 pub(crate) fn matmul_uninit(
                     out: &mut [MaybeUninit<$e>],
                     a: &[$e],
@@ -380,12 +384,14 @@ pub(crate) mod avx2 {
                     assert!(m > 0 && k > 0 && n > 0);
                     let (mk, kn, mn) = super::super::element_counts(m, k, n);
                     assert!(out.len() == mn && a.len() == mk && b.len() == kn);
-                    if !std::arch::is_x86_feature_detected!("avx2") {
+                    if !(std::arch::is_x86_feature_detected!("avx2")
+                        && std::arch::is_x86_feature_detected!("fma"))
+                    {
                         return false;
                     }
                     let (rs, cs) = lhs.strides(m, k);
-                    // SAFETY: AVX2 is detected above, and the lengths asserted above are the ones
-                    // `run` requires.
+                    // SAFETY: AVX2 and FMA are detected above, and the lengths asserted above are
+                    // the ones `run` requires.
                     unsafe { run(out, a, rs, cs, b, m, k, n) };
                     true
                 }
@@ -395,9 +401,10 @@ pub(crate) mod avx2 {
                 ///
                 /// # Safety
                 ///
-                /// AVX2 is available; `out` holds `m * n` elements, `b` `k * n`, and `a` an
-                /// element at `i * rs + p * cs` for every `i < m`, `p < k`; `m`, `k`, `n` nonzero.
-                #[target_feature(enable = "avx2")]
+                /// AVX2 and FMA are available; `out` holds `m * n` elements, `b` `k * n`, and `a`
+                /// an element at `i * rs + p * cs` for every `i < m`, `p < k`; `m`, `k`, `n`
+                /// nonzero.
+                #[target_feature(enable = "avx2,fma")]
                 #[allow(clippy::too_many_arguments)]
                 unsafe fn run(
                     out: &mut [MaybeUninit<$e>],
@@ -426,8 +433,8 @@ pub(crate) mod avx2 {
                         // elements from there on.
                         let dst = unsafe { out.as_mut_ptr().cast::<$e>().add(i0 * n) };
                         // SAFETY: `panel` and `dst` cover `rows` rows from `i0` and all `n`
-                        // columns, as `columns` requires; AVX2 is available by this function's
-                        // contract.
+                        // columns, as `columns` requires; AVX2 and FMA are available by this
+                        // function's contract.
                         unsafe {
                             match rows {
                                 6 => columns::<6>(dst, panel),
@@ -447,9 +454,9 @@ pub(crate) mod avx2 {
                 ///
                 /// # Safety
                 ///
-                /// AVX2 is available; `panel` reads `R` rows of `a` and all `n` columns of `b`,
-                /// and `out` has `R` rows of `n` writable elements, row stride `n`.
-                #[target_feature(enable = "avx2")]
+                /// AVX2 and FMA are available; `panel` reads `R` rows of `a` and all `n` columns
+                /// of `b`, and `out` has `R` rows of `n` writable elements, row stride `n`.
+                #[target_feature(enable = "avx2,fma")]
                 #[inline]
                 unsafe fn columns<const R: usize>(out: *mut $e, panel: Panel) {
                     let n = panel.n;
@@ -491,9 +498,9 @@ pub(crate) mod avx2 {
                 ///
                 /// # Safety
                 ///
-                /// AVX2 is available; `row` points at `V * LANES` readable elements, or, when
-                /// `MASKED`, `(V - 1) * LANES` and the lanes of `mask` after them.
-                #[target_feature(enable = "avx2")]
+                /// AVX2 and FMA are available; `row` points at `V * LANES` readable elements, or,
+                /// when `MASKED`, `(V - 1) * LANES` and the lanes of `mask` after them.
+                #[target_feature(enable = "avx2,fma")]
                 #[inline]
                 unsafe fn load<const V: usize, const MASKED: bool>(
                     row: *const $e,
@@ -516,14 +523,15 @@ pub(crate) mod avx2 {
 
                 /// One register block: `R` output rows by `V` vectors of output columns, held in
                 /// registers across all `k`. The `k = 0` products start every lane, and each later
-                /// `k` multiplies and then adds, as the portable loop does.
+                /// `k` fuses its product into the lane with one rounding, as the portable loop's
+                /// `mul_add` does.
                 ///
                 /// # Safety
                 ///
-                /// AVX2 is available; `panel` reads `R` rows of `a` and `V * LANES` columns of `b`
-                /// (when `MASKED`, of the last vector only the lanes of `mask`), and `out` has
-                /// the same rows and columns writable, row stride `panel.n`.
-                #[target_feature(enable = "avx2")]
+                /// AVX2 and FMA are available; `panel` reads `R` rows of `a` and `V * LANES`
+                /// columns of `b` (when `MASKED`, of the last vector only the lanes of `mask`),
+                /// and `out` has the same rows and columns writable, row stride `panel.n`.
+                #[target_feature(enable = "avx2,fma")]
                 #[inline]
                 unsafe fn block<const R: usize, const V: usize, const MASKED: bool>(
                     out: *mut $e,
@@ -548,7 +556,7 @@ pub(crate) mod avx2 {
                             // SAFETY: element `(r, p)` of the block's rows of `a`.
                             let x = $set1(unsafe { *a.add(r * rs + p * cs) });
                             for (acc, &y) in acc_row.iter_mut().zip(&row) {
-                                *acc = $add(*acc, $mul(x, y));
+                                *acc = $fmadd(x, y, *acc);
                             }
                         }
                     }
@@ -584,7 +592,7 @@ pub(crate) mod avx2 {
         _mm256_storeu_ps,
         _mm256_maskstore_ps,
         _mm256_mul_ps,
-        _mm256_add_ps,
+        _mm256_fmadd_ps,
     );
 
     kernel!(
@@ -600,6 +608,6 @@ pub(crate) mod avx2 {
         _mm256_storeu_pd,
         _mm256_maskstore_pd,
         _mm256_mul_pd,
-        _mm256_add_pd,
+        _mm256_fmadd_pd,
     );
 }
