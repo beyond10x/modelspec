@@ -21,12 +21,12 @@
       }
     },
     "seq_len": {
-      "description": "The number of tokens of every sequence, the binding's seq_len (coordinator decision D26, 2026-10-24, `.engineering/waves/bert-1.md`).",
-      "type": "integer"
+      "$ref": "#/$defs/modelspec.data.SequenceLength",
+      "description": "The number of tokens of every sequence, the binding's seq_len (coordinator decision D26, 2026-10-24, `.engineering/waves/bert-1.md`)."
     },
     "vocabulary_size": {
-      "description": "The number of tokens of the tokenizer's vocabulary, V; every id of a packed file lies in [0, V), a random substitution draws from [5, V) and the baseline smooths over the V - 5 tokens that are not special. Added so a batch and the baseline can be computed from the packed directory alone (coordinator decision D26, 2026-10-24, `.engineering/waves/bert-1.md`).",
-      "type": "integer"
+      "$ref": "#/$defs/modelspec.data.VocabularySize",
+      "description": "The number of tokens of the tokenizer's vocabulary, V; every id of a packed file lies in [0, V), a random substitution draws from [5, V) and the baseline smooths over the V - 5 tokens that are not special. Added so a batch and the baseline can be computed from the packed directory alone (coordinator decision D26, 2026-10-24, `.engineering/waves/bert-1.md`)."
     },
     "splits": {
       "type": "array",
@@ -55,17 +55,22 @@
   "x-ess-provenance": {
     "system": "modelspec",
     "specification_version": "v1",
-    "source_digest": "23d2c85480e84de5527acbab6b8bfdd081cf29bf8aa302fde575e26f0309a907",
-    "contract_digest": "slice-sha256/2:450a8a86da81e59dddcc3a1fc30db08e05f919177ad5b97d1f64fbb2a3c0b5de",
+    "source_digest": "59bde2059fa14134ef56aa2891237eef5659cddd208ce028ef33430ed21c62b1",
+    "contract_digest": "slice-sha256/2:0cf013b87f3461a2f71e8403a29d3441c0882b93297b268719a23b25bf74bc5e",
     "regenerate": "ess generate"
   },
   "$defs": {
     "modelspec.artifact.ContentHash": {
       "title": "ContentHash",
-      "description": "A blake3 digest under explicit serialization and version rules (DESIGN.md § 7).",
+      "description": "A blake3 digest under explicit serialization and version rules (DESIGN.md § 7), written as its 32 bytes in 64 lowercase hexadecimal digits (story:content-hash-schema-constrained).",
       "x-ess-name": "modelspec.artifact.ContentHash",
       "x-ess-kind": "newtype",
-      "type": "string"
+      "type": "string",
+      "pattern": "^[0-9a-f]*$",
+      "x-ess-invariants": [
+        "value.count == 64"
+      ],
+      "x-ess-alphabet": "0123456789abcdef"
     },
     "modelspec.data.PackedDataset.State": {
       "title": "State",
@@ -114,6 +119,17 @@
         "sequence_count > 0"
       ]
     },
+    "modelspec.data.SequenceLength": {
+      "title": "SequenceLength",
+      "description": "The number of tokens of every packed sequence, S, at least 1; the type of seq_len on TrainingDataBinding and PackedDataset, so the generated JSON Schema carries the bound as `minimum` 1 (story:content-hash-schema-constrained; coordinator decision D34, 2026-10-25, `.engineering/waves/bert-1.md`).",
+      "x-ess-name": "modelspec.data.SequenceLength",
+      "x-ess-kind": "newtype",
+      "type": "integer",
+      "minimum": 1,
+      "x-ess-invariants": [
+        "value > 0"
+      ]
+    },
     "modelspec.data.SplitRole": {
       "title": "SplitRole",
       "description": "What a split is used for; MLM loss and accuracy are evaluated on the held-out split (epic:bert-from-scratch).",
@@ -132,6 +148,17 @@
       "type": "string",
       "format": "uuid",
       "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    },
+    "modelspec.data.VocabularySize": {
+      "title": "VocabularySize",
+      "description": "The number of tokens of a vocabulary, V, more than the five special tokens, so a random substitution has a token in [5, V) to draw; the type of PackedDataset.vocabulary_size, so the generated JSON Schema carries the bound as `minimum` 6 (story:content-hash-schema-constrained; coordinator decision D34, 2026-10-25, `.engineering/waves/bert-1.md`).",
+      "x-ess-name": "modelspec.data.VocabularySize",
+      "x-ess-kind": "newtype",
+      "type": "integer",
+      "minimum": 6,
+      "x-ess-invariants": [
+        "value > 5"
+      ]
     }
   }
 }

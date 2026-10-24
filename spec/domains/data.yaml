@@ -170,6 +170,22 @@ types:
     kind: newtype
     of: Uuid
 
+  - name: modelspec.data.SequenceLength
+    kind: newtype
+    of: Integer
+    invariants:
+      - value > 0
+    naming:
+      summary: The number of tokens of every packed sequence, S, at least 1; the type of seq_len on TrainingDataBinding and PackedDataset, so the generated JSON Schema carries the bound as `minimum` 1 (story:content-hash-schema-constrained; coordinator decision D34, 2026-10-25, `.engineering/waves/bert-1.md`).
+
+  - name: modelspec.data.VocabularySize
+    kind: newtype
+    of: Integer
+    invariants:
+      - value > 5
+    naming:
+      summary: The number of tokens of a vocabulary, V, more than the five special tokens, so a random substitution has a token in [5, V) to draw; the type of PackedDataset.vocabulary_size, so the generated JSON Schema carries the bound as `minimum` 6 (story:content-hash-schema-constrained; coordinator decision D34, 2026-10-25, `.engineering/waves/bert-1.md`).
+
   - name: modelspec.data.PackedSplit
     kind: struct
     naming:
@@ -233,12 +249,10 @@ entities:
       - name: tokenizer_id
         type: modelspec.data.TokenizerId
       - name: seq_len
-        type: Integer
+        type: modelspec.data.SequenceLength
         summary: The number of tokens of every sequence, S (coordinator decision D26, 2026-10-24, `.engineering/waves/bert-1.md`).
       - name: masking_policy
         type: modelspec.data.MaskingPolicy
-    invariants:
-      - seq_len > 0
     relations:
       - name: dataset
         kind: references
@@ -265,10 +279,10 @@ entities:
       - name: binding_id
         type: modelspec.data.TrainingDataBindingId
       - name: seq_len
-        type: Integer
+        type: modelspec.data.SequenceLength
         summary: The number of tokens of every sequence, the binding's seq_len (coordinator decision D26, 2026-10-24, `.engineering/waves/bert-1.md`).
       - name: vocabulary_size
-        type: Integer
+        type: modelspec.data.VocabularySize
         summary: The number of tokens of the tokenizer's vocabulary, V; every id of a packed file lies in [0, V), a random substitution draws from [5, V) and the baseline smooths over the V - 5 tokens that are not special. Added so a batch and the baseline can be computed from the packed directory alone (coordinator decision D26, 2026-10-24, `.engineering/waves/bert-1.md`).
       - name: splits
         type: List<modelspec.data.PackedSplit>
@@ -276,8 +290,6 @@ entities:
         type: Binary64
         summary: The cross-entropy, in nats, of the tokens of the packed HeldOut split that are not special under the unigram frequencies of the packed Train split with add-one smoothing, -(1 / M) Σ ln((c(t) + 1) / (C + V - 5)) over the M held-out tokens t, where c(t) counts t among the C Train tokens that are not special; the target of pre-training is measured against it (story:bert-tiny-gpu-pretraining; coordinator decision D26, 2026-10-24, `.engineering/waves/bert-1.md`).
     invariants:
-      - seq_len > 0
-      - vocabulary_size > 5
       - distinct: {in: splits, as: split, by: split.role}
       - heldout_unigram_baseline_nats > 0
     relations:

@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/modelspec.data.SequenceLength",
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "59bde2059fa14134ef56aa2891237eef5659cddd208ce028ef33430ed21c62b1",
+    "contract_digest": "slice-sha256/2:842f8388d5b063f02b216883c32fcc8cbad8acbbb954fb0f5c97e3a1d7220ab6",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.data.SequenceLength": {
+      "title": "SequenceLength",
+      "description": "The number of tokens of every packed sequence, S, at least 1; the type of seq_len on TrainingDataBinding and PackedDataset, so the generated JSON Schema carries the bound as `minimum` 1 (story:content-hash-schema-constrained; coordinator decision D34, 2026-10-25, `.engineering/waves/bert-1.md`).",
+      "x-ess-name": "modelspec.data.SequenceLength",
+      "x-ess-kind": "newtype",
+      "type": "integer",
+      "minimum": 1,
+      "x-ess-invariants": [
+        "value > 0"
+      ]
+    }
+  }
+}

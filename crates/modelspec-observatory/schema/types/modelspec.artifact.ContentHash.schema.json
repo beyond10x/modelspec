@@ -4,17 +4,22 @@
   "x-ess-provenance": {
     "system": "modelspec",
     "specification_version": "v1",
-    "source_digest": "23d2c85480e84de5527acbab6b8bfdd081cf29bf8aa302fde575e26f0309a907",
-    "contract_digest": "slice-sha256/2:316bb063d01444c03b8c99709e0c8e5d7c1135867497e969832dd2c757aedfac",
+    "source_digest": "59bde2059fa14134ef56aa2891237eef5659cddd208ce028ef33430ed21c62b1",
+    "contract_digest": "slice-sha256/2:b44ccd86fc2432432203b84ec8f7028d509fe6b33df8443cb21f060a3e28be00",
     "regenerate": "ess generate"
   },
   "$defs": {
     "modelspec.artifact.ContentHash": {
       "title": "ContentHash",
-      "description": "A blake3 digest under explicit serialization and version rules (DESIGN.md § 7).",
+      "description": "A blake3 digest under explicit serialization and version rules (DESIGN.md § 7), written as its 32 bytes in 64 lowercase hexadecimal digits (story:content-hash-schema-constrained).",
       "x-ess-name": "modelspec.artifact.ContentHash",
       "x-ess-kind": "newtype",
-      "type": "string"
+      "type": "string",
+      "pattern": "^[0-9a-f]*$",
+      "x-ess-invariants": [
+        "value.count == 64"
+      ],
+      "x-ess-alphabet": "0123456789abcdef"
     }
   }
 }

@@ -48,8 +48,8 @@
   "x-ess-provenance": {
     "system": "modelspec",
     "specification_version": "v1",
-    "source_digest": "23d2c85480e84de5527acbab6b8bfdd081cf29bf8aa302fde575e26f0309a907",
-    "contract_digest": "slice-sha256/2:48da1cf9224369e3be65a5174babbaea9f854c68518b2e1d50e18c5752696a62",
+    "source_digest": "59bde2059fa14134ef56aa2891237eef5659cddd208ce028ef33430ed21c62b1",
+    "contract_digest": "slice-sha256/2:1ac79944936ae6b264d3dd8d763dd17c248c6b106c3ea6f55a4fa625c44b2cdc",
     "regenerate": "ess generate"
   },
   "$defs": {
@@ -63,10 +63,15 @@
     },
     "modelspec.artifact.ContentHash": {
       "title": "ContentHash",
-      "description": "A blake3 digest under explicit serialization and version rules (DESIGN.md § 7).",
+      "description": "A blake3 digest under explicit serialization and version rules (DESIGN.md § 7), written as its 32 bytes in 64 lowercase hexadecimal digits (story:content-hash-schema-constrained).",
       "x-ess-name": "modelspec.artifact.ContentHash",
       "x-ess-kind": "newtype",
-      "type": "string"
+      "type": "string",
+      "pattern": "^[0-9a-f]*$",
+      "x-ess-invariants": [
+        "value.count == 64"
+      ],
+      "x-ess-alphabet": "0123456789abcdef"
     },
     "modelspec.artifact.KernelCacheKey": {
       "title": "KernelCacheKey",

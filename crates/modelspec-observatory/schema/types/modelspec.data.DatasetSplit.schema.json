@@ -4,17 +4,22 @@
   "x-ess-provenance": {
     "system": "modelspec",
     "specification_version": "v1",
-    "source_digest": "23d2c85480e84de5527acbab6b8bfdd081cf29bf8aa302fde575e26f0309a907",
-    "contract_digest": "slice-sha256/2:4e7236727bb59791a97a1c0da78117916236e54c4545018c1b8b4c1f52b457ea",
+    "source_digest": "59bde2059fa14134ef56aa2891237eef5659cddd208ce028ef33430ed21c62b1",
+    "contract_digest": "slice-sha256/2:84963eb165c2bdb092e3cdd576b992207b4c1e444fad9e103f05e084b433cb31",
     "regenerate": "ess generate"
   },
   "$defs": {
     "modelspec.artifact.ContentHash": {
       "title": "ContentHash",
-      "description": "A blake3 digest under explicit serialization and version rules (DESIGN.md § 7).",
+      "description": "A blake3 digest under explicit serialization and version rules (DESIGN.md § 7), written as its 32 bytes in 64 lowercase hexadecimal digits (story:content-hash-schema-constrained).",
       "x-ess-name": "modelspec.artifact.ContentHash",
       "x-ess-kind": "newtype",
-      "type": "string"
+      "type": "string",
+      "pattern": "^[0-9a-f]*$",
+      "x-ess-invariants": [
+        "value.count == 64"
+      ],
+      "x-ess-alphabet": "0123456789abcdef"
     },
     "modelspec.data.DatasetSplit": {
       "title": "DatasetSplit",
