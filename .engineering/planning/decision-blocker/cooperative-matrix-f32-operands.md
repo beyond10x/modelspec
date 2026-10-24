@@ -7,7 +7,7 @@ title: The RTX 3090 reports no f32-operand cooperative-matrix shape; ADR-008 for
 relations:
 - blocks: story:fast-math-cooperative-matrix
 withholds: test_result
-revision: 2
+revision: 3
 ---
 # The RTX 3090 reports no f32-operand cooperative-matrix shape; ADR-008 forbids reduced-precision operands
 
@@ -31,3 +31,5 @@ larger change than TF32's 11-bit multiply, so it is outside the ADR as written.
 
 Until cleared, story:fast-math-cooperative-matrix has no `test_result` to record on this device.
 Wave coordinator, 2026-10-24, decision D12 on `.engineering/waves/perf-1.md`.
+
+Decider: operator

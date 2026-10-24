@@ -2,19 +2,62 @@
 format: aep.planning-md/3
 id: story:fast-math-mode
 kind: story
-status: draft
+status: implemented
 title: 'An opt-in fast-math mode: contraction under --fast-math'
 relations:
 - depends_on: story:matmul-shape-aware-tiling
+- serves: vision:modelspec
 scope:
 - confidence: cited
+  path: CHANGELOG.md
+- confidence: cited
   path: DESIGN.md
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-fastmath/baseline-profile-b8192-h4096.txt
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-fastmath/baseline-r2-profile-b8192-h4096.txt
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-fastmath/baseline-r3-profile-b8192-h4096.txt
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-fastmath/baseline-r4-clocks.csv
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-fastmath/baseline-r4-profile-b8192-h4096.txt
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-fastmath/baseline-sweep.jsonl
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-fastmath/baseline-sweep.stderr.txt
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-fastmath/fastmath-profile-b8192-h4096.txt
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-fastmath/fastmath-r2-profile-b8192-h4096.txt
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-fastmath/fastmath-r3-profile-b8192-h4096.txt
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-fastmath/fastmath-r4-clocks.csv
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-fastmath/fastmath-r4-profile-b8192-h4096.txt
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-fastmath/fastmath-short-sweep.jsonl
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-fastmath/fastmath-short-sweep.stderr.txt
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-fastmath/fastmath-sweep.jsonl
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-fastmath/fastmath-sweep.stderr.txt
+- confidence: cited
+  path: benchmarks/raw/2026-10-24-fastmath/tolerance-run.txt
 - confidence: cited
   path: crates/modelspec-cli/src/compile.rs
 - confidence: cited
   path: crates/modelspec-cli/src/train.rs
 - confidence: cited
+  path: crates/modelspec-cli/tests/fast_math.rs
+- confidence: cited
+  path: crates/modelspec-cli/tests/train_fast_math.rs
+- confidence: cited
   path: crates/modelspec-core/src/artifact.rs
+- confidence: cited
+  path: crates/modelspec-core/tests/artifact_fast_math.rs
 - confidence: cited
   path: crates/modelspec-runtime/benches/mlp_sweep.rs
 - confidence: cited
@@ -22,8 +65,14 @@ scope:
 - confidence: cited
   path: crates/modelspec-runtime/src/vulkan/runner.rs
 - confidence: cited
+  path: crates/modelspec-runtime/tests/fast_math_emission.rs
+- confidence: cited
   path: website/docs/reference/cli.md
-revision: 12
+revision: 18
+transitions:
+- {from: "draft", to: "proposed", at: "2026-10-24T12:05:24Z", actor: "human:timo", revision: 13, decided_on: {"recorded":{"review_outcome":5}}}
+- {from: "proposed", to: "active", at: "2026-10-24T12:05:24Z", actor: "human:timo", revision: 14, decided_on: {"recorded":{"review_outcome":5}}}
+- {from: "active", to: "implemented", at: "2026-10-24T13:19:58Z", actor: "human:timo", revision: 18, decided_on: {"recorded":{"test_result":1,"review_outcome":7,"verification":1}}}
 ---
 # An opt-in fast-math mode: contraction under `--fast-math`
 
@@ -105,14 +154,36 @@ fused multiply-adds; without the flag nothing changes.
 
 ## Scope
 
-- `DESIGN.md`
-- `crates/modelspec-runtime/src/spirv/emit.rs`
-- `crates/modelspec-core/src/artifact.rs`
+- `benchmarks/raw/2026-10-24-fastmath/baseline-profile-b8192-h4096.txt`
+- `benchmarks/raw/2026-10-24-fastmath/baseline-r2-profile-b8192-h4096.txt`
+- `benchmarks/raw/2026-10-24-fastmath/baseline-r3-profile-b8192-h4096.txt`
+- `benchmarks/raw/2026-10-24-fastmath/baseline-r4-clocks.csv`
+- `benchmarks/raw/2026-10-24-fastmath/baseline-r4-profile-b8192-h4096.txt`
+- `benchmarks/raw/2026-10-24-fastmath/baseline-sweep.jsonl`
+- `benchmarks/raw/2026-10-24-fastmath/baseline-sweep.stderr.txt`
+- `benchmarks/raw/2026-10-24-fastmath/fastmath-profile-b8192-h4096.txt`
+- `benchmarks/raw/2026-10-24-fastmath/fastmath-r2-profile-b8192-h4096.txt`
+- `benchmarks/raw/2026-10-24-fastmath/fastmath-r3-profile-b8192-h4096.txt`
+- `benchmarks/raw/2026-10-24-fastmath/fastmath-r4-clocks.csv`
+- `benchmarks/raw/2026-10-24-fastmath/fastmath-r4-profile-b8192-h4096.txt`
+- `benchmarks/raw/2026-10-24-fastmath/fastmath-short-sweep.jsonl`
+- `benchmarks/raw/2026-10-24-fastmath/fastmath-short-sweep.stderr.txt`
+- `benchmarks/raw/2026-10-24-fastmath/fastmath-sweep.jsonl`
+- `benchmarks/raw/2026-10-24-fastmath/fastmath-sweep.stderr.txt`
+- `benchmarks/raw/2026-10-24-fastmath/tolerance-run.txt`
+- `CHANGELOG.md`
 - `crates/modelspec-cli/src/compile.rs`
 - `crates/modelspec-cli/src/train.rs`
-- `crates/modelspec-runtime/src/vulkan/runner.rs`
+- `crates/modelspec-cli/tests/fast_math.rs`
+- `crates/modelspec-cli/tests/train_fast_math.rs`
+- `crates/modelspec-core/src/artifact.rs`
+- `crates/modelspec-core/tests/artifact_fast_math.rs`
 - `crates/modelspec-runtime/benches/mlp_sweep.rs`
-- `website/docs/reference/cli.md` (generated)
+- `crates/modelspec-runtime/src/spirv/emit.rs`
+- `crates/modelspec-runtime/src/vulkan/runner.rs`
+- `crates/modelspec-runtime/tests/fast_math_emission.rs`
+- `DESIGN.md`
+- `website/docs/reference/cli.md`
 
 ## Out of scope
 
@@ -122,3 +193,19 @@ fused multiply-adds; without the flag nothing changes.
 - The multi-workgroup loss sum: story:fast-math-parallel-loss-sum, after
   story:vulkan-loss-slots-written-by-kernel.
 - Benchmark figures with `fast_math` on as the headline number.
+
+
+## Adversary pass 1 (2026-10-24, review-result:adversary-fastmath-pass-1)
+
+Three findings, none introduced by the unit:
+
+- ADV-FM-1 (note): the artifact reader checks module headers only, so a `fast_math` artifact
+  relabelled deterministic and resealed is accepted. Pre-existing; nothing executes an artifact
+  directory and `seal` states it does not authenticate. No change.
+- ADV-FM-2 (warning): the `--record` event stream's `RunStarted` names no numerics class; the
+  runner's report line does. Escalated to story:run-record-names-numerics-class; the acceptance
+  `numerics-class-follows-fast-math` is met by the runner's report (`runner.rs:128`).
+- ADV-FM-3 (note): a concern that dropping `NoContraction` also permits reassociation. It does
+  not: SPIR-V `NoContraction` governs contraction only; reassociation needs an
+  `FPFastMathMode` decoration with `AllowReassoc`, and the emitter emits no `FPFastMathMode`
+  (`grep -c FPFastMathMode crates/modelspec-runtime/src/spirv/emit.rs` = 0). No change.

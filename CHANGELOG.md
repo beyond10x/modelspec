@@ -9,7 +9,6 @@ history.
 
 ## [Unreleased]
 
-
 ### Added
 
 - `compile --fast-math` and `train --backend vulkan --fast-math` set `fast_math` in the manifest and every kernel cache key (ADR-008): the artifact hash changes, the reader refuses a key whose `fast_math` is not the manifest's with E-ARTIFACT-003, the kernels drop every `NoContraction` and nothing else changes in them, the run's numerics class is `tolerance`, and `--fast-math` with `--backend cpu` is a usage error. `mlp_sweep --fast-math` on the RTX 3090 (medians of 3 runs, µs per step, deterministic figure first): b8192 h4096 13,794.6 → 10,648.6 (PyTorch eager CUDA 7,290.5), b8192 h1024 3,751.8 → 2,747.6 (1,932.1), b1000 h4096 1,882.5 → 1,373.0 (994.7); forward matmul 9,569 → 12,170 GFLOP/s; the tolerance run on `examples/mnist_mlp.mspec` and the b8192 h4096 source stays within 0.2 % of ADR-008's bound and two `fast_math` runs are bit-equal (`benchmarks/raw/2026-10-24-fastmath/`); DESIGN.md revision 0.32 (story:fast-math-mode)

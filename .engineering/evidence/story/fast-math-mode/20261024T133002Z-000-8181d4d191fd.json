@@ -1,0 +1,12 @@
+{
+  "at": "2026-10-24T13:30:02Z",
+  "actor": "human:timo",
+  "artifact": "story:fast-math-mode",
+  "kind": "story",
+  "revision": 15,
+  "change": {
+    "change": "evidence",
+    "kind": "verification",
+    "source": "adversary pass 1: 1614->1619 cases, 0 introduced red; default path byte-identical to base; tolerance oracle red on 2 planted defects"
+  }
+}

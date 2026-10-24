@@ -1,0 +1,13 @@
+{
+  "at": "2026-10-24T13:19:58Z",
+  "actor": "human:timo",
+  "artifact": "story:fast-math-mode",
+  "kind": "story",
+  "revision": 17,
+  "change": {
+    "change": "evidence",
+    "kind": "test_result",
+    "source": "task ci",
+    "reference": "impl/fast-math-mode ce118c1 task ci exit 0"
+  }
+}
