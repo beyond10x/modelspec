@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/modelspec.benchmark.BenchmarkRun.State",
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "e21d7f27dcedc3d15da67f289b036202cf0168d502b1c42e60519b3ebaa0e567",
+    "contract_digest": "slice-sha256/2:b20edbc767297277426710cbe87cca6ccfde7ca3b58cafb5870c78ecedb53d54",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.benchmark.BenchmarkRun.State": {
+      "title": "State",
+      "x-ess-name": "modelspec.benchmark.BenchmarkRun.State",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "Recorded"
+      ]
+    }
+  }
+}

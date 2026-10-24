@@ -4,14 +4,14 @@
   "x-ess-provenance": {
     "system": "modelspec",
     "specification_version": "v1",
-    "source_digest": "c8d09d592d06c980e3d96ff401af94130cae0e565826a9b3b5d93f3e3713ab8e",
-    "contract_digest": "slice-sha256/2:de2580c681ace71d32e2eee1295b24f1628df444d9cd27cf08dbe455183f637a",
+    "source_digest": "e21d7f27dcedc3d15da67f289b036202cf0168d502b1c42e60519b3ebaa0e567",
+    "contract_digest": "slice-sha256/2:bf89c5dc195f0552c22d44de4477e636f8bb744d1b9bbf48e5080c75768baab8",
     "regenerate": "ess generate"
   },
   "$defs": {
     "modelspec.data.MaskingPolicy": {
       "title": "MaskingPolicy",
-      "description": "The masked-language-modelling policy; of the selected tokens a fraction is replaced by the vocabulary's mask token, a fraction by a random token and the rest kept, 80/10/10 (epic:bert-from-scratch). The three fractions sum to 1, which ESS does not state here. Draws use the Philox key/counter derivation (DESIGN.md § 2.3).",
+      "description": "The masked-language-modelling policy; of the selected tokens a fraction is replaced by the vocabulary's mask token, a fraction by a random token and the rest kept, 80/10/10 (epic:bert-from-scratch). The three fractions sum to 1, which ESS does not state here. Draws use the Philox key/counter derivation (DESIGN.md § 2.3) with stream tag 3, the next after the tags 0 to 2 of DESIGN.md § 2.3 (story:bert-mlm-batches adds it there). The values are BERT's (Devlin, Chang, Lee, Toutanova 2018, § 3.1) — selection_rate 0.15, mask_fraction 0.8, random_fraction 0.1, keep_fraction 0.1 (coordinator decision D19, 2026-10-24, `.engineering/waves/bert-1.md`).",
       "x-ess-name": "modelspec.data.MaskingPolicy",
       "x-ess-kind": "struct",
       "type": "object",

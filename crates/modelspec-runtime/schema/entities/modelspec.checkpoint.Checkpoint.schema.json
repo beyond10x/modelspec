@@ -1,0 +1,329 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Checkpoint",
+  "description": "One `.msckpt` file; loadable by the CPU backend whichever backend wrote it (DESIGN.md § 6.2).",
+  "x-ess-name": "modelspec.checkpoint.Checkpoint",
+  "x-ess-kind": "entity",
+  "type": "object",
+  "properties": {
+    "checkpoint_id": {
+      "$ref": "#/$defs/modelspec.checkpoint.CheckpointId"
+    },
+    "magic": {
+      "description": "Header magic, the four bytes `MSCK` (DESIGN.md § 6.2).",
+      "type": "string"
+    },
+    "format_version": {
+      "description": "Header format version (DESIGN.md § 6.2).",
+      "type": "integer"
+    },
+    "endian_marker": {
+      "$ref": "#/$defs/modelspec.checkpoint.Endianness",
+      "description": "Header endian marker (DESIGN.md § 6.2)."
+    },
+    "manifest_size": {
+      "description": "Header manifest size, in bytes, of the structured manifest (DESIGN.md § 6.2).",
+      "type": "integer"
+    },
+    "header_checksum": {
+      "$ref": "#/$defs/modelspec.artifact.ContentHash",
+      "description": "Header checksum/hash, blake3 over the header and manifest bytes with this field's own bytes counted as zero (DESIGN.md § 6.2); required, unlike the optional payload_hash."
+    },
+    "file_size": {
+      "description": "Size of the `.msckpt` file in bytes; every offset and length is validated against it before mapping or allocating (DESIGN.md § 6.2).",
+      "type": "integer"
+    },
+    "alignment": {
+      "description": "The explicit alignment, in bytes, of every tensor offset in the payload (DESIGN.md § 6.2).",
+      "type": "integer"
+    },
+    "schema_hash": {
+      "$ref": "#/$defs/modelspec.artifact.ContentHash",
+      "description": "Compiler/model schema hash from the manifest. The checkpoint loads only into an artifact with an equal schema_hash and the same parameter paths, dtypes and shapes; anything else needs an explicit adapter (DESIGN.md § 6.2)."
+    },
+    "step": {
+      "description": "The step state at which the checkpoint was written (DESIGN.md § 6.2).",
+      "type": "integer"
+    },
+    "payload_hash": {
+      "$ref": "#/$defs/modelspec.artifact.ContentHash",
+      "description": "Verification hash of the payload, blake3 over the bytes from the payload start to the end of the file; format version 1 always writes it and a reader refuses a manifest without it (DESIGN.md § 6.2)."
+    },
+    "optimizer": {
+      "$ref": "#/$defs/modelspec.training.OptimizerConfig",
+      "description": "Optimizer hyperparameters, kept so a resumed run continues with the same optimizer (DESIGN.md § 6.1, § 9 gate 7)."
+    },
+    "optimizer_slots": {
+      "description": "Optimizer state descriptors; empty for plain SGD (DESIGN.md § 6.2).",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/modelspec.checkpoint.OptimizerSlot"
+      }
+    },
+    "rng": {
+      "$ref": "#/$defs/modelspec.training.RngState",
+      "description": "RNG state at `step` (DESIGN.md § 6.2)."
+    },
+    "state": {
+      "$ref": "#/$defs/modelspec.checkpoint.Checkpoint.State"
+    }
+  },
+  "required": [
+    "checkpoint_id",
+    "magic",
+    "format_version",
+    "endian_marker",
+    "manifest_size",
+    "header_checksum",
+    "file_size",
+    "alignment",
+    "schema_hash",
+    "step",
+    "payload_hash",
+    "optimizer",
+    "optimizer_slots",
+    "rng",
+    "state"
+  ],
+  "additionalProperties": false,
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "e21d7f27dcedc3d15da67f289b036202cf0168d502b1c42e60519b3ebaa0e567",
+    "contract_digest": "slice-sha256/2:2815223e3b46802bf3974cfb39c02fb14e13e1fa026050a5a3800e98c324a692",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.artifact.ContentHash": {
+      "title": "ContentHash",
+      "description": "A blake3 digest under explicit serialization and version rules (DESIGN.md § 7).",
+      "x-ess-name": "modelspec.artifact.ContentHash",
+      "x-ess-kind": "newtype",
+      "type": "string"
+    },
+    "modelspec.checkpoint.Checkpoint.State": {
+      "title": "State",
+      "x-ess-name": "modelspec.checkpoint.Checkpoint.State",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "Written"
+      ]
+    },
+    "modelspec.checkpoint.CheckpointId": {
+      "title": "CheckpointId",
+      "x-ess-name": "modelspec.checkpoint.CheckpointId",
+      "x-ess-kind": "newtype",
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    },
+    "modelspec.checkpoint.DType": {
+      "title": "DType",
+      "description": "A tensor element type and its size in bytes; `f32` is the only M0/M1 dtype (DESIGN.md § 2.2).",
+      "x-ess-name": "modelspec.checkpoint.DType",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "F32"
+      ],
+      "x-ess-attributes": [
+        {
+          "kind": "integer",
+          "name": "size_bytes",
+          "type": "Integer",
+          "values": {
+            "F32": 4
+          }
+        }
+      ]
+    },
+    "modelspec.checkpoint.Endianness": {
+      "title": "Endianness",
+      "description": "The header's endian marker; the payload is little-endian, so a reader refuses Big (DESIGN.md § 6.2).",
+      "x-ess-name": "modelspec.checkpoint.Endianness",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "Little",
+        "Big"
+      ]
+    },
+    "modelspec.checkpoint.OptimizerSlot": {
+      "title": "OptimizerSlot",
+      "description": "One optimizer state tensor of one parameter, addressed in the payload like a parameter (DESIGN.md § 6.2). Its offset and length are bounded by the file size and aligned like a ParameterRecord's, and the pair (path, slot) is unique in a checkpoint; ESS states neither here.",
+      "x-ess-name": "modelspec.checkpoint.OptimizerSlot",
+      "x-ess-kind": "struct",
+      "type": "object",
+      "properties": {
+        "path": {
+          "$ref": "#/$defs/modelspec.checkpoint.ParameterPath"
+        },
+        "slot": {
+          "type": "string"
+        },
+        "dtype": {
+          "$ref": "#/$defs/modelspec.checkpoint.DType",
+          "description": "Element type of the state tensor (DESIGN.md § 6.2 dtypes, § 6.2 never reinterpret tensor bytes)."
+        },
+        "shape": {
+          "$ref": "#/$defs/modelspec.checkpoint.Shape",
+          "description": "Shape of the state tensor (DESIGN.md § 6.2 shapes)."
+        },
+        "offset": {
+          "description": "Absolute byte offset of the tensor from the start of the file, a multiple of the checkpoint's alignment (DESIGN.md § 6.2).",
+          "type": "integer",
+          "minimum": 0
+        },
+        "length": {
+          "description": "Length in bytes, equal to the product of `shape` times `dtype.size_bytes`; offset + length <= the checkpoint's file_size (DESIGN.md § 6.2).",
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "path",
+        "slot",
+        "dtype",
+        "shape",
+        "offset",
+        "length"
+      ],
+      "additionalProperties": false,
+      "x-ess-invariants": [
+        "offset >= 0",
+        "length > 0",
+        "length >= dtype.size_bytes"
+      ]
+    },
+    "modelspec.checkpoint.ParameterPath": {
+      "title": "ParameterPath",
+      "description": "A stable canonical parameter path such as `TinyMLP.fc1.weight` (DESIGN.md § 2.3).",
+      "x-ess-name": "modelspec.checkpoint.ParameterPath",
+      "x-ess-kind": "newtype",
+      "type": "string"
+    },
+    "modelspec.checkpoint.Shape": {
+      "title": "Shape",
+      "description": "A tensor shape; each dimension is a positive integer and rank 0 is a scalar (DESIGN.md § 2.2).",
+      "x-ess-name": "modelspec.checkpoint.Shape",
+      "x-ess-kind": "newtype",
+      "type": "array",
+      "items": {
+        "type": "integer"
+      },
+      "x-ess-invariants": [
+        "forall dim in value: (dim > 0)"
+      ]
+    },
+    "modelspec.training.LearningRateSchedule": {
+      "title": "LearningRateSchedule",
+      "description": "How the learning rate varies over steps; a linear warmup over the first warmup_steps steps up to OptimizerConfig.learning_rate (epic:bert-from-scratch, AdamW with warmup).",
+      "x-ess-name": "modelspec.training.LearningRateSchedule",
+      "x-ess-kind": "struct",
+      "type": "object",
+      "properties": {
+        "warmup_steps": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "warmup_steps"
+      ],
+      "additionalProperties": false,
+      "x-ess-invariants": [
+        "warmup_steps >= 0"
+      ]
+    },
+    "modelspec.training.OptimizerConfig": {
+      "title": "OptimizerConfig",
+      "description": "Optimizer hyperparameters, recorded for reproducibility (DESIGN.md § 6.1). The AdamW fields are present exactly when kind is AdamW (Loshchilov and Hutter, decoupled weight decay); its first and second moments are a checkpoint's optimizer slots (DESIGN.md § 6.2).",
+      "x-ess-name": "modelspec.training.OptimizerConfig",
+      "x-ess-kind": "struct",
+      "type": "object",
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/modelspec.training.OptimizerKind"
+        },
+        "learning_rate": {
+          "description": "The base learning rate; the peak rate when a schedule is present.",
+          "type": "number"
+        },
+        "weight_decay": {
+          "description": "AdamW decoupled weight decay coefficient (epic:bert-from-scratch).",
+          "type": "number"
+        },
+        "beta1": {
+          "description": "AdamW first-moment decay rate.",
+          "type": "number"
+        },
+        "beta2": {
+          "description": "AdamW second-moment decay rate.",
+          "type": "number"
+        },
+        "epsilon": {
+          "description": "AdamW denominator term.",
+          "type": "number"
+        },
+        "schedule": {
+          "$ref": "#/$defs/modelspec.training.LearningRateSchedule",
+          "description": "Absent means a constant learning rate, as M0 SGD has."
+        }
+      },
+      "required": [
+        "kind",
+        "learning_rate"
+      ],
+      "additionalProperties": false,
+      "x-ess-invariants": [
+        "((kind == Sgd and not (defined(weight_decay)) and not (defined(beta1)) and not (defined(beta2)) and not (defined(epsilon))) or (kind == AdamW and defined(weight_decay) and defined(beta1) and defined(beta2) and defined(epsilon)))"
+      ]
+    },
+    "modelspec.training.OptimizerKind": {
+      "title": "OptimizerKind",
+      "description": "SGD from M0; AdamW with weight decay joins at M3 (DESIGN.md § 1, § 11 iteration 4; epic:bert-from-scratch). The CLI accepts only `sgd` until then.",
+      "x-ess-name": "modelspec.training.OptimizerKind",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "Sgd",
+        "AdamW"
+      ]
+    },
+    "modelspec.training.RngAlgorithm": {
+      "title": "RngAlgorithm",
+      "description": "The counter-based PRNG of DESIGN.md § 2.3.",
+      "x-ess-name": "modelspec.training.RngAlgorithm",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "Philox4x32x10"
+      ]
+    },
+    "modelspec.training.RngState": {
+      "title": "RngState",
+      "description": "RNG algorithm, seed and counter position (DESIGN.md § 2.3, § 6.1, § 6.2).",
+      "x-ess-name": "modelspec.training.RngState",
+      "x-ess-kind": "struct",
+      "type": "object",
+      "properties": {
+        "algorithm": {
+          "$ref": "#/$defs/modelspec.training.RngAlgorithm"
+        },
+        "seed": {
+          "type": "integer"
+        },
+        "counter": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "algorithm",
+        "seed",
+        "counter"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

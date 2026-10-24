@@ -4,20 +4,19 @@
   "x-ess-provenance": {
     "system": "modelspec",
     "specification_version": "v1",
-    "source_digest": "c8d09d592d06c980e3d96ff401af94130cae0e565826a9b3b5d93f3e3713ab8e",
-    "contract_digest": "slice-sha256/2:0acdfc8d0b4a7d06a74b79f5baa76b94686d6e5cee39fec62cd1270839d2aee7",
+    "source_digest": "e21d7f27dcedc3d15da67f289b036202cf0168d502b1c42e60519b3ebaa0e567",
+    "contract_digest": "slice-sha256/2:e1aa5fc54029246ed7f8f1ad2852239dd8979555b3a60ea38d61a63a3b558427",
     "regenerate": "ess generate"
   },
   "$defs": {
     "modelspec.data.TokenizerKind": {
       "title": "TokenizerKind",
-      "description": "The tokenization algorithm (epic:bert-from-scratch, \"a WordPiece (or byte-level) tokenizer\").",
+      "description": "The tokenization algorithm (epic:bert-from-scratch, \"a WordPiece (or byte-level) tokenizer\"). WordPiece, on lowercased text, as BERT (Devlin, Chang, Lee, Toutanova 2018), with a vocabulary of 8,192 tokens trained on the Train split of the Dataset (story:bert-tokenizer implements it); byte-level is not used (coordinator decision D19, 2026-10-24, `.engineering/waves/bert-1.md`).",
       "x-ess-name": "modelspec.data.TokenizerKind",
       "x-ess-kind": "enum",
       "type": "string",
       "enum": [
-        "WordPiece",
-        "ByteLevel"
+        "WordPiece"
       ]
     }
   }

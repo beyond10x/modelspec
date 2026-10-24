@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/modelspec.observatory.Subgraph",
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "e21d7f27dcedc3d15da67f289b036202cf0168d502b1c42e60519b3ebaa0e567",
+    "contract_digest": "slice-sha256/2:a33bb7021abde7348b522b9fe6df8f7b83f745ccd51d45b77cbbf3fb4fbb0deb",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.observatory.Subgraph": {
+      "title": "Subgraph",
+      "description": "The Training IR subgraph of a node; Gradient is the backward computation (DESIGN.md § 3.1; `Subgraph` in `modelspec-core/src/ir/training.rs`).",
+      "x-ess-name": "modelspec.observatory.Subgraph",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "Forward",
+        "Loss",
+        "Gradient",
+        "Optimizer"
+      ]
+    }
+  }
+}

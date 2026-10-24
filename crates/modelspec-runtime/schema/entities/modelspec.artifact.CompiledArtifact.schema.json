@@ -1,0 +1,459 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CompiledArtifact",
+  "description": "A versioned compiler output holding a manifest, kernels and an execution plan (DESIGN.md § 7.1). A Cpu artifact has no kernels and no Dispatch steps (DESIGN.md § 7.1); ESS states the plan half here, not the kernels half.",
+  "x-ess-name": "modelspec.artifact.CompiledArtifact",
+  "x-ess-kind": "entity",
+  "type": "object",
+  "properties": {
+    "artifact_id": {
+      "$ref": "#/$defs/modelspec.artifact.ArtifactId"
+    },
+    "format_version": {
+      "description": "CompiledArtifact is versioned (DESIGN.md § 7.1).",
+      "type": "integer"
+    },
+    "backend": {
+      "$ref": "#/$defs/modelspec.artifact.Backend"
+    },
+    "artifact_hash": {
+      "$ref": "#/$defs/modelspec.artifact.ContentHash",
+      "description": "blake3 of the serialized artifact; it covers fast_math and deterministic (DESIGN.md § 3.3, § 7)."
+    },
+    "source_hash": {
+      "$ref": "#/$defs/modelspec.artifact.ContentHash",
+      "description": "Hash of the `.mspec` source compiled; the source version (DESIGN.md § 6.1)."
+    },
+    "ir_hash": {
+      "$ref": "#/$defs/modelspec.artifact.ContentHash",
+      "description": "Part of every kernel cache key (DESIGN.md § 5.3)."
+    },
+    "fast_math": {
+      "description": "Recorded in the artifact hash (DESIGN.md § 3.3).",
+      "type": "boolean"
+    },
+    "deterministic": {
+      "description": "A compile setting; every floating-point reduction runs in an order fixed by the shape alone, workgroup sizes are fixed in the plan at compile time (no shipped command reads them from a DeviceProfile, and no reduction's workgroup size depends on one), and the CPU order is one admissible order, so it is recorded in the artifact hash (DESIGN.md § 3.3, § 5.2, § 6.1).",
+      "type": "boolean"
+    },
+    "compiler_version": {
+      "description": "Manifest; recorded for reproducibility (DESIGN.md § 6.1).",
+      "type": "string"
+    },
+    "schema_hash": {
+      "$ref": "#/$defs/modelspec.artifact.ContentHash",
+      "description": "Manifest; the compiler/model schema hash a checkpoint is matched against (DESIGN.md § 6.2)."
+    },
+    "parameters": {
+      "description": "Manifest; parameter paths, dtypes and shapes, matched against a checkpoint's (DESIGN.md § 6.2); paths are unique and no two parameters alias (DESIGN.md § 2.3).",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/modelspec.artifact.ParameterSpec"
+      }
+    },
+    "data": {
+      "description": "Manifest; the input and target tensors and their shapes (DESIGN.md § 2, § 6.1).",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/modelspec.artifact.DataSpec"
+      }
+    },
+    "plan": {
+      "description": "The execution DAG of one training step in a valid execution order (DESIGN.md § 3.1, § 7.1). It has no Complete step and exactly one fence, a Barrier with no dependencies, which is its last step. A runner may record it many times back to back into one command buffer, the recordings concatenated and each ordered after the fence of the one before, and the concatenation verifies as one plan in which each fence closes a recording. The runner places a CPU-visible completion point at the end of a run and at each requested checkpoint. Within one recording no step reads a parameter after its update. Its Allocate steps are run setup, executed once before the first recording.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/modelspec.artifact.PlanStep"
+      }
+    },
+    "forward_plan": {
+      "description": "The inference plan, the forward pass without loss, gradients or update, what the data loader runs (DESIGN.md § 7.1). It writes no parameter view, has no Complete step and has exactly one fence, its last step, as the step plan does.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/modelspec.artifact.PlanStep"
+      }
+    },
+    "buffers": {
+      "description": "The size in bytes of each plan buffer, indexed by BufferView.buffer; both plans and every bound view share them (DESIGN.md § 3.1 resources, § 7.1). In M1 each stored value has its own buffer, with five exceptions. An SGD update writes its parameter's buffer in place, a compile-time scalar folded into its readers' immediates has no buffer, the lr * g product of an update fused into one sgd_update kernel has no buffer, a matmul pre-activation that no op but its ReLU epilogue reads, and that is not the loss or the prediction, has no buffer, and a transpose that no op but matmuls reads, that is not the loss or the prediction, and whose operand is not a parameter updated before one of those matmuls, has no buffer, each matmul reading its operand in place (DESIGN.md § 3.1); no data, loss or prediction view lies in a parameter buffer. No buffer exceeds 4294967295 bytes, the u32 range of a storage buffer binding.",
+      "type": "array",
+      "items": {
+        "type": "integer"
+      }
+    },
+    "loss_view": {
+      "$ref": "#/$defs/modelspec.artifact.BufferView",
+      "description": "The plan buffer view the step plan writes the rank-0 loss into, one element (DESIGN.md § 7.1). Buffer numbers are shared by both plans and laid out for every backend; a Cpu artifact has the views and empty plans."
+    },
+    "prediction_view": {
+      "$ref": "#/$defs/modelspec.artifact.BufferView",
+      "description": "The plan buffer view the forward plan and the step plan write the model's prediction into (DESIGN.md § 7.1). A forward that returns an input or a parameter copies it into this view, and one that returns a literal fills it."
+    },
+    "state": {
+      "$ref": "#/$defs/modelspec.artifact.CompiledArtifact.State"
+    }
+  },
+  "required": [
+    "artifact_id",
+    "format_version",
+    "backend",
+    "artifact_hash",
+    "source_hash",
+    "ir_hash",
+    "fast_math",
+    "deterministic",
+    "compiler_version",
+    "schema_hash",
+    "parameters",
+    "data",
+    "plan",
+    "forward_plan",
+    "buffers",
+    "loss_view",
+    "prediction_view",
+    "state"
+  ],
+  "additionalProperties": false,
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "e21d7f27dcedc3d15da67f289b036202cf0168d502b1c42e60519b3ebaa0e567",
+    "contract_digest": "slice-sha256/2:94288ac346623ffea5ca3dd37a9569e12ab798afb6b46e2af3c43096faf1cdab",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.artifact.ArtifactId": {
+      "title": "ArtifactId",
+      "x-ess-name": "modelspec.artifact.ArtifactId",
+      "x-ess-kind": "newtype",
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    },
+    "modelspec.artifact.Backend": {
+      "title": "Backend",
+      "x-ess-name": "modelspec.artifact.Backend",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "Cpu",
+        "Vulkan"
+      ]
+    },
+    "modelspec.artifact.BufferView": {
+      "title": "BufferView",
+      "description": "A typed view of a plan buffer (DESIGN.md § 7.1). size_bytes equals element_count times dtype.size_bytes and offset is a multiple of alignment; ESS states neither here. Device ownership (§ 7.1) is not yet typed.",
+      "x-ess-name": "modelspec.artifact.BufferView",
+      "x-ess-kind": "struct",
+      "type": "object",
+      "properties": {
+        "buffer": {
+          "description": "The plan-local number of the allocation the view lies in (DESIGN.md § 3.1 resources).",
+          "type": "integer",
+          "minimum": 0
+        },
+        "dtype": {
+          "$ref": "#/$defs/modelspec.checkpoint.DType"
+        },
+        "element_count": {
+          "description": "Logical element count (DESIGN.md § 7.1).",
+          "type": "integer",
+          "minimum": 1
+        },
+        "offset": {
+          "description": "Start of the allocation range, in bytes (DESIGN.md § 7.1).",
+          "type": "integer",
+          "minimum": 0
+        },
+        "size_bytes": {
+          "description": "Length of the allocation range, in bytes (DESIGN.md § 7.1).",
+          "type": "integer",
+          "minimum": 1
+        },
+        "alignment": {
+          "description": "Alignment of the view, in bytes (DESIGN.md § 7.1).",
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "buffer",
+        "dtype",
+        "element_count",
+        "offset",
+        "size_bytes",
+        "alignment"
+      ],
+      "additionalProperties": false,
+      "x-ess-invariants": [
+        "buffer >= 0",
+        "element_count > 0",
+        "offset >= 0",
+        "size_bytes > 0",
+        "size_bytes >= dtype.size_bytes",
+        "alignment > 0"
+      ]
+    },
+    "modelspec.artifact.CompiledArtifact.State": {
+      "title": "State",
+      "x-ess-name": "modelspec.artifact.CompiledArtifact.State",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "Compiled"
+      ]
+    },
+    "modelspec.artifact.ContentHash": {
+      "title": "ContentHash",
+      "description": "A blake3 digest under explicit serialization and version rules (DESIGN.md § 7).",
+      "x-ess-name": "modelspec.artifact.ContentHash",
+      "x-ess-kind": "newtype",
+      "type": "string"
+    },
+    "modelspec.artifact.DataRole": {
+      "title": "DataRole",
+      "description": "Whether a bound tensor is a training input or a target (DESIGN.md § 2 `input`, `target`).",
+      "x-ess-name": "modelspec.artifact.DataRole",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "Input",
+        "Target"
+      ]
+    },
+    "modelspec.artifact.DataSpec": {
+      "title": "DataSpec",
+      "description": "One input or target tensor of the train specification, with the shape a batch must have (DESIGN.md § 2, § 6.1 tensor shapes).",
+      "x-ess-name": "modelspec.artifact.DataSpec",
+      "x-ess-kind": "struct",
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "role": {
+          "$ref": "#/$defs/modelspec.artifact.DataRole"
+        },
+        "dtype": {
+          "$ref": "#/$defs/modelspec.checkpoint.DType"
+        },
+        "shape": {
+          "$ref": "#/$defs/modelspec.checkpoint.Shape"
+        },
+        "view": {
+          "$ref": "#/$defs/modelspec.artifact.BufferView",
+          "description": "The plan buffer view a runner writes each batch of this tensor into before a step (DESIGN.md § 7.1). No plan step loads a batch; the runner uploads it between recordings, outside the recorded plan, ordered after the fence of the recording before and before the first step of the next."
+        }
+      },
+      "required": [
+        "name",
+        "role",
+        "dtype",
+        "shape",
+        "view"
+      ],
+      "additionalProperties": false
+    },
+    "modelspec.artifact.KernelModuleId": {
+      "title": "KernelModuleId",
+      "x-ess-name": "modelspec.artifact.KernelModuleId",
+      "x-ess-kind": "newtype",
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    },
+    "modelspec.artifact.ParameterSpec": {
+      "title": "ParameterSpec",
+      "description": "One parameter the artifact reads and updates, by its stable path (DESIGN.md § 2.3, § 6.2).",
+      "x-ess-name": "modelspec.artifact.ParameterSpec",
+      "x-ess-kind": "struct",
+      "type": "object",
+      "properties": {
+        "param": {
+          "description": "The parameter's number in the Tensor IR of the compiled step (DESIGN.md § 3.1); the stable identity is the path.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "path": {
+          "$ref": "#/$defs/modelspec.checkpoint.ParameterPath"
+        },
+        "canonical_parameter_id": {
+          "description": "The first 8 bytes of blake3 of the canonical path, read little-endian as an unsigned 64-bit integer; with the global seed it selects the parameter's initial values (DESIGN.md § 2.3).",
+          "type": "integer",
+          "minimum": 0
+        },
+        "dtype": {
+          "$ref": "#/$defs/modelspec.checkpoint.DType"
+        },
+        "shape": {
+          "$ref": "#/$defs/modelspec.checkpoint.Shape"
+        },
+        "views": {
+          "description": "The plan buffer views that hold the parameter across steps. One view is the in-place case, the step reading version n and the update writing n + 1 into it; two are ping-pong, step s reading view s mod 2 and writing view (s + 1) mod 2 (DESIGN.md § 6.3 item 3). M1 emits one.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/modelspec.artifact.BufferView"
+          }
+        }
+      },
+      "required": [
+        "param",
+        "path",
+        "canonical_parameter_id",
+        "dtype",
+        "shape",
+        "views"
+      ],
+      "additionalProperties": false,
+      "x-ess-invariants": [
+        "param >= 0",
+        "canonical_parameter_id >= 0",
+        "canonical_parameter_id <= 18446744073709551615",
+        "views.count >= 1",
+        "views.count <= 2"
+      ]
+    },
+    "modelspec.artifact.PlanOp": {
+      "title": "PlanOp",
+      "description": "The command kinds of the execution DAG (DESIGN.md § 3.1).",
+      "x-ess-name": "modelspec.artifact.PlanOp",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "Allocate",
+        "Copy",
+        "Dispatch",
+        "Barrier",
+        "Complete"
+      ]
+    },
+    "modelspec.artifact.PlanStep": {
+      "title": "PlanStep",
+      "description": "One command of the execution DAG (DESIGN.md § 3.1). A Dispatch names the kernel module it runs, one of its artifact's kernels (DESIGN.md § 7.1); ESS cannot state that the module belongs to the same artifact.",
+      "x-ess-name": "modelspec.artifact.PlanStep",
+      "x-ess-kind": "struct",
+      "type": "object",
+      "properties": {
+        "op": {
+          "$ref": "#/$defs/modelspec.artifact.PlanOp"
+        },
+        "kernel_module_id": {
+          "$ref": "#/$defs/modelspec.artifact.KernelModuleId",
+          "description": "Present exactly on a Dispatch step (DESIGN.md § 7.1)."
+        },
+        "workgroups": {
+          "$ref": "#/$defs/modelspec.device.Extent3D",
+          "description": "Dispatch dimensions, the workgroup count per dimension; present exactly on a Dispatch step (DESIGN.md § 3.1)."
+        },
+        "reads": {
+          "description": "The resources the step reads, such as a Copy's source (DESIGN.md § 3.1 resource dependencies).",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/modelspec.artifact.BufferView"
+          }
+        },
+        "writes": {
+          "description": "The resources the step writes; for an Allocate step the scratch allocation it makes (DESIGN.md § 3.1 scratch allocations).",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/modelspec.artifact.BufferView"
+          }
+        },
+        "depends_on": {
+          "description": "Positions in the plan of earlier steps this one waits on, the DAG's dependencies and barriers (DESIGN.md § 3.1). That each lies before this step is not stated in ESS. A Barrier with no dependencies is a fence, ordered after every earlier step; a step with no dependencies after a fence is ordered after that fence.",
+          "type": "array",
+          "items": {
+            "type": "integer"
+          }
+        },
+        "value": {
+          "description": "The Tensor IR value a Dispatch, Copy or Allocate step computes or holds (DESIGN.md § 3.1); absent on a Barrier.",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "op",
+        "reads",
+        "writes",
+        "depends_on"
+      ],
+      "additionalProperties": false,
+      "x-ess-invariants": [
+        "forall position in depends_on: (position >= 0)",
+        "(not (defined(value)) or value >= 0)",
+        "distinct position in depends_on",
+        "((op == Dispatch and defined(kernel_module_id) and defined(workgroups)) or (op != Dispatch and not (defined(kernel_module_id)) and not (defined(workgroups))))"
+      ]
+    },
+    "modelspec.checkpoint.DType": {
+      "title": "DType",
+      "description": "A tensor element type and its size in bytes; `f32` is the only M0/M1 dtype (DESIGN.md § 2.2).",
+      "x-ess-name": "modelspec.checkpoint.DType",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "F32"
+      ],
+      "x-ess-attributes": [
+        {
+          "kind": "integer",
+          "name": "size_bytes",
+          "type": "Integer",
+          "values": {
+            "F32": 4
+          }
+        }
+      ]
+    },
+    "modelspec.checkpoint.ParameterPath": {
+      "title": "ParameterPath",
+      "description": "A stable canonical parameter path such as `TinyMLP.fc1.weight` (DESIGN.md § 2.3).",
+      "x-ess-name": "modelspec.checkpoint.ParameterPath",
+      "x-ess-kind": "newtype",
+      "type": "string"
+    },
+    "modelspec.checkpoint.Shape": {
+      "title": "Shape",
+      "description": "A tensor shape; each dimension is a positive integer and rank 0 is a scalar (DESIGN.md § 2.2).",
+      "x-ess-name": "modelspec.checkpoint.Shape",
+      "x-ess-kind": "newtype",
+      "type": "array",
+      "items": {
+        "type": "integer"
+      },
+      "x-ess-invariants": [
+        "forall dim in value: (dim > 0)"
+      ]
+    },
+    "modelspec.device.Extent3D": {
+      "title": "Extent3D",
+      "description": "A size along the three workgroup dimensions x, y and z, each positive (DESIGN.md § 3.1 dispatch dimensions, § 5.1 workgroup limits).",
+      "x-ess-name": "modelspec.device.Extent3D",
+      "x-ess-kind": "struct",
+      "type": "object",
+      "properties": {
+        "x": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "y": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "z": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "x",
+        "y",
+        "z"
+      ],
+      "additionalProperties": false,
+      "x-ess-invariants": [
+        "x > 0",
+        "y > 0",
+        "z > 0"
+      ]
+    }
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/modelspec.data.SplitRole",
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "e21d7f27dcedc3d15da67f289b036202cf0168d502b1c42e60519b3ebaa0e567",
+    "contract_digest": "slice-sha256/2:c6ce43ff5ada16323e17092338e4add0c05cb84f0b2049a330c2415ce84d6bd9",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.data.SplitRole": {
+      "title": "SplitRole",
+      "description": "What a split is used for; MLM loss and accuracy are evaluated on the held-out split (epic:bert-from-scratch).",
+      "x-ess-name": "modelspec.data.SplitRole",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "Train",
+        "HeldOut"
+      ]
+    }
+  }
+}

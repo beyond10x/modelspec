@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/modelspec.observatory.RunFailed",
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "e21d7f27dcedc3d15da67f289b036202cf0168d502b1c42e60519b3ebaa0e567",
+    "contract_digest": "slice-sha256/2:a334dc7b648bbd40e6409dc479667bf9c85f0242a68e854dd76b031c3ae9ce05",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.observatory.RunFailed": {
+      "title": "RunFailed",
+      "description": "The event of a run failing, the last of its stream (RunEventBody). A failure is a diagnostic or a runtime error (DESIGN.md § 8.1, diagnostics distinguish user specification errors from runtime failures).",
+      "x-ess-name": "modelspec.observatory.RunFailed",
+      "x-ess-kind": "struct",
+      "type": "object",
+      "properties": {
+        "code": {
+          "description": "The diagnostic code that refused the run, such as E-DATA-003 (DESIGN.md § 8.1, M0 codes for `train`); absent for a runtime error, which has no code.",
+          "type": "string"
+        },
+        "message": {
+          "description": "The failure on one line, the diagnostic's message or the runtime error as `modelspec train` reports it.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "message"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

@@ -4,14 +4,14 @@
   "x-ess-provenance": {
     "system": "modelspec",
     "specification_version": "v1",
-    "source_digest": "c8d09d592d06c980e3d96ff401af94130cae0e565826a9b3b5d93f3e3713ab8e",
-    "contract_digest": "slice-sha256/2:c7a2b55b2c0c061585c87fdf0412844218c3a29ab90ae9e49405b7dcbbb1ba62",
+    "source_digest": "e21d7f27dcedc3d15da67f289b036202cf0168d502b1c42e60519b3ebaa0e567",
+    "contract_digest": "slice-sha256/2:204e5889023d65af174ec56d02b897ebb467a495c86fdc3b15ba964f5d55e0cd",
     "regenerate": "ess generate"
   },
   "$defs": {
     "modelspec.data.Vocabulary": {
       "title": "Vocabulary",
-      "description": "The tokens a tokenizer maps text to; a token's id is its position in tokens (about 30k for BERT-tiny, epic:bert-from-scratch). mask_token_id names the token 80/10/10 masking substitutes.",
+      "description": "The tokens a tokenizer maps text to; a token's id is its position in tokens (about 30k for BERT-tiny in the epic; 8,192 for the WordPiece tokenizer of TokenizerKind). mask_token_id names the token 80/10/10 masking substitutes. The special tokens are BERT's, at fixed ids at the head of tokens, in this order, `[PAD]` 0, `[UNK]` 1, `[CLS]` 2, `[SEP]` 3, `[MASK]` 4, so a batch record can be read without the vocabulary (coordinator decision D19, 2026-10-24, `.engineering/waves/bert-1.md`).",
       "x-ess-name": "modelspec.data.Vocabulary",
       "x-ess-kind": "struct",
       "type": "object",
@@ -24,18 +24,60 @@
         },
         "mask_token_id": {
           "type": "integer",
-          "minimum": 0
+          "minimum": 0,
+          "const": 4
+        },
+        "pad_token_id": {
+          "description": "The id of `[PAD]`, the token that fills a sequence up to its length (coordinator decision D19, 2026-10-24, `.engineering/waves/bert-1.md`).",
+          "type": "integer",
+          "minimum": 0,
+          "const": 0
+        },
+        "unk_token_id": {
+          "description": "The id of `[UNK]`, the token a word stands for when the vocabulary cannot encode it (coordinator decision D19, 2026-10-24, `.engineering/waves/bert-1.md`).",
+          "type": "integer",
+          "minimum": 0,
+          "const": 1
+        },
+        "cls_token_id": {
+          "description": "The id of `[CLS]`, the token that opens a sequence (coordinator decision D19, 2026-10-24, `.engineering/waves/bert-1.md`).",
+          "type": "integer",
+          "minimum": 0,
+          "const": 2
+        },
+        "sep_token_id": {
+          "description": "The id of `[SEP]`, the token that closes a sequence (coordinator decision D19, 2026-10-24, `.engineering/waves/bert-1.md`).",
+          "type": "integer",
+          "minimum": 0,
+          "const": 3
         }
       },
       "required": [
         "tokens",
-        "mask_token_id"
+        "mask_token_id",
+        "pad_token_id",
+        "unk_token_id",
+        "cls_token_id",
+        "sep_token_id"
       ],
       "additionalProperties": false,
       "x-ess-invariants": [
         "distinct token in tokens",
         "mask_token_id >= 0",
-        "mask_token_id < tokens.count"
+        "mask_token_id < tokens.count",
+        "mask_token_id == 4",
+        "pad_token_id >= 0",
+        "pad_token_id < tokens.count",
+        "pad_token_id == 0",
+        "unk_token_id >= 0",
+        "unk_token_id < tokens.count",
+        "unk_token_id == 1",
+        "cls_token_id >= 0",
+        "cls_token_id < tokens.count",
+        "cls_token_id == 2",
+        "sep_token_id >= 0",
+        "sep_token_id < tokens.count",
+        "sep_token_id == 3"
       ]
     }
   }

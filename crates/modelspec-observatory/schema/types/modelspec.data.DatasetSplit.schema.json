@@ -4,26 +4,54 @@
   "x-ess-provenance": {
     "system": "modelspec",
     "specification_version": "v1",
-    "source_digest": "c8d09d592d06c980e3d96ff401af94130cae0e565826a9b3b5d93f3e3713ab8e",
-    "contract_digest": "slice-sha256/2:1ac8fd7574727ea1718635b4633fd35d7b37d4eb839b769e1ca62feaa9442dd0",
+    "source_digest": "e21d7f27dcedc3d15da67f289b036202cf0168d502b1c42e60519b3ebaa0e567",
+    "contract_digest": "slice-sha256/2:a5ae5fa04421ed521b2a8edd45391031b549cea64be80d617b264dc69a81f640",
     "regenerate": "ess generate"
   },
   "$defs": {
+    "modelspec.artifact.ContentHash": {
+      "title": "ContentHash",
+      "description": "A blake3 digest under explicit serialization and version rules (DESIGN.md § 7).",
+      "x-ess-name": "modelspec.artifact.ContentHash",
+      "x-ess-kind": "newtype",
+      "type": "string"
+    },
     "modelspec.data.DatasetSplit": {
       "title": "DatasetSplit",
-      "description": "One split of a corpus.",
+      "description": "One split of a corpus, made from one file of the release, not by a fraction or a shuffle, so the held-out set is the one every published WikiText-103 number uses. Train is `wiki.train.raw` and HeldOut is `wiki.valid.raw`; `wiki.test.raw` is not read. `modelspec data prepare` copies the file byte for byte to `train.raw` or `heldout.raw` in its output directory. A split is identified by role, content_hash, document_count and byte_count (coordinator decision D19, 2026-10-24, `.engineering/waves/bert-1.md`).",
       "x-ess-name": "modelspec.data.DatasetSplit",
       "x-ess-kind": "struct",
       "type": "object",
       "properties": {
         "role": {
           "$ref": "#/$defs/modelspec.data.SplitRole"
+        },
+        "content_hash": {
+          "$ref": "#/$defs/modelspec.artifact.ContentHash",
+          "description": "The blake3 hash of the split file's bytes, 64 lowercase hexadecimal digits (coordinator decision D19, 2026-10-24, `.engineering/waves/bert-1.md`)."
+        },
+        "document_count": {
+          "description": "The number of documents in the split. A document is one article of the release. It starts at a line of the shape ` = <title> = ` (one leading space, `= `, a title that does not start with `=`, ` = `, then the line's end; a section heading ` = = <section> = = ` does not count) that has a blank line, a single space, directly before it and directly after it; a line of that shape without both blank lines is a table key or a citation or equation fragment inside an article. Any non-blank text before the first such heading is one document too. On the release this gives 28,472 Train, 60 HeldOut and 60 test articles. The published train count (Merity et al. 2016) is 28,475; the 3 missing articles are not in the file under any heading rule the coordinator tried (coordinator decisions D19 and D22, 2026-10-24, `.engineering/waves/bert-1.md`).",
+          "type": "integer",
+          "minimum": 1
+        },
+        "byte_count": {
+          "description": "The length of the split file in bytes; the file is UTF-8 (coordinator decision D19, 2026-10-24, `.engineering/waves/bert-1.md`).",
+          "type": "integer",
+          "minimum": 1
         }
       },
       "required": [
-        "role"
+        "role",
+        "content_hash",
+        "document_count",
+        "byte_count"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "x-ess-invariants": [
+        "document_count > 0",
+        "byte_count > 0"
+      ]
     },
     "modelspec.data.SplitRole": {
       "title": "SplitRole",

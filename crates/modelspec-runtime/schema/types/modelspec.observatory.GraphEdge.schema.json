@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/modelspec.observatory.GraphEdge",
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "e21d7f27dcedc3d15da67f289b036202cf0168d502b1c42e60519b3ebaa0e567",
+    "contract_digest": "slice-sha256/2:4267359748fff07c1b191026cd2b76df5acca54fba7609fc3d6f0ce539363f7c",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.observatory.GraphEdge": {
+      "title": "GraphEdge",
+      "description": "One tensor flowing from the node that defines it to a node that reads it; its dtype and shape are its producer's (DESIGN.md § 3.2 TensorNode.operands).",
+      "x-ess-name": "modelspec.observatory.GraphEdge",
+      "x-ess-kind": "struct",
+      "type": "object",
+      "properties": {
+        "producer": {
+          "description": "value_id of the node defining the tensor.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "consumer": {
+          "description": "value_id of the node reading it.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "operand": {
+          "description": "The position of the tensor among the consumer's operands, from 0; operand order matters (Sub, MatMul).",
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "producer",
+        "consumer",
+        "operand"
+      ],
+      "additionalProperties": false,
+      "x-ess-invariants": [
+        "producer >= 0",
+        "consumer >= 0",
+        "operand >= 0"
+      ]
+    }
+  }
+}

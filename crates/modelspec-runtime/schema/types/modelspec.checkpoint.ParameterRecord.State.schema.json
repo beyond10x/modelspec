@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/modelspec.checkpoint.ParameterRecord.State",
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "e21d7f27dcedc3d15da67f289b036202cf0168d502b1c42e60519b3ebaa0e567",
+    "contract_digest": "slice-sha256/2:7ea2edae64caa0610c9e5e038f27952211b08fca895403f70ca66558c2cfe8e5",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.checkpoint.ParameterRecord.State": {
+      "title": "State",
+      "x-ess-name": "modelspec.checkpoint.ParameterRecord.State",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "Written"
+      ]
+    }
+  }
+}

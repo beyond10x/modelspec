@@ -1,0 +1,129 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ParameterRecord",
+  "description": "One tensor in a checkpoint's payload, addressed by offset and length (DESIGN.md § 6.2). Its path is unique among the records of its checkpoint (DESIGN.md § 2.3), and offset + length <= the checkpoint's file_size with offset a multiple of its alignment (DESIGN.md § 6.2); ESS states neither here. On disk a record is identified by its path and belongs to the checkpoint whose manifest contains it, and parameter_record_id and checkpoint_id are derived from those and not written in the record (DESIGN.md § 6.2).",
+  "x-ess-name": "modelspec.checkpoint.ParameterRecord",
+  "x-ess-kind": "entity",
+  "type": "object",
+  "properties": {
+    "parameter_record_id": {
+      "$ref": "#/$defs/modelspec.checkpoint.ParameterRecordId"
+    },
+    "checkpoint_id": {
+      "$ref": "#/$defs/modelspec.checkpoint.CheckpointId",
+      "x-ess-relation": {
+        "name": "parameters",
+        "kind": "owns",
+        "source": "modelspec.checkpoint.Checkpoint",
+        "target": "modelspec.checkpoint.ParameterRecord",
+        "cardinality": "many",
+        "via": "checkpoint_id"
+      }
+    },
+    "path": {
+      "$ref": "#/$defs/modelspec.checkpoint.ParameterPath"
+    },
+    "dtype": {
+      "$ref": "#/$defs/modelspec.checkpoint.DType"
+    },
+    "shape": {
+      "$ref": "#/$defs/modelspec.checkpoint.Shape"
+    },
+    "offset": {
+      "description": "Absolute byte offset of the tensor from the start of the file, a multiple of the checkpoint's alignment (DESIGN.md § 6.2).",
+      "type": "integer"
+    },
+    "length": {
+      "description": "Length in bytes, equal to the product of `shape` times `dtype.size_bytes`, so tensor bytes are never reinterpreted (DESIGN.md § 6.2).",
+      "type": "integer"
+    },
+    "state": {
+      "$ref": "#/$defs/modelspec.checkpoint.ParameterRecord.State"
+    }
+  },
+  "required": [
+    "parameter_record_id",
+    "checkpoint_id",
+    "path",
+    "dtype",
+    "shape",
+    "offset",
+    "length",
+    "state"
+  ],
+  "additionalProperties": false,
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "e21d7f27dcedc3d15da67f289b036202cf0168d502b1c42e60519b3ebaa0e567",
+    "contract_digest": "slice-sha256/2:2815223e3b46802bf3974cfb39c02fb14e13e1fa026050a5a3800e98c324a692",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.checkpoint.CheckpointId": {
+      "title": "CheckpointId",
+      "x-ess-name": "modelspec.checkpoint.CheckpointId",
+      "x-ess-kind": "newtype",
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    },
+    "modelspec.checkpoint.DType": {
+      "title": "DType",
+      "description": "A tensor element type and its size in bytes; `f32` is the only M0/M1 dtype (DESIGN.md § 2.2).",
+      "x-ess-name": "modelspec.checkpoint.DType",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "F32"
+      ],
+      "x-ess-attributes": [
+        {
+          "kind": "integer",
+          "name": "size_bytes",
+          "type": "Integer",
+          "values": {
+            "F32": 4
+          }
+        }
+      ]
+    },
+    "modelspec.checkpoint.ParameterPath": {
+      "title": "ParameterPath",
+      "description": "A stable canonical parameter path such as `TinyMLP.fc1.weight` (DESIGN.md § 2.3).",
+      "x-ess-name": "modelspec.checkpoint.ParameterPath",
+      "x-ess-kind": "newtype",
+      "type": "string"
+    },
+    "modelspec.checkpoint.ParameterRecord.State": {
+      "title": "State",
+      "x-ess-name": "modelspec.checkpoint.ParameterRecord.State",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "Written"
+      ]
+    },
+    "modelspec.checkpoint.ParameterRecordId": {
+      "title": "ParameterRecordId",
+      "x-ess-name": "modelspec.checkpoint.ParameterRecordId",
+      "x-ess-kind": "newtype",
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    },
+    "modelspec.checkpoint.Shape": {
+      "title": "Shape",
+      "description": "A tensor shape; each dimension is a positive integer and rank 0 is a scalar (DESIGN.md § 2.2).",
+      "x-ess-name": "modelspec.checkpoint.Shape",
+      "x-ess-kind": "newtype",
+      "type": "array",
+      "items": {
+        "type": "integer"
+      },
+      "x-ess-invariants": [
+        "forall dim in value: (dim > 0)"
+      ]
+    }
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/modelspec.artifact.PlanOp",
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "e21d7f27dcedc3d15da67f289b036202cf0168d502b1c42e60519b3ebaa0e567",
+    "contract_digest": "slice-sha256/2:b5085da8114735818edfc40ad195cdf95fc9aaac4bc8e2b385b7c18e0fdfc7d3",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.artifact.PlanOp": {
+      "title": "PlanOp",
+      "description": "The command kinds of the execution DAG (DESIGN.md § 3.1).",
+      "x-ess-name": "modelspec.artifact.PlanOp",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "Allocate",
+        "Copy",
+        "Dispatch",
+        "Barrier",
+        "Complete"
+      ]
+    }
+  }
+}

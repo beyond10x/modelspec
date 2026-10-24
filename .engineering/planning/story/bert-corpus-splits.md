@@ -2,13 +2,12 @@
 format: aep.planning-md/3
 id: story:bert-corpus-splits
 kind: story
-status: draft
+status: implemented
 title: Prepare a public text corpus into train and held-out splits in Rust
 summary: Adds modelspec data prepare, writing reproducible Train and HeldOut splits with a schema-checked record; settles the Dataset and DatasetSplit markers.
 relations:
 - decomposes: epic:bert-from-scratch
 - serves: vision:modelspec
-- depends_on: story:observatory-saliency-gradient-x-input
 scope:
 - confidence: cited
   path: AGENTS.md
@@ -38,7 +37,11 @@ scope:
   path: spec/domains/data.yaml
 - confidence: cited
   path: website/docs/reference/cli.md
-revision: 3
+revision: 6
+transitions:
+- {from: "draft", to: "proposed", at: "2026-10-24T18:51:35Z", actor: "human:timo", revision: 4}
+- {from: "proposed", to: "active", at: "2026-10-24T18:51:35Z", actor: "human:timo", revision: 5}
+- {from: "active", to: "implemented", at: "2026-10-24T19:51:50Z", actor: "human:timo", revision: 6, decided_on: {"recorded":{"test_result":1,"review_outcome":1}}}
 ---
 # Prepare a public text corpus into train and held-out splits in Rust
 
