@@ -1,5 +1,5 @@
 //! The WordPiece tokenizer of a masked-language-model run (`spec/domains/data.yaml`,
-//! `modelspec.data.Tokenizer`; story:bert-tokenizer, coordinator decisions D19 and D23).
+//! `modelspec.data.Tokenizer`; story:bert-tokenizer, coordinator decisions D19, D23 and D25).
 //!
 //! [`train`] counts the words of a prepared dataset's `Train` split once, then merges on that
 //! word table, never on the text, until the vocabulary has exactly the requested size. Every
@@ -81,6 +81,14 @@ pub enum TrainError {
     BelowSpecialTokens { requested: usize },
     /// No pair was left to merge at `reached` tokens.
     TooSmall { reached: usize, requested: usize },
+    /// No pair was left to merge at `reached` tokens because the requested size left room for
+    /// only part of the alphabet, which alone needs `alphabet_tokens` (the special tokens and
+    /// two per character).
+    AlphabetTooLarge {
+        reached: usize,
+        requested: usize,
+        alphabet_tokens: usize,
+    },
 }
 
 impl fmt::Display for TrainError {
@@ -94,6 +102,15 @@ impl fmt::Display for TrainError {
             TrainError::TooSmall { reached, requested } => write!(
                 f,
                 "the split yields {reached} tokens, fewer than the {requested} requested"
+            ),
+            TrainError::AlphabetTooLarge {
+                reached,
+                requested,
+                alphabet_tokens,
+            } => write!(
+                f,
+                "training stopped at {reached} tokens, fewer than the {requested} requested: \
+                 the alphabet alone needs {alphabet_tokens} tokens"
             ),
         }
     }
@@ -195,8 +212,9 @@ pub fn write(tokenizer: &Tokenizer, out: &Path) -> Result<(), TokenizerError> {
 }
 
 /// The alphabet of `counts`: its characters by descending frequency, ties by byte order, at
-/// most [`MAX_ALPHABET`] and at most `room` / 2.
-fn alphabet(counts: &WordCounts, room: usize) -> Vec<char> {
+/// most [`MAX_ALPHABET`] and at most `room` / 2; and how many characters it holds without the
+/// `room` limit.
+fn alphabet(counts: &WordCounts, room: usize) -> (Vec<char>, usize) {
     let mut frequency: HashMap<char, u64> = HashMap::new();
     for (word, count) in counts {
         for c in word.chars() {
@@ -205,8 +223,9 @@ fn alphabet(counts: &WordCounts, room: usize) -> Vec<char> {
     }
     let mut chars: Vec<(char, u64)> = frequency.into_iter().collect();
     chars.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-    chars.truncate(MAX_ALPHABET.min(room / 2));
-    chars.into_iter().map(|(c, _)| c).collect()
+    let unlimited = chars.len().min(MAX_ALPHABET);
+    chars.truncate(unlimited.min(room / 2));
+    (chars.into_iter().map(|(c, _)| c).collect(), unlimited)
 }
 
 /// `a` followed by `b` without its continuation prefix.
@@ -230,11 +249,10 @@ struct Pair {
     count: u64,
 }
 
-/// The merge state: tokens, their counts, the word table and the pairs in it.
+/// The merge state: tokens, the word table and the pairs in it.
 struct Trainer {
     tokens: Vec<String>,
     index: HashMap<String, u32>,
-    token_counts: Vec<u64>,
     words: Vec<Word>,
     pairs: Vec<Pair>,
     pair_slots: HashMap<(u32, u32), usize>,
@@ -247,7 +265,6 @@ impl Trainer {
         let id = self.tokens.len() as u32;
         self.index.insert(token.clone(), id);
         self.tokens.push(token);
-        self.token_counts.push(0);
         id
     }
 
@@ -270,18 +287,11 @@ impl Trainer {
         self.pairs[slot].count -= count;
     }
 
-    /// Whether pair `x` ranks before pair `y`: a higher score `count(ab) / (count(a) *
-    /// count(b))`, compared by cross-multiplication, then the lower byte order of the merged
-    /// token, then of `a`.
+    /// Whether pair `x` ranks before pair `y`: a higher pair count (coordinator decision D25),
+    /// then the lower byte order of the merged token, then of `a`.
     fn ranks_before(&self, x: &Pair, y: &Pair) -> bool {
-        let denominator = |p: &Pair| {
-            u128::from(self.token_counts[p.a as usize])
-                * u128::from(self.token_counts[p.b as usize])
-        };
-        let left = u128::from(x.count) * denominator(y);
-        let right = u128::from(y.count) * denominator(x);
-        if left != right {
-            return left > right;
+        if x.count != y.count {
+            return x.count > y.count;
         }
         let (xa, xb) = (&self.tokens[x.a as usize], &self.tokens[x.b as usize]);
         let (ya, yb) = (&self.tokens[y.a as usize], &self.tokens[y.b as usize]);
@@ -318,18 +328,18 @@ impl Trainer {
             let old = std::mem::take(&mut self.words[w as usize].pieces);
             let mut pieces = Vec::with_capacity(old.len());
             let mut i = 0;
-            let mut merges = 0;
+            let mut merged_any = false;
             while i < old.len() {
                 if i + 1 < old.len() && old[i] == a && old[i + 1] == b {
                     pieces.push(m);
-                    merges += 1;
+                    merged_any = true;
                     i += 2;
                 } else {
                     pieces.push(old[i]);
                     i += 1;
                 }
             }
-            if merges > 0 {
+            if merged_any {
                 for pair in old.windows(2) {
                     self.remove_pair((pair[0], pair[1]), count);
                 }
@@ -340,9 +350,6 @@ impl Trainer {
                         self.pair_words.entry(pair).or_default().push(w);
                     }
                 }
-                self.token_counts[a as usize] -= merges * count;
-                self.token_counts[b as usize] -= merges * count;
-                self.token_counts[m as usize] += merges * count;
             }
             self.words[w as usize].pieces = pieces;
         }
@@ -360,7 +367,8 @@ impl Trainer {
     }
 }
 
-/// Trains a tokenizer on word counts to exactly `vocab_size` tokens (coordinator decision D23).
+/// Trains a tokenizer on word counts to exactly `vocab_size` tokens (coordinator decisions D23
+/// and D25).
 pub fn train_counts(counts: &WordCounts, vocab_size: usize) -> Result<Tokenizer, TrainError> {
     let specials = SPECIAL_TOKENS.len();
     if vocab_size < specials {
@@ -368,11 +376,10 @@ pub fn train_counts(counts: &WordCounts, vocab_size: usize) -> Result<Tokenizer,
             requested: vocab_size,
         });
     }
-    let alphabet = alphabet(counts, vocab_size - specials);
+    let (alphabet, unlimited) = alphabet(counts, vocab_size - specials);
     let mut trainer = Trainer {
         tokens: Vec::new(),
         index: HashMap::new(),
-        token_counts: Vec::new(),
         words: Vec::new(),
         pairs: Vec::new(),
         pair_slots: HashMap::new(),
@@ -406,9 +413,6 @@ pub fn train_counts(counts: &WordCounts, vocab_size: usize) -> Result<Tokenizer,
             .collect();
         let Some(pieces) = pieces else { continue };
         let w = trainer.words.len() as u32;
-        for &piece in &pieces {
-            trainer.token_counts[piece as usize] += count;
-        }
         for pair in pieces.windows(2) {
             let pair = (pair[0], pair[1]);
             trainer.add_pair(pair, count);
@@ -419,9 +423,16 @@ pub fn train_counts(counts: &WordCounts, vocab_size: usize) -> Result<Tokenizer,
 
     while trainer.tokens.len() < vocab_size {
         let Some((a, b)) = trainer.best() else {
-            return Err(TrainError::TooSmall {
-                reached: trainer.tokens.len(),
-                requested: vocab_size,
+            let reached = trainer.tokens.len();
+            let requested = vocab_size;
+            return Err(if alphabet.len() < unlimited {
+                TrainError::AlphabetTooLarge {
+                    reached,
+                    requested,
+                    alphabet_tokens: specials + 2 * unlimited,
+                }
+            } else {
+                TrainError::TooSmall { reached, requested }
             });
         };
         let token = merged(&trainer.tokens[a as usize], &trainer.tokens[b as usize]);
@@ -574,8 +585,8 @@ mod tests {
         let mut counts = WordCounts::new();
         counts.insert("abc".into(), 1);
         counts.insert("c".into(), 1);
-        assert_eq!(alphabet(&counts, 5), ['c', 'a']);
-        assert_eq!(alphabet(&counts, 100), ['c', 'a', 'b']);
+        assert_eq!(alphabet(&counts, 5), (vec!['c', 'a'], 3));
+        assert_eq!(alphabet(&counts, 100), (vec!['c', 'a', 'b'], 3));
     }
 
     #[test]

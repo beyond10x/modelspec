@@ -21,7 +21,7 @@ const UNK: u32 = 1;
 
 /// The corpus of story:bert-corpus-splits, pinned by its tests.
 const CORPUS: &str = "corpus";
-/// This story's corpus: `zqjx` three times in the `Train` split only and `xjqz` three times in
+/// This story's corpus: `zqjx` six times in the `Train` split only and `xjqz` six times in
 /// the `HeldOut` split only; neither of their four letters is in any other word of the `Train`
 /// split.
 const CORPUS_TOKENIZER: &str = "corpus-tokenizer";
@@ -169,16 +169,16 @@ fn round_trip() {
     }
 }
 
-/// Scenario 4: `xjqz`, three times in the `HeldOut` split and never in `Train`, is not a single
-/// vocabulary token, while `zqjx`, three times in `Train`, is. Trained on both splits together the
+/// Scenario 4: `xjqz`, six times in the `HeldOut` split and never in `Train`, is not a single
+/// vocabulary token, while `zqjx`, six times in `Train`, is. Trained on both splits together the
 /// same algorithm does make `xjqz` a token, so the case tells the two apart.
 #[test]
 fn train_split_only() {
     let dataset = prepared(CORPUS_TOKENIZER, "train_split_only");
     let train = word_counts(&split_text(&dataset, SplitRole::Train));
     let held_out = word_counts(&split_text(&dataset, SplitRole::HeldOut));
-    assert_eq!(train.get(TRAIN_WORD), Some(&3));
-    assert_eq!(held_out.get(HELD_OUT_WORD), Some(&3), "equal frequency");
+    assert_eq!(train.get(TRAIN_WORD), Some(&6));
+    assert_eq!(held_out.get(HELD_OUT_WORD), Some(&6), "equal frequency");
     assert_eq!(
         train.get(HELD_OUT_WORD),
         None,
@@ -259,15 +259,14 @@ fn encode_is_greedy_longest_match_first() {
     );
     let codec = tokenizer.codec();
     let id = |t: &str| tokens.iter().position(|x| x == t).unwrap() as u32;
-    // (a, ##b), (##b, ##a) and (##a, ##b) all score 5 / (5 * 10); the byte order of the merged
-    // token breaks the tie, and `#` sorts before `a`.
+    // (a, ##b), (##b, ##a) and (##a, ##b) all occur 5 times; the byte order of the merged token
+    // breaks the tie, and `#` sorts before `a`.
     assert_eq!(tokens[9], "##ab");
+    // Longest match first: after `a ##b` the remainder `ab` is `##ab`, not `##a ##b`, which a
+    // shortest-match encoder gives and which decodes to the same text.
+    assert_eq!(codec.encode("abab"), [id("a"), id("##b"), id("##ab")]);
     assert_eq!(codec.encode("b"), [id("b")]);
-    assert_eq!(codec.encode("AB, c"), {
-        let mut ids = codec.encode("ab");
-        ids.extend([UNK, UNK]);
-        ids
-    });
+    assert_eq!(codec.encode("AB, c"), [id("a"), id("##b"), UNK, UNK]);
     assert_eq!(codec.encode(&"a".repeat(100)).len(), 100);
     assert_eq!(codec.encode(&"a".repeat(101)), [UNK]);
     assert_eq!(
@@ -277,11 +276,12 @@ fn encode_is_greedy_longest_match_first() {
     assert_eq!(codec.decode(&[SIZE as u32]), None);
 }
 
-/// The merge is chosen by `count(ab) / (count(a) * count(b))`, not by `count(ab)`: `ab` is the
-/// most frequent pair, but `a` is frequent on its own, so `cd` scores 2 / (2 * 2) against
-/// 10 / (110 * 10) and is merged first.
+/// Merges are ranked by pair frequency (coordinator decision D25), not by the likelihood score
+/// `count(ab) / (count(a) * count(b))`: `ab` occurs 10 times and `cd` twice, so `ab` is merged
+/// first, although `cd` scores 2 / (2 * 2) against 10 / (110 * 10) because `a` is frequent on
+/// its own.
 #[test]
-fn merge_score_divides_by_the_counts_of_both_parts() {
+fn merge_ranks_pairs_by_frequency_not_by_score() {
     let mut counts = tokenizer::WordCounts::new();
     counts.insert("ab".into(), 10);
     counts.insert("a".into(), 100);
@@ -293,5 +293,85 @@ fn merge_score_divides_by_the_counts_of_both_parts() {
         ["a", "##a", "b", "##b", "c", "##c", "d", "##d"].map(String::from),
         "the alphabet by frequency, ties by byte order, each as c and ##c"
     );
-    assert_eq!(tokens[13], "cd");
+    assert_eq!(tokens[13], "ab");
+}
+
+/// A tie between pairs breaks by the byte order of the merged token, not of its first part.
+/// `xac` and `yab` once each: all four pairs occur once. By merged token `##ab` wins; by first
+/// part `##a` ties between `(##a, ##c)` and `(##a, ##b)`, and `(##a, ##c)` is met first, in
+/// `xac`.
+#[test]
+fn ties_break_by_the_merged_token_not_its_first_part() {
+    let mut counts = tokenizer::WordCounts::new();
+    counts.insert("xac".into(), 1);
+    counts.insert("yab".into(), 1);
+    let tokenizer = tokenizer::train_counts(&counts, 5 + 10 + 1).unwrap();
+    let tokens = &tokenizer.vocabulary.tokens;
+    assert_eq!(
+        tokens[5..15],
+        ["a", "##a", "b", "##b", "c", "##c", "x", "##x", "y", "##y"].map(String::from)
+    );
+    assert_eq!(tokens[15], "##ab");
+}
+
+/// A word of exactly 100 characters takes part in merging; one of 101 does not, so with no
+/// other word no pair is left.
+#[test]
+fn trainer_word_cap_is_100_characters() {
+    let mut hundred = tokenizer::WordCounts::new();
+    hundred.insert("a".repeat(100), 1);
+    let tokenizer = tokenizer::train_counts(&hundred, 5 + 2 + 1).unwrap();
+    // (##a, ##a) occurs 98 times, (a, ##a) once.
+    assert_eq!(tokenizer.vocabulary.tokens[7], "##aa");
+
+    let mut long = tokenizer::WordCounts::new();
+    long.insert("a".repeat(101), 1);
+    assert_eq!(
+        tokenizer::train_counts(&long, 5 + 2 + 1).unwrap_err(),
+        tokenizer::TrainError::TooSmall {
+            reached: 7,
+            requested: 8
+        }
+    );
+}
+
+/// A size too small for the whole alphabet that still needs a merge is refused naming the size
+/// reached and the tokens the alphabet alone needs, not as a split too small: `abc` needs
+/// 5 + 2 * 3 tokens before any merge.
+#[test]
+fn too_small_for_the_alphabet_says_what_the_alphabet_needs() {
+    let mut counts = tokenizer::WordCounts::new();
+    counts.insert("abc".into(), 1);
+    for (requested, reached) in [(6, 5), (8, 7), (10, 9)] {
+        let error = tokenizer::train_counts(&counts, requested).unwrap_err();
+        assert_eq!(
+            error,
+            tokenizer::TrainError::AlphabetTooLarge {
+                reached,
+                requested,
+                alphabet_tokens: 11
+            }
+        );
+        let message = error.to_string();
+        assert!(
+            message.contains(&format!(" {reached} "))
+                && message.contains("the alphabet alone needs 11 tokens"),
+            "{message}"
+        );
+    }
+    assert_eq!(
+        tokenizer::train_counts(&counts, 11)
+            .unwrap()
+            .vocabulary
+            .tokens
+            .len(),
+        11
+    );
+    assert_eq!(
+        tokenizer::train_counts(&counts, 14).unwrap_err(),
+        tokenizer::TrainError::TooSmall {
+            reached: 13,
+            requested: 14
+        }
+    );
 }
