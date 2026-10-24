@@ -32,8 +32,8 @@
   "x-ess-provenance": {
     "system": "modelspec",
     "specification_version": "v1",
-    "source_digest": "a5c9aa0cb5c62fb600e6e23d99795113986a393a7a166f7b941d561385c45021",
-    "contract_digest": "slice-sha256/2:5e392323fcdeedcf1cf473c63052a7b09dd6a1b5e93671cf536fe79ee38d15c6",
+    "source_digest": "fafc190d637a41a2cff4163cc12e68926205805aa17b26422c4529c2f50df603",
+    "contract_digest": "slice-sha256/2:046cc8cf080ac74e8a72d46c884f30d851328ab873cd12ea2a36ef2413e15bc8",
     "regenerate": "ess generate"
   },
   "$defs": {
@@ -76,7 +76,7 @@
           "description": "The blake3 hash of the split file's bytes, 64 lowercase hexadecimal digits (coordinator decision D19, 2026-10-24, `.engineering/waves/bert-1.md`)."
         },
         "document_count": {
-          "description": "The number of documents in the split. A document is one article of the release. It starts at a top-level heading line `= <title> =` (one `=` on each side, surrounding whitespace ignored, `= = <section> = =` is not one), and any non-blank text before the first heading is one document too (coordinator decision D19, 2026-10-24, `.engineering/waves/bert-1.md`).",
+          "description": "The number of documents in the split. A document is one article of the release. It starts at a line of the shape ` = <title> = ` (one leading space, `= `, a title that does not start with `=`, ` = `, then the line's end; a section heading ` = = <section> = = ` does not count) that has a blank line, a single space, directly before it and directly after it; a line of that shape without both blank lines is a table key or a citation or equation fragment inside an article. Any non-blank text before the first such heading is one document too. On the release this gives 28,472 Train, 60 HeldOut and 60 test articles. The published train count (Merity et al. 2016) is 28,475; the 3 missing articles are not in the file under any heading rule the coordinator tried (coordinator decisions D19 and D22, 2026-10-24, `.engineering/waves/bert-1.md`).",
           "type": "integer",
           "minimum": 1
         },

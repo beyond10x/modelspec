@@ -1,0 +1,14 @@
+{
+  "at": "2026-10-24T19:43:59Z",
+  "actor": "human:timo",
+  "artifact": "story:bert-corpus-splits",
+  "kind": "story",
+  "revision": 5,
+  "change": {
+    "change": "evidence",
+    "kind": "review_outcome",
+    "source": "fix pass after adversary pass 1: D22 document rule, 13 adversary cases green",
+    "review": "review-result:adversary-bert-corpus-pass-1",
+    "outcome": "fixed"
+  }
+}

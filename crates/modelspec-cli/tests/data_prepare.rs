@@ -59,15 +59,26 @@ fn assert_success(output: &Output) {
     );
 }
 
-/// The title lines of the articles of a release file: a top-level heading `= <title> =`, one
-/// `=` on each side, which a section heading `= = <section> = =` is not.
-fn article_titles(text: &str) -> Vec<String> {
-    text.lines()
-        .map(str::trim)
-        .filter(|t| t.starts_with("= ") && t.ends_with(" =") && !t.starts_with("= ="))
-        .map(str::to_owned)
-        .collect()
-}
+/// The articles of each fixture file, by title, as the fixture was written. `wiki.train.raw` also
+/// holds a table key line ` = Weight ; W = ` with a blank line before it only and an equation line
+/// ` = 2 c + 1 = ` with a blank line after it only; neither starts an article.
+const ARTICLES: [&[&str]; 2] = [
+    &[
+        "Lantern Moth",
+        "Copper Bridge",
+        "Salt Orchard",
+        "Pebble Ledger",
+    ],
+    &["Glass Kettle", "Hollow Hill"],
+];
+
+/// The heading-shaped lines of the fixture that are not article headings.
+const NOT_ARTICLES: [&str; 2] = [" = Weight ; W = \n", " = 2 c + 1 = \n"];
+
+/// The `dataset_id` of the fixture: the leading 16 bytes of blake3 over the blake3 digest bytes
+/// of `wiki.train.raw` then `wiki.valid.raw`, version nibble 8 and RFC variant bits set; computed
+/// once outside the code under test.
+const FIXTURE_DATASET_ID: &str = "41e72a1c-06bf-89c0-80f7-a29fdc3b1874";
 
 fn schema() -> jsonschema::Validator {
     let text = std::fs::read_to_string(repo_root().join(SCHEMA)).expect("the schema is generated");
@@ -99,39 +110,56 @@ fn splits_one_per_role_cover_every_fixture_document_and_validate() {
         "one split per role, Train first"
     );
 
-    // Every fixture document is in exactly one split, and each split file is its release file.
-    let mut every_title = Vec::new();
-    let mut written_titles = Vec::new();
-    for ((role, release, written), split) in SPLITS.iter().zip(splits) {
+    // Each split file is its release file, and its count is the fixture's own article count.
+    let mut written = Vec::new();
+    for (((role, release, file), split), articles) in SPLITS.iter().zip(splits).zip(ARTICLES) {
         let source = std::fs::read(repo_root().join(FIXTURE).join(release)).unwrap();
-        let copy = std::fs::read(out.join(written))
-            .unwrap_or_else(|e| panic!("{role} is written to {written}: {e}"));
-        assert_eq!(copy, source, "{written} is {release} byte for byte");
-        let titles = article_titles(std::str::from_utf8(&source).unwrap());
-        assert_eq!(split["document_count"], titles.len() as u64, "{role}");
+        let copy = std::fs::read(out.join(file))
+            .unwrap_or_else(|e| panic!("{role} is written to {file}: {e}"));
+        assert_eq!(copy, source, "{file} is {release} byte for byte");
+        assert_eq!(split["document_count"], articles.len() as u64, "{role}");
         assert_eq!(split["byte_count"], source.len() as u64, "{role}");
         let hash = split["content_hash"].as_str().unwrap();
         assert!(
             hash.len() == 64 && hash.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')),
             "{role}: content_hash {hash} is 64 lowercase hex digits"
         );
-        every_title.extend(titles.iter().cloned());
-        written_titles.push(titles);
+        written.push(String::from_utf8(copy).unwrap());
     }
-    assert_eq!(every_title.len(), 5, "the fixture holds five articles");
-    for title in &every_title {
-        let holders = written_titles
-            .iter()
-            .filter(|titles| titles.contains(title))
-            .count();
+    for line in NOT_ARTICLES {
+        assert!(written[0].contains(line), "the fixture holds {line:?}");
+    }
+    // Every fixture document is in exactly one split.
+    for title in ARTICLES.concat() {
+        let heading = format!(" \n = {title} = \n \n");
+        let holders: usize = written.iter().map(|s| s.matches(&heading).count()).sum();
         assert_eq!(holders, 1, "{title} is in exactly one split");
     }
     assert_ne!(
         splits[0]["content_hash"], splits[1]["content_hash"],
         "the two splits differ"
     );
+}
+
+#[test]
+fn reproducible_dataset_id_is_derived_from_the_split_digests() {
+    let out = scratch("dataset_id");
+    let output = prepare(&out);
+    assert_success(&output);
+    let record: Value =
+        serde_json::from_str(&std::fs::read_to_string(out.join(RECORD)).unwrap()).unwrap();
     let id = record["dataset_id"].as_str().unwrap();
+    assert_eq!(id, FIXTURE_DATASET_ID);
     assert_eq!(&id[14..15], "8", "{id} is a version-8 UUID");
+    assert!(
+        matches!(&id[19..20], "8" | "9" | "a" | "b"),
+        "{id}: RFC variant"
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.starts_with(&format!("dataset {id} (corpus)\n")),
+        "{stdout}"
+    );
 }
 
 #[test]
@@ -204,6 +232,53 @@ fn refusals_missing_split_file_exits_1_naming_it() {
         left.is_empty(),
         "a refused run leaves the output directory empty"
     );
+}
+
+/// Both release files exist, so every check before reading passes; the HeldOut file holds no
+/// document, so the run fails while copying. It leaves no `.partial` file, does not leave behind
+/// an `--out` directory it created, and leaves an existing one as it was.
+#[test]
+fn refusals_failed_read_leaves_no_partial_file_and_no_created_out_directory() {
+    let case = scratch("refusals_failed_read");
+    let corpus = case.join("corpus");
+    std::fs::create_dir_all(&corpus).unwrap();
+    std::fs::copy(
+        repo_root().join(FIXTURE).join("wiki.train.raw"),
+        corpus.join("wiki.train.raw"),
+    )
+    .unwrap();
+    std::fs::write(corpus.join("wiki.valid.raw"), " \n \n").unwrap();
+    let named = corpus.join("wiki.valid.raw").display().to_string();
+
+    let created = case.join("new").join("nested").join("out");
+    let existing = case.join("existing");
+    std::fs::create_dir_all(&existing).unwrap();
+    for out in [&created, &existing] {
+        let output = modelspec(&[
+            "data",
+            "prepare",
+            corpus.to_str().unwrap(),
+            "--out",
+            out.to_str().unwrap(),
+        ]);
+        assert_eq!(output.status.code(), Some(1), "stderr: {}", stderr(&output));
+        assert_eq!(
+            stderr(&output),
+            format!("modelspec data prepare {named}: holds no document\n")
+        );
+    }
+    assert!(
+        !case.join("new").exists(),
+        "the directories the run created are gone"
+    );
+    let left: Vec<_> = std::fs::read_dir(&existing).unwrap().collect();
+    assert!(left.is_empty(), "an existing --out keeps no file: {left:?}");
+    let mut corpus_files: Vec<String> = std::fs::read_dir(&corpus)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
+    corpus_files.sort();
+    assert_eq!(corpus_files, ["wiki.train.raw", "wiki.valid.raw"]);
 }
 
 #[test]

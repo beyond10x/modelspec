@@ -103,7 +103,8 @@ impl std::error::Error for PrepareError {}
 /// Reads the release files of `corpus_dir` and writes each split and [`RECORD_FILE`] into
 /// `out_dir`, which is created when missing. The files are written as `<name>.partial` first
 /// and renamed only once both splits have been read whole, so a refused run writes no split or
-/// record and leaves what `out_dir` held before as it was.
+/// record and leaves what `out_dir` held before as it was; the directories it created for
+/// `out_dir` are removed again.
 pub fn prepare(corpus_dir: &Path, out_dir: &Path) -> Result<Dataset, PrepareError> {
     let meta = fs::metadata(corpus_dir).map_err(|e| PrepareError::new(corpus_dir, e))?;
     if !meta.is_dir() {
@@ -118,7 +119,11 @@ pub fn prepare(corpus_dir: &Path, out_dir: &Path) -> Result<Dataset, PrepareErro
         let source = corpus_dir.join(role.release_file());
         fs::metadata(&source).map_err(|e| PrepareError::new(&source, e))?;
     }
-    fs::create_dir_all(out_dir).map_err(|e| PrepareError::new(out_dir, e))?;
+    let created = missing_directories(out_dir);
+    if let Err(e) = fs::create_dir_all(out_dir) {
+        remove_directories(&created);
+        return Err(PrepareError::new(out_dir, e));
+    }
 
     let mut pending: Vec<(PathBuf, PathBuf)> = Vec::new();
     let mut splits = Vec::new();
@@ -166,8 +171,26 @@ pub fn prepare(corpus_dir: &Path, out_dir: &Path) -> Result<Dataset, PrepareErro
             for (partial, _) in &pending {
                 let _ = fs::remove_file(partial);
             }
+            remove_directories(&created);
             Err(error)
         }
+    }
+}
+
+/// `dir` and those of its ancestors that do not exist, deepest first: what `create_dir_all`
+/// would create.
+fn missing_directories(dir: &Path) -> Vec<PathBuf> {
+    dir.ancestors()
+        .filter(|d| !d.as_os_str().is_empty())
+        .take_while(|d| fs::symlink_metadata(d).is_err())
+        .map(Path::to_path_buf)
+        .collect()
+}
+
+/// Removes the directories of [`missing_directories`], deepest first; each only if it is empty.
+fn remove_directories(created: &[PathBuf]) {
+    for dir in created {
+        let _ = fs::remove_dir(dir);
     }
 }
 

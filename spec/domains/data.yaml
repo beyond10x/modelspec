@@ -116,7 +116,7 @@ types:
         summary: The blake3 hash of the split file's bytes, 64 lowercase hexadecimal digits (coordinator decision D19, 2026-10-24, `.engineering/waves/bert-1.md`).
       - name: document_count
         type: Integer
-        summary: The number of documents in the split. A document is one article of the release. It starts at a top-level heading line `= <title> =` (one `=` on each side, surrounding whitespace ignored, `= = <section> = =` is not one), and any non-blank text before the first heading is one document too (coordinator decision D19, 2026-10-24, `.engineering/waves/bert-1.md`).
+        summary: The number of documents in the split. A document is one article of the release. It starts at a line of the shape ` = <title> = ` (one leading space, `= `, a title that does not start with `=`, ` = `, then the line's end; a section heading ` = = <section> = = ` does not count) that has a blank line, a single space, directly before it and directly after it; a line of that shape without both blank lines is a table key or a citation or equation fragment inside an article. Any non-blank text before the first such heading is one document too. On the release this gives 28,472 Train, 60 HeldOut and 60 test articles. The published train count (Merity et al. 2016) is 28,475; the 3 missing articles are not in the file under any heading rule the coordinator tried (coordinator decisions D19 and D22, 2026-10-24, `.engineering/waves/bert-1.md`).
       - name: byte_count
         type: Integer
         summary: The length of the split file in bytes; the file is UTF-8 (coordinator decision D19, 2026-10-24, `.engineering/waves/bert-1.md`).
