@@ -1,0 +1,12 @@
+{
+  "at": "2026-10-24T08:50:01Z",
+  "actor": "human:timo",
+  "artifact": "story:dense-step-reuses-batch-buffers",
+  "kind": "story",
+  "revision": 4,
+  "change": {
+    "change": "evidence",
+    "kind": "verification",
+    "source": "coordinator: adversary pass 2 found nothing over 4 new cases (refill after first allocates nothing, uneven epoch wrap, same count other dims, resumed run losses); cargo test -p modelspec-runtime --features vulkan 380 passed exit 0; cargo test -p modelspec-cli 298 passed exit 0; clippy and fmt exit 0; MNIST losses sha256 equal to base over 1800 steps"
+  }
+}

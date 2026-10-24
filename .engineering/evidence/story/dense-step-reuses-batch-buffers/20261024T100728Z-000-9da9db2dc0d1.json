@@ -1,0 +1,13 @@
+{
+  "at": "2026-10-24T10:07:28Z",
+  "actor": "human:timo",
+  "artifact": "story:dense-step-reuses-batch-buffers",
+  "kind": "story",
+  "revision": 7,
+  "change": {
+    "change": "evidence",
+    "kind": "test_result",
+    "source": "task ci run 2 on wave/perf-1 b9e49ef plus the closing tree (coordinator), CHROME set: every task passed, ui-browser 8 of 8 (observatory_ui 6, observatory_ui_adversary 2); 204 suites, 1633 passed, 141 ignored, 0 failed",
+    "reference": "scratch task-ci-perf-1-run2.log EXIT=0"
+  }
+}

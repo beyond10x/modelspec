@@ -2,15 +2,17 @@
 format: aep.planning-md/3
 id: story:vulkan-step-counters
 kind: story
-status: active
+status: implemented
 title: Vulkan run counters for barriers, device allocations and peak device bytes
 relations:
 - serves: vision:modelspec
 scope:
 - confidence: cited
   path: DESIGN.md
-- confidence: inferred
+- confidence: cited
   path: crates/modelspec-cli/src/train.rs
+- confidence: cited
+  path: crates/modelspec-cli/tests/adversary_step_counters.rs
 - confidence: cited
   path: crates/modelspec-runtime/src/vulkan/memory.rs
 - confidence: cited
@@ -22,15 +24,18 @@ scope:
 - confidence: cited
   path: crates/modelspec-runtime/tests/adversary_profile_throughput.rs
 - confidence: cited
+  path: crates/modelspec-runtime/tests/adversary_step_counters.rs
+- confidence: cited
   path: crates/modelspec-runtime/tests/vulkan_profile.rs
-- confidence: inferred
+- confidence: cited
   path: website/docs/guides/inspect-a-run.md
-- confidence: inferred
+- confidence: cited
   path: website/docs/reference/cli.md
-revision: 7
+revision: 10
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-24T08:09:09Z", actor: "human:timo", revision: 6, decided_on: {"recorded":{"review_outcome":2}}}
 - {from: "proposed", to: "active", at: "2026-10-24T08:09:09Z", actor: "human:timo", revision: 7, decided_on: {"recorded":{"review_outcome":2}}}
+- {from: "active", to: "implemented", at: "2026-10-24T09:37:29Z", actor: "human:timo", revision: 10, decided_on: {"recorded":{"test_result":1,"review_outcome":3,"verification":1}}}
 ---
 # Vulkan run counters for barriers, device allocations and peak device bytes
 
@@ -79,16 +84,18 @@ by name.
 
 ## Scope
 
-- `crates/modelspec-runtime/src/vulkan/runner.rs`
-- `crates/modelspec-runtime/src/vulkan/profile.rs`
-- `crates/modelspec-runtime/src/vulkan/sync.rs`
+- `crates/modelspec-cli/src/train.rs`
+- `crates/modelspec-cli/tests/adversary_step_counters.rs`
 - `crates/modelspec-runtime/src/vulkan/memory.rs`
-- `crates/modelspec-runtime/tests/vulkan_profile.rs`
+- `crates/modelspec-runtime/src/vulkan/profile.rs`
+- `crates/modelspec-runtime/src/vulkan/runner.rs`
+- `crates/modelspec-runtime/src/vulkan/sync.rs`
 - `crates/modelspec-runtime/tests/adversary_profile_throughput.rs`
-- `DESIGN.md` (§ 8)
-- `website/docs/guides/inspect-a-run.md` (inferred)
-- `crates/modelspec-cli/src/train.rs` (inferred)
-- `website/docs/reference/cli.md` (inferred, generated)
+- `crates/modelspec-runtime/tests/adversary_step_counters.rs`
+- `crates/modelspec-runtime/tests/vulkan_profile.rs`
+- `DESIGN.md`
+- `website/docs/guides/inspect-a-run.md`
+- `website/docs/reference/cli.md`
 
 ## Out of scope
 

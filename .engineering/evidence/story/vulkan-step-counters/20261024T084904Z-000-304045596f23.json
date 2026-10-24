@@ -1,0 +1,12 @@
+{
+  "at": "2026-10-24T08:49:04Z",
+  "actor": "human:timo",
+  "artifact": "story:vulkan-step-counters",
+  "kind": "story",
+  "revision": 7,
+  "change": {
+    "change": "evidence",
+    "kind": "verification",
+    "source": "coordinator: adversary pass 1 found nothing over 14 device cases on the RTX 3090 with MODELSPEC_VK_VALIDATION=1; cargo test -p modelspec-runtime --features vulkan 363 passed exit 0; cargo test -p modelspec-cli 298 passed exit 0; docs generate --check exit 0; clippy and fmt exit 0"
+  }
+}

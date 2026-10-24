@@ -1,0 +1,12 @@
+{
+  "at": "2026-10-24T08:52:03Z",
+  "actor": "human:timo",
+  "artifact": "story:cpu-matmul-output-skips-zero-fill",
+  "kind": "story",
+  "revision": 4,
+  "change": {
+    "change": "evidence",
+    "kind": "verification",
+    "source": "coordinator read the correction-2 diff of crates/modelspec-runtime/src/cpu/matmul.rs: doc(hidden) and doc reword on output_zero_fills only; adversary pass 2 0 red over 7+1 cases, pass 1 0 red; cargo test -p modelspec-runtime --features vulkan 373 passed exit 0, clippy exit 0, fmt exit 0"
+  }
+}

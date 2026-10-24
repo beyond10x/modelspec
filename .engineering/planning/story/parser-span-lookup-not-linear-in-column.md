@@ -2,17 +2,24 @@
 format: aep.planning-md/3
 id: story:parser-span-lookup-not-linear-in-column
 kind: story
-status: active
+status: implemented
 title: Span lookup is not linear in the column
 relations:
 - serves: vision:modelspec
 scope:
 - confidence: cited
   path: crates/modelspec-core/src/syntax/parser.rs
-revision: 4
+- confidence: cited
+  path: crates/modelspec-core/tests/span_lookup.rs
+- confidence: cited
+  path: crates/modelspec-core/tests/span_lookup_adversary.rs
+- confidence: cited
+  path: crates/modelspec-core/tests/span_lookup_counter_adversary.rs
+revision: 7
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-24T08:09:09Z", actor: "human:timo", revision: 3}
 - {from: "proposed", to: "active", at: "2026-10-24T08:09:09Z", actor: "human:timo", revision: 4}
+- {from: "active", to: "implemented", at: "2026-10-24T09:37:29Z", actor: "human:timo", revision: 7, decided_on: {"recorded":{"test_result":1,"review_outcome":2,"verification":1}}}
 ---
 # Span lookup is not linear in the column
 
@@ -36,6 +43,9 @@ Outcome: checking a program costs the same whether its statements share a line o
 ## Scope
 
 - `crates/modelspec-core/src/syntax/parser.rs`
+- `crates/modelspec-core/tests/span_lookup_adversary.rs`
+- `crates/modelspec-core/tests/span_lookup_counter_adversary.rs`
+- `crates/modelspec-core/tests/span_lookup.rs`
 
 ## Out of scope
 

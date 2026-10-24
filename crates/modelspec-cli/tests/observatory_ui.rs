@@ -547,13 +547,44 @@ fn charts(address: &str) -> PageRead {
     charts_in(&browser(), address)
 }
 
-/// [`charts`] in a browser that is already running, so a live scenario starts it before the run
-/// and the browser's start-up does not use up the run's steps.
-fn charts_in(browser: &headless_chrome::Browser, address: &str) -> PageRead {
+/// Opens `http://<address>/` in a new tab of `browser` and returns the tab once the app has
+/// mounted (its `main` element exists).
+///
+/// Not `wait_until_navigated`: that returns on the `networkAlmostIdle` lifecycle event, and the
+/// page's event stream keeps the network busy for as long as the run emits, so on a run that
+/// emits faster than the page settles (a linear regression on the CPU backend, some 30,000
+/// events a second) it returns only once the stream has ended and the page already says
+/// `finished`.
+fn open_page(
+    browser: &headless_chrome::Browser,
+    address: &str,
+) -> std::sync::Arc<headless_chrome::Tab> {
     let tab = browser.new_tab().expect("a tab opens");
     tab.navigate_to(&format!("http://{address}/"))
         .expect("the page is requested");
-    tab.wait_until_navigated().expect("the page loads");
+    let start = Instant::now();
+    loop {
+        let mounted = tab
+            .evaluate("document.querySelector('main') !== null", false)
+            .ok()
+            .and_then(|r| r.value)
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        if mounted {
+            return tab;
+        }
+        assert!(
+            start.elapsed() < WAIT,
+            "the page has not mounted after {WAIT:?}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// [`charts`] in a browser that is already running, so a live scenario starts it before the run
+/// and the browser's start-up does not use up the run's steps.
+fn charts_in(browser: &headless_chrome::Browser, address: &str) -> PageRead {
+    let tab = open_page(browser, address);
     let start = Instant::now();
     let mut before: Vec<Reading> = Vec::new();
     let state = loop {
@@ -660,14 +691,17 @@ fn assert_loss_only(served: &Served, browser: &headless_chrome::Browser) -> (Vec
 }
 
 /// The steps of a live scenario's run: the models' own 500 and 200 end in under 0.1 s, before the
-/// browser has opened the page, and 50000 take 5 and 9 s on the CPU backend (debug build, on the
-/// machine this was written on), so the page reads the stream while the run is still emitting it.
-const LIVE_STEPS: &str = "50000";
+/// browser has opened the page, and these take 6 s (linear regression, 200,000 steps) and 6 s (a
+/// two-layer ReLU, 100,000 steps) served on the CPU backend (debug build, on the machine this was
+/// written on), so the page reads the stream while the run is still emitting it.
+const LIVE_STEPS: &str = "200000";
+/// The steps of the two-layer live scenario, whose step costs about 3.5 times the linear one.
+const TWO_LAYER_LIVE_STEPS: &str = "100000";
 
-/// A live scenario: the page opened during a run of [`LIVE_STEPS`] steps says `streaming` with
+/// A live scenario: the page opened during a run of `steps` steps says `streaming` with
 /// some but not all of the loss points at one reading at least, and at the end draws the loss
 /// chart the stream gives.
-fn live(model: &str) {
+fn live(model: &str, steps: &str) {
     let ui = built_ui();
     let browser = browser();
     let mut served = Served::start(&[
@@ -676,7 +710,7 @@ fn live(model: &str) {
         "--backend",
         "cpu",
         "--steps",
-        LIVE_STEPS,
+        steps,
         "--serve",
         "127.0.0.1:0",
         "--ui",
@@ -703,14 +737,14 @@ fn replay(fixture: &str) {
 #[test]
 #[ignore = "needs ui/dist and a Chrome or Chromium; run by `task ui-browser`"]
 fn observatory_ui_live_linear_regression() {
-    live(LINEAR);
+    live(LINEAR, LIVE_STEPS);
 }
 
 /// `observatory.ui.live-two-layer-relu`.
 #[test]
 #[ignore = "needs ui/dist and a Chrome or Chromium; run by `task ui-browser`"]
 fn observatory_ui_live_two_layer_relu() {
-    live(TWO_LAYER);
+    live(TWO_LAYER, TWO_LAYER_LIVE_STEPS);
 }
 
 /// `observatory.ui.replay-linear-regression`: `modelspec observe` of the fixture, no training
@@ -863,10 +897,7 @@ fn observatory_ui_parameter_stats_two_layer_relu() {
     assert_eq!(served.next_line(), format!("ui http://{}/", served.address));
     let data = streamed(&served.address);
     let browser = browser();
-    let tab = browser.new_tab().expect("a tab opens");
-    tab.navigate_to(&format!("http://{}/", served.address))
-        .expect("the page is requested");
-    tab.wait_until_navigated().expect("the page loads");
+    let tab = open_page(&browser, &served.address);
     let start = Instant::now();
     loop {
         let state = tab

@@ -103,6 +103,37 @@ fn browser() -> headless_chrome::Browser {
     })
 }
 
+/// Opens `http://<address>/` in a new tab of `browser` and returns the tab once the app has
+/// mounted (its `main` element exists). Not `wait_until_navigated`: that returns on the
+/// `networkAlmostIdle` lifecycle event, which the page's event stream holds off for as long as a
+/// fast run emits, so it would return only once the page already says `finished`
+/// (`observatory_ui.rs`, `open_page`).
+fn open_page(
+    browser: &headless_chrome::Browser,
+    address: &str,
+) -> std::sync::Arc<headless_chrome::Tab> {
+    let tab = browser.new_tab().expect("a tab opens");
+    tab.navigate_to(&format!("http://{address}/"))
+        .expect("the page is requested");
+    let start = Instant::now();
+    loop {
+        let mounted = tab
+            .evaluate("document.querySelector('main') !== null", false)
+            .ok()
+            .and_then(|r| r.value)
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        if mounted {
+            return tab;
+        }
+        assert!(
+            start.elapsed() < WAIT,
+            "the page has not mounted after {WAIT:?}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 /// What the page shows now.
 #[derive(Debug, Clone, PartialEq)]
 struct Shown {
@@ -185,10 +216,7 @@ fn observatory_ui_follows_the_run_a_restarted_server_serves() {
         &ui,
     ]);
     let browser = browser();
-    let tab = browser.new_tab().expect("a tab opens");
-    tab.navigate_to(&format!("http://{address}/"))
-        .expect("the page is requested");
-    tab.wait_until_navigated().expect("the page loads");
+    let tab = open_page(&browser, &address);
     let (before, _) = watch(&tab, WAIT, |s| s.state == "streaming" && s.points > 0);
     assert_eq!(
         before.state, "streaming",
@@ -235,10 +263,7 @@ fn observatory_ui_draws_a_run_while_it_streams() {
         &ui,
     ]);
     let browser = browser();
-    let tab = browser.new_tab().expect("a tab opens");
-    tab.navigate_to(&format!("http://{address}/"))
-        .expect("the page is requested");
-    tab.wait_until_navigated().expect("the page loads");
+    let tab = open_page(&browser, &address);
     let (end, seen) = watch(&tab, WAIT, |s| s.state == "finished" || s.state == "failed");
     assert_eq!(end.state, "finished", "{end:?}");
     assert!(

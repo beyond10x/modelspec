@@ -13,6 +13,8 @@
 //! device that reports `shaderRoundingModeRTEFloat32`. It is ignored by default; run it with
 //! `cargo test -p modelspec-runtime --features vulkan --test adversary_loss_sum -- --ignored`.
 
+#![cfg(feature = "vulkan")]
+
 #[allow(dead_code)]
 mod common;
 

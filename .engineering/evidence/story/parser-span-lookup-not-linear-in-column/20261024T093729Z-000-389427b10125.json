@@ -1,0 +1,13 @@
+{
+  "at": "2026-10-24T09:37:29Z",
+  "actor": "human:timo",
+  "artifact": "story:parser-span-lookup-not-linear-in-column",
+  "kind": "story",
+  "revision": 6,
+  "change": {
+    "change": "evidence",
+    "kind": "test_result",
+    "source": "task ci on wave/perf-1 b9e49ef (coordinator): build, lint, test, core-no-vulkan, cli-without-vulkan, check-examples, docs-check, spec-validate, schema-check, ui-types-check, ui passed; 203 suites, 1625 passed, 141 ignored, 0 failed except the 6 observatory_ui browser tests of ui-browser, which found no Chrome on this host (CI check.yml supplies one)",
+    "reference": "scratch task-ci-perf-1.log EXIT=201"
+  }
+}

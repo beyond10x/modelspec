@@ -18,7 +18,7 @@ scope:
   path: crates/modelspec-runtime/src/spirv/emit.rs
 - confidence: cited
   path: website/docs/guides/inspect-a-run.md
-revision: 6
+revision: 7
 ---
 # Matmul tiling chosen by shape, deterministic
 
@@ -62,6 +62,20 @@ shapes run closer to the device's throughput, without changing a bit on the devi
   lines in `website/docs/guides/inspect-a-run.md` are regenerated in the same change, and
   `crates/modelspec-cli/tests/ir_kernel.rs` and
   `crates/modelspec-cli/tests/adversary_guide_kernel_lines.rs` pass.
+- **register-blocked**: for a shape whose output has at least 1024 rows and 1024 columns, each
+  invocation computes a block of `rows` by `cols_per_invocation` output elements (at least 4 by 4)
+  from register-held operand fragments staged through workgroup memory, each element still
+  accumulated by one invocation over ascending `k` from the `k = 0` product; the tile rule
+  prints the block and the kernel signature changes with it. Added 2026-10-24 by the wave
+  coordinator for the goal "modelspec beats python+cuda in the bigger batch benchmark": one or two
+  output elements per invocation bound the kernel at 3.45 TFLOP/s at b8192 h4096 (31,067.1 µs,
+  `benchmarks/runs.yaml` sweep-b8192-h4096-modelspec-vulkan) against 14.7 TFLOP/s of PyTorch eager
+  CUDA (7,290.5 µs, sweep-b8192-h4096-pytorch-cuda-eager, TF32 off).
+- **gap-to-pytorch-reported**: the `mlp_sweep` medians at b8192 for every hidden size and at b1000
+  h1024 and h4096 after the change are reported beside the PyTorch eager CUDA medians recorded in
+  `benchmarks/runs.yaml` (b8192: 506.9, 624.6, 1,932.1, 7,290.5 µs; b1000 h1024 555.1, h4096
+  994.7 µs), with the ratio per point; this is reported, not gated, and the goal is checked at the
+  release benchmark rerun.
 - `task ci` exits 0.
 
 ## Scope

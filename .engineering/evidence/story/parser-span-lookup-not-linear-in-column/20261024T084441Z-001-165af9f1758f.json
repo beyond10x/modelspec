@@ -1,0 +1,12 @@
+{
+  "at": "2026-10-24T08:44:41Z",
+  "actor": "human:timo",
+  "artifact": "story:parser-span-lookup-not-linear-in-column",
+  "kind": "story",
+  "revision": 4,
+  "change": {
+    "change": "evidence",
+    "kind": "verification",
+    "source": "coordinator read the correction-2 diff of crates/modelspec-core/src/syntax/parser.rs: span_at counts the walked slice itself (line 143), Anchor::advance no longer counts; planted base walk fails tests/span_lookup.rs:67 (9087562188 vs 639253); cargo test -p modelspec-core 355 passed exit 0, clippy exit 0, fmt exit 0"
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "at": "2026-10-24T09:31:21Z",
+  "actor": "human:timo",
+  "artifact": "story:cpu-prepared-training-step",
+  "kind": "story",
+  "revision": 7,
+  "change": {
+    "change": "evidence",
+    "kind": "verification",
+    "source": "coordinator read the correction-2 diff of crates/modelspec-runtime/src/cpu/interpreter.rs: storage slots hold whole tensors refilled in place (interpreter.rs:291, :426-438), a moved output allocates nothing; second-step allocations 10→4 (3 listings), 5→2 (2 listings), 4→0 (MNIST); cargo test -p modelspec-runtime --features vulkan 403 passed exit 0, core 356, cli 298, clippy --all-targets 0/0/0, fmt 0; modelspec train output sha256 equal to base on mnist_mlp and linear_regression"
+  }
+}

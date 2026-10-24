@@ -2,19 +2,28 @@
 format: aep.planning-md/3
 id: story:dense-step-reuses-batch-buffers
 kind: story
-status: active
+status: implemented
 title: A dense step reuses its batch buffers
 relations:
 - serves: vision:modelspec
 scope:
 - confidence: cited
+  path: crates/modelspec-runtime/src/cpu/tensor.rs
+- confidence: cited
   path: crates/modelspec-runtime/src/train/data.rs
 - confidence: cited
   path: crates/modelspec-runtime/src/train/runner.rs
-revision: 4
+- confidence: cited
+  path: crates/modelspec-runtime/tests/adversary_dense_batch_reuse.rs
+- confidence: cited
+  path: crates/modelspec-runtime/tests/adversary_dense_batch_reuse_2.rs
+- confidence: cited
+  path: crates/modelspec-runtime/tests/dense_batch_reuse.rs
+revision: 7
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-24T08:09:08Z", actor: "human:timo", revision: 3}
 - {from: "proposed", to: "active", at: "2026-10-24T08:09:08Z", actor: "human:timo", revision: 4}
+- {from: "active", to: "implemented", at: "2026-10-24T09:37:29Z", actor: "human:timo", revision: 7, decided_on: {"recorded":{"test_result":1,"review_outcome":2,"verification":1}}}
 ---
 # A dense step reuses its batch buffers
 
@@ -35,8 +44,12 @@ Outcome: a dense training step fills buffers allocated once per run.
 
 ## Scope
 
+- `crates/modelspec-runtime/src/cpu/tensor.rs`
 - `crates/modelspec-runtime/src/train/data.rs`
 - `crates/modelspec-runtime/src/train/runner.rs`
+- `crates/modelspec-runtime/tests/adversary_dense_batch_reuse_2.rs`
+- `crates/modelspec-runtime/tests/adversary_dense_batch_reuse.rs`
+- `crates/modelspec-runtime/tests/dense_batch_reuse.rs`
 
 ## Out of scope
 
