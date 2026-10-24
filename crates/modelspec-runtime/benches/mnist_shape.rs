@@ -1,10 +1,11 @@
 //! Training throughput of the CPU reference on the shape of the MNIST benchmark of release 0.1.1:
 //! 784 -> 64 ReLU -> 10, no bias, `f32`, MSE over the one-hot targets, SGD lr 0.1, batch 100.
 //!
-//! The data is synthetic and seeded, so the run needs no files. The timed loop includes minibatch
-//! assembly and excludes setup, a 20-step warmup and the data generation, as the 0.1.1 benchmark
-//! did. It prints images per second and a digest of the final weights' bits, so two builds that
-//! must compute the same bits can be compared from their output.
+//! The data is synthetic and seeded, so the run needs no files. Every step runs on one prepared
+//! step (story:cpu-prepared-training-step). The timed loop includes minibatch assembly and
+//! excludes setup, a 20-step warmup and the data generation, as the 0.1.1 benchmark did. It prints
+//! images per second and a digest of the final weights' bits, so two builds that must compute the
+//! same bits can be compared from their output.
 //!
 //! Run it with `cargo bench -p modelspec-runtime --bench mnist_shape`; it is not part of
 //! `task ci`.
@@ -17,7 +18,7 @@ use modelspec_core::ir::tensor::{Initializer, TensorProgramBuilder, TensorType};
 use modelspec_core::ir::training::attach_sgd;
 use modelspec_runtime::cpu::HostTensor;
 use modelspec_runtime::train::init::{Stream, initialize};
-use modelspec_runtime::train::optimizer::{ParamState, sgd_step};
+use modelspec_runtime::train::optimizer::{ParamState, PreparedStep};
 
 const INPUTS: usize = 784;
 const HIDDEN: usize = 64;
@@ -83,6 +84,7 @@ fn main() {
     let forward = b.finish();
     let step = attach_sgd(differentiate(&forward, loss).unwrap(), LR).unwrap();
     let mut state = ParamState::new(&step, initialize(&forward, SEED, Stream::Init).unwrap());
+    let mut prepared = PreparedStep::new(&step).unwrap();
 
     let mut rng = SplitMix(SEED);
     let images: Vec<f32> = (0..BATCHES * BATCH * INPUTS).map(|_| rng.unit()).collect();
@@ -111,7 +113,7 @@ fn main() {
                     ),
                 ),
             ]);
-            loss = sgd_step(&step, &inputs, &mut state).unwrap().loss;
+            loss = prepared.step(&inputs, &mut state).unwrap();
         }
         loss
     };

@@ -10,15 +10,21 @@
 //! of the old values and changes nothing, and [`Evaluated::apply`] writes the updates. Between
 //! the two a caller can read the old values beside their gradients, as the observatory does
 //! (story:observatory-parameter-statistics). [`sgd_step`] is both.
+//!
+//! Each of those is a run of one step. A run of many steps prepares the step once
+//! ([`PreparedStep`], story:cpu-prepared-training-step): it verifies the step and builds its
+//! tables and the interpreter's plan once, and each of its steps then reuses the storage of the
+//! last one and moves its outputs instead of copying them, with the same bits as [`sgd_step`].
 
 use std::collections::BTreeMap;
 
 use modelspec_core::ir::tensor::ParamId;
-use modelspec_core::ir::training::{Access, StateVersion, TrainConfig, TrainingStep};
-use modelspec_core::ir::verify::{TrainingVerifyError, verify_step};
+use modelspec_core::ir::training::{StateVersion, TrainConfig, TrainingStep};
+use modelspec_core::ir::verify::{TrainingVerifyError, verify_step_writes};
 use thiserror::Error;
 
-use crate::cpu::{HostTensor, RuntimeError, evaluate};
+use crate::cpu::interpreter::Prepared;
+use crate::cpu::{HostTensor, RuntimeError};
 
 /// The SGD configuration of a run, from its `train` block.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -106,7 +112,7 @@ impl Evaluated {
 }
 
 /// Runs one step of `step` on `inputs` and `state`, applies its updates and returns the loss and
-/// the gradients of the old parameter values.
+/// the gradients of the old parameter values: a run of one step of a [`PreparedStep`].
 pub fn sgd_step(
     step: &TrainingStep,
     inputs: &BTreeMap<String, HostTensor<f32>>,
@@ -123,66 +129,219 @@ pub fn evaluate_step(
     inputs: &BTreeMap<String, HostTensor<f32>>,
     state: &ParamState,
 ) -> Result<Evaluated, StepError> {
-    verify_step(step)?;
-    let program = &step.training.program;
-    let position = |value| {
-        program
-            .outputs
-            .iter()
-            .position(|&o| o == value)
-            .expect("a verified gradient or update is an output")
-    };
-    let writes: Vec<(ParamId, usize)> = step
-        .optimizer
-        .effects_in_order()
-        .into_iter()
-        .filter(|(_, effect)| effect.access == Access::Write)
-        .map(|(value, effect)| (effect.param, position(value)))
-        .collect();
-    for &(param, _) in &writes {
-        let current = state
-            .versions
-            .get(&param)
-            .copied()
-            .unwrap_or(StateVersion(0));
-        if current.0.checked_add(1).is_none() {
-            return Err(StepError::VersionExhausted { param, current });
-        }
-    }
-    let reads: Vec<(ParamId, usize)> = step
-        .training
-        .gradients
+    let mut prepared = PreparedStep::new(step)?;
+    let loss = prepared.run(inputs, state, false)?;
+    let updates = prepared
+        .writes
         .iter()
-        .map(|(&param, &value)| (param, position(value)))
+        .zip(&mut prepared.pending)
+        .map(|(&(param, _), update)| (param, update.take().expect("a run holds every update")))
         .collect();
-
-    let mut outputs: Vec<Option<HostTensor<f32>>> = evaluate(program, inputs, &state.values)?
-        .into_iter()
-        .map(Some)
-        .collect();
-    let loss = outputs[0].as_ref().expect("the loss is output 0").data()[0];
-    // Each output is moved out at its last use and cloned before that: an output that is a
-    // gradient is not also an update, so nothing is copied unless two of them share a value.
-    let mut uses = vec![0usize; outputs.len()];
-    for &(_, at) in reads.iter().chain(&writes) {
-        uses[at] += 1;
-    }
-    let mut take = |at: usize| {
-        uses[at] -= 1;
-        let value = if uses[at] == 0 {
-            outputs[at].take()
-        } else {
-            outputs[at].clone()
-        };
-        value.expect("an output is moved out at its last use only")
-    };
-    let gradients = reads.into_iter().map(|(p, at)| (p, take(at))).collect();
-    let updates = writes.into_iter().map(|(p, at)| (p, take(at))).collect();
     Ok(Evaluated {
         loss,
-        gradients,
+        gradients: std::mem::take(&mut prepared.gradients),
         updates,
     })
+}
+
+/// Per-thread counts of the optimizer's work, for the tests of story:cpu-prepared-training-step.
+#[doc(hidden)]
+pub mod counters {
+    use std::cell::Cell;
+
+    thread_local! {
+        pub(super) static WRITES_TABLE: Cell<u64> = const { Cell::new(0) };
+    }
+
+    /// Builds of the table of a step's writes on this thread: one per [`super::PreparedStep`].
+    pub fn writes_table() -> u64 {
+        WRITES_TABLE.get()
+    }
+}
+
+/// What a training program's output is to a step.
+#[derive(Clone, Copy, Debug)]
+enum Role {
+    Loss,
+    Gradient(ParamId),
+    /// The update of the write at this index of [`PreparedStep::writes`].
+    Update(usize),
+}
+
+/// A training step verified and planned once, to be stepped any number of times: a run.
+///
+/// [`PreparedStep::new`] verifies the step and its program, orders its effects and builds the
+/// table of its writes and the interpreter's plan; each step then runs the plan
+/// ([`crate::cpu::interpreter::Prepared`]), refusing it as [`sgd_step`] refuses it. Each step
+/// moves the updates into the state, and each parameter value they replace becomes the storage of
+/// that parameter's next update; the gradients stay with the prepared step and are read through
+/// [`PendingStep::gradients`].
+pub struct PreparedStep<'s> {
+    program: Prepared<'s, f32>,
+    /// Each write's parameter and the output position of its update, in effect-token order.
+    writes: Vec<(ParamId, usize)>,
+    /// The role of each output position.
+    roles: Vec<Role>,
+    /// The outputs of the current run, between the interpreter and their roles.
+    outputs: Vec<HostTensor<f32>>,
+    /// The gradients of the last evaluation.
+    gradients: BTreeMap<ParamId, HostTensor<f32>>,
+    /// The updates of the last evaluation not yet applied, by index of [`PreparedStep::writes`].
+    pending: Vec<Option<HostTensor<f32>>>,
+}
+
+impl<'s> PreparedStep<'s> {
+    /// Verifies `step` and plans its runs; a step that does not verify is refused here, before
+    /// anything runs.
+    pub fn new(step: &'s TrainingStep) -> Result<Self, StepError> {
+        let written = verify_step_writes(step)?;
+        let program = &step.training.program;
+        // Positions come from the verified output layout, never from a search by value: one
+        // value may be listed more than once (two parameters sharing one gradient), and each
+        // listing has its own position and its own tensor.
+        let gradients = &step.training.gradients;
+        let update_at: BTreeMap<ParamId, usize> = step
+            .optimizer
+            .updates
+            .keys()
+            .enumerate()
+            .map(|(k, &param)| (param, 1 + gradients.len() + k))
+            .collect();
+        counters::WRITES_TABLE.set(counters::WRITES_TABLE.get() + 1);
+        let writes: Vec<(ParamId, usize)> = written
+            .into_iter()
+            .map(|(param, value)| {
+                let at = update_at[&param];
+                debug_assert_eq!(program.outputs[at], value, "the verified layout");
+                (param, at)
+            })
+            .collect();
+        let mut roles: Vec<Option<Role>> = vec![None; program.outputs.len()];
+        roles[0] = Some(Role::Loss);
+        for (k, (&param, &value)) in gradients.iter().enumerate() {
+            debug_assert_eq!(program.outputs[1 + k], value, "the verified layout");
+            roles[1 + k] = Some(Role::Gradient(param));
+        }
+        for (k, &(_, at)) in writes.iter().enumerate() {
+            roles[at] = Some(Role::Update(k));
+        }
+        let roles = roles
+            .into_iter()
+            .map(|role| role.expect("the verified layout gives every output a role"))
+            .collect();
+        Ok(Self {
+            program: Prepared::verified(program),
+            pending: vec![None; writes.len()],
+            writes,
+            roles,
+            outputs: Vec::new(),
+            gradients: BTreeMap::new(),
+        })
+    }
+
+    /// Evaluates one step on `inputs` and `state` and changes nothing until the result is
+    /// applied ([`PendingStep::apply`]); between the two the caller reads the old values beside
+    /// their gradients.
+    pub fn evaluate(
+        &mut self,
+        inputs: &BTreeMap<String, HostTensor<f32>>,
+        state: &ParamState,
+    ) -> Result<PendingStep<'_, 's>, StepError> {
+        let loss = self.run(inputs, state, true)?;
+        Ok(PendingStep {
+            prepared: self,
+            loss,
+        })
+    }
+
+    /// Evaluates one step and applies it; returns its loss.
+    pub fn step(
+        &mut self,
+        inputs: &BTreeMap<String, HostTensor<f32>>,
+        state: &mut ParamState,
+    ) -> Result<f32, StepError> {
+        Ok(self.evaluate(inputs, state)?.apply(state))
+    }
+
+    /// Runs the program on `state` and sorts its outputs by role. With `again`, each gradient
+    /// keeps a second buffer for the next run, which writes into it while the caller may still
+    /// hold the first.
+    fn run(
+        &mut self,
+        inputs: &BTreeMap<String, HostTensor<f32>>,
+        state: &ParamState,
+        again: bool,
+    ) -> Result<f32, StepError> {
+        for (k, &(_, at)) in self.writes.iter().enumerate() {
+            if let Some(update) = self.pending[k].take() {
+                self.program.recycle(at, update);
+            }
+        }
+        for &(param, _) in &self.writes {
+            let current = state
+                .versions
+                .get(&param)
+                .copied()
+                .unwrap_or(StateVersion(0));
+            if current.0.checked_add(1).is_none() {
+                return Err(StepError::VersionExhausted { param, current });
+            }
+        }
+        self.program
+            .run_into(inputs, &state.values, &mut self.outputs)?;
+        let mut loss = f32::NAN;
+        for (position, output) in self.outputs.drain(..).enumerate() {
+            match self.roles[position] {
+                Role::Loss => {
+                    loss = output.data()[0];
+                    self.program.recycle(position, output);
+                }
+                Role::Gradient(param) => match self.gradients.insert(param, output) {
+                    Some(old) => self.program.recycle(position, old),
+                    None if again => self.program.reserve_output(position)?,
+                    None => {}
+                },
+                Role::Update(k) => self.pending[k] = Some(output),
+            }
+        }
+        Ok(loss)
+    }
+}
+
+/// A step of a [`PreparedStep`] evaluated on the old values and not yet applied.
+pub struct PendingStep<'a, 's> {
+    prepared: &'a mut PreparedStep<'s>,
+    loss: f32,
+}
+
+impl PendingStep<'_, '_> {
+    /// The loss of the old values.
+    pub fn loss(&self) -> f32 {
+        self.loss
+    }
+
+    /// The gradient of the loss with respect to each parameter the loss reads, at the old values.
+    pub fn gradients(&self) -> &BTreeMap<ParamId, HostTensor<f32>> {
+        &self.prepared.gradients
+    }
+
+    /// Writes each update as its parameter's next version, in effect-token order, and returns
+    /// the loss. Each value an update replaces becomes the storage of that parameter's next
+    /// update.
+    pub fn apply(self, state: &mut ParamState) -> f32 {
+        let prepared = self.prepared;
+        for (k, &(param, at)) in prepared.writes.iter().enumerate() {
+            let value = prepared.pending[k]
+                .take()
+                .expect("an evaluated step holds every update");
+            if let Some(old) = state.values.insert(param, value) {
+                prepared.program.recycle(at, old);
+            }
+            let version = state.versions.entry(param).or_insert(StateVersion(0));
+            version.0 += 1;
+        }
+        self.loss
+    }
 }
 
 #[cfg(test)]

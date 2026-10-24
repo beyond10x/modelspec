@@ -27,7 +27,7 @@ use thiserror::Error;
 use super::checkpoint::CheckpointError;
 use super::data::{DataError, DenseBatch, DenseData, SyntheticData, synthetic};
 use super::init::{InitError, Stream, initialize};
-use super::optimizer::{ParamState, StepError, evaluate_step};
+use super::optimizer::{ParamState, PreparedStep, StepError};
 use crate::cpu::{HostTensor, RuntimeError, evaluate, evaluate_all};
 
 /// The loss of a training step, or a parameter after the update of a step, is NaN or ±inf: the
@@ -207,18 +207,28 @@ pub fn run_from(
             version.0 = version.0.saturating_add(start);
         }
     }
+    // Prepared at the first step that makes an update, so a run of no steps verifies nothing more
+    // than before; every later step reuses it (story:cpu-prepared-training-step).
+    let mut prepared: Option<PreparedStep<'_>> = None;
     let mut losses = Vec::new();
     for step in start..=end {
         let loss = if step < end {
-            let evaluated = evaluate_step(&compiled.training, feed.inputs(step), &state)
+            if prepared.is_none() {
+                let ready = PreparedStep::new(&compiled.training)
+                    .map_err(|source| RunError::Step { step, source })?;
+                prepared = Some(ready);
+            }
+            let prepared = prepared.as_mut().expect("prepared above");
+            let evaluated = prepared
+                .evaluate(feed.inputs(step), &state)
                 .map_err(|source| RunError::Step { step, source })?;
             observe(&Observed {
                 step,
-                loss: evaluated.loss,
+                loss: evaluated.loss(),
                 values: &state.values,
-                gradients: Some(&evaluated.gradients),
+                gradients: Some(evaluated.gradients()),
             });
-            evaluated.apply(&mut state).loss
+            evaluated.apply(&mut state)
         } else {
             let loss = evaluate(forward, feed.inputs(end), &state.values)?[0].data()[0];
             observe(&Observed {
