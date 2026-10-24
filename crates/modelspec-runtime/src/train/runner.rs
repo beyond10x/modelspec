@@ -17,7 +17,6 @@
 //! the parameter values that loss is of and, for a step that makes an update, the gradients the
 //! update applies (story:observatory-parameter-statistics).
 
-use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 use modelspec_core::compile::CompiledTraining;
@@ -26,7 +25,7 @@ use modelspec_core::ir::tensor::ParamId;
 use thiserror::Error;
 
 use super::checkpoint::CheckpointError;
-use super::data::{DataError, DenseData, SyntheticData, synthetic};
+use super::data::{DataError, DenseBatch, DenseData, SyntheticData, synthetic};
 use super::init::{InitError, Stream, initialize};
 use super::optimizer::{ParamState, StepError, evaluate_step};
 use crate::cpu::{HostTensor, RuntimeError, evaluate, evaluate_all};
@@ -164,7 +163,8 @@ pub struct Observed<'a> {
 
 /// Runs as [`run_observed`] does, on `data` when it is given instead of synthetic data, and with
 /// each parameter in `init` starting from that value instead of its draw, and shows `observe`
-/// each step as an [`Observed`]. Step `k` feeds [`DenseData::step`]`(k)`; the loss after the
+/// each step as an [`Observed`]. Step `k` feeds the samples of [`DenseData::step`]`(k)`, filled
+/// into one [`DenseBatch`] per run ([`DenseData::fill_step`]); the loss after the
 /// last update is the forward program on `step(steps)`. A dense run has no teacher:
 /// [`Run::teacher`] is empty.
 pub fn run_with(
@@ -197,13 +197,9 @@ pub fn run_from(
     let forward = &compiled.forward.program;
     let mut initial = initialize(forward, config.seed, Stream::Init)?;
     initial.extend(init.iter().map(|(&p, v)| (p, v.clone())));
-    let feed = match data {
-        Some(dense) => Feed::Dense(dense),
+    let mut feed = match data {
+        Some(dense) => Feed::Dense(dense, DenseBatch::default()),
         None => Feed::Synthetic(synthetic(config, &compiled.forward)?),
-    };
-    let inputs = |step: u64| match &feed {
-        Feed::Synthetic(s) => Cow::Borrowed(&s.inputs),
-        Feed::Dense(d) => Cow::Owned(d.step(step)),
     };
     let mut state = ParamState::new(&compiled.training, initial.clone());
     for param in compiled.training.optimizer.updates.keys() {
@@ -214,7 +210,7 @@ pub fn run_from(
     let mut losses = Vec::new();
     for step in start..=end {
         let loss = if step < end {
-            let evaluated = evaluate_step(&compiled.training, &inputs(step), &state)
+            let evaluated = evaluate_step(&compiled.training, feed.inputs(step), &state)
                 .map_err(|source| RunError::Step { step, source })?;
             observe(&Observed {
                 step,
@@ -224,7 +220,7 @@ pub fn run_from(
             });
             evaluated.apply(&mut state).loss
         } else {
-            let loss = evaluate(forward, &inputs(end), &state.values)?[0].data()[0];
+            let loss = evaluate(forward, feed.inputs(end), &state.values)?[0].data()[0];
             observe(&Observed {
                 step,
                 loss,
@@ -259,18 +255,30 @@ pub fn run_from(
     })
 }
 
-/// Where the inputs of a step come from.
+/// Where the inputs of a step come from: synthetic data, the same every step, or dense data and
+/// the one batch every step of the run is filled into.
 enum Feed<'a> {
     Synthetic(SyntheticData),
-    Dense(&'a DenseData),
+    Dense(&'a DenseData, DenseBatch),
 }
 
 impl Feed<'_> {
+    /// The inputs of step `step`.
+    fn inputs(&mut self, step: u64) -> &BTreeMap<String, HostTensor<f32>> {
+        match self {
+            Feed::Synthetic(s) => &s.inputs,
+            Feed::Dense(data, batch) => {
+                data.fill_step(step, batch);
+                batch.inputs()
+            }
+        }
+    }
+
     /// The teacher parameters of synthetic data; dense data has none.
     fn teacher(self) -> BTreeMap<ParamId, HostTensor<f32>> {
         match self {
             Feed::Synthetic(s) => s.teacher,
-            Feed::Dense(_) => BTreeMap::new(),
+            Feed::Dense(..) => BTreeMap::new(),
         }
     }
 }
@@ -296,9 +304,11 @@ pub fn evaluate_dense(
     let batches = data.samples() / data.batch();
     let mut loss = 0.0f64;
     let mut correct = 0usize;
+    let mut batch = DenseBatch::default();
     for b in 0..batches {
-        let inputs = data.eval_batch(b);
-        let mut values = evaluate_all(&compiled.forward.program, &inputs, params)?;
+        data.fill_eval_batch(b, &mut batch);
+        let inputs = batch.inputs();
+        let mut values = evaluate_all(&compiled.forward.program, inputs, params)?;
         loss += f64::from(values.outputs[0].data()[0]);
         let predicted = values
             .values

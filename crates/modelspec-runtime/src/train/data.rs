@@ -175,6 +175,22 @@ pub struct DenseData {
     order: Option<Vec<u32>>,
 }
 
+/// The inputs of one training step or eval batch of a [`DenseData`], refilled in place by
+/// [`DenseData::fill_step`] and [`DenseData::fill_eval_batch`]: the first fill allocates the key
+/// and the data buffer of each declaration, and every later fill by the same data copies into
+/// them (story:dense-step-reuses-batch-buffers). A batch is filled by one [`DenseData`] only.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct DenseBatch {
+    inputs: BTreeMap<String, HostTensor<f32>>,
+}
+
+impl DenseBatch {
+    /// The value of each declaration, by name.
+    pub fn inputs(&self) -> &BTreeMap<String, HostTensor<f32>> {
+        &self.inputs
+    }
+}
+
 /// The samples of one declaration.
 #[derive(Clone, Debug, PartialEq)]
 struct DenseTensor {
@@ -203,39 +219,61 @@ impl DenseData {
     }
 
     /// The inputs of training step `k`: the samples `order[(k·B + i) mod len]` with an order,
-    /// `(k·B + i) mod N` without one, for `i` in `0..B`.
+    /// `(k·B + i) mod N` without one, for `i` in `0..B`. A new map each call; the training loop
+    /// refills one [`DenseBatch`] with [`Self::fill_step`] instead.
     pub fn step(&self, k: u64) -> BTreeMap<String, HostTensor<f32>> {
+        let mut batch = DenseBatch::default();
+        self.fill_step(k, &mut batch);
+        batch.inputs
+    }
+
+    /// The inputs of eval batch `b`: the samples `b·B .. (b+1)·B`. A new map each call, as
+    /// [`Self::step`].
+    pub fn eval_batch(&self, b: usize) -> BTreeMap<String, HostTensor<f32>> {
+        let mut batch = DenseBatch::default();
+        self.fill_eval_batch(b, &mut batch);
+        batch.inputs
+    }
+
+    /// Fills `batch` with the inputs of training step `k`, the samples [`Self::step`] names.
+    pub fn fill_step(&self, k: u64, batch: &mut DenseBatch) {
         let first = k as u128 * self.batch as u128;
         let position = |i: usize| first + i as u128;
-        let samples: Vec<usize> = (0..self.batch)
-            .map(|i| match &self.order {
-                Some(order) => order[(position(i) % order.len() as u128) as usize] as usize,
-                None => (position(i) % self.samples as u128) as usize,
-            })
-            .collect();
-        self.gather(&samples)
+        self.fill(batch, |i| match &self.order {
+            Some(order) => order[(position(i) % order.len() as u128) as usize] as usize,
+            None => (position(i) % self.samples as u128) as usize,
+        });
     }
 
-    /// The inputs of eval batch `b`: the samples `b·B .. (b+1)·B`.
-    pub fn eval_batch(&self, b: usize) -> BTreeMap<String, HostTensor<f32>> {
-        let samples: Vec<usize> = (b * self.batch..(b + 1) * self.batch).collect();
-        self.gather(&samples)
+    /// Fills `batch` with the inputs of eval batch `b`, the samples `b·B .. (b+1)·B`.
+    pub fn fill_eval_batch(&self, b: usize, batch: &mut DenseBatch) {
+        let first = b * self.batch;
+        self.fill(batch, |i| first + i);
     }
 
-    fn gather(&self, samples: &[usize]) -> BTreeMap<String, HostTensor<f32>> {
-        self.tensors
-            .iter()
-            .map(|t| {
-                let mut data = Vec::with_capacity(samples.len() * t.sample);
-                for &s in samples {
+    /// Writes the samples `sample(i)`, `i` in `0..B`, of each declaration into its entry of
+    /// `batch`. An entry `batch` holds is rewritten in place, its key, shape and data buffer
+    /// kept, so only a declaration `batch` does not hold yet allocates (or a fill of more
+    /// elements than the entry has held).
+    fn fill(&self, batch: &mut DenseBatch, sample: impl Fn(usize) -> usize) {
+        for t in &self.tensors {
+            let write = |data: &mut Vec<f32>| {
+                data.clear();
+                for i in 0..self.batch {
+                    let s = sample(i);
                     data.extend_from_slice(&t.values[s * t.sample..(s + 1) * t.sample]);
                 }
-                (
-                    t.name.clone(),
-                    HostTensor::from_parts(t.shape.clone(), data),
-                )
-            })
-            .collect()
+            };
+            match batch.inputs.get_mut(t.name.as_str()) {
+                Some(tensor) => tensor.refill(&t.shape, write),
+                None => {
+                    let mut data = Vec::with_capacity(self.batch * t.sample);
+                    write(&mut data);
+                    let tensor = HostTensor::from_parts(t.shape.clone(), data);
+                    batch.inputs.insert(t.name.clone(), tensor);
+                }
+            }
+        }
     }
 }
 
