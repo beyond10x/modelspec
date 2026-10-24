@@ -10,6 +10,8 @@
     "mean",
     "mse",
     "embedding",
+    "add_rows",
+    "gelu",
     "xavier_uniform",
     "sgd",
     "cpu",

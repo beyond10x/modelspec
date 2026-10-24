@@ -13,6 +13,9 @@
 //! type; the first product of a `matmul` or `mse` sum is rounded and starts the sum, and each later
 //! product is fused into the sum with [`Element::mul_add`], rounded once, as the GPU's `Fma`
 //! (DESIGN.md § 12 ADR-009). The partial sums of `reduce_sum` and `mean` are rounded each.
+//! `SumRows`, the bias gradient of `add_rows`, starts each column from row 0 and adds every later
+//! row in ascending order, each partial sum rounded; `EmbeddingGrad` adds rows in ascending `n`.
+//! `gelu` and its gradient are computed in the element type, with its `exp` (DESIGN.md § 4).
 //!
 //! Every value is allocated through one checked path; a value the host cannot hold is a
 //! [`RuntimeError::Allocation`].
@@ -684,8 +687,87 @@ impl<'p, T: Element> Prepared<'p, T> {
                     }
                 }
             }
+            TensorOp::AddRows => {
+                let (x, b) = (arg(0), arg(1));
+                let h = b.len();
+                data.extend(
+                    x.data
+                        .chunks_exact(h)
+                        .flat_map(|row| row.iter().zip(b.data).map(|(&x, &b)| x + b)),
+                );
+            }
+            TensorOp::SumRows => {
+                let g = arg(0);
+                let h = n;
+                let mut rows = g.data.chunks_exact(h);
+                match rows.next() {
+                    Some(first) => data.extend_from_slice(first),
+                    None => data.resize(n, T::ZERO),
+                }
+                for row in rows {
+                    for (out, &x) in data.iter_mut().zip(row) {
+                        *out = *out + x;
+                    }
+                }
+            }
+            TensorOp::Gelu => data.extend(arg(0).data.iter().map(|&x| gelu(x))),
+            TensorOp::GeluGrad => {
+                let (a, g) = (arg(0), arg(1));
+                data.extend(a.data.iter().zip(g.data).map(|(&a, &g)| gelu_grad(a, g)));
+            }
         }
     }
+}
+
+/// `sqrt(2 / pi)`, the scale of the tanh form of GELU.
+const GELU_SCALE: f64 = 0.797_884_560_802_865_4;
+/// `0.044715`, the cubic coefficient of the tanh form of GELU.
+const GELU_CUBIC: f64 = 0.044_715;
+
+/// `value` in `T` as the sum of two `f32` parts: in `f64` it is `value` to about `2^-48`
+/// relative, in `f32` the nearest `f32` to `value` (the low part is under half an `f32` ulp of
+/// the high part, so their `f32` sum rounds to the high part).
+fn constant<T: Element>(value: f64) -> T {
+    let high = value as f32;
+    let low = (value - f64::from(high)) as f32;
+    T::from_f32(high) + T::from_f32(low)
+}
+
+/// `2 u`, for `u = sqrt(2/pi) (x + 0.044715 x^3)` the argument of the tanh in the tanh form of
+/// GELU.
+fn gelu_twice_inner<T: Element>(x: T) -> T {
+    let two = T::from_f32(2.0);
+    two * constant::<T>(GELU_SCALE) * (x + constant::<T>(GELU_CUBIC) * x * x * x)
+}
+
+/// The logistic function at `v`, `1 / (1 + exp(-v))`, which is `0.5 (1 + tanh(v / 2))`.
+fn logistic<T: Element>(v: T) -> T {
+    let one = T::from_f32(1.0);
+    one / (one + (T::ZERO - v).exp())
+}
+
+/// The tanh form of GELU, `0.5 x (1 + tanh(u))` with `u = sqrt(2/pi) (x + 0.044715 x^3)`
+/// (DESIGN.md § 4), evaluated as the identical `x / (1 + exp(-2u))`: in the left tail `tanh(u)`
+/// rounds to within an ulp of `-1` and `1 + tanh(u)` keeps only a few correct bits in `f32`
+/// (at `x = -3` the tanh evaluation is off by `1.1e-5` relative), where `exp(-2u)` loses none.
+fn gelu<T: Element>(x: T) -> T {
+    x * logistic(gelu_twice_inner(x))
+}
+
+/// The derivative of [`gelu`] at `x` times `g`. With `s = 1 / (1 + exp(-2u))` and
+/// `r = 1 - s = 1 / (1 + exp(2u))`, `gelu(x) = x s` and
+/// `gelu'(x) = s + 2 x s r u'(x)`, `u'(x) = sqrt(2/pi) (1 + 3 * 0.044715 x^2)`; this is
+/// `0.5 (1 + t) + 0.5 x (1 - t^2) u'(x)` with `t = tanh(u)`, since `1 + t = 2 s` and
+/// `1 - t^2 = 4 s r`. `r` is computed from its own exponential, not as `1 - s`, so that neither
+/// tail cancels.
+fn gelu_grad<T: Element>(x: T, g: T) -> T {
+    let one = T::from_f32(1.0);
+    let two = T::from_f32(2.0);
+    let three = T::from_f32(3.0);
+    let v = gelu_twice_inner(x);
+    let (s, r) = (logistic(v), logistic(T::ZERO - v));
+    let slope = constant::<T>(GELU_SCALE) * (one + three * constant::<T>(GELU_CUBIC) * x * x);
+    (s + two * (s * x) * r * slope) * g
 }
 
 /// Each `transpose` whose every reader is a `matmul` reading it as its left operand, and which is
@@ -926,4 +1008,22 @@ fn sum<T: Element>(mut terms: impl Iterator<Item = T>) -> T {
 
 fn count<T: Element>(a: View<'_, T>) -> T {
     T::from_count(a.len() as u64)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The GELU constants are the nearest `f32` in `f32`, and within `2^-48` relative in `f64`.
+    #[test]
+    fn gelu_constants_round_once_in_f32_and_keep_f64_precision() {
+        for value in [GELU_SCALE, GELU_CUBIC] {
+            assert_eq!(constant::<f32>(value), value as f32, "{value}");
+            let wide = constant::<f64>(value);
+            assert!(
+                ((wide - value) / value).abs() <= f64::powi(2.0, -48),
+                "{value}: {wide}"
+            );
+        }
+    }
 }

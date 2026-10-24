@@ -280,6 +280,9 @@ impl Element for Wrapped {
     fn mul_add(self, b: Self, c: Self) -> Self {
         Wrapped(self.0.mul_add(b.0, c.0))
     }
+    fn exp(self) -> Self {
+        Wrapped(self.0.exp())
+    }
 }
 
 /// The portable kernel writes every element for a type with no AVX2 code; under `Kernel::Avx2`

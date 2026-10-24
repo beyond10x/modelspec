@@ -730,6 +730,8 @@ fn op_diagnostic(name: OpName<'_>, error: OpError, span: &SourceSpan) -> Diagnos
         OpError::ShapeMismatch { lhs, rhs, .. } => {
             let rule = if name == "mse" {
                 "`mse` needs operands of identical shape"
+            } else if name == "add_rows" {
+                "`add_rows(x, b)` needs `b` of shape [H] for `x` of shape [N, H]"
             } else {
                 "operands need the same shape, or one of them rank 0; M0 has no broadcasting"
             };
@@ -858,7 +860,9 @@ mod tests {
                 "sum",
                 "mean",
                 "mse",
-                "embedding"
+                "embedding",
+                "add_rows",
+                "gelu"
             ]
         );
     }

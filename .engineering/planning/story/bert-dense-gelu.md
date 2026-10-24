@@ -2,7 +2,7 @@
 format: aep.planning-md/3
 id: story:bert-dense-gelu
 kind: story
-status: draft
+status: active
 title: Dense layers with a bias row and GELU, gradient-checked on the CPU
 summary: Adds add_rows with its SumRows gradient and the tanh-form gelu on the CPU interpreter, each with an f64 finite-difference check.
 relations:
@@ -46,7 +46,10 @@ scope:
   path: ui/src/generated/
 - confidence: cited
   path: website/docs/reference/operators.md
-revision: 3
+revision: 5
+transitions:
+- {from: "draft", to: "proposed", at: "2026-10-24T22:25:57Z", actor: "human:timo", revision: 4}
+- {from: "proposed", to: "active", at: "2026-10-24T22:25:57Z", actor: "human:timo", revision: 5}
 ---
 # Dense layers with a bias row and GELU, gradient-checked on the CPU
 

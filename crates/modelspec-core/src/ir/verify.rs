@@ -2160,6 +2160,38 @@ mod tests {
         );
     }
 
+    /// `gelu(add_rows(x, b))` and the two internal gradient ops verify; an `AddRows` whose row
+    /// is not the width of `x` is refused by the registry rule.
+    #[test]
+    fn the_dense_ops_verify_and_a_row_of_another_width_is_refused() {
+        let mut b = crate::ir::tensor::TensorProgramBuilder::new();
+        let x = b.input("x", TensorType::f32(&[5, 3])).unwrap();
+        let row = b.input("b", TensorType::f32(&[3])).unwrap();
+        let z = b.add_rows(x, row).unwrap();
+        let y = b.gelu(z).unwrap();
+        let dz = b.gelu_grad(z, y).unwrap();
+        let db = b.sum_rows(dz).unwrap();
+        b.output(y).unwrap();
+        b.output(db).unwrap();
+        let mut program = b.finish();
+        assert_eq!(verify(&program), Ok(()));
+
+        let wide = program.inputs[1];
+        let at = program.nodes.iter().position(|n| n.id == wide).unwrap();
+        program.nodes[at].ty = TensorType::f32(&[4]);
+        assert!(
+            matches!(
+                verify(&program),
+                Err(VerifyError::Op {
+                    source: OpError::ShapeMismatch { op: "AddRows", .. },
+                    ..
+                })
+            ),
+            "{:?}",
+            verify(&program)
+        );
+    }
+
     /// Outputs are `f32`: an `i32` input is read only as ids.
     #[test]
     fn an_i32_output_is_refused() {

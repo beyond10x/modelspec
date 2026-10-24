@@ -165,6 +165,17 @@ pub enum TensorOp {
     EmbeddingGrad {
         rows: Dim,
     },
+    /// `x: f32[N, H]`, `b: f32[H] -> f32[N, H]`: `b` added to every row of `x`.
+    AddRows,
+    /// Internal gradient op `f32[N, H] -> f32[H]`: the rows summed in ascending order, starting
+    /// from the first row (DESIGN.md § 4).
+    SumRows,
+    /// The tanh form of GELU, `0.5 x (1 + tanh(sqrt(2/pi) (x + 0.044715 x^3)))`, element by
+    /// element on any shape (DESIGN.md § 4).
+    Gelu,
+    /// Internal gradient op over operands `A, G` of one shape: the derivative of [`Self::Gelu`]
+    /// at `A` times `G`, element by element (DESIGN.md § 4).
+    GeluGrad,
 }
 
 impl TensorOp {
@@ -187,6 +198,10 @@ impl TensorOp {
             TensorOp::BroadcastScalar { .. } => "BroadcastScalar",
             TensorOp::Embedding => "Embedding",
             TensorOp::EmbeddingGrad { .. } => "EmbeddingGrad",
+            TensorOp::AddRows => "AddRows",
+            TensorOp::SumRows => "SumRows",
+            TensorOp::Gelu => "Gelu",
+            TensorOp::GeluGrad => "GeluGrad",
         }
     }
 }
@@ -386,6 +401,26 @@ impl TensorProgramBuilder {
         self.push(TensorOp::EmbeddingGrad { rows }, &[ids, g])
     }
 
+    /// The `[H]` row `b` added to every row of the `[N, H]` `x`.
+    pub fn add_rows(&mut self, x: ValueId, b: ValueId) -> Result<ValueId, BuildError> {
+        self.push(TensorOp::AddRows, &[x, b])
+    }
+
+    /// The rows of the `[N, H]` `g` summed, in ascending order, to an `[H]` row.
+    pub fn sum_rows(&mut self, g: ValueId) -> Result<ValueId, BuildError> {
+        self.push(TensorOp::SumRows, &[g])
+    }
+
+    /// The tanh form of GELU of `a`, element by element.
+    pub fn gelu(&mut self, a: ValueId) -> Result<ValueId, BuildError> {
+        self.push(TensorOp::Gelu, &[a])
+    }
+
+    /// The derivative of GELU at `a` times `g`, element by element.
+    pub fn gelu_grad(&mut self, a: ValueId, g: ValueId) -> Result<ValueId, BuildError> {
+        self.push(TensorOp::GeluGrad, &[a, g])
+    }
+
     /// Adds any op except `Input`, typed by the registry.
     pub fn push(&mut self, op: TensorOp, operands: &[ValueId]) -> Result<ValueId, BuildError> {
         self.push_at(op, operands, None)
@@ -482,6 +517,10 @@ mod tests {
             TensorOp::EmbeddingGrad {
                 rows: Dim::Static(1),
             },
+            TensorOp::AddRows,
+            TensorOp::SumRows,
+            TensorOp::Gelu,
+            TensorOp::GeluGrad,
         ];
         for op in &ops {
             match op {
@@ -500,7 +539,11 @@ mod tests {
                 | TensorOp::ReluGrad
                 | TensorOp::BroadcastScalar { .. }
                 | TensorOp::Embedding
-                | TensorOp::EmbeddingGrad { .. } => {}
+                | TensorOp::EmbeddingGrad { .. }
+                | TensorOp::AddRows
+                | TensorOp::SumRows
+                | TensorOp::Gelu
+                | TensorOp::GeluGrad => {}
             }
         }
         ops

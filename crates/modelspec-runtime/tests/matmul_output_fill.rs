@@ -72,6 +72,10 @@ impl Element for Counted {
     fn from_count(count: u64) -> Self {
         Counted(count as f32)
     }
+
+    fn exp(self) -> Self {
+        Counted(self.0.exp())
+    }
 }
 
 /// The clones `f` makes on this thread, and its result.

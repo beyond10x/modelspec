@@ -76,6 +76,16 @@ const EXAMPLES: &[Examples] = &[
         accepted: &[&[&[7, 3], &[10]]],
         refused: &[&[&[7], &[10]], &[&[7, 3], &[2, 5]]],
     },
+    Examples {
+        operator: "add_rows",
+        accepted: &[&[&[8, 4], &[4]]],
+        refused: &[&[&[8, 4], &[5]], &[&[4], &[4]]],
+    },
+    Examples {
+        operator: "gelu",
+        accepted: &[&[&[8, 4]], &[&[]]],
+        refused: &[],
+    },
 ];
 
 /// `name(Tensor<...>, ...)`, as a call in source would read with typed operands.
@@ -269,6 +279,23 @@ mod tests {
             "| `embedding(Tensor<f32, [7, 3]>, Tensor<i32, [10]>)` | `Tensor<f32, [10, 3]>` |"
         ));
         assert!(page.contains("| `Embedding` |"));
+    }
+
+    /// `add_rows` and `gelu` are on the page with an accepted and a refused call each where the
+    /// rule refuses one, and the gradient rows of `AddRows` and `Gelu` are in the table.
+    #[test]
+    fn add_rows_and_gelu_are_on_the_page_with_their_gradients() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let page = page(&root).unwrap();
+        assert!(page.contains("\n## `add_rows`\n"));
+        assert!(page.contains(
+            "| `add_rows(Tensor<f32, [8, 4]>, Tensor<f32, [4]>)` | `Tensor<f32, [8, 4]>` |"
+        ));
+        assert!(page.contains("| `add_rows(Tensor<f32, [8, 4]>, Tensor<f32, [5]>)` | refused: "));
+        assert!(page.contains("\n## `gelu`\n"));
+        assert!(page.contains("| `gelu(Tensor<f32, [8, 4]>)` | `Tensor<f32, [8, 4]>` |"));
+        assert!(page.contains("| `AddRows` | `G` | `sum_rows(G)`"));
+        assert!(page.contains("| `Gelu` | `gelu_grad(A, G)`"));
     }
 
     #[test]
