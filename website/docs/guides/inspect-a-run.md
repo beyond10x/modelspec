@@ -129,8 +129,11 @@ profile dispatch final 4 d588cbc2-b3eb-8bf1-93a1-29d8680aba58 main calls 1 total
 profile dispatches 1008003
 profile submits 282
 profile host_waits 1
+profile barriers_per_step 10
 profile bytes_uploaded 520864
 profile bytes_downloaded 491268
+profile device_allocations 20
+profile peak_device_bytes 2480464
 profile pipeline_creation_us 1639.888
 profile compile_us 1951.865
 profile steady_us_per_step 44.797
@@ -143,13 +146,21 @@ profile steady_us_per_step 44.797
 | `<kernel_module_id> <entry>` | the module and its entry point; find the module id on a `kernel` line of `--stage kernel` |
 | `total_us`, `mean_us` | GPU time from just before the dispatch starts to just after it ends, summed over the calls and per call |
 | `steady_us_per_step` | GPU time per step from step 20 to the final loss, so the first 20 steps are left out as warm-up |
+| `dispatches`, `submits`, `host_waits`, `bytes_uploaded`, `bytes_downloaded` | the run's counters, the same as the `--stats` lines: one host wait for the whole run |
+| `barriers_per_step` | the pipeline barriers one training step records: the `barrier` steps of `plan step` and the two around the copy of the step's loss |
+| `device_allocations`, `peak_device_bytes` | the `vkAllocateMemory` calls of the run, one per buffer, and the largest sum of the allocation sizes of its live buffers, as the device rounds them up |
 | `pipeline_creation_us`, `compile_us` | host time to build the pipelines and to compile the file and emit its kernels, outside the steady state |
 | `flop`, `bytes` | after `mean_us`: the counts of the dispatch on its `plan step` line of `--stage kernel` |
 | `gflop_per_s`, `gb_per_s` | `flop` and `bytes` over `mean_us`; `unavailable` when the time is 0 |
 | `uncounted` | in place of the four fields above, for a dispatch the counting rule has no count for |
 | `step_total` | the last line: the `flop` and `bytes` of every counted `step` site, over `steady_us_per_step`, and `uncounted_sites`, the `step` sites it leaves out |
 
-The run above was made before the profile printed those fields. For its times, the current
+The run above was made before the profile printed `barriers_per_step`, `device_allocations`,
+`peak_device_bytes` and the throughput fields. The three counter lines are from a later run of
+the same command, whose other counters equal the ones above; none of the three depends on
+timing. The step's 10 barriers are the 8 `barrier` steps of `plan step` and the 2 around the copy
+of its loss, and the 20 allocations are the 17 plan buffers, the loss buffer and one staging
+buffer each for the upload and the read-back. For its times, the current
 `--profile` adds `flop 10035200 bytes 565504 gflop_per_s 1166.423 gb_per_s 65.730` to step 0,
 and its last line is `profile step_total flop 20566432 bytes 2600004` with about 459.1 GFLOP/s
 and 58.04 GB/s over the 44.797 µs step, `uncounted_sites 0`. Bytes are what the views name, not

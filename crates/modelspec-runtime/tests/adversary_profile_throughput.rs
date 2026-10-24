@@ -29,8 +29,11 @@ fn stats() -> RunStats {
         submits: 1,
         dispatches: 61,
         dispatches_per_step: 2,
+        barriers_per_step: 4,
         bytes_uploaded: 40,
         bytes_downloaded: 28,
+        device_allocations: 5,
+        peak_device_bytes: 1024,
         class: NumericsClass::Tolerance,
         elapsed: Duration::from_micros(90),
     }

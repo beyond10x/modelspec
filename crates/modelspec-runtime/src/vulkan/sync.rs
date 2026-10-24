@@ -3,8 +3,23 @@
 //! Each barrier makes the writes of one kind of step visible to the next: an upload to a
 //! dispatch, a dispatch to the next dispatch, a dispatch to a download, a copy to a later copy
 //! that reads what it wrote, a download to the host.
+//!
+//! Every barrier is recorded by [`Barrier::record`], which counts it for the recording thread
+//! ([`recorded_barriers`]).
+
+use std::cell::Cell;
 
 use ash::vk;
+
+thread_local! {
+    static RECORDED: Cell<u64> = const { Cell::new(0) };
+}
+
+/// The pipeline barriers this thread has recorded into any command buffer so far. The
+/// difference of two readings around a stretch of recording on one thread is that stretch's.
+pub fn recorded_barriers() -> u64 {
+    RECORDED.get()
+}
 
 /// A global memory barrier between two kinds of step.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -61,8 +76,9 @@ impl Barrier {
         }
     }
 
-    /// Records the barrier into `command`.
+    /// Records the barrier into `command` and counts it ([`recorded_barriers`]).
     pub(crate) fn record(self, device: &ash::Device, command: vk::CommandBuffer) {
+        RECORDED.set(RECORDED.get() + 1);
         let (source_stage, source_access, target_stage, target_access) = self.scopes();
         let barriers = [vk::MemoryBarrier::default()
             .src_access_mask(source_access)

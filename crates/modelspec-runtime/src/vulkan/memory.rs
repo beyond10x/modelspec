@@ -3,11 +3,114 @@
 //! A device-local buffer is a storage buffer that copies run into and out of; a staging buffer
 //! is host-visible, host-coherent memory mapped for the buffer's whole life, which the host
 //! writes inputs to and reads results from.
+//!
+//! Every `vkAllocateMemory` call and the free of its memory are counted for the thread that
+//! made the buffer, which is the thread that frees it (a [`Buffer`] is not `Send`). A
+//! [`MemorySpan`] reads them for a stretch of that thread, such as one device run: the
+//! allocations made in it and the largest sum of the allocation sizes of its live buffers.
+
+use std::cell::RefCell;
+use std::marker::PhantomData;
 
 use ash::vk;
 use modelspec_core::ir::kernel::BufferView;
 
 use super::{Device, ExecError};
+
+/// The device memory counters of one thread.
+#[derive(Default)]
+struct Ledger {
+    /// The `vkAllocateMemory` calls of the thread so far; the next allocation's serial.
+    allocations: u64,
+    /// The spans open on the thread, the outermost first.
+    spans: Vec<Open>,
+}
+
+/// An open [`MemorySpan`]'s counts.
+struct Open {
+    /// The serial of the first allocation made in the span.
+    first: u64,
+    /// The allocation bytes of the span's allocations that are not freed.
+    live: u64,
+    /// The largest `live` so far.
+    peak: u64,
+}
+
+thread_local! {
+    static LEDGER: RefCell<Ledger> = RefCell::default();
+}
+
+/// Counts an allocation of `bytes` on this thread and returns its serial, for [`freed`].
+fn allocated(bytes: u64) -> u64 {
+    LEDGER.with_borrow_mut(|ledger| {
+        let serial = ledger.allocations;
+        ledger.allocations += 1;
+        for open in &mut ledger.spans {
+            open.live += bytes;
+            open.peak = open.peak.max(open.live);
+        }
+        serial
+    })
+}
+
+/// Counts the free of the allocation of `bytes` that [`allocated`] gave `serial`; nothing once
+/// the thread's counters are destroyed as it exits, when no span is open any more.
+fn freed(serial: u64, bytes: u64) {
+    let _ = LEDGER.try_with(|ledger| {
+        let mut ledger = ledger.borrow_mut();
+        for open in ledger.spans.iter_mut().filter(|open| serial >= open.first) {
+            open.live -= bytes;
+        }
+    });
+}
+
+/// The device memory this thread allocates from [`MemorySpan::start`] until the span is
+/// dropped. Spans nest: one started inside another counts its own part, which the outer one
+/// counts too. Dropping a span closes it and every span started after it.
+pub struct MemorySpan {
+    /// The span's place in the thread's open spans.
+    index: usize,
+    /// The serial of its first allocation.
+    first: u64,
+    /// Ties the span to the thread whose counters it reads.
+    _thread: PhantomData<*const ()>,
+}
+
+impl MemorySpan {
+    /// Opens a span on this thread.
+    pub fn start() -> Self {
+        LEDGER.with_borrow_mut(|ledger| {
+            let first = ledger.allocations;
+            ledger.spans.push(Open {
+                first,
+                live: 0,
+                peak: 0,
+            });
+            MemorySpan {
+                index: ledger.spans.len() - 1,
+                first,
+                _thread: PhantomData,
+            }
+        })
+    }
+
+    /// The `vkAllocateMemory` calls since the span started.
+    pub fn allocations(&self) -> u64 {
+        LEDGER.with_borrow(|ledger| ledger.allocations - self.first)
+    }
+
+    /// The largest sum of the allocation sizes of the span's allocations live at one time, in
+    /// bytes.
+    pub fn peak_bytes(&self) -> u64 {
+        LEDGER.with_borrow(|ledger| ledger.spans.get(self.index).map_or(0, |open| open.peak))
+    }
+}
+
+impl Drop for MemorySpan {
+    fn drop(&mut self) {
+        LEDGER.with_borrow_mut(|ledger| ledger.spans.truncate(self.index));
+    }
+}
 
 /// A buffer and the memory bound to it.
 pub struct Buffer<'d> {
@@ -15,6 +118,10 @@ pub struct Buffer<'d> {
     pub(crate) buffer: vk::Buffer,
     memory: vk::DeviceMemory,
     bytes: u64,
+    /// The `allocationSize` of the memory's `vkAllocateMemory` call; 0 before it succeeds.
+    allocation_bytes: u64,
+    /// The serial [`allocated`] gave the memory.
+    serial: u64,
     mapped: Option<*mut u8>,
 }
 
@@ -22,6 +129,12 @@ impl Buffer<'_> {
     /// The size the buffer was asked for, in bytes.
     pub fn bytes(&self) -> u64 {
         self.bytes
+    }
+
+    /// The size of the device memory allocated for the buffer, in bytes: at least
+    /// [`Buffer::bytes`], as the device's memory requirements for the buffer round it.
+    pub fn allocation_bytes(&self) -> u64 {
+        self.allocation_bytes
     }
 
     /// Whether the buffer is a mapped staging buffer rather than a device-local one.
@@ -102,6 +215,9 @@ impl Drop for Buffer<'_> {
             self.device.destroy_buffer(self.buffer, None);
             self.device.free_memory(self.memory, None);
         }
+        if self.memory != vk::DeviceMemory::null() {
+            freed(self.serial, self.allocation_bytes);
+        }
     }
 }
 
@@ -173,6 +289,8 @@ impl Device<'_> {
             buffer,
             memory: vk::DeviceMemory::null(),
             bytes,
+            allocation_bytes: 0,
+            serial: 0,
             mapped: None,
         };
         // SAFETY: `buffer` was created on this device.
@@ -189,6 +307,8 @@ impl Device<'_> {
         // SAFETY: `allocation` outlives the call; the memory is freed by `owned`'s drop.
         owned.memory = unsafe { self.device.allocate_memory(&allocation, None) }
             .map_err(ExecError::call("vkAllocateMemory"))?;
+        owned.allocation_bytes = needs.size;
+        owned.serial = allocated(needs.size);
         // SAFETY: the memory is new, of a type the buffer allows and at least its size.
         unsafe { self.device.bind_buffer_memory(buffer, owned.memory, 0) }
             .map_err(ExecError::call("vkBindBufferMemory"))?;
@@ -237,5 +357,32 @@ mod tests {
         );
         assert_eq!(find_memory_type(&memory, 0b0011, host), None);
         assert_eq!(find_memory_type(&memory, 0b1_0000, host), None);
+    }
+
+    /// story:vulkan-step-counters: a span counts the allocations made after it starts and the
+    /// largest sum of their live sizes; an allocation from before it, freed during it, is not
+    /// its own, and a span inside it counts its own part and adds to the outer one.
+    #[test]
+    fn a_span_counts_its_allocations_and_the_peak_of_their_live_bytes() {
+        let earlier = allocated(100);
+        let span = MemorySpan::start();
+        assert_eq!((span.allocations(), span.peak_bytes()), (0, 0));
+        let a = allocated(10);
+        let b = allocated(20);
+        freed(a, 10);
+        let c = allocated(5);
+        freed(earlier, 100);
+        assert_eq!((span.allocations(), span.peak_bytes()), (3, 30));
+        {
+            let inner = MemorySpan::start();
+            let d = allocated(40);
+            assert_eq!((inner.allocations(), inner.peak_bytes()), (1, 40));
+            freed(d, 40);
+            assert_eq!((inner.allocations(), inner.peak_bytes()), (1, 40));
+        }
+        assert_eq!((span.allocations(), span.peak_bytes()), (4, 65));
+        freed(b, 20);
+        freed(c, 5);
+        assert_eq!((span.allocations(), span.peak_bytes()), (4, 65));
     }
 }
