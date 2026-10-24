@@ -31,6 +31,9 @@
 //! makes non-finite, or at the read-back, not at its own step ([`diverged`]). [`infer`] does not
 //! check.
 //!
+//! A run reads `fast_math` from its artifact: its modules are emitted under it and the
+//! [`RunStats::class`] of a `fast_math` run is `tolerance` (DESIGN.md § 5.4, § 12 ADR-008).
+//!
 //! [`infer`] runs the steps of the step plan up to the loss once on a checkpoint's parameters and
 //! the synthetic batch, with one host wait, and reads the prediction and the loss back.
 //!
@@ -601,7 +604,7 @@ fn execute(
     }
     let stamps_of = |chunk: usize, next: u32| pools.get(chunk).map(|pool| Stamps { pool, next });
 
-    let class = numerics_class(negotiated, plan);
+    let class = numerics_class(negotiated, artifact);
     let waits_before = device.host_waits();
     let submits_before = device.submits();
     let dispatches_before = device.dispatches();
@@ -1090,11 +1093,14 @@ fn record<'r>(
 /// negotiated bit-for-bit whose every result is in the M1 bit-for-bit set, which holds the matmul
 /// outputs and the `mse` loss sum before its division. A run reports its losses after the
 /// division and updates its parameters by SGD, so every M1 training run is in the tolerance class.
-fn numerics_class(negotiated: &Negotiated, plan: &ExecutionPlan) -> NumericsClass {
-    let in_set = plan
-        .kernels
-        .iter()
-        .all(|kernel| kernel.kind == KernelKind::MatMul);
+/// A `fast_math` artifact is never in the bit-for-bit class (DESIGN.md § 12 ADR-008).
+fn numerics_class(negotiated: &Negotiated, artifact: &CompiledArtifact) -> NumericsClass {
+    let plan = &artifact.execution;
+    let in_set = !artifact.fast_math
+        && plan
+            .kernels
+            .iter()
+            .all(|kernel| kernel.kind == KernelKind::MatMul);
     match negotiated.numerics {
         NumericsClass::BitForBit if in_set && !plan.kernels.is_empty() => NumericsClass::BitForBit,
         _ => NumericsClass::Tolerance,
@@ -1130,6 +1136,51 @@ mod tests {
         compile_artifact(file, source, Backend::Vulkan)
             .expect("the example compiles for Vulkan")
             .execution
+    }
+
+    /// `story:fast-math-mode`, acceptance `numerics-class-follows-fast-math`: on a device
+    /// negotiated bit-for-bit, a plan of matmuls alone is in the bit-for-bit class when its
+    /// artifact's `fast_math` is off and in the tolerance class when it is on (DESIGN.md § 5.4
+    /// item 2, § 12 ADR-008).
+    #[test]
+    fn a_plan_of_matmuls_is_bit_for_bit_only_without_fast_math() {
+        let mut artifact = compile_artifact("fit.mspec", EXAMPLE, Backend::Vulkan)
+            .expect("the example compiles for Vulkan");
+        artifact
+            .execution
+            .kernels
+            .retain(|kernel| kernel.kind == KernelKind::MatMul);
+        assert!(
+            !artifact.execution.kernels.is_empty(),
+            "the example has a matmul"
+        );
+        let bit_for_bit = Negotiated {
+            api_version: super::super::negotiate::REQUIRED_API_VERSION,
+            features: Vec::new(),
+            extensions: Vec::new(),
+            numerics: NumericsClass::BitForBit,
+        };
+        assert!(!artifact.fast_math);
+        assert_eq!(
+            numerics_class(&bit_for_bit, &artifact),
+            NumericsClass::BitForBit
+        );
+        artifact.fast_math = true;
+        assert_eq!(
+            numerics_class(&bit_for_bit, &artifact),
+            NumericsClass::Tolerance
+        );
+        let tolerance = Negotiated {
+            numerics: NumericsClass::Tolerance,
+            ..bit_for_bit
+        };
+        for fast_math in [false, true] {
+            artifact.fast_math = fast_math;
+            assert_eq!(
+                numerics_class(&tolerance, &artifact),
+                NumericsClass::Tolerance
+            );
+        }
     }
 
     /// The pool holds one descriptor per view each set binds: 14 dispatches of `mnist_mlp`

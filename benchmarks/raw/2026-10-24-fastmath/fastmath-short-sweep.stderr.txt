@@ -1,0 +1,28 @@
+gpu-apps-before []
+b10x-build-slot: slot 1 of 3, 136G free
+    Finished `bench` profile [optimized] target(s) in 6.35s
+     Running benches/mlp_sweep.rs (target/release/deps/mlp_sweep-6c09fa7629455d42)
+mlp_sweep: warning: not a clean checkout: Build { version: Some("0.8.0"), commit: Some("2ab8c0b94a0d69b3dae67c4e177fa2eb94a69cce"), dirty: Some(true) }
+mlp_sweep: batch 8192 hidden 4096: 107239964672 FLOP per step
+mlp_sweep:   calibration: 290 steps in 3.718 s
+mlp_sweep:   calibration: 469 steps in 5.273 s
+mlp_sweep:   timed: 469 steps in 4.974 s, 10605.282 us per step
+mlp_sweep:   warning: the run was shorter than 5 s
+mlp_sweep:   timed: 469 steps in 5.198 s, 11082.634 us per step
+mlp_sweep:   timed: 469 steps in 5.225 s, 11139.825 us per step
+mlp_sweep: batch 8192 hidden 1024: 26809991168 FLOP per step
+mlp_sweep:   calibration: 969 steps in 3.625 s
+mlp_sweep:   calibration: 1605 steps in 4.375 s
+mlp_sweep:   calibration: 2202 steps in 5.948 s
+mlp_sweep:   timed: 2202 steps in 5.955 s, 2704.398 us per step
+mlp_sweep:   timed: 2202 steps in 5.989 s, 2720.000 us per step
+mlp_sweep:   timed: 2202 steps in 6.022 s, 2734.723 us per step
+mlp_sweep: batch 1000 hidden 4096: 13090816000 FLOP per step
+mlp_sweep:   calibration: 1985 steps in 3.507 s
+mlp_sweep:   calibration: 3396 steps in 5.006 s
+mlp_sweep:   timed: 3396 steps in 4.837 s, 1424.234 us per step
+mlp_sweep:   warning: the run was shorter than 5 s
+mlp_sweep:   timed: 3396 steps in 4.683 s, 1379.110 us per step
+mlp_sweep:   warning: the run was shorter than 5 s
+mlp_sweep:   timed: 3396 steps in 4.821 s, 1419.693 us per step
+mlp_sweep:   warning: the run was shorter than 5 s

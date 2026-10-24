@@ -1,4 +1,5 @@
-//! `modelspec compile <file> --backend cpu|vulkan --output <dir> [--device-profile <json>]`:
+//! `modelspec compile <file> --backend cpu|vulkan --output <dir> [--device-profile <json>]
+//! [--fast-math]`:
 //! compile a `.mspec` file into an artifact directory (DESIGN.md § 7.1, § 8), its
 //! `artifact.json` and, for Vulkan, one `kernels/<kernel_module_id>.spv` per kernel.
 //!
@@ -6,8 +7,11 @@
 //! `--device-profile`, or without it device 0 of the Vulkan loader. The profile is negotiated
 //! before anything is written, so a device the runtime would refuse (E-TARGET-004) leaves the
 //! output directory as it was. A profile file that cannot be read or breaks an invariant of
-//! `spec/domains/device.yaml` exits 1 naming the file and the invariant. `--device-profile` with
-//! `--backend cpu` is a usage error; a Cpu compile opens no Vulkan library.
+//! `spec/domains/device.yaml` exits 1 naming the file and the invariant. `--fast-math` sets the
+//! artifact's `fast_math` (DESIGN.md § 12 ADR-008), recorded in the manifest, in every kernel
+//! cache key and so in the artifact hash, and its modules carry no `NoContraction`.
+//! `--device-profile` or `--fast-math` with `--backend cpu` is a usage error; a Cpu compile opens
+//! no Vulkan library.
 //!
 //! What is written is read back through `modelspec_core::artifact::read` before the process
 //! exits 0 and prints `artifact <artifact_id> <artifact_hash> kernels=<n> <dir>`. Two compiles of
@@ -35,6 +39,12 @@ pub struct Args {
     /// form `inspect-device --format json` prints) instead of probing device 0.
     #[arg(long, value_name = "PATH")]
     pub device_profile: Option<PathBuf>,
+    /// With --backend vulkan, compile with fast_math (DESIGN.md ADR-008): the manifest and every
+    /// kernel cache key record it, and the float multiplies, adds and subtracts of the matmul,
+    /// reduction, loss-sum and SGD kernels carry no NoContraction, so a driver may contract them
+    /// into fused multiply-adds.
+    #[arg(long)]
+    pub fast_math: bool,
 }
 
 /// A backend `modelspec compile` can name.
@@ -49,13 +59,21 @@ pub enum Backend {
 
 /// Runs `modelspec compile` and returns the process exit code.
 pub fn run(args: Args, stdout: &mut dyn Write, stderr: &mut dyn Write) -> u8 {
-    if args.backend == Backend::Cpu && args.device_profile.is_some() {
-        let _ = writeln!(
-            stderr,
-            "error: the argument '--device-profile' cannot be used with '--backend cpu'; it is \
-             available only with '--backend vulkan'"
-        );
-        return crate::EXIT_USAGE;
+    if args.backend == Backend::Cpu {
+        let misplaced = [
+            ("--device-profile", args.device_profile.is_some()),
+            ("--fast-math", args.fast_math),
+        ]
+        .into_iter()
+        .find_map(|(flag, given)| given.then_some(flag));
+        if let Some(flag) = misplaced {
+            let _ = writeln!(
+                stderr,
+                "error: the argument '{flag}' cannot be used with '--backend cpu'; it is \
+                 available only with '--backend vulkan'"
+            );
+            return crate::EXIT_USAGE;
+        }
     }
     #[cfg(not(feature = "vulkan"))]
     if args.backend == Backend::Vulkan {
@@ -84,7 +102,10 @@ pub fn run(args: Args, stdout: &mut dyn Write, stderr: &mut dyn Write) -> u8 {
         Backend::Vulkan => Target::Vulkan,
     };
     let compiled = match compile::compile_artifact(&file, &source, target) {
-        Ok(compiled) => compiled,
+        Ok(mut compiled) => {
+            compiled.fast_math = args.fast_math;
+            compiled
+        }
         Err(diagnostics) => {
             for diagnostic in &diagnostics {
                 let _ = writeln!(stderr, "{diagnostic}");

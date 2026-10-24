@@ -1,0 +1,21 @@
+gpu-apps-before []
+b10x-build-slot: slot 1 of 3, 135G free
+    Finished `release` profile [optimized] target(s) in 1m 18s
+     Running tests/train_fast_math.rs (target/release/deps/train_fast_math-8308451086a3702a)
+
+running 2 tests
+test mnist_mlp_with_fast_math_passes_against_the_cpu_and_repeats_its_bits ... mnist_mlp: two fast_math runs print the same bytes: true
+mnist_mlp: 37 printed losses, 36 differ from the CPU in bits; largest share of the loss tolerance 0.000717 at step 0
+mnist_mlp: @MnistMlp.w1: Tensor<f32, [784, 64]>: ||g - c||_2 / ||c||_2 = 7.020e-7 (bound 1e-4), 48062 of 50176 values differ from the CPU in bits
+mnist_mlp: @MnistMlp.w2: Tensor<f32, [64, 10]>: ||g - c||_2 / ||c||_2 = 5.270e-7 (bound 1e-4), 605 of 640 values differ from the CPU in bits
+ok
+test the_sweep_at_batch_8192_hidden_4096_with_fast_math_passes_against_the_cpu ... sweep b8192 h4096: two fast_math runs print the same bytes: true
+sweep b8192 h4096: 2 printed losses, 2 differ from the CPU in bits; largest share of the loss tolerance 0.001729 at step 0
+sweep b8192 h4096: @SweepMlp.w1: Tensor<f32, [784, 4096]>: ||g - c||_2 / ||c||_2 = 4.017e-9 (bound 1e-4), 11011 of 3211264 values differ from the CPU in bits
+sweep b8192 h4096: @SweepMlp.w2: Tensor<f32, [4096, 10]>: ||g - c||_2 / ||c||_2 = 8.211e-9 (bound 1e-4), 1293 of 40960 values differ from the CPU in bits
+ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 117.85s
+
+wall 210 s
+EXIT=0

@@ -61,6 +61,7 @@ Usage: modelspec compile [OPTIONS] --backend <BACKEND> --output <DIR> <PATH>
 | `--backend <BACKEND>` | yes | none | The backend the artifact is for. One of:<br/>`cpu`: The CPU interpreter: an artifact without kernel modules<br/>`vulkan`: Vulkan compute: an artifact with one SPIR-V module per kernel, in a build with the vulkan feature |
 | `--output <DIR>` | yes | none | The artifact directory to write, created with its parents; files of an earlier artifact in it are overwritten. |
 | `--device-profile <PATH>` | no | none | With --backend vulkan, build the kernel modules for the DeviceProfile JSON file PATH (the form `inspect-device --format json` prints) instead of probing device 0. |
+| `--fast-math` | no | `false` | With --backend vulkan, compile with fast_math (DESIGN.md ADR-008): the manifest and every kernel cache key record it, and the float multiplies, adds and subtracts of the matmul, reduction, loss-sum and SGD kernels carry no NoContraction, so a driver may contract them into fused multiply-adds. |
 
 ## `modelspec infer`
 
@@ -146,3 +147,4 @@ Usage: modelspec train [OPTIONS] --backend <BACKEND> <PATH>
 | `--device <INDEX>` | no | none | With --backend vulkan, train on the physical device INDEX, in the order the Vulkan loader lists them, instead of device 0. |
 | `--stats` | no | `false` | With --backend vulkan, print the run's host waits, submits, dispatches, dispatches and barriers per step, bytes copied up and down, device allocations, peak device bytes, numerics class and microseconds per step on stderr after it. |
 | `--profile` | no | `false` | With --backend vulkan, time every dispatch with GPU timestamp queries and print one `profile dispatch` line per dispatch site, with its FLOP, bytes, achieved GFLOP/s and GB/s, then the run's counters (dispatches, submits, host waits, barriers per step, bytes copied up and down, device allocations, peak device bytes), compile and pipeline creation time, steady-state microseconds per step and the step's total FLOP, bytes, GFLOP/s and GB/s on stderr after it. |
+| `--fast-math` | no | `false` | With --backend vulkan, compile with fast_math (DESIGN.md ADR-008): the float multiplies, adds and subtracts of the matmul, reduction, loss-sum and SGD kernels may be contracted into fused multiply-adds, so the run is compared with the CPU within tolerance, never bit for bit; two runs of it on one device and driver give the same bits. |

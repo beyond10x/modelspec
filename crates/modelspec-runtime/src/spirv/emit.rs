@@ -9,7 +9,11 @@
 //! three for f32; no other module declares a float-control mode. Every `OpFAdd`, `OpFSub` and
 //! `OpFMul` of a reduction, loss-sum or matmul module is decorated `NoContraction`, so no driver
 //! fuses a multiply and an add; so are the multiply and the subtraction of an SGD update with
-//! three operands, `p - (lr * g)` (DESIGN.md § 3.1).
+//! three operands, `p - (lr * g)` (DESIGN.md § 3.1). The modules [`emit_kernels`] builds for an
+//! artifact whose `fast_math` is set carry none of these decorations, so the driver may contract
+//! a multiply and an add into a fused multiply-add, and nothing else in them changes; their
+//! cache keys say `fast_math` (DESIGN.md § 12 ADR-008). [`emit`], [`emit_module`] and
+//! [`emit_loss_sum_undivided`] build the deterministic module.
 //!
 //! A matmul with a `relu` epilogue applies the compare and select of the `relu` kernel to its
 //! rounded sum and writes that; when it keeps the pre-activation, it writes the sum first.
@@ -136,12 +140,12 @@ pub use modelspec_core::ir::kernel::MIN_SHARED_MEMORY_BYTES;
 /// The SPIR-V words of `kernel`'s compute module, with no float-control mode, for a device with
 /// [`MIN_SHARED_MEMORY_BYTES`] of workgroup memory.
 pub fn emit(kernel: &Kernel) -> Result<Vec<u32>, EmitError> {
-    Ok(build(kernel, Variant::Plan, false, MIN_SHARED_MEMORY_BYTES)?.assemble())
+    Ok(build(kernel, Variant::Plan, false, MIN_SHARED_MEMORY_BYTES, false)?.assemble())
 }
 
 /// The module of `kernel` for a device with `profile`.
 pub fn emit_module(kernel: &Kernel, profile: &DeviceProfile) -> Result<KernelModule, EmitError> {
-    module_for(kernel, profile, Variant::Plan)
+    module_for(kernel, profile, Variant::Plan, false)
 }
 
 /// The module of the loss-sum `kernel` without its division by the element count: the sum of
@@ -156,7 +160,7 @@ pub fn emit_loss_sum_undivided(
             op: kernel.op,
         });
     }
-    module_for(kernel, profile, Variant::Undivided)
+    module_for(kernel, profile, Variant::Undivided, false)
 }
 
 /// One module per kernel of `artifact`'s execution plan, in plan order; none for a CPU artifact.
@@ -168,7 +172,7 @@ pub fn emit_kernels(
         .execution
         .kernels
         .iter()
-        .map(|kernel| emit_module(kernel, profile))
+        .map(|kernel| module_for(kernel, profile, Variant::Plan, artifact.fast_math))
         .collect()
 }
 
@@ -188,6 +192,7 @@ fn module_for(
     kernel: &Kernel,
     profile: &DeviceProfile,
     variant: Variant,
+    fast_math: bool,
 ) -> Result<KernelModule, EmitError> {
     let float_controls = matches!(kernel.kind, KernelKind::LossSum | KernelKind::MatMul)
         && reports_float_controls(profile);
@@ -201,6 +206,7 @@ fn module_for(
         variant,
         float_controls,
         profile.max_shared_memory_bytes,
+        fast_math,
     )?
     .assemble();
     let mut shapes = Vec::new();
@@ -242,7 +248,7 @@ fn module_for(
             ir_hash,
             shapes,
             dtype: kernel.dtype,
-            fast_math: false,
+            fast_math,
             deterministic: true,
             vendor_id: profile.vendor_id,
             device_id: profile.device_id,
@@ -577,6 +583,7 @@ fn build(
     variant: Variant,
     float_controls: bool,
     shared_bytes: u32,
+    fast_math: bool,
 ) -> Result<dr::Module, EmitError> {
     let body = body_of(kernel, variant, shared_bytes)?;
     let reads = kernel
@@ -600,7 +607,14 @@ fn build(
             "only a matmul kernel has an epilogue",
         ));
     }
-    let exact = !matches!(body, Body::Elementwise(..));
+    // Every float add, subtract and multiply of a reduction, loss-sum, transpose or matmul module,
+    // and the product and difference of an SGD update with three operands, is decorated
+    // `NoContraction`; none is in a `fast_math` module (DESIGN.md § 5.4, § 12 ADR-008).
+    let exact = !fast_math
+        && match body {
+            Body::Elementwise(arith, _) => arith == Arith::ScaledSub,
+            _ => true,
+        };
     let mut m = Shell::new(
         reads,
         kernel.written(),
@@ -692,6 +706,8 @@ struct Shell {
     matmul_vars: Vec<Word>,
     /// The workgroup size, the `LocalSize` x of the entry point.
     group: Word,
+    /// Whether [`Shell::f_add`], [`Shell::f_sub`] and [`Shell::f_mul`] decorate their result
+    /// `NoContraction`.
     exact: bool,
     u32_constants: BTreeMap<u32, Word>,
     f32_constants: BTreeMap<u32, Word>,
@@ -1106,11 +1122,8 @@ impl Shell {
                     m.b.select(f32_ty, None, positive, values[1], f_zero)?
                 }
                 Arith::ScaledSub => {
-                    let product = m.b.f_mul(f32_ty, None, values[1], values[2])?;
-                    m.b.decorate(product, Decoration::NoContraction, []);
-                    let difference = m.b.f_sub(f32_ty, None, values[0], product)?;
-                    m.b.decorate(difference, Decoration::NoContraction, []);
-                    difference
+                    let product = m.f_mul(values[1], values[2])?;
+                    m.f_sub(values[0], product)?
                 }
                 Arith::Copy => values[0],
             };

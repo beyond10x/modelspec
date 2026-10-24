@@ -31,6 +31,10 @@
 //! read when the sweep starts; left out where git does not answer). A point that does not
 //! compile or run prints its refusal and the sweep goes on. Progress goes to stderr.
 //!
+//! `--fast-math` compiles every point with `fast_math` set (DESIGN.md § 12 ADR-008) and writes
+//! its lines as the side `modelspec-vulkan-fast-math`, a figure reported beside the
+//! deterministic `modelspec-vulkan` one, never as the headline.
+//!
 //! `--crossover <file>...` reads result lines of any side (this bench's and those of
 //! `opponents/mlp_sweep/mlp_sweep.py`) and prints, per side and batch, the first width whose
 //! median µs per step is more than 10 % above the previous width's ([`sweep::crossover_lines`]),
@@ -63,6 +67,10 @@ use sweep::{Build, Point, PointResult, TimedRun};
 /// The side this bench writes.
 const SIDE: &str = "modelspec-vulkan";
 
+/// The side this bench writes with `--fast-math`: a labelled figure beside the deterministic one,
+/// never the headline (DESIGN.md § 12 ADR-008).
+const SIDE_FAST_MATH: &str = "modelspec-vulkan-fast-math";
+
 /// The calibration runs a point gets before its step count is taken as it stands.
 const CALIBRATIONS: usize = 4;
 
@@ -82,6 +90,10 @@ struct Cli {
     /// Print the crossover lines of these result files instead of running; opens no device.
     #[arg(long, num_args = 1.., value_name = "RESULTS")]
     crossover: Vec<PathBuf>,
+    /// Compile every point with fast_math (DESIGN.md ADR-008) and write the side
+    /// `modelspec-vulkan-fast-math`.
+    #[arg(long)]
+    fast_math: bool,
     /// Passed by `cargo bench`; ignored.
     #[arg(long, hide = true)]
     bench: bool,
@@ -111,7 +123,7 @@ fn main() -> ExitCode {
     } else {
         cli.points.clone()
     };
-    sweep_on_device(cli.device, cli.min_seconds, &points)
+    sweep_on_device(cli.device, cli.min_seconds, cli.fast_math, &points)
 }
 
 /// Prints the crossover lines of the result lines in `files`.
@@ -145,7 +157,7 @@ fn crossover(files: &[PathBuf]) -> ExitCode {
 }
 
 /// Opens device `index` and runs every point of `points` on it.
-fn sweep_on_device(index: usize, min_seconds: f64, points: &[Point]) -> ExitCode {
+fn sweep_on_device(index: usize, min_seconds: f64, fast_math: bool, points: &[Point]) -> ExitCode {
     let opened = (|| {
         let vulkan = Vulkan::load()?;
         let candidates = vulkan.candidates()?;
@@ -180,7 +192,9 @@ fn sweep_on_device(index: usize, min_seconds: f64, points: &[Point]) -> ExitCode
         device: &device,
         profile: &profile,
         negotiated: &negotiated,
+        fast_math,
     };
+    let side = if fast_math { SIDE_FAST_MATH } else { SIDE };
     let mut stdout = std::io::stdout();
     for &point in points {
         eprintln!(
@@ -191,11 +205,11 @@ fn sweep_on_device(index: usize, min_seconds: f64, points: &[Point]) -> ExitCode
         );
         let result = match measure(&on, point, min_seconds) {
             Ok((steps, runs)) => {
-                PointResult::measured(SIDE, point, steps, runs, Some(named.clone()))
+                PointResult::measured(side, point, steps, runs, Some(named.clone()))
             }
             Err(refusal) => {
                 eprintln!("mlp_sweep: refused: {refusal}");
-                PointResult::refused(SIDE, point, refusal, Some(named.clone()))
+                PointResult::refused(side, point, refusal, Some(named.clone()))
             }
         }
         .with_build(build.clone());
@@ -235,10 +249,16 @@ struct On<'d> {
     device: &'d Device<'d>,
     profile: &'d DeviceProfile,
     negotiated: &'d Negotiated,
+    /// The `fast_math` every point's artifact is compiled with.
+    fast_math: bool,
 }
 
-/// The point's source for `steps` steps, compiled for training and for Vulkan.
-fn compile(point: Point, steps: u64) -> Result<(CompiledTraining, CompiledArtifact), String> {
+/// The point's source for `steps` steps, compiled for training and for Vulkan with `fast_math`.
+fn compile(
+    point: Point,
+    steps: u64,
+    fast_math: bool,
+) -> Result<(CompiledTraining, CompiledArtifact), String> {
     let name = point.file_name();
     let source = point.source(steps);
     let refusal = |diagnostics: Vec<modelspec_core::diag::Diagnostic>| {
@@ -249,7 +269,8 @@ fn compile(point: Point, steps: u64) -> Result<(CompiledTraining, CompiledArtifa
             .join("\n")
     };
     let compiled = compile_training(&name, &source).map_err(refusal)?;
-    let artifact = compile_artifact(&name, &source, Backend::Vulkan).map_err(refusal)?;
+    let mut artifact = compile_artifact(&name, &source, Backend::Vulkan).map_err(refusal)?;
+    artifact.fast_math = fast_math;
     Ok((compiled, artifact))
 }
 
@@ -278,12 +299,12 @@ fn run(
 /// the runs.
 fn measure(on: &On<'_>, point: Point, min_seconds: f64) -> Result<(u64, Vec<TimedRun>), String> {
     let target = min_seconds * 1.2;
-    let warm = compile(point, sweep::WARMUP_STEPS)?;
+    let warm = compile(point, sweep::WARMUP_STEPS, on.fast_math)?;
     let data = synthetic(&warm.0.config, &warm.0.forward).map_err(|error| error.to_string())?;
     let warm = run(on, &warm, &data)?;
     let mut steps = sweep::steps_for(warm.elapsed.as_secs_f64(), warm.steps, target);
     for _ in 0..CALIBRATIONS {
-        let stats = run(on, &compile(point, steps)?, &data)?;
+        let stats = run(on, &compile(point, steps, on.fast_math)?, &data)?;
         let seconds = stats.elapsed.as_secs_f64();
         eprintln!("mlp_sweep:   calibration: {steps} steps in {seconds:.3} s");
         if seconds >= min_seconds {
@@ -291,7 +312,7 @@ fn measure(on: &On<'_>, point: Point, min_seconds: f64) -> Result<(u64, Vec<Time
         }
         steps = sweep::steps_for(seconds, steps, target).max(steps + 1);
     }
-    let timed = compile(point, steps)?;
+    let timed = compile(point, steps, on.fast_math)?;
     let mut runs = Vec::with_capacity(sweep::RUNS);
     for _ in 0..sweep::RUNS {
         let stats = run(on, &timed, &data)?;

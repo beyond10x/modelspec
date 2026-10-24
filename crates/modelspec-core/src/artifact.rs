@@ -7,7 +7,8 @@
 //! On disk an artifact is a directory ([`write`], [`read`]): `artifact.json`, the manifest of
 //! format version [`FORMAT_VERSION`], and `kernels/<kernel_module_id>.spv`, one SPIR-V module per
 //! kernel of a Vulkan artifact; a Cpu artifact has no `kernels/`. The manifest holds the hashes,
-//! the compile settings (`deterministic = true`, `fast_math = false`), the parameters, data,
+//! the compile settings (`deterministic = true` and the artifact's `fast_math`, which every
+//! kernel cache key repeats), the parameters, data,
 //! buffers, loss and prediction views, the step plan and forward plan, and one entry per kernel:
 //! its Kernel IR, entry point, cache key, byte length and the blake3 of its bytes.
 //! `artifact_hash` is blake3 over the manifest's JSON with `artifact_hash` and `artifact_id`
@@ -23,7 +24,8 @@
 //! module file is a regular file no longer than its entry says and `kernels/` holds no other
 //! entry ([`E_ARTIFACT_004`]); each module's hash and then `artifact_hash` and `artifact_id`
 //! ([`E_ARTIFACT_002`]); then every byte size computed from a shape or element count fits in 64
-//! bits, the invariants of `spec/domains/artifact.yaml`, every Dispatch names a module the
+//! bits, the invariants of `spec/domains/artifact.yaml`, every kernel cache key has the
+//! manifest's `fast_math`, every Dispatch names a module the
 //! artifact owns, every module is SPIR-V, and the plan verifier ([`verify_plan`])
 //! ([`E_ARTIFACT_003`]).
 
@@ -121,6 +123,10 @@ pub struct CompiledArtifact {
     pub schema_hash: ContentHash,
     /// Views, kernels and plans; a Cpu artifact has no kernels and empty plans.
     pub execution: ExecutionPlan,
+    /// The opt-in `fast_math` compilation setting (DESIGN.md § 3.3, § 12 ADR-008): `false` from
+    /// [`CompiledArtifact::new`]; set by `compile --fast-math` and `train --fast-math`. It is
+    /// recorded in the manifest, in every kernel cache key and in the artifact hash.
+    pub fast_math: bool,
 }
 
 impl CompiledArtifact {
@@ -146,6 +152,7 @@ impl CompiledArtifact {
             ir_hash: ContentHash::of(&ir_hasher),
             schema_hash: schema_hash(&step.training.program.params),
             execution,
+            fast_math: false,
         }
     }
 }
@@ -1311,6 +1318,13 @@ impl Manifest {
                             .ok_or_else(|| {
                                 WriteError::Invalid(format!("kernel {} has no module", kernel.id))
                             })?;
+                        if module.cache_key.fast_math != artifact.fast_math {
+                            return Err(WriteError::Invalid(format!(
+                                "the module of kernel {} was built with fast_math {}, the \
+                                 artifact has fast_math {}",
+                                kernel.id, module.cache_key.fast_math, artifact.fast_math
+                            )));
+                        }
                         WireKernel::of(kernel, module)
                     })
                     .collect::<Result<_, _>>()?
@@ -1326,7 +1340,7 @@ impl Manifest {
             artifact_hash: String::new(),
             source_hash: artifact.source_hash.0.clone(),
             ir_hash: artifact.ir_hash.0.clone(),
-            fast_math: false,
+            fast_math: artifact.fast_math,
             deterministic: true,
             compiler_version: env!("CARGO_PKG_VERSION").to_owned(),
             schema_hash: artifact.schema_hash.0.clone(),
@@ -1408,6 +1422,16 @@ impl Manifest {
     fn check(&self) -> Result<CompiledArtifact, String> {
         self.check_byte_sizes()?;
         self.check_invariants()?;
+        if let Some(kernel) = self
+            .kernels
+            .iter()
+            .find(|kernel| kernel.cache_key.fast_math != self.fast_math)
+        {
+            return Err(format!(
+                "kernel {} has a cache key with fast_math {}, the manifest has fast_math {}",
+                kernel.kernel_module_id, kernel.cache_key.fast_math, self.fast_math
+            ));
+        }
         let kernels = self
             .kernels
             .iter()
@@ -1476,6 +1500,7 @@ impl Manifest {
                 loss_view: BufferView::from(&self.loss_view),
                 prediction_view: BufferView::from(&self.prediction_view),
             },
+            fast_math: self.fast_math,
         })
     }
 

@@ -9,6 +9,10 @@ history.
 
 ## [Unreleased]
 
+
+### Added
+
+- `compile --fast-math` and `train --backend vulkan --fast-math` set `fast_math` in the manifest and every kernel cache key (ADR-008): the artifact hash changes, the reader refuses a key whose `fast_math` is not the manifest's with E-ARTIFACT-003, the kernels drop every `NoContraction` and nothing else changes in them, the run's numerics class is `tolerance`, and `--fast-math` with `--backend cpu` is a usage error. `mlp_sweep --fast-math` on the RTX 3090 (medians of 3 runs, µs per step, deterministic figure first): b8192 h4096 13,794.6 → 10,648.6 (PyTorch eager CUDA 7,290.5), b8192 h1024 3,751.8 → 2,747.6 (1,932.1), b1000 h4096 1,882.5 → 1,373.0 (994.7); forward matmul 9,569 → 12,170 GFLOP/s; the tolerance run on `examples/mnist_mlp.mspec` and the b8192 h4096 source stays within 0.2 % of ADR-008's bound and two `fast_math` runs are bit-equal (`benchmarks/raw/2026-10-24-fastmath/`); DESIGN.md revision 0.32 (story:fast-math-mode)
 ### Changed
 
 - A matmul whose output covers at least 128 blocks of 64 rows with `n` of at least 64 is register-blocked (`MatMulTile` `cols_per_invocation` and `b_pad`, `MatMulBlock`): each of 128 invocations accumulates an 8×8 (64×128 block) or 8×4 (64×64 block) tile of outputs from fragments staged through workgroup memory, `b` stored k-major, every element still accumulated by one invocation over ascending `k` from the `k = 0` product with `NoContraction` on every multiply and add, so the bits are those of the plan before (22 shapes and 34 edge shapes compared against recorded digests); smaller shapes keep the one-or-two-row tile, so the MNIST kernels change only in their printed tile text and module ids. `mlp_sweep` on the RTX 3090 (medians of 3 runs, µs per step): b8192 h4096 32,810.6 → 13,285.0 (PyTorch eager CUDA 7,290.5), b8192 h1024 6,034.5 → 3,684.7, b1000 h1024 743.5 → 493.8 (PyTorch 555.1); DESIGN.md revision 0.31 states the rule (story:matmul-shape-aware-tiling)

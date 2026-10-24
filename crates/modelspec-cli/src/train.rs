@@ -42,9 +42,11 @@
 //! compiled before the loader is opened; then a missing loader exits 1 with `E-TARGET-002`, no
 //! device or a `--device` that names none with `E-TARGET-003`, and a device below the
 //! requirements with `E-TARGET-004`. A build without the `vulkan` feature refuses the backend
-//! with [`E_TARGET_001`] before the file is read. `--data`, `--init`, `--eval` and
-//! `--statistics-every` are CPU-only, and `--device`, `--stats` and `--profile` Vulkan-only:
-//! naming one with the other backend is a usage error (exit 2).
+//! with [`E_TARGET_001`] before the file is read. `--fast-math` compiles the artifact with
+//! `fast_math` set (DESIGN.md § 12 ADR-008): its kernels carry no `NoContraction`, the run is
+//! compared within tolerance, and `--stats` names the class `tolerance`. `--data`, `--init`,
+//! `--eval` and `--statistics-every` are CPU-only, and `--device`, `--stats`, `--profile` and
+//! `--fast-math` Vulkan-only: naming one with the other backend is a usage error (exit 2).
 //!
 //! `--data <dir>` trains on dense `f32` files instead of synthetic data, `--init <dir>` starts
 //! the parameters that have a file from it, and `--eval <dir>` adds a last line
@@ -203,6 +205,12 @@ pub struct Args {
     /// GB/s on stderr after it.
     #[arg(long)]
     pub profile: bool,
+    /// With --backend vulkan, compile with fast_math (DESIGN.md ADR-008): the float multiplies,
+    /// adds and subtracts of the matmul, reduction, loss-sum and SGD kernels may be contracted
+    /// into fused multiply-adds, so the run is compared with the CPU within tolerance, never bit
+    /// for bit; two runs of it on one device and driver give the same bits.
+    #[arg(long)]
+    pub fast_math: bool,
 }
 
 /// The flag of `args` the backend cannot take, if one is given.
@@ -212,6 +220,7 @@ fn misplaced_flag(args: &Args) -> Option<&'static str> {
             ("--device", args.device.is_some()),
             ("--stats", args.stats),
             ("--profile", args.profile),
+            ("--fast-math", args.fast_math),
         ]
         .into_iter()
         .find_map(|(flag, given)| given.then_some(flag)),
@@ -335,6 +344,19 @@ pub enum Backend {
     Vulkan,
 }
 
+/// The artifact a Vulkan run of `source` executes, with the `fast_math` of `--fast-math`.
+#[cfg(feature = "vulkan")]
+fn vulkan_artifact(
+    file: &str,
+    source: &str,
+    args: &Args,
+) -> Result<modelspec_core::artifact::CompiledArtifact, Vec<Diagnostic>> {
+    let mut artifact =
+        compile::compile_artifact(file, source, modelspec_core::artifact::Backend::Vulkan)?;
+    artifact.fast_math = args.fast_math;
+    Ok(artifact)
+}
+
 /// Runs `modelspec train` and returns the process exit code.
 pub fn run(args: Args, stdout: &mut dyn Write, stderr: &mut dyn Write) -> u8 {
     if let Some(flag) = misplaced_flag(&args) {
@@ -392,23 +414,20 @@ pub fn run(args: Args, stdout: &mut dyn Write, stderr: &mut dyn Write) -> u8 {
         #[cfg(not(feature = "vulkan"))]
         Backend::Vulkan => unreachable!("refused above in a build without the vulkan feature"),
         #[cfg(feature = "vulkan")]
-        Backend::Vulkan => {
-            use modelspec_core::artifact::Backend as Target;
-            match compile::compile_artifact(&file, &source, Target::Vulkan) {
-                Ok(artifact) => Engine::Vulkan {
-                    artifact: Box::new(artifact),
-                    device: args.device,
-                    stats: args.stats,
-                    profile: args.profile.then(|| compiling.elapsed()),
-                },
-                Err(diagnostics) => {
-                    for diagnostic in &diagnostics {
-                        let _ = writeln!(stderr, "{diagnostic}");
-                    }
-                    return crate::EXIT_FAILURE;
+        Backend::Vulkan => match vulkan_artifact(&file, &source, &args) {
+            Ok(artifact) => Engine::Vulkan {
+                artifact: Box::new(artifact),
+                device: args.device,
+                stats: args.stats,
+                profile: args.profile.then(|| compiling.elapsed()),
+            },
+            Err(diagnostics) => {
+                for diagnostic in &diagnostics {
+                    let _ = writeln!(stderr, "{diagnostic}");
                 }
+                return crate::EXIT_FAILURE;
             }
-        }
+        },
     };
     let resume = match &args.resume {
         None => None,
@@ -903,3 +922,37 @@ fn list(values: &[f32]) -> String {
 
 #[cfg(test)]
 mod tests;
+
+/// `story:fast-math-mode`, acceptance `flag-sets-field` for `train`: the artifact a Vulkan run
+/// executes has the `fast_math` of `--fast-math`.
+#[cfg(all(test, feature = "vulkan"))]
+mod fast_math_tests {
+    use super::{Args, Backend, vulkan_artifact};
+    use clap::Parser;
+
+    const EXAMPLE: &str = include_str!("../../../examples/mnist_mlp.mspec");
+
+    #[derive(Parser)]
+    struct Cli {
+        #[command(flatten)]
+        args: Args,
+    }
+
+    fn args(extra: &[&str]) -> Args {
+        let mut argv = vec!["train", "mnist_mlp.mspec", "--backend", "vulkan"];
+        argv.extend_from_slice(extra);
+        Cli::try_parse_from(argv).expect("the arguments parse").args
+    }
+
+    #[test]
+    fn train_fast_math_sets_fast_math_in_the_artifact_it_runs() {
+        let off = args(&[]);
+        let on = args(&["--fast-math"]);
+        assert_eq!(on.backend, Backend::Vulkan);
+        let off = vulkan_artifact("mnist_mlp.mspec", EXAMPLE, &off).expect("compiles");
+        let on = vulkan_artifact("mnist_mlp.mspec", EXAMPLE, &on).expect("compiles");
+        assert!(!off.fast_math, "without --fast-math");
+        assert!(on.fast_math, "with --fast-math");
+        assert_eq!(off.execution, on.execution, "the same plan");
+    }
+}
