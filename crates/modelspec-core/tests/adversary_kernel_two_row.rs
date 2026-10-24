@@ -19,9 +19,11 @@ fn base_of(m: u64, k: u64, n: u64) -> MatMulTile {
         workgroup_size,
         cols,
         rows: if one_row >= 256 { 2 } else { 1 },
+        cols_per_invocation: 1,
         depth: k.clamp(1, 64) as u32,
         ahead: 6,
         buffers: 1,
+        b_pad: 4,
     };
     loop {
         tile.buffers = if u64::from(tile.depth) < k { 2 } else { 1 };
@@ -77,6 +79,15 @@ fn every_two_row_tile_reads_2_ahead_at_the_deepest_depth_up_to_16_that_fits() {
         let tile = MatMulTile::of(m, k, n);
         let base = base_of(m, k, n);
         let what = format!("[{m}, {k}] x [{k}, {n}]: {tile:?}");
+        // story:matmul-shape-aware-tiling: an output of at least 128 blocks of 64 by 64 with
+        // `n` of at least 64 is register-blocked, outside the row rule.
+        if tile.cols_per_invocation > 1 {
+            assert!(
+                n >= 64 && m.div_ceil(64) * n.div_ceil(64) >= 128,
+                "{what}: register-blocked"
+            );
+            continue;
+        }
         assert_eq!(tile.rows, base.rows, "{what}: the row rule moved");
         if tile.rows != 2 {
             continue;

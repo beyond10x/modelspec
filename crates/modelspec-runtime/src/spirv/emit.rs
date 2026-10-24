@@ -591,7 +591,7 @@ fn build(
         _ => None,
     };
     let matmul_vars = match body {
-        Body::MatMul { k, tile, .. } => tile.rows as usize + matmul_carried(k, &tile),
+        Body::MatMul { k, tile, .. } => matmul_accumulators(&tile) + matmul_carried(k, &tile),
         _ => 0,
     };
     if kernel.epilogue.is_some() && !matches!(body, Body::MatMul { .. }) {
@@ -643,6 +643,11 @@ const MATMUL_UNROLL: u32 = 4;
 fn matmul_passes(k: u32, tile: &MatMulTile) -> u32 {
     let full = k / tile.depth;
     full.saturating_sub(tile.ahead.max(1) + 1) / MATMUL_UNROLL
+}
+
+/// The accumulators of one invocation: one per output element of its block.
+fn matmul_accumulators(tile: &MatMulTile) -> usize {
+    (tile.rows * tile.cols_per_invocation) as usize
 }
 
 /// The values one invocation reads per tile: its `a` slots, then its `b` slots.
@@ -1368,13 +1373,16 @@ impl Shell {
     /// of row block `g / ⌈n / cols⌉` and column block `g % ⌈n / cols⌉`. For each tile of `depth`
     /// values of the contracting index, from `k = 0` up, its invocations read the block's
     /// `a[rows, tile]` and `b[tile, cols]` into registers `ahead` tiles early, stage them in
-    /// workgroup memory (`b` transposed), wait on a barrier, and each invocation adds the
-    /// tile's products to each of its `rows` accumulators in ascending `k`, the first product of
-    /// the first tile starting the sum. Values outside the matrices are staged but never enter
-    /// a written output, and the last tile has its own trip count, so no padding term is added:
-    /// every output element is `a[i, 0] * b[0, j]`, then each next product added in ascending
-    /// `k`, as the CPU computes it. With an [`Epilogue`] the rounded sum is written to the
-    /// pre-activation binding when the kernel keeps it, and its `relu` to the result.
+    /// workgroup memory (`b` transposed when an invocation computes one column, as read when it
+    /// computes several), wait on a barrier, and each invocation reads its `rows` values of `a`
+    /// and `cols_per_invocation` values of `b` of each `k` of the tile into registers and adds
+    /// their products to the accumulator of each output element of its block in ascending `k`,
+    /// the first product of the first tile starting the sum. Values outside the matrices are
+    /// staged but never enter a written output, and the last tile has its own trip count, so no
+    /// padding term is added: every output element is `a[i, 0] * b[0, j]`, then each next
+    /// product added in ascending `k`, as the CPU computes it. With an [`Epilogue`] the rounded
+    /// sum is written to the pre-activation binding when the kernel keeps it, and its `relu` to
+    /// the result.
     fn matmul(
         &mut self,
         m: u32,
@@ -1386,8 +1394,11 @@ impl Shell {
         let local = self.local.expect("a module with workgroup memory");
         let u32_ty = self.u32_ty;
         let (size, cols, depth) = (tile.workgroup_size, tile.cols, tile.depth);
+        let (lanes, per) = (tile.lanes(), tile.cols_per_invocation);
+        // `b` staged transposed, one column per stride, or as read, one `k` per stride.
+        let transposed = per == 1;
         let block_rows = tile.rows_per_workgroup();
-        let thread_rows = size / cols;
+        let thread_rows = size / lanes;
         let a_stride = depth;
         let b_offset = block_rows * a_stride;
 
@@ -1401,16 +1412,29 @@ impl Shell {
         let row0 = self.mul(block_row, block_rows_c)?;
         let cols_c = self.uint(cols);
         let col0 = self.mul(block_col, cols_c)?;
-        let thread_col = self.b.u_mod(u32_ty, None, local, cols_c)?;
-        let thread_row = self.b.u_div(u32_ty, None, local, cols_c)?;
-        let j = self.add(col0, thread_col)?;
+        let lanes_c = self.uint(lanes);
+        let thread_col = self.b.u_mod(u32_ty, None, local, lanes_c)?;
+        let thread_row = self.b.u_div(u32_ty, None, local, lanes_c)?;
         let (m_c, k_c, n_c) = (self.uint(m), self.uint(k), self.uint(n));
         let depth_c = self.uint(depth);
         let a_stride_c = self.uint(a_stride);
         let b_offset_c = self.uint(b_offset);
         let b_stride_c = self.uint(tile.b_stride());
-        let b_col = self.mul(thread_col, b_stride_c)?;
-        let b_col = self.add(b_offset_c, b_col)?;
+        // Per column `c` of the invocation's block: its output column `j`, and where its `b`
+        // values start in a buffer, at `k` 0 of the tile.
+        let mut local_cols = Vec::new();
+        let mut b_cols = Vec::new();
+        for c in 0..per {
+            let offset = self.uint(c * lanes);
+            let col = self.add(thread_col, offset)?;
+            let at = if transposed {
+                self.mul(col, b_stride_c)?
+            } else {
+                col
+            };
+            b_cols.push(self.add(b_offset_c, at)?);
+            local_cols.push(self.add(col0, col)?);
+        }
         let mut local_rows = Vec::new();
         for q in 0..tile.rows {
             let offset = self.uint(q * thread_rows);
@@ -1467,9 +1491,15 @@ impl Shell {
                     let valid = self.less(col, n_c)?;
                     let p_at = self.mul(p, n_c)?;
                     let at = self.add(p_at, col)?;
-                    let c_at = self.mul(c, b_stride_c)?;
-                    let c_at = self.add(b_offset_c, c_at)?;
-                    let to = self.add(c_at, p)?;
+                    let to = if transposed {
+                        let c_at = self.mul(c, b_stride_c)?;
+                        let c_at = self.add(b_offset_c, c_at)?;
+                        self.add(c_at, p)?
+                    } else {
+                        let p_at = self.mul(p, b_stride_c)?;
+                        let p_at = self.add(b_offset_c, p_at)?;
+                        self.add(p_at, c)?
+                    };
                     (p, to, at, valid)
                 };
                 let valid = match taken {
@@ -1538,12 +1568,16 @@ impl Shell {
             Ok(())
         };
 
-        let rows = tile.rows as usize;
+        let accumulators = matmul_accumulators(&tile);
+        let b_line = tile.b_stride();
         // Adds the products of the first `len` values of the tile staged in the buffer at
-        // `buffer` to the accumulators, the first product starting the sum when `opening`.
+        // `buffer` to the accumulators, the first product starting the sum when `opening`. Per
+        // `k`, the invocation reads its `b` value of each of its columns into registers, then
+        // per row its `a` value and that row's products, accumulator `q * per + c` holding row
+        // `q` and column `c` of its block.
         let compute =
             |s: &mut Self, buffer: Word, len: u32, opening: bool| -> Result<(), EmitError> {
-                let vars = s.matmul_vars[..rows].to_vec();
+                let vars = s.matmul_vars[..accumulators].to_vec();
                 let mut sums: Vec<Option<Word>> = Vec::new();
                 for &var in &vars {
                     sums.push(if opening {
@@ -1552,23 +1586,32 @@ impl Shell {
                         Some(s.b.load(s.f32_ty, None, var, None, [])?)
                     });
                 }
-                let b_start = s.add(buffer, b_col)?;
+                let mut b_starts = Vec::new();
+                for &b_col in &b_cols {
+                    b_starts.push(s.add(buffer, b_col)?);
+                }
                 let mut a_starts = Vec::new();
                 for &a_row in &a_rows {
                     a_starts.push(s.add(buffer, a_row)?);
                 }
                 for p in 0..len {
                     let p_c = s.uint(p);
-                    let b_at = s.add(b_start, p_c)?;
-                    let b = s.load_shared(b_at)?;
-                    for (sum, &a_start) in sums.iter_mut().zip(&a_starts) {
+                    let b_step = s.uint(if transposed { p } else { p * b_line });
+                    let mut bs = Vec::new();
+                    for &b_start in &b_starts {
+                        let b_at = s.add(b_start, b_step)?;
+                        bs.push(s.load_shared(b_at)?);
+                    }
+                    for (row_sums, &a_start) in sums.chunks_mut(per as usize).zip(&a_starts) {
                         let a_at = s.add(a_start, p_c)?;
                         let a = s.load_shared(a_at)?;
-                        let product = s.f_mul(a, b)?;
-                        *sum = Some(match *sum {
-                            None => product,
-                            Some(acc) => s.f_add(acc, product)?,
-                        });
+                        for (sum, &b) in row_sums.iter_mut().zip(&bs) {
+                            let product = s.f_mul(a, b)?;
+                            *sum = Some(match *sum {
+                                None => product,
+                                Some(acc) => s.f_add(acc, product)?,
+                            });
+                        }
                     }
                 }
                 for (&var, sum) in vars.iter().zip(sums) {
@@ -1631,7 +1674,7 @@ impl Shell {
         let passes = matmul_passes(k, &tile);
         let mut resume = 1;
         if passes > 0 {
-            let carried = self.matmul_vars[rows..].to_vec();
+            let carried = self.matmul_vars[accumulators..].to_vec();
             let per = slots.len();
             assert_eq!(carried.len(), (ahead - 1) * per, "matmul_carried");
             let spill = |s: &mut Self, queue: &mut VecDeque<Vec<Word>>| -> Result<(), EmitError> {
@@ -1682,29 +1725,34 @@ impl Shell {
             step(self, &mut fetched, i, ahead_of(i))?;
         }
 
+        let mut col_inside = Vec::new();
+        for &j in &local_cols {
+            col_inside.push(self.less(j, n_c)?);
+        }
         for (q, &row) in local_rows.iter().enumerate() {
             let row = self.add(row0, row)?;
             let row_inside = self.less(row, m_c)?;
-            let col_inside = self.less(j, n_c)?;
-            let inside = self.and(row_inside, col_inside)?;
-            let var = self.matmul_vars[q];
-            self.when(inside, |s| {
-                let row_at = s.mul(row, n_c)?;
-                let at = s.add(row_at, j)?;
-                let sum = s.b.load(s.f32_ty, None, var, None, [])?;
-                match epilogue {
-                    None => s.write(at, sum),
-                    Some(Epilogue::Relu {
-                        writes_pre_activation,
-                    }) => {
-                        if writes_pre_activation {
-                            s.write_to(0, at, sum)?;
+            let row_at = self.mul(row, n_c)?;
+            for (c, (&j, &col_inside)) in local_cols.iter().zip(&col_inside).enumerate() {
+                let inside = self.and(row_inside, col_inside)?;
+                let var = self.matmul_vars[q * per as usize + c];
+                self.when(inside, |s| {
+                    let at = s.add(row_at, j)?;
+                    let sum = s.b.load(s.f32_ty, None, var, None, [])?;
+                    match epilogue {
+                        None => s.write(at, sum),
+                        Some(Epilogue::Relu {
+                            writes_pre_activation,
+                        }) => {
+                            if writes_pre_activation {
+                                s.write_to(0, at, sum)?;
+                            }
+                            let activation = s.relu(sum)?;
+                            s.write(at, activation)
                         }
-                        let activation = s.relu(sum)?;
-                        s.write(at, activation)
                     }
-                }
-            })?;
+                })?;
+            }
         }
         Ok(())
     }

@@ -52,7 +52,7 @@ prints the buffers, one `kernel` line per kernel with its content-hashed module 
 The kernel lines name what each module computes:
 
 ```text
-kernel k0 ecca4089-63a1-8ae9-868c-1a08decd036d matmul MatMul f32 (Tensor<f32, [100, 784]>, Tensor<f32, [784, 64]>) -> Tensor<f32, [100, 64]> epilogue Relu writes pre-activation workgroup_size 128 workgroups [52, 1, 1] tile workgroup_size 128 cols 16 rows 1 depth 64 ahead 6 buffers 2
+kernel k0 6bd32d9c-1c0c-8fd4-96b2-46d2c722adc9 matmul MatMul f32 (Tensor<f32, [100, 784]>, Tensor<f32, [784, 64]>) -> Tensor<f32, [100, 64]> epilogue Relu writes pre-activation workgroup_size 128 workgroups [52, 1, 1] tile workgroup_size 128 cols 16 rows 1 cols_per_invocation 1 depth 64 ahead 6 buffers 2 b_pad 4
 kernel k2 d588cbc2-b3eb-8bf1-93a1-29d8680aba58 loss_sum Mse f32 (Tensor<f32, [100, 10]>, Tensor<f32, [100, 10]>) -> Tensor<f32, []> workgroup_size 64 workgroups [1, 1, 1]
 ```
 

@@ -45,7 +45,11 @@ fn with_lr(lr: &str) -> String {
     );
     std::fs::create_dir_all(scratch()).expect("the temp dir is writable");
     let path = scratch().join(format!("lr-{lr}.mspec"));
-    std::fs::write(&path, changed).expect("the source is written");
+    // Tests run in parallel and two write the same `lr`: write a file of this thread's own and
+    // rename it, so no reader sees the truncated file.
+    let staged = scratch().join(format!("lr-{lr}.{:?}.tmp", std::thread::current().id()));
+    std::fs::write(&staged, changed).expect("the source is written");
+    std::fs::rename(&staged, &path).expect("the source is moved into place");
     path.display().to_string()
 }
 

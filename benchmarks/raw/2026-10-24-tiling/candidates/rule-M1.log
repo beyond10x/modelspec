@@ -1,0 +1,58 @@
+    Finished `release` profile [optimized] target(s) in 5.74s
+gpu apps before sweep_b8192_h64: []
+step 0 flop 822083584 mean_us 138.812 gflop/s 5922.276
+step 2 flop 10485760 mean_us 7.119 gflop/s 1472.873
+step 10 flop 10485760 mean_us 6.081 gflop/s 1724.318
+step 13 flop 10485760 mean_us 67.867 gflop/s 154.504
+step 17 flop 822083584 mean_us 267.036 gflop/s 3078.554
+profile steady_us_per_step 1020.398
+profile step_total flop 1676578048 bytes 130129924 gflop_per_s 1643.062 gb_per_s 127.529 uncounted_sites 0
+gpu apps before sweep_b8192_h256: []
+step 0 flop 3288334336 mean_us 440.496 gflop/s 7465.068
+step 2 flop 41943040 mean_us 20.179 gflop/s 2078.511
+step 10 flop 41943040 mean_us 14.413 gflop/s 2910.119
+step 13 flop 41943040 mean_us 70.434 gflop/s 595.492
+step 14 flop 2097152 mean_us 35.823 gflop/s 58.542
+step 17 flop 3288334336 mean_us 786.270 gflop/s 4182.192
+profile steady_us_per_step 1920.429
+profile step_total flop 6705329152 bytes 202407940 gflop_per_s 3491.579 gb_per_s 105.397 uncounted_sites 0
+gpu apps before sweep_b8192_h1024: []
+step 0 flop 13153337344 mean_us 1300.443 gflop/s 10114.504
+step 2 flop 167772160 mean_us 72.716 gflop/s 2307.216
+step 10 flop 167772160 mean_us 51.013 gflop/s 3288.812
+step 13 flop 167772160 mean_us 118.667 gflop/s 1413.803
+step 14 flop 8388608 mean_us 191.568 gflop/s 43.789
+step 17 flop 13153337344 mean_us 2161.754 gflop/s 6084.568
+step 19 flop 1605632 mean_us 12.906 gflop/s 124.405
+profile steady_us_per_step 4618.342
+profile step_total flop 26820333568 bytes 491520004 gflop_per_s 5807.352 gb_per_s 106.428 uncounted_sites 0
+gpu apps before sweep_b8192_h4096: []
+step 0 flop 52613349376 mean_us 5563.711 gflop/s 9456.521
+step 2 flop 671088640 mean_us 318.874 gflop/s 2104.560
+step 10 flop 671088640 mean_us 217.883 gflop/s 3080.045
+step 13 flop 671088640 mean_us 362.268 gflop/s 1852.465
+step 14 flop 33554432 mean_us 694.295 gflop/s 48.329
+step 17 flop 52613349376 mean_us 6804.717 gflop/s 7731.893
+step 19 flop 6422528 mean_us 60.374 gflop/s 106.379
+profile steady_us_per_step 15749.064
+profile step_total flop 107280351232 bytes 1647968260 gflop_per_s 6811.856 gb_per_s 104.639 uncounted_sites 0
+gpu apps before sweep_b1000_h1024: []
+step 0 flop 1605632000 mean_us 258.909 gflop/s 6201.524
+step 2 flop 20480000 mean_us 20.648 gflop/s 991.853
+step 10 flop 20480000 mean_us 9.554 gflop/s 2143.519
+step 13 flop 20480000 mean_us 20.493 gflop/s 999.350
+step 14 flop 1024000 mean_us 21.109 gflop/s 48.511
+step 17 flop 1605632000 mean_us 306.272 gflop/s 5242.511
+step 19 flop 1605632 mean_us 14.686 gflop/s 109.329
+profile steady_us_per_step 757.436
+profile step_total flop 3275394112 bytes 74384004 gflop_per_s 4324.320 gb_per_s 98.205 uncounted_sites 0
+gpu apps before sweep_b1000_h4096: []
+step 0 flop 6422528000 mean_us 821.116 gflop/s 7821.703
+step 2 flop 81920000 mean_us 69.985 gflop/s 1170.538
+step 10 flop 81920000 mean_us 27.794 gflop/s 2947.432
+step 13 flop 81920000 mean_us 47.874 gflop/s 1711.144
+step 14 flop 4096000 mean_us 78.728 gflop/s 52.027
+step 17 flop 6422528000 mean_us 838.678 gflop/s 7657.920
+step 19 flop 6422528 mean_us 61.144 gflop/s 105.039
+profile steady_us_per_step 2248.209
+profile step_total flop 13101456448 bytes 258704004 gflop_per_s 5827.507 gb_per_s 115.071 uncounted_sites 0

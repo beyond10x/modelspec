@@ -163,36 +163,111 @@ pub const MATMUL_TWO_ROWS_FROM_WORKGROUPS: u64 = 256;
 /// (DESIGN.md § 5.2).
 pub const MATMUL_TWO_ROW_TILE: (u32, u32) = (16, 2);
 
+/// A register-blocked [`MatMulTile`] (DESIGN.md § 5.2): its workgroup size, columns, rows and
+/// columns per invocation, its depth before [`MIN_SHARED_MEMORY_BYTES`] lowers it, and the
+/// shapes that take it: `n` of at least `cols`, `k` of at least `from_k`, and at least
+/// `from_workgroups` workgroups of the block over the output.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MatMulBlock {
+    pub workgroup_size: u32,
+    pub cols: u32,
+    pub rows: u32,
+    pub cols_per_invocation: u32,
+    pub depth: u32,
+    pub from_k: u64,
+    pub from_workgroups: u64,
+}
+
+/// The wide register-blocked tile: 128 invocations of 8 rows by 8 columns, a block of 64 rows by
+/// 128 columns, tiles of 8 values of `k`. On the RTX 3090 it takes the forward matmul of
+/// `mlp_sweep` b8192 h4096, `[8192, 784] x [784, 4096]`, from 16,062 µs (one or two columns per
+/// invocation) to 5,487 µs, against 9,042 µs for [`MATMUL_SQUARE_BLOCK`]; at `k = 10`, the
+/// `[8192, 10] x [10, 4096]` matmul of that step, the square block is faster (202 against
+/// 221 µs), hence `from_k` (DESIGN.md § 5.2).
+pub const MATMUL_WIDE_BLOCK: MatMulBlock = MatMulBlock {
+    workgroup_size: 128,
+    cols: 128,
+    rows: 8,
+    cols_per_invocation: 8,
+    depth: 8,
+    from_k: 64,
+    from_workgroups: 128,
+};
+
+/// The square register-blocked tile: 128 invocations of 8 rows by 4 columns, a block of 64 rows
+/// by 64 columns, tiles of 16 values of `k`. Every output of at least 1024 by 1024 that does not
+/// take [`MATMUL_WIDE_BLOCK`] takes it (256 workgroups). On the RTX 3090 it is slower than one
+/// or two columns per invocation at 52 workgroups (`[784, 8192] x [8192, 256]`, 1,087 against
+/// 773 µs) and faster at 128 (`[8192, 784] x [784, 64]`, 123 against 184 µs), hence
+/// `from_workgroups` (DESIGN.md § 5.2).
+pub const MATMUL_SQUARE_BLOCK: MatMulBlock = MatMulBlock {
+    workgroup_size: 128,
+    cols: 64,
+    rows: 8,
+    cols_per_invocation: 4,
+    depth: 16,
+    from_k: 1,
+    from_workgroups: 128,
+};
+
 /// How a matmul kernel `[m, k] x [k, n] -> [m, n]` covers its output (DESIGN.md § 5.2): each
 /// workgroup of `workgroup_size` invocations computes a block of
-/// [`MatMulTile::rows_per_workgroup`] rows by `cols` columns. Invocation `t` computes column
-/// `t % cols` of the rows `t / cols + q * (workgroup_size / cols)` for `q` in `0..rows`, one
-/// output element per row, each over ascending `k` from the `k = 0` product. The contracting
-/// index is walked in tiles of `depth` values: a tile is read into registers `ahead` tiles
-/// before its products, then staged in one of `buffers` workgroup memory buffers.
+/// [`MatMulTile::rows_per_workgroup`] rows by `cols` columns, in `cols / cols_per_invocation`
+/// column lanes. Invocation `t` computes the columns `t % lanes + c * lanes` for `c` in
+/// `0..cols_per_invocation` of the rows `t / lanes + q * (workgroup_size / lanes)` for `q` in
+/// `0..rows`, `rows · cols_per_invocation` output elements, each with its own accumulator over
+/// ascending `k` from the `k = 0` product. The contracting index is walked in tiles of `depth`
+/// values: a tile is read into registers `ahead` tiles before its products, then staged in one
+/// of `buffers` workgroup memory buffers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct MatMulTile {
     pub workgroup_size: u32,
     /// Output columns per workgroup, a power of two that divides `workgroup_size`.
     pub cols: u32,
-    /// Output rows per invocation, each with its own accumulator.
+    /// Output rows per invocation.
     pub rows: u32,
+    /// Output columns per invocation, a power of two that divides `cols`; with 1 the staged `b`
+    /// block is transposed, one column per [`MatMulTile::b_stride`], else it is staged as read,
+    /// one value of `k` per [`MatMulTile::b_stride`].
+    pub cols_per_invocation: u32,
     /// Values of the contracting index per tile.
     pub depth: u32,
     /// Tiles read into registers before the products of the first one.
     pub ahead: u32,
     /// Workgroup memory buffers, 2 when there is more than one tile, else 1.
     pub buffers: u32,
+    /// The `f32` values added to the stride of the staged `b` block against bank conflicts.
+    pub b_pad: u32,
 }
 
 impl MatMulTile {
-    /// The tile of a `[m, k] x [k, n]` matmul, a function of its shape alone: 128
-    /// invocations, 16 columns (fewer, a power of two, when `n` is smaller), one row per
-    /// invocation, or two when one row needs at least [`MATMUL_TWO_ROWS_FROM_WORKGROUPS`]
-    /// workgroups, tiles of up to 64 values read 6 tiles ahead for one row and of up to 16
-    /// values read 2 tiles ahead for two ([`MATMUL_TWO_ROW_TILE`]), and depth halved until the
-    /// staged values fit in [`MIN_SHARED_MEMORY_BYTES`].
+    /// The tile of a `[m, k] x [k, n]` matmul, a function of its shape alone: the first of
+    /// [`MATMUL_WIDE_BLOCK`] and [`MATMUL_SQUARE_BLOCK`] the shape takes, read 1 tile ahead with
+    /// `b` unpadded. Otherwise 128 invocations of one column each, 16 columns (fewer, a power of
+    /// two, when `n` is smaller), one row per invocation, or two when one row needs at least
+    /// [`MATMUL_TWO_ROWS_FROM_WORKGROUPS`] workgroups, tiles of up to 64 values read 6 tiles
+    /// ahead for one row and of up to 16 values read 2 tiles ahead for two
+    /// ([`MATMUL_TWO_ROW_TILE`]), and the transposed `b` padded by 4. In every tile the depth is
+    /// clamped to `k`, then halved until the staged values fit in [`MIN_SHARED_MEMORY_BYTES`].
     pub fn of(m: u64, k: u64, n: u64) -> Self {
+        for block in [MATMUL_WIDE_BLOCK, MATMUL_SQUARE_BLOCK] {
+            let tile = Self {
+                workgroup_size: block.workgroup_size,
+                cols: block.cols,
+                rows: block.rows,
+                cols_per_invocation: block.cols_per_invocation,
+                depth: block.depth,
+                ahead: 1,
+                buffers: 1,
+                b_pad: 0,
+            };
+            if n >= u64::from(block.cols)
+                && k >= block.from_k
+                && tile.workgroups(m, n) >= block.from_workgroups
+            {
+                return tile.fitted(k);
+            }
+        }
         let workgroup_size = 128;
         let cols = n.clamp(1, 16).next_power_of_two() as u32;
         let one_row = m.div_ceil(u64::from(workgroup_size / cols)) * n.div_ceil(u64::from(cols));
@@ -201,39 +276,64 @@ impl MatMulTile {
         } else {
             (1, (64, 6))
         };
-        let mut tile = Self {
+        Self {
             workgroup_size,
             cols,
             rows,
-            depth: k.clamp(1, u64::from(depth)) as u32,
+            cols_per_invocation: 1,
+            depth,
             ahead,
             buffers: 1,
-        };
-        loop {
-            tile.buffers = if u64::from(tile.depth) < k { 2 } else { 1 };
-            if tile.depth == 1 || tile.shared_bytes() <= MIN_SHARED_MEMORY_BYTES {
-                return tile;
-            }
-            tile.depth /= 2;
+            b_pad: 4,
         }
+        .fitted(k)
+    }
+
+    /// The tile with its depth clamped to `k`, then halved until the staged values fit in
+    /// [`MIN_SHARED_MEMORY_BYTES`], and two buffers when there is more than one tile.
+    fn fitted(mut self, k: u64) -> Self {
+        self.depth = k.clamp(1, u64::from(self.depth)) as u32;
+        loop {
+            self.buffers = if u64::from(self.depth) < k { 2 } else { 1 };
+            if self.depth == 1 || self.shared_bytes() <= MIN_SHARED_MEMORY_BYTES {
+                return self;
+            }
+            self.depth /= 2;
+        }
+    }
+
+    /// The column lanes of a workgroup: `cols / cols_per_invocation`.
+    pub fn lanes(&self) -> u32 {
+        self.cols / self.cols_per_invocation
     }
 
     /// Output rows per workgroup.
     pub fn rows_per_workgroup(&self) -> u32 {
-        (self.workgroup_size / self.cols) * self.rows
+        (self.workgroup_size / self.lanes()) * self.rows
     }
 
-    /// The distance between two columns of the staged, transposed `b` block: `depth` rounded
-    /// up to a multiple of 4, plus 4, so the columns an access reads at once fall in distinct
-    /// memory banks.
+    /// The distance in the staged `b` block between two columns, when it is transposed
+    /// (`cols_per_invocation` 1), or between two values of `k`: `depth` or `cols` rounded up
+    /// to a multiple of 4, plus [`MatMulTile::b_pad`].
     pub fn b_stride(&self) -> u32 {
-        self.depth.next_multiple_of(4) + 4
+        let line = if self.cols_per_invocation == 1 {
+            self.depth
+        } else {
+            self.cols
+        };
+        line.next_multiple_of(4) + self.b_pad
     }
 
     /// The `f32` values of one buffer: the `a` block, one row of `depth` values per output
-    /// row, then the `b` block transposed, one column per [`MatMulTile::b_stride`].
+    /// row, then the `b` block, `cols` lines of [`MatMulTile::b_stride`] transposed or `depth`
+    /// lines as read.
     pub fn buffer_values(&self) -> u32 {
-        self.rows_per_workgroup() * self.depth + self.cols * self.b_stride()
+        let lines = if self.cols_per_invocation == 1 {
+            self.cols
+        } else {
+            self.depth
+        };
+        self.rows_per_workgroup() * self.depth + lines * self.b_stride()
     }
 
     /// The `f32` values the tile stages, every buffer.
@@ -261,14 +361,17 @@ impl fmt::Display for MatMulTile {
             workgroup_size,
             cols,
             rows,
+            cols_per_invocation,
             depth,
             ahead,
             buffers,
+            b_pad,
         } = *self;
         write!(
             f,
-            "tile workgroup_size {workgroup_size} cols {cols} rows {rows} depth {depth} \
-             ahead {ahead} buffers {buffers}"
+            "tile workgroup_size {workgroup_size} cols {cols} rows {rows} \
+             cols_per_invocation {cols_per_invocation} depth {depth} ahead {ahead} \
+             buffers {buffers} b_pad {b_pad}"
         )
     }
 }
@@ -604,9 +707,11 @@ mod tests {
             workgroup_size,
             cols,
             rows,
+            cols_per_invocation,
             depth,
             ahead,
             buffers,
+            b_pad,
         } = tile;
         let variants = [
             (
@@ -648,6 +753,20 @@ mod tests {
                 "buffers",
                 MatMulTile {
                     buffers: buffers + 1,
+                    ..tile
+                },
+            ),
+            (
+                "cols_per_invocation",
+                MatMulTile {
+                    cols_per_invocation: cols_per_invocation * 2,
+                    ..tile
+                },
+            ),
+            (
+                "b_pad",
+                MatMulTile {
+                    b_pad: b_pad + 1,
                     ..tile
                 },
             ),

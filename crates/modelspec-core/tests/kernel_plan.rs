@@ -969,9 +969,11 @@ fn a_two_row_matmul_tile_reads_tiles_of_16_values_2_ahead() {
             workgroup_size: 128,
             cols: 16,
             rows: 2,
+            cols_per_invocation: 1,
             depth: 16,
             ahead: 2,
             buffers: 2,
+            b_pad: 4,
         },
         "the weight-gradient matmul of the MNIST example"
     );

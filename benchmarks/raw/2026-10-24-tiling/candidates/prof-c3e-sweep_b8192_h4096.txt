@@ -1,0 +1,29 @@
+profile dispatch step 0 a638879c-1b21-8426-a4d4-58c28177b877 main calls 220 total_us 2127995.328 mean_us 9672.706 flop 52613349376 bytes 306970624 gflop_per_s 5439.362 gb_per_s 31.736
+profile dispatch step 2 f39a0278-629b-8a45-91a6-c3bd874b89d8 main calls 220 total_us 62769.088 mean_us 285.314 flop 671088640 bytes 134709248 gflop_per_s 2352.105 gb_per_s 472.144
+profile dispatch step 4 d661a871-498f-8049-ba2d-d5fffdd46a69 main calls 220 total_us 72270.752 mean_us 328.503 flop 163840 bytes 655364 gflop_per_s 0.499 gb_per_s 1.995
+profile dispatch step 5 86ed65f2-6357-8d34-9690-26f6a20c767c main calls 220 total_us 720.992 mean_us 3.277 flop 81920 bytes 983040 gflop_per_s 24.997 gb_per_s 299.960
+profile dispatch step 7 433a67c6-745b-8d8b-b46f-08d596d7c53d main calls 220 total_us 688.128 mean_us 3.128 flop 81920 bytes 655360 gflop_per_s 26.190 gb_per_s 209.524
+profile dispatch step 8 d7c602c5-93c2-8422-a0c1-59f866929b49 main calls 220 total_us 647.168 mean_us 2.942 flop 0 bytes 327680 gflop_per_s 0.000 gb_per_s 111.392
+profile dispatch step 10 aa3c8a7d-28a8-879d-93b2-e1dc7bbe9f32 main calls 220 total_us 49844.224 mean_us 226.565 flop 671088640 bytes 134709248 gflop_per_s 2962.018 gb_per_s 594.573
+profile dispatch step 11 289ddcbb-b9e1-8991-943d-de0ab11551af main calls 220 total_us 382849.024 mean_us 1740.223 flop 0 bytes 268435456 gflop_per_s 0.000 gb_per_s 154.253
+profile dispatch step 13 d6440ca0-73e0-86e5-a4d1-10abb7d5e4e2 main calls 220 total_us 72523.776 mean_us 329.654 flop 671088640 bytes 134709248 gflop_per_s 2035.739 gb_per_s 408.639
+profile dispatch step 14 9c26b26f-30a4-83fd-93a4-2f6b58a3233f main calls 220 total_us 146026.496 mean_us 663.757 flop 33554432 bytes 402653184 gflop_per_s 50.552 gb_per_s 606.628
+profile dispatch step 15 77e1f334-177e-81f3-9dc5-59c3ab22dded main calls 220 total_us 38329.344 mean_us 174.224 flop 0 bytes 51380224 gflop_per_s 0.000 gb_per_s 294.908
+profile dispatch step 17 170013e9-facd-8e82-b88e-4c42af92f66f main calls 220 total_us 3003647.392 mean_us 13652.943 flop 52613349376 bytes 172752896 gflop_per_s 3853.627 gb_per_s 12.653
+profile dispatch step 19 5e255200-6dd1-8e6a-b722-15b0efb04e7c main calls 220 total_us 13090.272 mean_us 59.501 flop 6422528 bytes 38535168 gflop_per_s 107.939 gb_per_s 647.636
+profile dispatch step 20 22c4c89c-aec7-8d43-be1c-a59edb97236d main calls 220 total_us 720.896 mean_us 3.277 flop 81920 bytes 491520 gflop_per_s 25.000 gb_per_s 150.000
+profile dispatch final 0 a638879c-1b21-8426-a4d4-58c28177b877 main calls 1 total_us 7596.640 mean_us 7596.640 flop 52613349376 bytes 306970624 gflop_per_s 6925.871 gb_per_s 40.409
+profile dispatch final 2 f39a0278-629b-8a45-91a6-c3bd874b89d8 main calls 1 total_us 205.824 mean_us 205.824 flop 671088640 bytes 134709248 gflop_per_s 3260.498 gb_per_s 654.488
+profile dispatch final 4 d661a871-498f-8049-ba2d-d5fffdd46a69 main calls 1 total_us 247.808 mean_us 247.808 flop 163840 bytes 655364 gflop_per_s 0.661 gb_per_s 2.645
+profile dispatches 3083
+profile submits 1
+profile host_waits 1
+profile barriers_per_step 10
+profile bytes_uploaded 39026688
+profile bytes_downloaded 13009780
+profile device_allocations 20
+profile peak_device_bytes 801998608
+profile pipeline_creation_us 2797932.771
+profile compile_us 8406.556
+profile steady_us_per_step 24827.866
+profile step_total flop 107280351232 bytes 1647968260 gflop_per_s 4320.965 gb_per_s 66.376 uncounted_sites 0
