@@ -11,8 +11,30 @@
 //!
 //! The left operand is read row-major, or [`Lhs::Transposed`]: as the `[K, M]` value a
 //! `transpose` would have turned into it, read in place.
+//!
+//! Both kernels write each output element once, into storage that is not filled first; only a
+//! `K` of 0 writes zeros, which are then the result.
+
+#[cfg(target_arch = "x86_64")]
+use std::any::TypeId;
+use std::mem::MaybeUninit;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use super::tensor::Element;
+
+/// See [`output_zero_fills`].
+static OUTPUT_ZERO_FILLS: AtomicUsize = AtomicUsize::new(0);
+
+/// The number of `matmul` calls in this process that zero-filled the output before handing it to
+/// a `T::matmul_avx2` hook under `Kernel::Avx2`, whether or not the hook then wrote over the
+/// zeros. The zeros of a `k` of 0 are the result, not such a fill, and are not counted.
+///
+/// A test-only instrument, not API: the tests `matmul_output_zero_fills` and
+/// `adversary_matmul_output_zero_fills` read it; the kernels never touch it.
+#[doc(hidden)]
+pub fn output_zero_fills() -> usize {
+    OUTPUT_ZERO_FILLS.load(Ordering::Relaxed)
+}
 
 /// A `matmul` kernel.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -114,24 +136,111 @@ pub(crate) fn matmul_into<T: Element>(
     let end = start
         .checked_add(mn)
         .unwrap_or_else(|| panic!("{start} + {mn} elements overflow `usize`"));
-    out.resize(end, T::ZERO);
-    if m == 0 || k == 0 || n == 0 {
+    if k == 0 {
+        // Each element is the sum of no products.
+        out.resize(end, T::ZERO);
         return true;
     }
-    let dst = &mut out[start..];
+    if mn == 0 {
+        return true;
+    }
     match kernel {
         Kernel::Portable => {
-            portable(dst, a, lhs, b, m, k, n);
+            portable(out, a, lhs, b, m, k, n);
             true
         }
         Kernel::Avx2 => {
-            let done = T::matmul_avx2(dst, a, lhs, b, m, k, n);
+            if let Some(done) = avx2_uninit(out, a, lhs, b, m, k, n) {
+                return done;
+            }
+            // A type this module has no vector code for runs its own hook, over zeros.
+            OUTPUT_ZERO_FILLS.fetch_add(1, Ordering::Relaxed);
+            out.resize(end, T::ZERO);
+            let done = T::matmul_avx2(&mut out[start..], a, lhs, b, m, k, n);
             if !done {
                 out.truncate(start);
             }
             done
         }
     }
+}
+
+/// [`Kernel::Avx2`] for `f32` and `f64`, appending the `m * n` elements to `out` without filling
+/// them first: `Some(true)` once written, `Some(false)` with `out` unchanged where the CPU has no
+/// AVX2, `None` for any other type. `m`, `k` and `n` are nonzero and the slices hold their counts.
+#[allow(clippy::too_many_arguments)]
+fn avx2_uninit<T: Element>(
+    out: &mut Vec<T>,
+    a: &[T],
+    lhs: Lhs,
+    b: &[T],
+    m: usize,
+    k: usize,
+    n: usize,
+) -> Option<bool> {
+    let start = out.len();
+    let mn = m * n;
+    out.reserve(mn);
+    let dst = &mut out.spare_capacity_mut()[..mn];
+    let done = write_avx2(dst, a, lhs, b, m, k, n)?;
+    if done {
+        // SAFETY: the capacity was reserved above, and `write_avx2` returned true, so it wrote
+        // every one of the `m * n` elements after `start`.
+        unsafe { out.set_len(start + mn) };
+    }
+    Some(done)
+}
+
+/// The AVX2 kernel of `T` into `dst`, when `T` is `f32` or `f64`.
+#[cfg(target_arch = "x86_64")]
+#[allow(clippy::too_many_arguments)]
+fn write_avx2<T: Element>(
+    dst: &mut [MaybeUninit<T>],
+    a: &[T],
+    lhs: Lhs,
+    b: &[T],
+    m: usize,
+    k: usize,
+    n: usize,
+) -> Option<bool> {
+    if let (Some(dst), Some(a), Some(b)) = (same_mut::<T, f32>(dst), same(a), same(b)) {
+        return Some(avx2::f32x8::matmul_uninit(dst, a, lhs, b, m, k, n));
+    }
+    if let (Some(dst), Some(a), Some(b)) = (same_mut::<T, f64>(dst), same(a), same(b)) {
+        return Some(avx2::f64x4::matmul_uninit(dst, a, lhs, b, m, k, n));
+    }
+    None
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+#[allow(clippy::too_many_arguments)]
+fn write_avx2<T: Element>(
+    _dst: &mut [MaybeUninit<T>],
+    _a: &[T],
+    _lhs: Lhs,
+    _b: &[T],
+    _m: usize,
+    _k: usize,
+    _n: usize,
+) -> Option<bool> {
+    None
+}
+
+/// `s` as a slice of `U`, where `T` is `U`.
+#[cfg(target_arch = "x86_64")]
+fn same<T: 'static, U: 'static>(s: &[T]) -> Option<&[U]> {
+    // SAFETY: `T` and `U` are one type, so the slice is unchanged.
+    (TypeId::of::<T>() == TypeId::of::<U>())
+        .then(|| unsafe { std::slice::from_raw_parts(s.as_ptr().cast::<U>(), s.len()) })
+}
+
+/// [`same`] for writable, possibly uninitialised storage.
+#[cfg(target_arch = "x86_64")]
+fn same_mut<T: 'static, U: 'static>(s: &mut [MaybeUninit<T>]) -> Option<&mut [MaybeUninit<U>]> {
+    // SAFETY: `T` and `U` are one type, so the slice is unchanged.
+    (TypeId::of::<T>() == TypeId::of::<U>()).then(|| unsafe {
+        std::slice::from_raw_parts_mut(s.as_mut_ptr().cast::<MaybeUninit<U>>(), s.len())
+    })
 }
 
 /// `m * k`, `k * n` and `m * n`, the element counts of the left operand, the right operand and
@@ -149,17 +258,27 @@ pub(crate) fn element_counts(m: usize, k: usize, n: usize) -> (usize, usize, usi
     (count(m, k), count(k, n), count(m, n))
 }
 
-/// Loop order `i`, `k`, `j`, so the inner loop reads a row of `b`: each output row starts as its
-/// `k = 0` products (not `+0`, so an all-`-0` sum stays `-0`) and every later `k` adds its
-/// products in turn, the same sequence of roundings per element as summing over `k` directly.
-fn portable<T: Element>(out: &mut [T], a: &[T], lhs: Lhs, b: &[T], m: usize, k: usize, n: usize) {
+/// Loop order `i`, `k`, `j`, so the inner loop reads a row of `b`: each output row is appended to
+/// `out` as its `k = 0` products (not `+0`, so an all-`-0` sum stays `-0`) and every later `k`
+/// adds its products in turn, the same sequence of roundings per element as summing over `k`
+/// directly. `k` and `n` are nonzero.
+fn portable<T: Element>(
+    out: &mut Vec<T>,
+    a: &[T],
+    lhs: Lhs,
+    b: &[T],
+    m: usize,
+    k: usize,
+    n: usize,
+) {
     let (rs, cs) = lhs.strides(m, k);
     let (b_first, b_rest) = b.split_at(n);
-    for (i, row) in out.chunks_exact_mut(n).enumerate() {
+    out.reserve(m * n);
+    for i in 0..m {
         let x = a[i * rs];
-        for (acc, &y) in row.iter_mut().zip(b_first) {
-            *acc = x * y;
-        }
+        let start = out.len();
+        out.extend(b_first.iter().map(|&y| x * y));
+        let row = &mut out[start..];
         for (p, b_row) in (1..k).zip(b_rest.chunks_exact(n)) {
             let x = a[i * rs + p * cs];
             for (acc, &y) in row.iter_mut().zip(b_row) {
@@ -209,6 +328,7 @@ pub(crate) mod avx2 {
                 use std::arch::x86_64::{
                     $add, $loadu, $maskload, $maskstore, $mul, $set1, $setzero, $storeu, __m256i,
                 };
+                use std::mem::MaybeUninit;
 
                 use super::super::Lhs;
                 use super::{$mask, ROWS};
@@ -239,6 +359,24 @@ pub(crate) mod avx2 {
                     k: usize,
                     n: usize,
                 ) -> bool {
+                    let out = out as *mut [$e] as *mut [MaybeUninit<$e>];
+                    // SAFETY: `MaybeUninit<$e>` has the layout of `$e`, and `matmul_uninit`
+                    // stores only `$e` values, so every element of `out` stays initialised.
+                    matmul_uninit(unsafe { &mut *out }, a, lhs, b, m, k, n)
+                }
+
+                /// [`matmul`] into storage that need not be initialised: true once it has
+                /// written every one of the `m * n` elements of `out`, false, writing nothing,
+                /// where the CPU has no AVX2.
+                pub(crate) fn matmul_uninit(
+                    out: &mut [MaybeUninit<$e>],
+                    a: &[$e],
+                    lhs: Lhs,
+                    b: &[$e],
+                    m: usize,
+                    k: usize,
+                    n: usize,
+                ) -> bool {
                     assert!(m > 0 && k > 0 && n > 0);
                     let (mk, kn, mn) = super::super::element_counts(m, k, n);
                     assert!(out.len() == mn && a.len() == mk && b.len() == kn);
@@ -252,7 +390,8 @@ pub(crate) mod avx2 {
                     true
                 }
 
-                /// Row blocks of `ROWS` rows and a last one of the rest.
+                /// Row blocks of `ROWS` rows and a last one of the rest, together storing every
+                /// element of `out` once.
                 ///
                 /// # Safety
                 ///
@@ -261,7 +400,7 @@ pub(crate) mod avx2 {
                 #[target_feature(enable = "avx2")]
                 #[allow(clippy::too_many_arguments)]
                 unsafe fn run(
-                    out: &mut [$e],
+                    out: &mut [MaybeUninit<$e>],
                     a: &[$e],
                     rs: usize,
                     cs: usize,
@@ -285,7 +424,7 @@ pub(crate) mod avx2 {
                         };
                         // SAFETY: element `(i0, 0)` of `out`, which has `rows` rows of `n`
                         // elements from there on.
-                        let dst = unsafe { out.as_mut_ptr().add(i0 * n) };
+                        let dst = unsafe { out.as_mut_ptr().cast::<$e>().add(i0 * n) };
                         // SAFETY: `panel` and `dst` cover `rows` rows from `i0` and all `n`
                         // columns, as `columns` requires; AVX2 is available by this function's
                         // contract.
