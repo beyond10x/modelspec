@@ -2,7 +2,7 @@
 format: aep.planning-md/3
 id: story:muon-optimizer
 kind: story
-status: proposed
+status: active
 title: 'Muon: orthogonalized momentum for the matrix parameters, compiled into the training step'
 relations:
 - decomposes: epic:bert-from-scratch
@@ -45,9 +45,10 @@ scope:
   path: opponents/**
 - confidence: cited
   path: spec/domains/training.yaml
-revision: 3
+revision: 4
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-25T11:24:37Z", actor: "human:timo", revision: 3}
+- {from: "proposed", to: "active", at: "2026-10-25T16:09:04Z", actor: "human:timo", revision: 4}
 ---
 # Muon: orthogonalized momentum for the matrix parameters, compiled into the training step
 
