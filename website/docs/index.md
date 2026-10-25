@@ -42,16 +42,17 @@ train Fit {
 ## What works today
 
 ModelSpec is in milestone M1 (GPU execution), and its current goal is a small BERT pre-trained
-from scratch; the latest release is [0.10.0](https://github.com/beyond10x/modelspec/releases/tag/0.10.0).
+from scratch; the latest release is [0.11.0](https://github.com/beyond10x/modelspec/releases/tag/0.11.0).
 
-| Works in 0.10.0 | Not built yet |
+| Works in 0.11.0 | Not built yet |
 |---|---|
 | `modelspec check`: parse and check names, types and shapes | `bench` |
 | `modelspec ir --stage tensor`, `--stage training` and `--stage kernel`: print the verified IR and the kernel plan | more than one device |
-| `modelspec train --backend cpu`: train on the CPU reference with seeded synthetic data or dense `f32` tensor files (`--data`) | held-out evaluation during training |
-| `modelspec train --backend vulkan [--stats] [--profile]`: train on one Vulkan device with one host wait per run | Vulkan kernels for the BERT operators |
-| `embedding`, `add_rows`, `gelu`, `layer_norm`, `softmax` and `attention`, with `i32` row ids, on the CPU reference | modules, layers, generics, `f16` and optimizers other than SGD |
+| `modelspec train --backend cpu`: train on the CPU reference with seeded synthetic data or dense `f32` tensor files (`--data`) | Vulkan kernels for the BERT operators |
+| `modelspec train --backend vulkan [--stats] [--profile]`: train on one Vulkan device with one host wait per run | modules, layers, generics, `f16` and optimizers other than SGD |
+| `embedding`, `add_rows`, `gelu`, `layer_norm`, `softmax`, `attention`, `cross_entropy` and `dropout`, with `i32` row ids, on the CPU reference | |
 | `modelspec data prepare`, `data tokenizer` and `data pack`: split a corpus, train a WordPiece tokenizer and pack token sequences | |
+| `modelspec train --backend cpu --data <packed-dir> [--eval-every <n>]`: train a masked-language model on packed sequences and evaluate the held-out split during the run | |
 | `modelspec train --checkpoint`, `--resume` and `modelspec infer --backend cpu\|vulkan`: checkpoints and inference on the CPU or one Vulkan device | |
 | `modelspec compile --backend cpu\|vulkan --output <dir>`: a sealed artifact directory | |
 | `modelspec inspect-device --backend vulkan`: each device's profile and negotiation verdict | |
@@ -63,8 +64,9 @@ The observatory UI draws the loss and every metric per step, and for a CPU run t
 histogram of each parameter's values and gradient on sampled steps (`--statistics-every`), for a
 Vulkan run those of its values at the first and the last step.
 
-On `main`, not yet released: `cross_entropy` and `dropout`, and `train --backend cpu --data` on
-a packed directory, which trains a masked-language model on the sequences `data pack` wrote
+Since 0.11.0, `cross_entropy` and `dropout` run on the CPU reference, `train --backend cpu --data`
+on a packed directory trains a masked-language model on the sequences `data pack` wrote, and
+`--eval-every` evaluates the held-out split during the run
 ([Prepare training data](./guides/prepare-training-data.md)).
 
 On the MNIST benchmark example, `train --backend vulkan` measured 27.14 µs per step on an RTX
@@ -91,7 +93,7 @@ capability with the test that holds it, and [Roadmap](./roadmap.md) says what M1
 
 ## Where to go next
 
-- [Getting started](./getting-started.md): download the 0.10.0 binary and train the examples on the CPU or a GPU.
+- [Getting started](./getting-started.md): download the 0.11.0 binary and train the examples on the CPU or a GPU.
 - [The language](./concepts/language.md): what a file may contain.
 - [Write a model](./guides/write-a-model.md): build a two-layer model step by step.
 - [Pitch deck](pathname:///modelspec/pitch/): the case for ModelSpec in slides.

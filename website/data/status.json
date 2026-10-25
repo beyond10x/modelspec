@@ -291,14 +291,14 @@
     },
     {
       "area": "BERT operators",
-      "detail": "Not yet released: the weighted masked-language-model loss over `f32[N,V]` logits, `i32[N]` labels and `f32[N]` weights; its gradient is checked against central differences. Held by test cross_entropy_gradient_of_w_matches_central_differences in crates/modelspec-runtime/tests/gradients_cross_entropy.rs.",
+      "detail": "Since 0.11.0: the weighted masked-language-model loss over `f32[N,V]` logits, `i32[N]` labels and `f32[N]` weights; its gradient is checked against central differences. Held by test cross_entropy_gradient_of_w_matches_central_differences in crates/modelspec-runtime/tests/gradients_cross_entropy.rs.",
       "href": "/docs/concepts/bert-operators",
       "label": "`cross_entropy`",
       "status": "shipped"
     },
     {
       "area": "BERT operators",
-      "detail": "Not yet released: `dropout(x, p = 0.1)` draws its mask from the seed, the call site and the step, applies in the training step only and recomputes the mask for its gradient. Held by test gradients_dropout_match_central_differences_at_a_fixed_token in crates/modelspec-runtime/tests/gradients_dropout.rs.",
+      "detail": "Since 0.11.0: `dropout(x, p = 0.1)` draws its mask from the seed, the call site and the step, applies in the training step only and recomputes the mask for its gradient. Held by test gradients_dropout_match_central_differences_at_a_fixed_token in crates/modelspec-runtime/tests/gradients_dropout.rs.",
       "href": "/docs/concepts/bert-operators",
       "label": "`dropout`",
       "status": "shipped"
@@ -340,24 +340,24 @@
     },
     {
       "area": "Training",
-      "detail": "Not yet released: modelspec train --backend cpu --data <dir> on a directory modelspec data pack wrote feeds each step its masked-language-model batch, and prints a data line naming the binding. Held by test trains_mlm_bag_on_packed_batches in crates/modelspec-cli/tests/train_data.rs.",
+      "detail": "Since 0.11.0: modelspec train --backend cpu --data <dir> on a directory modelspec data pack wrote feeds each step its masked-language-model batch, and prints a data line naming the binding. Held by test trains_mlm_bag_on_packed_batches in crates/modelspec-cli/tests/train_data.rs.",
       "href": "/docs/guides/prepare-training-data",
       "label": "Training on a packed directory",
       "status": "shipped"
     },
     {
       "area": "Training",
-      "detail": "Not yet released: the final loss line, --eval and infer run the forward program without dropout. Held by test train_dropout_final_loss_is_the_forward_program_without_dropout in crates/modelspec-cli/tests/train_dropout.rs.",
+      "detail": "Since 0.11.0: the final loss line, --eval and infer run the forward program without dropout. Held by test train_dropout_final_loss_is_the_forward_program_without_dropout in crates/modelspec-cli/tests/train_dropout.rs.",
       "href": "/docs/concepts/training",
       "label": "Dropout applies in the training step only",
       "status": "shipped"
     },
     {
       "area": "Training",
-      "detail": "The masked-language-model loss and accuracy on the HeldOut split at a fixed interval, printed and streamed as metrics. Planned.",
-      "href": "/docs/roadmap",
+      "detail": "Since 0.11.0: modelspec train --backend cpu --data <dir> --eval-every <n> evaluates the masked-language-model loss and accuracy on the HeldOut split without dropout at every multiple of n and the last step, prints them and streams them as metrics. Held by test values_at_the_evaluated_steps_equal_the_test_computation in crates/modelspec-cli/tests/train_eval.rs.",
+      "href": "/docs/reference/cli",
       "label": "Held-out evaluation during training",
-      "status": "planned"
+      "status": "shipped"
     },
     {
       "area": "Training",

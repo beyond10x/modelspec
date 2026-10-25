@@ -9,7 +9,7 @@ source: "DESIGN.md § 3; crates/modelspec-core/src/lower.rs, autodiff.rs, ir and
 # The pipeline
 
 The compiler turns a source file into a chain of immutable values, each verified before the next
-stage reads it. DESIGN.md § 3 draws the whole chain, and 0.10.0 builds every stage of it.
+stage reads it. DESIGN.md § 3 draws the whole chain, and 0.11.0 builds every stage of it.
 
 ```text
 .mspec source

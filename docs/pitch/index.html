@@ -216,7 +216,7 @@ body.all .hud, body.all .narrow { display: none; }
 <!-- 1 -->
 <section class="slide" data-n="1">
   <div class="title-wrap">
-    <div class="kicker">Vision · 2026-10-25 · release 0.10.0</div>
+    <div class="kicker">Vision · 2026-10-25 · release 0.11.0</div>
     <h1>ModelSpec</h1>
     <p class="promise">Specify <b>what</b> the model computes.<br>The compiler decides <b>how</b> it runs.</p>
     <p class="sub">A declarative language and a Rust compiler for differentiable tensor programs. One <code>.mspec</code> file is the whole training step.</p>
@@ -544,18 +544,18 @@ body.all .hud, body.all .narrow { display: none; }
       <div class="st" style="color:var(--mut)">not built</div></div>
   </div>
   <p class="mut" style="font-size:26px;margin-top:34px">End-to-end f32 training on the RTX 3090 shipped in 0.4.0. M1 stays open: its epic is a draft and the 9 acceptance boxes in DESIGN.md § 9 are not ticked.</p>
-  <aside class="notes">README milestones; DESIGN.md section 1. M0: CHANGELOG.md § 0.1.0. M1: train --backend vulkan in CHANGELOG.md § 0.4.0; the milestone table of website/docs/status.mdx says "in progress"; DESIGN.md:551-559 nine unticked boxes. M2 items done in M1: elementwise fusion and --profile in CHANGELOG.md § 0.4.0, the tiled matmul in CHANGELOG.md § 0.5.0 and DESIGN.md:273 ("The M2 tiling below, done in M1"). M3: embedding, add_rows, gelu, layer_norm, softmax and attention in CHANGELOG.md § 0.10.0, cross_entropy and dropout in CHANGELOG.md § Unreleased; their Vulkan kernels are planned rows of website/data/status.json; DESIGN.md revision 0.7 adds the BERT-like proof model to M3. M4: designed in DESIGN.md section 1, not built (website/docs/status.mdx). 2026-10-25.</aside>
+  <aside class="notes">README milestones; DESIGN.md section 1. M0: CHANGELOG.md § 0.1.0. M1: train --backend vulkan in CHANGELOG.md § 0.4.0; the milestone table of website/docs/status.mdx says "in progress"; DESIGN.md:551-559 nine unticked boxes. M2 items done in M1: elementwise fusion and --profile in CHANGELOG.md § 0.4.0, the tiled matmul in CHANGELOG.md § 0.5.0 and DESIGN.md:273 ("The M2 tiling below, done in M1"). M3: embedding, add_rows, gelu, layer_norm, softmax and attention in CHANGELOG.md § 0.10.0, cross_entropy and dropout in CHANGELOG.md § 0.11.0; their Vulkan kernels are planned rows of website/data/status.json; DESIGN.md revision 0.7 adds the BERT-like proof model to M3. M4: designed in DESIGN.md section 1, not built (website/docs/status.mdx). 2026-10-25.</aside>
 </section>
 
 <!-- 13 -->
 <section class="slide" data-n="13">
   <div class="kicker">Status · 2026-10-25</div>
-  <h2>0.10.0 trains on the RTX 3090 through Vulkan</h2>
+  <h2>0.11.0 trains on the RTX 3090 through Vulkan</h2>
   <div class="stats">
-    <div class="stat"><div class="v">0.10.0</div><div class="l">latest of 12 releases, 2026-10-25, with a Linux x86_64 binary</div></div>
-    <div class="stat"><div class="v">50</div><div class="l">capabilities shipped, each held by a named test or task</div></div>
-    <div class="stat"><div class="v">62</div><div class="l">stories implemented, 1 in progress</div></div>
-    <div class="stat"><div class="v">2440</div><div class="l">tests passed in <code>task ci</code>, 0 failed, 235 ignored</div></div>
+    <div class="stat"><div class="v">0.11.0</div><div class="l">latest of 13 releases, 2026-10-25, with a Linux x86_64 binary</div></div>
+    <div class="stat"><div class="v">51</div><div class="l">capabilities shipped, each held by a named test or task</div></div>
+    <div class="stat"><div class="v">66</div><div class="l">stories implemented</div></div>
+    <div class="stat"><div class="v">2485</div><div class="l">tests passed in <code>task ci</code>, 0 failed, 235 ignored</div></div>
   </div>
   <div class="grid3" style="gap:24px">
     <div class="card" style="padding:22px 26px">
@@ -563,15 +563,15 @@ body.all .hud, body.all .narrow { display: none; }
       <p style="font-size:21px"><code>train --backend vulkan</code> with one host wait · checkpoints, resume and <code>infer</code> on CPU and Vulkan · <code>compile</code> to a sealed artifact · <code>--serve</code>, <code>--record</code>, <code>observe</code> and the observatory UI · <code>--profile</code> · tiled GPU matmul</p>
     </div>
     <div class="card" style="padding:22px 26px">
-      <h3 style="font-size:26px">Released, 0.8.0 to 0.10.0</h3>
-      <p style="font-size:21px">Register-blocked matmul · elementwise chain fusion · deterministic fused multiply-adds · <code>--fast-math</code> · <code>embedding</code>, <code>layer_norm</code>, <code>softmax</code>, <code>attention</code> on the CPU · <code>data prepare</code>, <code>tokenizer</code>, <code>pack</code></p>
+      <h3 style="font-size:26px">Released, 0.8.0 to 0.11.0</h3>
+      <p style="font-size:21px">Register-blocked matmul · elementwise chain fusion · deterministic fused multiply-adds · <code>--fast-math</code> · <code>embedding</code>, <code>layer_norm</code>, <code>softmax</code>, <code>attention</code>, <code>cross_entropy</code>, <code>dropout</code> on the CPU · <code>data prepare</code>, <code>tokenizer</code>, <code>pack</code> · <code>train --data</code> with <code>--eval-every</code></p>
     </div>
     <div class="card" style="padding:22px 26px">
       <h3 style="font-size:26px">Not built</h3>
-      <p style="font-size:21px">Vulkan kernels for the BERT operators · AdamW · held-out evaluation · M4: the Tensor Core path</p>
+      <p style="font-size:21px">Vulkan kernels for the BERT operators · AdamW · M4: the Tensor Core path</p>
     </div>
   </div>
-  <aside class="notes">Releases: git tag lists 12 tags, 0.1.0 to 0.10.0; 0.10.0 dated 2026-10-25 (CHANGELOG.md § 0.10.0); the Linux x86_64 binary: the opening paragraph of CHANGELOG.md and .github/workflows/release.yml. 50 shipped, 5 planned: website/data/status.json (asOf 2026-10-25). 62 implemented, 1 in progress: the stories of the repository's planning store, 2026-10-25. 2440 / 0 / 235: the sum of the cargo "test result" lines of task ci, 2026-10-25, with a local Chromium as CHROME; the ignored tests include the device tests and the browser tests that task ui-browser then runs (AGENTS.md "Commands"); the node --test cases of pnpm test are not counted. Released, 0.2.0 to 0.7.1: --serve in CHANGELOG.md § 0.2.0; train --backend vulkan with one host wait and --profile in CHANGELOG.md § 0.4.0; the tiled GPU matmul in CHANGELOG.md § 0.5.0; checkpoints, resume, infer, compile, --record and observe in CHANGELOG.md § 0.6.0; the observatory UI in CHANGELOG.md § 0.7.0. Released, 0.8.0 to 0.10.0: CHANGELOG.md § 0.9.0 and § 0.10.0; data prepare, tokenizer and pack are in the 0.10.0 tag without a CHANGELOG.md entry (website/docs/guides/prepare-training-data.md). Not built: the planned rows of website/data/status.json; DESIGN.md section 1 M3 and M4 rows.</aside>
+  <aside class="notes">Releases: 13 tags, 0.1.0 to 0.11.0; 0.11.0 dated 2026-10-25 (CHANGELOG.md § 0.11.0); the Linux x86_64 binary: the opening paragraph of CHANGELOG.md and .github/workflows/release.yml. 51 shipped, 4 planned: website/data/status.json (asOf 2026-10-25). 66 implemented, none in progress: the stories of the repository's planning store, 2026-10-25. 2485 / 0 / 235: the sum of the cargo "test result" lines of the 357 suites of task ci on a216b9a, 2026-10-25, with a local Chromium as CHROME; the ignored tests include the device tests and the browser tests that task ui-browser then runs (AGENTS.md "Commands"); the node --test cases of pnpm test are not counted. Released, 0.2.0 to 0.7.1: --serve in CHANGELOG.md § 0.2.0; train --backend vulkan with one host wait and --profile in CHANGELOG.md § 0.4.0; the tiled GPU matmul in CHANGELOG.md § 0.5.0; checkpoints, resume, infer, compile, --record and observe in CHANGELOG.md § 0.6.0; the observatory UI in CHANGELOG.md § 0.7.0. Released, 0.8.0 to 0.11.0: CHANGELOG.md § 0.9.0, § 0.10.0 and § 0.11.0; data prepare, tokenizer and pack are in the 0.10.0 tag without a CHANGELOG.md entry (website/docs/guides/prepare-training-data.md). Not built: the planned rows of website/data/status.json; DESIGN.md section 1 M3 and M4 rows.</aside>
 </section>
 
 <!-- 14 -->
@@ -684,12 +684,13 @@ body.all .hud, body.all .narrow { display: none; }
       </ul>
     </div>
     <div>
-      <div class="kicker" style="color:var(--m1)">2 · Released, 0.7.0 to 0.10.0</div>
+      <div class="kicker" style="color:var(--m1)">2 · Released, 0.7.0 to 0.11.0</div>
       <ul class="bul" style="font-size:0">
         <li style="font-size:24px;margin-bottom:12px">0.7.0: the observatory UI; Vulkan refuses a NaN or ±inf run</li>
         <li style="font-size:24px;margin-bottom:12px">0.8.0: a CPU run prepares its step once; per-step device counters</li>
         <li style="font-size:24px;margin-bottom:12px">0.9.0: register-blocked matmul and <code>--fast-math</code></li>
         <li style="font-size:24px;margin-bottom:12px">0.10.0: the BERT operators on the CPU; deterministic fused multiply-adds</li>
+        <li style="font-size:24px;margin-bottom:12px">0.11.0: masked-language-model training on the CPU with held-out evaluation</li>
       </ul>
     </div>
     <div>
@@ -701,7 +702,7 @@ body.all .hud, body.all .narrow { display: none; }
       </ul>
     </div>
   </div>
-  <aside class="notes">Done: CHANGELOG.md § 0.1.0 (2026-10-21), CHANGELOG.md § 0.4.0 (2026-10-22, train --backend vulkan), CHANGELOG.md § 0.5.0 (2026-10-23, 27.282 µs from 40.225 µs), CHANGELOG.md § 0.6.0 (2026-10-23, Vulkan checkpoints, infer --backend vulkan, compile). Released: CHANGELOG.md § 0.7.0, § 0.8.0, § 0.9.0 and § 0.10.0. Open: DESIGN.md:551-559 nine unticked boxes; CHANGELOG.md § 0.6.0 "ADR-007's accuracy and final-weight conditions were not measured for this release". BERT: website/data/status.json planned rows, asOf 2026-10-25.</aside>
+  <aside class="notes">Done: CHANGELOG.md § 0.1.0 (2026-10-21), CHANGELOG.md § 0.4.0 (2026-10-22, train --backend vulkan), CHANGELOG.md § 0.5.0 (2026-10-23, 27.282 µs from 40.225 µs), CHANGELOG.md § 0.6.0 (2026-10-23, Vulkan checkpoints, infer --backend vulkan, compile). Released: CHANGELOG.md § 0.7.0, § 0.8.0, § 0.9.0, § 0.10.0 and § 0.11.0. Open: DESIGN.md:551-559 nine unticked boxes; CHANGELOG.md § 0.6.0 "ADR-007's accuracy and final-weight conditions were not measured for this release". BERT: website/data/status.json planned rows, asOf 2026-10-25.</aside>
 </section>
 
 <div class="narrow">The slides are 16:9: turn the device sideways to read them. Tap the right or left half, or swipe, to change slides.</div>

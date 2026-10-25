@@ -443,7 +443,7 @@ pub const CAPABILITIES: &[Capability] = &[
     shipped(
         "BERT operators",
         "`cross_entropy`",
-        "Not yet released: the weighted masked-language-model loss over `f32[N,V]` logits, `i32[N]` labels and `f32[N]` weights; its gradient is checked against central differences.",
+        "Since 0.11.0: the weighted masked-language-model loss over `f32[N,V]` logits, `i32[N]` labels and `f32[N]` weights; its gradient is checked against central differences.",
         Evidence::Test(
             "crates/modelspec-runtime/tests/gradients_cross_entropy.rs::cross_entropy_gradient_of_w_matches_central_differences",
         ),
@@ -452,7 +452,7 @@ pub const CAPABILITIES: &[Capability] = &[
     shipped(
         "BERT operators",
         "`dropout`",
-        "Not yet released: `dropout(x, p = 0.1)` draws its mask from the seed, the call site and the step, applies in the training step only and recomputes the mask for its gradient.",
+        "Since 0.11.0: `dropout(x, p = 0.1)` draws its mask from the seed, the call site and the step, applies in the training step only and recomputes the mask for its gradient.",
         Evidence::Test(
             "crates/modelspec-runtime/tests/gradients_dropout.rs::gradients_dropout_match_central_differences_at_a_fixed_token",
         ),
@@ -500,7 +500,7 @@ pub const CAPABILITIES: &[Capability] = &[
     shipped(
         "Training",
         "Training on a packed directory",
-        "Not yet released: modelspec train --backend cpu --data <dir> on a directory modelspec data pack wrote feeds each step its masked-language-model batch, and prints a data line naming the binding.",
+        "Since 0.11.0: modelspec train --backend cpu --data <dir> on a directory modelspec data pack wrote feeds each step its masked-language-model batch, and prints a data line naming the binding.",
         Evidence::Test(
             "crates/modelspec-cli/tests/train_data.rs::trains_mlm_bag_on_packed_batches",
         ),
@@ -509,18 +509,20 @@ pub const CAPABILITIES: &[Capability] = &[
     shipped(
         "Training",
         "Dropout applies in the training step only",
-        "Not yet released: the final loss line, --eval and infer run the forward program without dropout.",
+        "Since 0.11.0: the final loss line, --eval and infer run the forward program without dropout.",
         Evidence::Test(
             "crates/modelspec-cli/tests/train_dropout.rs::train_dropout_final_loss_is_the_forward_program_without_dropout",
         ),
         "/docs/concepts/training",
     ),
-    planned(
+    shipped(
         "Training",
         "Held-out evaluation during training",
-        "The masked-language-model loss and accuracy on the HeldOut split at a fixed interval, printed and streamed as metrics.",
-        "story:bert-heldout-evaluation",
-        "/docs/roadmap",
+        "Since 0.11.0: modelspec train --backend cpu --data <dir> --eval-every <n> evaluates the masked-language-model loss and accuracy on the HeldOut split without dropout at every multiple of n and the last step, prints them and streams them as metrics.",
+        Evidence::Test(
+            "crates/modelspec-cli/tests/train_eval.rs::values_at_the_evaluated_steps_equal_the_test_computation",
+        ),
+        "/docs/reference/cli",
     ),
     planned(
         "Training",

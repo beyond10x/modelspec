@@ -3,7 +3,7 @@ title: BERT operators
 description: The operators a small BERT needs - embedding, add_rows, gelu, layer_norm, softmax, attention, cross_entropy and dropout - what each computes, its i32 operands, its gradient, and why it runs on the CPU only for now.
 sidebar_position: 4
 lede: "Eight operators added for a small BERT are typed by the operator registry, have gradients checked against central differences and run on the CPU interpreter only, answering E-TARGET-011 wherever a Vulkan kernel is needed."
-source: "DESIGN.md § 2 and the operator registry in crates/modelspec-core/src/ops.rs and resolve.rs; the tests gradients_embedding.rs, gradients_dense.rs, gradients_norm.rs, gradients_attention.rs, gradients_cross_entropy.rs and gradients_dropout.rs of crates/modelspec-runtime, and check_i32.rs and embedding_no_kernel.rs of crates/modelspec-cli; the E-TARGET-011 output from a run of modelspec ir on crates/modelspec-cli/tests/fixtures/mlm_bag.mspec; CHANGELOG.md § 0.10.0 and § Unreleased."
+source: "DESIGN.md § 2 and the operator registry in crates/modelspec-core/src/ops.rs and resolve.rs; the tests gradients_embedding.rs, gradients_dense.rs, gradients_norm.rs, gradients_attention.rs, gradients_cross_entropy.rs and gradients_dropout.rs of crates/modelspec-runtime, and check_i32.rs and embedding_no_kernel.rs of crates/modelspec-cli; the E-TARGET-011 output from a run of modelspec ir on crates/modelspec-cli/tests/fixtures/mlm_bag.mspec; CHANGELOG.md § 0.10.0 and § 0.11.0."
 ---
 
 # BERT operators
@@ -22,8 +22,8 @@ accepted and refused examples and the gradient formula of each; this page says w
 | `layer_norm(x, gamma, beta)` | each row of `x: f32[N, H]` normalized to mean 0 and variance 1, `eps = 1e-12`, then scaled by `gamma` and shifted by `beta` | 0.10.0 |
 | `softmax(x)` | the softmax of each row of a rank-2 `x`, the row maximum subtracted before `exp` | 0.10.0 |
 | `attention(q, k, v, key_mask, heads = A)` | multi-head scaled dot-product attention over sequences of `S` rows: `q`, `k`, `v: f32[N, H]`, `key_mask: f32[B, S]` with `N = B · S`, `A` heads of width `H / A` | 0.10.0 |
-| `cross_entropy(logits, labels, weights)` | the weighted masked-language-model loss over `logits: f32[N, V]`, `labels: i32[N]` and `weights: f32[N]`, a scalar | not yet released |
-| `dropout(x, p = 0.1)` | each element zeroed with probability `p` and the rest scaled by `1 / (1 - p)`, in the training step only | not yet released |
+| `cross_entropy(logits, labels, weights)` | the weighted masked-language-model loss over `logits: f32[N, V]`, `labels: i32[N]` and `weights: f32[N]`, a scalar | 0.11.0 |
+| `dropout(x, p = 0.1)` | each element zeroed with probability `p` and the rest scaled by `1 / (1 - p)`, in the training step only | 0.11.0 |
 
 ## Row ids and labels are `i32`
 

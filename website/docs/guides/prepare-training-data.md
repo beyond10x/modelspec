@@ -22,7 +22,7 @@ Nothing is downloaded. The commands below run from the root of a checkout on the
 tests use, `crates/modelspec-runtime/tests/fixtures/corpus-tokenizer/`, which has the layout of a
 release; point `data prepare` at an unpacked release to prepare the real one. Each output below
 was printed by the command line built from `main`. The three `data` commands are in 0.10.0;
-training on a packed directory (step 4) is on `main` and not yet released.
+training on a packed directory (step 4) is in 0.11.0.
 
 ## 1. Split the corpus
 

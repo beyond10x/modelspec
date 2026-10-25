@@ -9,6 +9,10 @@ history.
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-10-25
+
+Masked-language-model training on the CPU interpreter: the weighted `cross_entropy` loss and `dropout`, `modelspec train --data <packed-dir>` feeding the batches that `modelspec data prepare`, `data tokenizer` and `data pack` write, and `--eval-every <n>` evaluating the held-out split during the run and streaming its loss and accuracy. `task ui-ux` puts the observatory UI iteration loop's hermetic gates and ratchet on every merge, and the documentation site, README and AGENTS.md describe the shipped compiler, with a status row for every capability since 0.8.0 and the test that holds it.
+
 ### Added
 
 - `modelspec train --backend cpu --data <packed-dir> --eval-every <n>` evaluates the held-out split with dropout off at every multiple of `n` among the run's steps and at the run's last step, so a resumed run evaluates no step 0 of its own and starts at the first multiple of `n` at or after the step it resumes at, over every full batch of `B` sequences, the last `count mod B` never evaluated, prints `eval <k> loss <v> accuracy <a>` after the `step <k>` line and streams the values as the `StepCompleted` metric samples `heldout_mlm_loss` and `heldout_mlm_accuracy`; without a packed `--data`, with `n = 0` or on `--backend vulkan` it is a usage error; DESIGN.md revision 0.47 (story:bert-heldout-evaluation).
@@ -224,7 +228,8 @@ with `E-TARGET-001`.
 - `examples/linear_regression.mspec` checks and trains; `task check-examples` runs `modelspec check` on it
 - ESS contracts for the compiled artifact, checkpoint, device profile and training run in `spec/`
 
-[Unreleased]: https://github.com/beyond10x/modelspec/compare/0.10.0...HEAD
+[Unreleased]: https://github.com/beyond10x/modelspec/compare/0.11.0...HEAD
+[0.11.0]: https://github.com/beyond10x/modelspec/compare/0.10.0...0.11.0
 [0.10.0]: https://github.com/beyond10x/modelspec/compare/0.9.0...0.10.0
 [0.9.0]: https://github.com/beyond10x/modelspec/compare/0.8.0...0.9.0
 [0.8.0]: https://github.com/beyond10x/modelspec/compare/0.7.1...0.8.0
