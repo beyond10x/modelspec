@@ -330,8 +330,8 @@ fn cross_entropy_values_uniform_logits_give_ln_v() {
     assert!((in_f64 - ln_v).abs() <= 1e-6, "{in_f64} vs {ln_v}");
 }
 
-/// Scenario 4: changing the logits of a row whose weight is 0 leaves the loss unchanged, bit for
-/// bit, in `f32` and in `f64`.
+/// Scenario 4: changing the logits of a row whose weight is 0, its row loss staying finite (D46),
+/// leaves the loss unchanged, bit for bit, in `f32` and in `f64`.
 #[test]
 fn cross_entropy_values_ignore_the_logits_of_a_weight_0_row() {
     let mut rng = Rng::new(seed_of("cross_entropy_values_ignore"));
@@ -356,6 +356,84 @@ fn cross_entropy_values_ignore_the_logits_of_a_weight_0_row() {
             gradient[row * v..(row + 1) * v].iter().all(|&x| x == 0.0),
             "row {row} of the gradient: {gradient:?}"
         );
+    }
+}
+
+/// `logits` with row `row` replaced by `values`.
+fn with_row(logits: &[f32], row: usize, values: [f32; V as usize]) -> Vec<f32> {
+    let v = V as usize;
+    let mut changed = logits.to_vec();
+    changed[row * v..(row + 1) * v].copy_from_slice(&values);
+    changed
+}
+
+/// Coordinator decision D46, 2026-10-25, `.engineering/waves/bert-1.md` (adversary finding F1):
+/// a row of weight 0 contributes `0 * loss_n`, so logits that keep its row loss finite leave the
+/// loss's bits unchanged, up to a row loss of `2e38` in `f32` (`1e38 - -1e38`, under
+/// `f32::MAX`), in `f32` and in `f64`.
+#[test]
+fn cross_entropy_values_keep_the_bits_while_a_weight_0_row_loss_is_finite() {
+    let mut rng = Rng::new(seed_of("cross_entropy_values_finite_row_loss"));
+    let logits = draw(&mut rng, N * V);
+    let changed = with_row(&logits, 1, [1.0e38, 0.0, 0.0, 0.0, -1.0e38]);
+    assert_eq!(LABELS[1], 4, "the label of row 1 is its logit -1e38");
+    let before = loss_of(&logits, &LABELS, &WEIGHTS, |v| v).unwrap();
+    let after = loss_of(&changed, &LABELS, &WEIGHTS, |v| v).unwrap();
+    assert!(before.is_finite(), "{before}");
+    assert_eq!(before.to_bits(), after.to_bits(), "{before} vs {after}");
+    let before = loss_of(&logits, &LABELS, &WEIGHTS, f64::from).unwrap();
+    let after = loss_of(&changed, &LABELS, &WEIGHTS, f64::from).unwrap();
+    assert_eq!(before.to_bits(), after.to_bits(), "{before} vs {after}");
+}
+
+/// D46 (adversary finding F1): rows of weight 0 are not skipped, so a non-finite row loss makes
+/// the loss NaN whatever the weight. Finite logits `3e38` and `-3e38` overflow `max - logit` to
+/// `inf` in `f32` (not in `f64`, where the loss keeps its bits). An infinite or NaN logit, or
+/// `-inf` at the label, makes the loss NaN in both; an infinite or NaN logit also makes the
+/// row's softmax NaN, so its gradient row is NaN (`0 * NaN`), and every other row keeps its bits.
+#[test]
+fn cross_entropy_values_are_nan_when_a_weight_0_row_loss_is_not_finite() {
+    let mut rng = Rng::new(seed_of("cross_entropy_values_non_finite_row_loss"));
+    let logits = draw(&mut rng, N * V);
+    let overflowing = with_row(&logits, 1, [3.0e38, 0.0, 0.0, 0.0, -3.0e38]);
+    let loss = loss_of(&overflowing, &LABELS, &WEIGHTS, |v| v).unwrap();
+    assert!(loss.is_nan(), "f32: {loss}");
+    let before = loss_of(&logits, &LABELS, &WEIGHTS, f64::from).unwrap();
+    let after = loss_of(&overflowing, &LABELS, &WEIGHTS, f64::from).unwrap();
+    assert_eq!(
+        before.to_bits(),
+        after.to_bits(),
+        "f64: {before} vs {after}"
+    );
+
+    let v = V as usize;
+    let g = -0.75;
+    let base = grad_of(&logits, &LABELS, &WEIGHTS, g).unwrap();
+    let bits = |v: &[f32]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+    assert_eq!(LABELS[4], 3, "the label of row 4 is its column 3");
+    for (column, bad, nan_row) in [
+        (1, f32::INFINITY, true),
+        (1, f32::NAN, true),
+        (3, f32::NEG_INFINITY, false),
+    ] {
+        let mut row = [0.5f32, 1.5, -1.0, 2.0, 0.25];
+        row[column] = bad;
+        let changed = with_row(&logits, 4, row);
+        let loss = loss_of(&changed, &LABELS, &WEIGHTS, |v| v).unwrap();
+        assert!(loss.is_nan(), "{bad} in f32: {loss}");
+        let loss = loss_of(&changed, &LABELS, &WEIGHTS, f64::from).unwrap();
+        assert!(loss.is_nan(), "{bad} in f64: {loss}");
+        let gradient = grad_of(&changed, &LABELS, &WEIGHTS, g).unwrap();
+        for n in 0..N as usize {
+            let got = &gradient[n * v..(n + 1) * v];
+            if n != 4 {
+                assert_eq!(bits(got), bits(&base[n * v..(n + 1) * v]), "{bad}, row {n}");
+            } else if nan_row {
+                assert!(got.iter().all(|x| x.is_nan()), "{bad}, row 4: {got:?}");
+            } else {
+                assert!(got.iter().all(|&x| x == 0.0), "{bad}, row 4: {got:?}");
+            }
+        }
     }
 }
 

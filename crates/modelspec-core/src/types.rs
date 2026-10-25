@@ -1061,25 +1061,44 @@ fn layer_norm_operand(types: &[&TensorType]) -> Option<&'static str> {
         .map(|(operand, _)| operand)
 }
 
-/// The `cross_entropy` operand that [`ops::infer`] refuses first, in the order it checks them:
-/// `logits` of rank 2, `labels` of rank 1, `weights` of rank 1, then `labels` and `weights`
-/// each as long as the rows of `logits`. `None` unless `types` holds the three operand types.
-fn cross_entropy_operand(types: &[&TensorType]) -> Option<&'static str> {
+/// The `cross_entropy` operand that [`ops::infer`] refuses first for its rank, in the order it
+/// checks them: `logits` of rank 2, `labels` of rank 1, then `weights` of rank 1. `None` unless
+/// `types` holds the three operand types and one of them has another rank.
+fn cross_entropy_rank_operand(types: &[&TensorType]) -> Option<&'static str> {
     let [logits, labels, weights] = types else {
         return None;
     };
-    let ranks = [
+    [
         ("logits", logits, 2),
         ("labels", labels, 1),
         ("weights", weights, 1),
-    ];
-    if let Some((operand, _, _)) = ranks.iter().find(|(_, ty, rank)| ty.rank() != *rank) {
-        return Some(operand);
+    ]
+    .into_iter()
+    .find(|(_, ty, rank)| ty.rank() != *rank)
+    .map(|(operand, _, _)| operand)
+}
+
+/// The operands an E-TYPE-003 of `cross_entropy` names (adversary finding N1): when `labels` and
+/// `weights` agree on `N` and `logits` has another row count, `logits` and its rows against
+/// `N`; when `labels` and `weights` disagree with each other, both, beside the type of `logits`.
+/// `None` unless `types` holds the three operand types, each of its rank, and a length differs.
+fn cross_entropy_shape_operands(types: &[&TensorType]) -> Option<String> {
+    let [logits, labels, weights] = types else {
+        return None;
+    };
+    if cross_entropy_rank_operand(types).is_some() {
+        return None;
     }
-    [("labels", labels), ("weights", weights)]
-        .into_iter()
-        .find(|(_, ty)| ty.shape[0] != logits.shape[0])
-        .map(|(operand, _)| operand)
+    let (rows, n) = (logits.shape[0], labels.shape[0]);
+    if n != weights.shape[0] {
+        return Some(format!(
+            "`labels` has type {labels} and `weights` has type {weights} for `logits` of type \
+             {logits}"
+        ));
+    }
+    (n != rows).then(|| {
+        format!("`logits` has type {logits}, {rows} rows against N = {n} of `labels` and `weights`")
+    })
 }
 
 /// The user diagnostic for a registry error of the operator called `name` at `span`, its operands
@@ -1107,8 +1126,8 @@ fn op_diagnostic(
             } else if name == "cross_entropy" {
                 let rule = "`cross_entropy(logits, labels, weights)` needs `labels` and `weights` \
                             of shape [N] for `logits` of shape [N, V]";
-                match cross_entropy_operand(types) {
-                    Some(operand) => format!("{rule}; `{operand}` has type {rhs}"),
+                match cross_entropy_shape_operands(types) {
+                    Some(operands) => format!("{rule}; {operands}"),
                     None => rule.to_owned(),
                 }
             } else if name == "layer_norm" {
@@ -1140,7 +1159,7 @@ fn op_diagnostic(
             if name == "cross_entropy" {
                 let rule =
                     "`cross_entropy` needs `logits` of rank 2 and `labels` and `weights` of rank 1";
-                let message = match cross_entropy_operand(types) {
+                let message = match cross_entropy_rank_operand(types) {
                     Some(operand) => format!("{rule}; `{operand}` has type {got}"),
                     None => format!("{rule}; got {got}"),
                 };
@@ -1389,6 +1408,51 @@ train T {{
             ),
             ["E-TYPE-004"]
         );
+    }
+
+    /// The one E-TYPE-003 diagnostic of `cross_entropy` with `labels`, `weights` and `loss`,
+    /// rendered.
+    fn cross_entropy_shape_diagnostic(labels: &str, weights: &str, loss: &str) -> String {
+        let source = cross_entropy_source("", labels, weights, loss);
+        let diagnostics = check_source("m.mspec", &source).expect_err(loss);
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+        assert_eq!(
+            diagnostics[0].code,
+            codes::SHAPE_MISMATCH,
+            "{diagnostics:?}"
+        );
+        diagnostics[0].to_string()
+    }
+
+    /// An E-TYPE-003 of `cross_entropy` names the operand a reader can fix (adversary finding N1):
+    /// `logits` with its row count when `labels` and `weights` agree on `N`, and both `labels`
+    /// and `weights` when they disagree with each other.
+    #[test]
+    fn cross_entropy_shape_mismatch_names_the_operand_that_disagrees() {
+        let transposed = "cross_entropy(transpose(model.forward(ids)), labels, weights)";
+        let text = cross_entropy_shape_diagnostic(LABELS, WEIGHTS, transposed);
+        assert!(
+            text.contains(
+                "`logits` has type Tensor<f32, [5, 6]>, 5 rows against N = 6 of `labels` and \
+                 `weights`"
+            ),
+            "{text}"
+        );
+        assert!(!text.contains("`labels` has type"), "{text}");
+        assert!(!text.contains("`weights` has type"), "{text}");
+
+        for (labels, weights) in [
+            ("Tensor<i32, [7]>", WEIGHTS),
+            (LABELS, "Tensor<f32, [5]>"),
+            ("Tensor<i32, [7]>", "Tensor<f32, [5]>"),
+        ] {
+            let text = cross_entropy_shape_diagnostic(labels, weights, LOSS);
+            let want = format!(
+                "`labels` has type {labels} and `weights` has type {weights} for `logits` of \
+                 type Tensor<f32, [6, 5]>"
+            );
+            assert!(text.contains(&want), "{labels}, {weights}: {text}");
+        }
     }
 
     /// The weights take no gradient: weights that read a parameter, directly in a model function
