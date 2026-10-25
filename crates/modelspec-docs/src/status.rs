@@ -547,6 +547,13 @@ pub const CAPABILITIES: &[Capability] = &[
         Evidence::Test("crates/modelspec-runtime/tests/muon.rs::one_step"),
         "/docs/concepts/training",
     ),
+    shipped(
+        "Training",
+        "BERT-tiny checked, and its hidden-32 twin trained on the CPU",
+        "`examples/bert_tiny.mspec`, BERT-tiny with 4,367,290 parameters, passes modelspec check; its hidden-32 twin passes a finite-difference check of every parameter in `f64` and, trained twice from one seed with --data and --eval-every, prints the same step and eval lines both times.",
+        Evidence::Test("crates/modelspec-cli/tests/bert_cpu_train.rs::reproducible"),
+        "/docs/examples/bert-tiny",
+    ),
     planned(
         "GPU",
         "Vulkan kernels for attention, cross-entropy and AdamW",
@@ -557,7 +564,7 @@ pub const CAPABILITIES: &[Capability] = &[
     planned(
         "Training",
         "Pre-train BERT-tiny on the GPU",
-        "BERT-tiny as a checked example, pre-trained on the GPU until its held-out loss is below the unigram baseline.",
+        "BERT-tiny pre-trained on the GPU until its held-out loss is below the unigram baseline.",
         "story:bert-tiny-gpu-pretraining",
         "/docs/roadmap",
     ),

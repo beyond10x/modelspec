@@ -641,7 +641,7 @@ Initial performance goals are **measured correctness and transparent baselines**
 
 **Iteration 3 — architecture and optimizations (months).** Elaboration for modules/layers/generics, optimizer IR, liveness and scratch reuse, fusion, tiled matmul, diagnostics, SPIR-V printing, benchmark harness and on-disk kernel cache.
 
-**Iteration 4 — Transformer path (later).** FP16/capability checks, AdamW, softmax/layer norm, embedding lookup, attention, causal and bidirectional masking, GELU, a masked-language-model head for a small BERT-like proof model beside the GPT-like one, mixed precision, numerical loss-handling and cooperative-matrix specialization if the Vulkan driver exposes it.
+**Iteration 4 — Transformer path (later).** FP16/capability checks, AdamW, softmax/layer norm, embedding lookup, attention, causal and bidirectional masking, GELU, a masked-language-model head for a small BERT-like proof model beside the GPT-like one, mixed precision, numerical loss-handling and cooperative-matrix specialization if the Vulkan driver exposes it. The BERT-like proof model is BERT-tiny, `examples/bert_tiny.mspec` (two encoder layers of hidden size 128, 4,367,290 parameters, written out in the M0 subset without modules), and its hidden-32 twin `crates/modelspec-cli/tests/fixtures/bert_cpu.mspec`, the same program whose every parameter is checked against central differences in `f64` (§ 9 gate 3) and which trains reproducibly on the CPU reference.
 
 If the architecture meets its tests, aggressive per-model specialization and autotuning can follow without changing the public specification format.
 

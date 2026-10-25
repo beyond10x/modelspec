@@ -37,7 +37,7 @@ that start with "Not yet released" are on `main` only.
 | M0 semantic core | done: released as 0.1.0 |
 | M1 native Vulkan execution | in progress: Vulkan training since 0.4.0; `compile`, Vulkan checkpoints and Vulkan `infer` since 0.6.0; the observatory UI and Vulkan non-finite loss refusal since 0.7.0; per-dispatch FLOP and byte counts since 0.7.1; per-step device counters since 0.8.0; register blocking, in-place transposed operands and `--fast-math` since 0.9.0; device-profile scheduling and chain fusion since 0.10.0; the `relu_grad` matmul epilogue and the loss sum beside the largest matmul since 0.13.0 |
 | M2 optimizing compiler | partly done early, in M1: elementwise fusion and per-dispatch profiling since 0.4.0, the tiled shared-memory matmul since 0.5.0; the rest is design |
-| M3 neural-network essentials | in progress on the CPU reference: the BERT operators since 0.10.0, `cross_entropy`, `dropout`, packed training data and held-out evaluation since 0.11.0, AdamW since 0.12.0, the `muon` optimizer since 0.15.0; Vulkan kernels for the row-wise operators since 0.14.0, those for `attention`, `cross_entropy` and AdamW are planned |
+| M3 neural-network essentials | in progress on the CPU reference: the BERT operators since 0.10.0, `cross_entropy`, `dropout`, packed training data and held-out evaluation since 0.11.0, AdamW since 0.12.0, the `muon` optimizer since 0.15.0, BERT-tiny checked and its hidden-32 twin gradient-checked and trained on `main` after 0.15.0; Vulkan kernels for the row-wise operators since 0.14.0, those for `attention`, `cross_entropy` and AdamW are planned |
 | M4 device specialization | designed in DESIGN.md § 1; not built |
 
 ## Every capability

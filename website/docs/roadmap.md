@@ -87,6 +87,9 @@ Released in 0.12.0: `optimizer = adamw(...)`, AdamW with decoupled weight decay 
 rate that warms up linearly from 0 and decays linearly to 0 at the last step.
 Released in 0.15.0: `optimizer = muon(...)`, Nesterov momentum orthogonalized by Newton–Schulz
 steps for each rank-2 parameter that no `embedding` reads as its table, and AdamW for the rest.
+On `main` after 0.15.0: [BERT-tiny](./examples/bert-tiny.md), `examples/bert_tiny.mspec` with
+4,367,290 parameters, passes `modelspec check`, and its hidden-32 twin passes a gradient check of
+every parameter and trains to the same output twice from one seed.
 
 :::
 
