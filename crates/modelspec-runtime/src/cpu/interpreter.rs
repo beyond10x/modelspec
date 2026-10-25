@@ -19,7 +19,13 @@
 //! `layer_norm`, `softmax` and their gradient ops work row by row: each row reduction sums in
 //! ascending column order from the first column, and the gradient of `gamma` sums rows in
 //! ascending order from row 0; a sum of products fuses each product after the first, as the
-//! `mse` sum does (DESIGN.md § 4).
+//! `mse` sum does (DESIGN.md § 4). `attention` and its gradient ops work per sequence, head and
+//! query over the unmasked keys only, every reduction in ascending index order and every sum of
+//! products fused after its first product; the gradient ops recompute the probabilities through
+//! the forward's code path, and a masked key's rows of the `k` and `v` gradients stay `+0`
+//! (DESIGN.md § 4, coordinator decision D37). The key mask is checked before the op runs: a
+//! value other than 0 or 1 is [`RuntimeError::KeyMaskValue`], a sequence with no unmasked key
+//! [`RuntimeError::NoUnmaskedKey`].
 //!
 //! Every value is allocated through one checked path; a value the host cannot hold is a
 //! [`RuntimeError::Allocation`].
@@ -86,6 +92,20 @@ pub enum RuntimeError {
         id: i32,
         rows: u64,
     },
+    /// A key mask of `attention` or one of its gradient ops holding a value other than 0 and 1
+    /// (DESIGN.md § 4); NaN is such a value.
+    #[error(
+        "the key mask of {value} holds a value other than 0 or 1 at sequence {sequence}, key {key}"
+    )]
+    KeyMaskValue {
+        value: ValueId,
+        sequence: usize,
+        key: usize,
+    },
+    /// A key mask of `attention` or one of its gradient ops that masks every key of a sequence,
+    /// whose softmax would divide by zero (DESIGN.md § 4).
+    #[error("the key mask of {value} masks every key of sequence {sequence}")]
+    NoUnmaskedKey { value: ValueId, sequence: usize },
 }
 
 /// No ids, for the programs that read none.
@@ -527,6 +547,11 @@ impl<'p, T: Element> Prepared<'p, T> {
         }
         let (mut live, mut peak) = (0usize, 0usize);
         for i in 0..self.program.nodes.len() {
+            let node = &self.program.nodes[i];
+            if node.op.attention_heads().is_some() {
+                let mask = self.view(self.plan.operands[i][3], inputs, params);
+                check_key_mask(node.id, mask)?;
+            }
             match self.plan.hold[i] {
                 Hold::InPlace(_) => continue,
                 Hold::Supplied | Hold::Ids => {}
@@ -784,7 +809,242 @@ impl<'p, T: Element> Prepared<'p, T> {
                     data.extend(y_row.iter().zip(g_row).map(|(&y, &g)| y * (g - d)));
                 }
             }
+            TensorOp::Attention { heads } => {
+                let at = Attend::new(arg(0), arg(1), arg(2), arg(3), *heads);
+                data.resize(n, T::ZERO);
+                for i in 0..at.rows() {
+                    for head in 0..at.heads {
+                        let softmax = at.softmax(i, head);
+                        let mut first = true;
+                        for j in at.keys(i) {
+                            let p = at.probability(i, j, head, softmax);
+                            for c in at.columns(head) {
+                                let out = &mut data[i * at.h + c];
+                                *out = fused(first, p, at.v.data[j * at.h + c], *out);
+                            }
+                            first = false;
+                        }
+                    }
+                }
+            }
+            TensorOp::AttentionGradQ { heads } => {
+                let at = Attend::new(arg(0), arg(1), arg(2), arg(3), *heads);
+                let g = arg(4);
+                data.resize(n, T::ZERO);
+                for i in 0..at.rows() {
+                    for head in 0..at.heads {
+                        let softmax = at.softmax(i, head);
+                        let d = at.row_dot(i, head, softmax, g);
+                        let mut first = true;
+                        for j in at.keys(i) {
+                            let ds = at.score_grad(i, j, head, softmax, d, g);
+                            for c in at.columns(head) {
+                                let out = &mut data[i * at.h + c];
+                                *out = fused(first, ds, at.k.data[j * at.h + c], *out);
+                            }
+                            first = false;
+                        }
+                        for c in at.columns(head) {
+                            data[i * at.h + c] = data[i * at.h + c] * at.scale;
+                        }
+                    }
+                }
+            }
+            TensorOp::AttentionGradK { heads } => {
+                let at = Attend::new(arg(0), arg(1), arg(2), arg(3), *heads);
+                let g = arg(4);
+                data.resize(n, T::ZERO);
+                for i in 0..at.rows() {
+                    let first = i % at.s == 0;
+                    for head in 0..at.heads {
+                        let softmax = at.softmax(i, head);
+                        let d = at.row_dot(i, head, softmax, g);
+                        for j in at.keys(i) {
+                            let ds = at.score_grad(i, j, head, softmax, d, g);
+                            for c in at.columns(head) {
+                                let out = &mut data[j * at.h + c];
+                                *out = fused(first, ds, at.q.data[i * at.h + c], *out);
+                            }
+                        }
+                    }
+                }
+                for j in 0..at.rows() {
+                    if at.unmasked(j) {
+                        for out in &mut data[j * at.h..(j + 1) * at.h] {
+                            *out = *out * at.scale;
+                        }
+                    }
+                }
+            }
+            TensorOp::AttentionGradV { heads } => {
+                let at = Attend::new(arg(0), arg(1), arg(2), arg(3), *heads);
+                let g = arg(4);
+                data.resize(n, T::ZERO);
+                for i in 0..at.rows() {
+                    let first = i % at.s == 0;
+                    for head in 0..at.heads {
+                        let softmax = at.softmax(i, head);
+                        for j in at.keys(i) {
+                            let p = at.probability(i, j, head, softmax);
+                            for c in at.columns(head) {
+                                let out = &mut data[j * at.h + c];
+                                *out = fused(first, p, g.data[i * at.h + c], *out);
+                            }
+                        }
+                    }
+                }
+            }
         }
+    }
+}
+
+/// Checks the key mask `mask` of the `attention` op or gradient op `value` before it runs:
+/// every value 0 or 1, and at least one 1 in each sequence (a row of `mask`), in ascending
+/// sequence order and, within one, ascending key order (coordinator decision D37).
+fn check_key_mask<T: Element>(value: ValueId, mask: View<'_, T>) -> Result<(), RuntimeError> {
+    let one = T::from_f32(1.0);
+    let s = mask.shape[1] as usize;
+    for (sequence, row) in mask.data.chunks_exact(s).enumerate() {
+        if let Some(key) = row.iter().position(|&m| m != T::ZERO && m != one) {
+            return Err(RuntimeError::KeyMaskValue {
+                value,
+                sequence,
+                key,
+            });
+        }
+        if !row.contains(&one) {
+            return Err(RuntimeError::NoUnmaskedKey { value, sequence });
+        }
+    }
+    Ok(())
+}
+
+/// `a * b` when `first`, else `a * b + acc` fused and rounded once: one step of an accumulation
+/// that starts from its first product, as [`sum_of_products`] does (DESIGN.md § 12 ADR-009).
+fn fused<T: Element>(first: bool, a: T, b: T, acc: T) -> T {
+    if first { a * b } else { a.mul_add(b, acc) }
+}
+
+/// The operands of one `attention` or gradient op, `q`, `k`, `v` of shape `[N, H]` and a key
+/// mask of shape `[B, S]` that [`check_key_mask`] passed, with `heads` dividing `H` (DESIGN.md
+/// § 4, coordinator decision D37). Row `i` is token `i % S` of sequence `i / S`, and the key mask
+/// entry of row `j` is element `j` of the mask; head `a` reads columns `a * H/A` to
+/// `(a + 1) * H/A - 1`. A masked key is skipped: it adds nothing to any sum, so no value of its
+/// `k` or `v` row reaches a result.
+struct Attend<'v, T> {
+    q: View<'v, T>,
+    k: View<'v, T>,
+    v: View<'v, T>,
+    mask: View<'v, T>,
+    heads: usize,
+    /// `S`, the tokens per sequence.
+    s: usize,
+    /// `H`, the width of `q`, `k` and `v`.
+    h: usize,
+    /// `H / heads`, the width of one head.
+    d: usize,
+    /// `1 / sqrt(H / heads)`, computed once per call.
+    scale: T,
+}
+
+/// The maximum score over the unmasked keys of one query and head, and the sum of
+/// `exp(score - max)` over them.
+#[derive(Clone, Copy)]
+struct Softmax<T> {
+    max: T,
+    total: T,
+}
+
+impl<'v, T: Element> Attend<'v, T> {
+    fn new(q: View<'v, T>, k: View<'v, T>, v: View<'v, T>, mask: View<'v, T>, heads: u64) -> Self {
+        let (h, heads) = (q.shape[1] as usize, heads as usize);
+        let d = h / heads;
+        Self {
+            s: mask.shape[1] as usize,
+            h,
+            d,
+            heads,
+            scale: T::from_f32(1.0) / T::from_count(d as u64).sqrt(),
+            q,
+            k,
+            v,
+            mask,
+        }
+    }
+
+    /// `N`, the rows of `q`.
+    fn rows(&self) -> usize {
+        self.q.shape[0] as usize
+    }
+
+    /// The columns head `head` reads.
+    fn columns(&self, head: usize) -> std::ops::Range<usize> {
+        head * self.d..(head + 1) * self.d
+    }
+
+    /// Whether the key mask keeps the key of row `j`.
+    fn unmasked(&self, j: usize) -> bool {
+        self.mask.data[j] != T::ZERO
+    }
+
+    /// The rows of the unmasked keys of the sequence of row `i`, ascending.
+    fn keys(&self, i: usize) -> impl Iterator<Item = usize> + '_ {
+        let start = i / self.s * self.s;
+        (start..start + self.s).filter(|&j| self.unmasked(j))
+    }
+
+    /// The score of query `i` and key `j` in head `head`: their dot product over the head's
+    /// columns in ascending order, fused after its first product, times the scale.
+    fn score(&self, i: usize, j: usize, head: usize) -> T {
+        let (q, k) = (&self.q.data[i * self.h..], &self.k.data[j * self.h..]);
+        sum_of_products(self.columns(head).map(|c| (q[c], k[c]))) * self.scale
+    }
+
+    /// The softmax of query `i` in head `head` over its unmasked keys: the maximum score in
+    /// ascending key order, then the sum of `exp(score - max)` in ascending key order.
+    fn softmax(&self, i: usize, head: usize) -> Softmax<T> {
+        let mut scores = self.keys(i).map(|j| self.score(i, j, head));
+        let first = scores
+            .next()
+            .expect("the key mask keeps a key of every sequence");
+        let max = scores.fold(first, |m, x| if x > m { x } else { m });
+        let total = sum(self.keys(i).map(|j| (self.score(i, j, head) - max).exp()));
+        Softmax { max, total }
+    }
+
+    /// The probability of key `j` for query `i` in head `head`: `exp(score - max) / total`.
+    fn probability(&self, i: usize, j: usize, head: usize, softmax: Softmax<T>) -> T {
+        (self.score(i, j, head) - softmax.max).exp() / softmax.total
+    }
+
+    /// `dP[i, j]`, the gradient of the probability of key `j` for query `i` in head `head`:
+    /// the dot product of row `i` of `g` and row `j` of `v` over the head's columns.
+    fn probability_grad(&self, i: usize, j: usize, head: usize, g: View<'_, T>) -> T {
+        let (g, v) = (&g.data[i * self.h..], &self.v.data[j * self.h..]);
+        sum_of_products(self.columns(head).map(|c| (g[c], v[c])))
+    }
+
+    /// `sum_j P[i, j] dP[i, j]` over the unmasked keys of query `i` in head `head`, ascending.
+    fn row_dot(&self, i: usize, head: usize, softmax: Softmax<T>, g: View<'_, T>) -> T {
+        sum_of_products(self.keys(i).map(|j| {
+            let p = self.probability(i, j, head, softmax);
+            (p, self.probability_grad(i, j, head, g))
+        }))
+    }
+
+    /// `dS[i, j] = P[i, j] * (dP[i, j] - d)`, the gradient of the score of query `i` and key
+    /// `j` in head `head`, `d` its row's [`Self::row_dot`]; the scale is applied by the caller.
+    fn score_grad(
+        &self,
+        i: usize,
+        j: usize,
+        head: usize,
+        softmax: Softmax<T>,
+        d: T,
+        g: View<'_, T>,
+    ) -> T {
+        let p = self.probability(i, j, head, softmax);
+        p * (self.probability_grad(i, j, head, g) - d)
     }
 }
 

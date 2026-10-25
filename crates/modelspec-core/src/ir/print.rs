@@ -231,6 +231,10 @@ pub fn write_node(out: &mut impl Write, program: &TensorProgram, node: &TensorNo
             out.write_char(']')?;
         }
         TensorOp::EmbeddingGrad { rows } => write!(out, " [{rows}]")?,
+        TensorOp::Attention { heads }
+        | TensorOp::AttentionGradQ { heads }
+        | TensorOp::AttentionGradK { heads }
+        | TensorOp::AttentionGradV { heads } => write!(out, " [heads = {heads}]")?,
         _ => {}
     }
     for (i, operand) in node.operands.iter().enumerate() {

@@ -192,6 +192,28 @@ pub enum TensorOp {
     /// Internal gradient op over operands `y`, `G` of one `[N, K]` shape, `y` the result of
     /// [`Self::Softmax`]: `y * (G - rowsum(G * y))` (DESIGN.md § 4).
     SoftmaxGrad,
+    /// `q`, `k`, `v: f32[N, H]`, `key_mask: f32[B, S]` with `N = B * S` `-> f32[N, H]`:
+    /// bidirectional multi-head attention. Sequence `b` is rows `b * S` to `b * S + S - 1`, head
+    /// `a` columns `a * H/heads` to `(a + 1) * H/heads - 1`; within each, the masked softmax of
+    /// `q k^T / sqrt(H/heads)` over the keys whose mask value is 1, times `v` (DESIGN.md § 4).
+    Attention {
+        heads: u64,
+    },
+    /// Internal gradient op over operands `q, k, v, key_mask, G`: the gradient of
+    /// [`Self::Attention`] with respect to `q` (DESIGN.md § 4).
+    AttentionGradQ {
+        heads: u64,
+    },
+    /// Internal gradient op over operands `q, k, v, key_mask, G`: the gradient of
+    /// [`Self::Attention`] with respect to `k`, exactly 0 in the row of a masked key.
+    AttentionGradK {
+        heads: u64,
+    },
+    /// Internal gradient op over operands `q, k, v, key_mask, G`: the gradient of
+    /// [`Self::Attention`] with respect to `v`, exactly 0 in the row of a masked key.
+    AttentionGradV {
+        heads: u64,
+    },
 }
 
 impl TensorOp {
@@ -223,6 +245,21 @@ impl TensorOp {
             TensorOp::LayerNormGradGamma => "LayerNormGradGamma",
             TensorOp::Softmax => "Softmax",
             TensorOp::SoftmaxGrad => "SoftmaxGrad",
+            TensorOp::Attention { .. } => "Attention",
+            TensorOp::AttentionGradQ { .. } => "AttentionGradQ",
+            TensorOp::AttentionGradK { .. } => "AttentionGradK",
+            TensorOp::AttentionGradV { .. } => "AttentionGradV",
+        }
+    }
+
+    /// The `heads` of `Attention` and its three gradient ops; `None` for every other op.
+    pub fn attention_heads(&self) -> Option<u64> {
+        match self {
+            TensorOp::Attention { heads }
+            | TensorOp::AttentionGradQ { heads }
+            | TensorOp::AttentionGradK { heads }
+            | TensorOp::AttentionGradV { heads } => Some(*heads),
+            _ => None,
         }
     }
 }
@@ -503,6 +540,18 @@ impl TensorProgramBuilder {
         self.push(TensorOp::SoftmaxGrad, &[y, g])
     }
 
+    /// Multi-head attention of the `[N, H]` `q`, `k`, `v` under the `[B, S]` `key_mask`.
+    pub fn attention(
+        &mut self,
+        q: ValueId,
+        k: ValueId,
+        v: ValueId,
+        key_mask: ValueId,
+        heads: u64,
+    ) -> Result<ValueId, BuildError> {
+        self.push(TensorOp::Attention { heads }, &[q, k, v, key_mask])
+    }
+
     /// Adds any op except `Input`, typed by the registry.
     pub fn push(&mut self, op: TensorOp, operands: &[ValueId]) -> Result<ValueId, BuildError> {
         self.push_at(op, operands, None)
@@ -608,6 +657,10 @@ mod tests {
             TensorOp::LayerNormGradGamma,
             TensorOp::Softmax,
             TensorOp::SoftmaxGrad,
+            TensorOp::Attention { heads: 1 },
+            TensorOp::AttentionGradQ { heads: 1 },
+            TensorOp::AttentionGradK { heads: 1 },
+            TensorOp::AttentionGradV { heads: 1 },
         ];
         for op in &ops {
             match op {
@@ -635,7 +688,11 @@ mod tests {
                 | TensorOp::LayerNormGradX
                 | TensorOp::LayerNormGradGamma
                 | TensorOp::Softmax
-                | TensorOp::SoftmaxGrad => {}
+                | TensorOp::SoftmaxGrad
+                | TensorOp::Attention { .. }
+                | TensorOp::AttentionGradQ { .. }
+                | TensorOp::AttentionGradK { .. }
+                | TensorOp::AttentionGradV { .. } => {}
             }
         }
         ops

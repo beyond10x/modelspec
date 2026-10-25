@@ -476,8 +476,8 @@ fn a_relu_of_compile_time_scalars_stays_a_kernel_as_the_schedule_documentation_s
 fn the_elementwise_chain_rule_is_stated_and_every_chain_obeys_it() {
     let design = std::fs::read_to_string(repo_root().join("DESIGN.md")).expect("DESIGN.md reads");
     assert!(
-        design.contains("**Revision:** 0.42 (2026-10-25)"),
-        "DESIGN.md is at revision 0.42"
+        design.contains("0.42 (2026-10-25): a chain of elementwise ops"),
+        "DESIGN.md carries revision 0.42, the chain rule entry"
     );
     assert!(
         design.contains("each op but the last read once and by the next op alone"),

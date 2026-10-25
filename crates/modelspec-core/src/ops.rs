@@ -58,6 +58,92 @@ pub enum OpError {
         expected: Dim,
         got: Dim,
     },
+    #[error("{op} needs heads to divide the width {width}; got heads = {heads}")]
+    HeadsDivide {
+        op: &'static str,
+        heads: u64,
+        width: Dim,
+    },
+}
+
+/// The kind of value a named compile-time operator argument takes (DESIGN.md § 2.1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NamedKind {
+    /// An integer literal of at least 1.
+    PositiveInteger,
+}
+
+/// A named compile-time argument an operator takes after its operands, such as `heads = 2`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NamedParameter {
+    pub name: &'static str,
+    pub kind: NamedKind,
+}
+
+/// The value of a named compile-time argument: a literal of its parameter's kind.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NamedValue {
+    Integer(u64),
+}
+
+impl std::fmt::Display for NamedValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            NamedValue::Integer(n) => write!(f, "{n}"),
+        }
+    }
+}
+
+impl NamedKind {
+    /// What a source literal of this kind looks like, for messages: `a positive integer literal`.
+    pub const fn describe(self) -> &'static str {
+        match self {
+            NamedKind::PositiveInteger => "an integer literal of at least 1",
+        }
+    }
+
+    /// The value of the integer literal `literal` if this kind admits it.
+    pub fn integer(self, literal: u64) -> Option<NamedValue> {
+        match self {
+            NamedKind::PositiveInteger => (literal >= 1).then_some(NamedValue::Integer(literal)),
+        }
+    }
+}
+
+/// `heads = <integer>` of `attention`.
+const HEADS: NamedParameter = NamedParameter {
+    name: "heads",
+    kind: NamedKind::PositiveInteger,
+};
+
+/// The named compile-time arguments the source operator `op` takes, every one of them required,
+/// in the order [`with_named`] takes their values; empty for an operator that takes none.
+pub fn named_parameters(op: &TensorOp) -> &'static [NamedParameter] {
+    match op {
+        TensorOp::Attention { .. } => &[HEADS],
+        _ => &[],
+    }
+}
+
+/// `op` with the values of its named arguments, one per entry of [`named_parameters`] and in its
+/// order. `op` itself when it takes none.
+pub fn with_named(op: &TensorOp, values: &[NamedValue]) -> TensorOp {
+    match (op, values) {
+        (TensorOp::Attention { .. }, [NamedValue::Integer(heads)]) => {
+            TensorOp::Attention { heads: *heads }
+        }
+        _ => op.clone(),
+    }
+}
+
+/// The operands of the source operator `op` that take no gradient, by index and source name:
+/// `key_mask` of `attention`. A parameter cannot reach one, since training needs a gradient for
+/// every parameter the loss reads (DESIGN.md § 2.2).
+pub fn constant_operands(op: &TensorOp) -> &'static [(usize, &'static str)] {
+    match op {
+        TensorOp::Attention { .. } => &[(3, "key_mask")],
+        _ => &[],
+    }
 }
 
 /// The number of operands `op` takes.
@@ -85,6 +171,10 @@ pub fn arity(op: &TensorOp) -> usize {
         | TensorOp::LayerNormGradGamma
         | TensorOp::SoftmaxGrad => 2,
         TensorOp::LayerNorm | TensorOp::LayerNormGradX => 3,
+        TensorOp::Attention { .. } => 4,
+        TensorOp::AttentionGradQ { .. }
+        | TensorOp::AttentionGradK { .. }
+        | TensorOp::AttentionGradV { .. } => 5,
     }
 }
 
@@ -271,7 +361,55 @@ pub fn infer(
             same_shape(name, y, g)?;
             Ok(y.clone())
         }
+        TensorOp::Attention { heads } => {
+            attention_operands(name, *heads, operands)?;
+            Ok(operands[0].clone())
+        }
+        TensorOp::AttentionGradQ { heads }
+        | TensorOp::AttentionGradK { heads }
+        | TensorOp::AttentionGradV { heads } => {
+            attention_operands(name, *heads, &operands[..4])?;
+            same_shape(name, operands[0], operands[4])?;
+            Ok(operands[0].clone())
+        }
     }
+}
+
+/// The operands `q, k, v, key_mask` of `Attention` and its gradient ops: `q` of rank 2, `k` and
+/// `v` of its shape `[N, H]`, `key_mask` of rank 2 and shape `[B, S]` with `B * S = N`, and
+/// `heads` dividing `H`. A `key_mask` whose `B * S` is not `N`, or a dimension of `key_mask` or
+/// `N` that is not static, is a shape mismatch against `q`; `heads` of 0, or a width that is not
+/// static or that `heads` does not divide, is [`OpError::HeadsDivide`].
+fn attention_operands(
+    op: &'static str,
+    heads: u64,
+    operands: &[&TensorType],
+) -> Result<(), OpError> {
+    let (q, k, v, mask) = (operands[0], operands[1], operands[2], operands[3]);
+    rank(op, q, 2)?;
+    same_shape(op, q, k)?;
+    same_shape(op, q, v)?;
+    same_dtype(op, q, mask)?;
+    rank(op, mask, 2)?;
+    let rows = match (q.shape[0], mask.shape[0], mask.shape[1]) {
+        (Dim::Static(n), Dim::Static(b), Dim::Static(s)) => b.checked_mul(s) == Some(n),
+        _ => false,
+    };
+    if !rows {
+        return Err(shape_mismatch(op, q, mask));
+    }
+    let divides = match q.shape[1] {
+        Dim::Static(width) => heads != 0 && width % heads == 0,
+        Dim::Symbol(_) => false,
+    };
+    if !divides {
+        return Err(OpError::HeadsDivide {
+            op,
+            heads,
+            width: q.shape[1],
+        });
+    }
+    Ok(())
 }
 
 /// `x` of rank 2 and each of `rows` of rank 1 and as long as a row of `x`: a row of another rank
@@ -316,7 +454,8 @@ pub trait GradientSink {
 /// the contributions of every use of a value. An operand of rank 0 under a same-shape-or-scalar
 /// op receives the sum of its broadcast contribution. Returns `Ok(None)` for the internal
 /// gradient ops `ReluGrad`, `BroadcastScalar`, `EmbeddingGrad`, `SumRows`, `GeluGrad`,
-/// `LayerNormGradX`, `LayerNormGradGamma` and `SoftmaxGrad`, which have no rule.
+/// `LayerNormGradX`, `LayerNormGradGamma`, `SoftmaxGrad`, `AttentionGradQ`, `AttentionGradK`
+/// and `AttentionGradV`, which have no rule.
 ///
 /// The rules, for `Y = op(A, B, C)` and `G = dL/dY`:
 ///
@@ -336,6 +475,7 @@ pub trait GradientSink {
 /// | `Gelu` | `gelu_grad(A, G)` (`GeluGrad`: `gelu'(A) * G`) | | |
 /// | `LayerNorm` | `layer_norm_grad_x(A, B, G)` (`LayerNormGradX`: `rstd * (G B - mean(G B) - xhat * mean(G B xhat))` per row) | `layer_norm_grad_gamma(A, G)` (`LayerNormGradGamma`: the rows of `G * xhat` summed in ascending order) | `sum_rows(G)` |
 /// | `Softmax` | `softmax_grad(Y, G)` (`SoftmaxGrad`: `Y * (G - rowsum(G * Y))`) | | |
+/// | `Attention` | `attention_grad_q(A, B, C, D, G)` (`AttentionGradQ`: `scale * dS K` per sequence and head) | `attention_grad_k(A, B, C, D, G)` (`AttentionGradK`: `scale * dS^T Q`, 0 at a masked key) | `attention_grad_v(A, B, C, D, G)` (`AttentionGradV`: `P^T G`, 0 at a masked key) |
 ///
 /// The constants `1 / numel` and `2 / numel` are `f32` scalars. `Mse`'s `B` is a target in a
 /// training program, an input that receives no gradient; a trainable `B` receives `-dA`.
@@ -343,7 +483,10 @@ pub trait GradientSink {
 /// fixed order, and a row never read stays exactly zero. `SumRows` starts from row 0 and adds
 /// each later row in ascending order. `gelu'` is the derivative of the tanh form of `Gelu`. For
 /// `LayerNorm`, `xhat = (A - mean) * rstd` and `rstd = 1 / sqrt(var + 1e-12)` are recomputed from
-/// `A` per row; `Softmax`'s rule reads its own result `Y`.
+/// `A` per row; `Softmax`'s rule reads its own result `Y`. `Attention`'s operand `D` is the key
+/// mask, which receives no gradient; each of its three gradient ops recomputes the probabilities
+/// `P` of a sequence and head from `A`, `B` and `D`, and with `dP = G V^T` takes
+/// `dS = P * (dP - rowsum(P * dP))`; `scale = 1 / sqrt(H / heads)`.
 pub fn gradient<S: GradientSink + ?Sized>(
     sink: &mut S,
     op: &TensorOp,
@@ -470,6 +613,20 @@ pub fn gradient<S: GradientSink + ?Sized>(
                 out[0] = Some(sink.emit(TensorOp::SoftmaxGrad, &[result, g])?);
             }
         }
+        TensorOp::Attention { heads } => {
+            let heads = *heads;
+            let reads = [operands[0], operands[1], operands[2], operands[3], g];
+            let rules = [
+                TensorOp::AttentionGradQ { heads },
+                TensorOp::AttentionGradK { heads },
+                TensorOp::AttentionGradV { heads },
+            ];
+            for (i, rule) in rules.into_iter().enumerate() {
+                if want(i) {
+                    out[i] = Some(sink.emit(rule, &reads)?);
+                }
+            }
+        }
         TensorOp::ReluGrad
         | TensorOp::BroadcastScalar { .. }
         | TensorOp::EmbeddingGrad { .. }
@@ -477,7 +634,10 @@ pub fn gradient<S: GradientSink + ?Sized>(
         | TensorOp::GeluGrad
         | TensorOp::LayerNormGradX
         | TensorOp::LayerNormGradGamma
-        | TensorOp::SoftmaxGrad => {
+        | TensorOp::SoftmaxGrad
+        | TensorOp::AttentionGradQ { .. }
+        | TensorOp::AttentionGradK { .. }
+        | TensorOp::AttentionGradV { .. } => {
             return Ok(None);
         }
     }
@@ -965,5 +1125,101 @@ mod tests {
                 "{op:?}"
             );
         }
+    }
+
+    /// `attention` of `q, k, v: [N, H]` and `key_mask: [B, S]` with `B * S = N` is `[N, H]`, and
+    /// each gradient op, with `G` of that shape too, is `[N, H]`.
+    #[test]
+    fn attention_of_n_by_h_operands_and_a_b_by_s_mask_is_n_by_h() {
+        let x = f32(&[6, 4]);
+        let mask = f32(&[2, 3]);
+        for heads in [1, 2, 4] {
+            let op = TensorOp::Attention { heads };
+            assert_eq!(infer(&op, &[&x, &x, &x, &mask], None), Ok(x.clone()));
+            for grad in [
+                TensorOp::AttentionGradQ { heads },
+                TensorOp::AttentionGradK { heads },
+                TensorOp::AttentionGradV { heads },
+            ] {
+                assert_eq!(infer(&grad, &[&x, &x, &x, &mask, &x], None), Ok(x.clone()));
+            }
+        }
+    }
+
+    /// A key mask whose `B * S` is not `N`, or `k` of another shape, is a shape mismatch;
+    /// `heads` that does not divide `H` is [`OpError::HeadsDivide`]; an operand not of rank 2 is
+    /// a rank error.
+    #[test]
+    fn attention_refuses_a_mask_of_other_rows_heads_not_dividing_h_and_other_ranks() {
+        let x = f32(&[6, 4]);
+        let mask = f32(&[2, 3]);
+        let op = TensorOp::Attention { heads: 2 };
+        assert_eq!(
+            infer(&op, &[&x, &x, &x, &f32(&[2, 4])], None),
+            Err(OpError::ShapeMismatch {
+                op: "Attention",
+                lhs: x.clone(),
+                rhs: f32(&[2, 4]),
+            })
+        );
+        assert_eq!(
+            infer(&op, &[&x, &f32(&[6, 2]), &x, &mask], None),
+            Err(OpError::ShapeMismatch {
+                op: "Attention",
+                lhs: x.clone(),
+                rhs: f32(&[6, 2]),
+            })
+        );
+        assert_eq!(
+            infer(
+                &TensorOp::Attention { heads: 3 },
+                &[&x, &x, &x, &mask],
+                None
+            ),
+            Err(OpError::HeadsDivide {
+                op: "Attention",
+                heads: 3,
+                width: Dim::Static(4),
+            })
+        );
+        assert_eq!(
+            infer(&op, &[&x, &x, &x, &f32(&[6])], None),
+            Err(OpError::Rank {
+                op: "Attention",
+                expected: 2,
+                got: f32(&[6]),
+            })
+        );
+        assert_eq!(
+            infer(
+                &TensorOp::AttentionGradV { heads: 2 },
+                &[&x, &x, &x, &mask, &f32(&[6, 2])],
+                None
+            ),
+            Err(OpError::ShapeMismatch {
+                op: "AttentionGradV",
+                lhs: x,
+                rhs: f32(&[6, 2]),
+            })
+        );
+    }
+
+    /// `heads` is `attention`'s one named argument, and only its key mask takes no gradient.
+    #[test]
+    fn attention_takes_heads_by_name_and_its_key_mask_is_constant() {
+        let op = TensorOp::Attention { heads: 1 };
+        assert_eq!(named_parameters(&op), &[HEADS]);
+        assert_eq!(
+            with_named(&op, &[NamedValue::Integer(4)]),
+            TensorOp::Attention { heads: 4 }
+        );
+        assert_eq!(constant_operands(&op), &[(3, "key_mask")]);
+        assert!(named_parameters(&TensorOp::Softmax).is_empty());
+        assert!(constant_operands(&TensorOp::Softmax).is_empty());
+        assert_eq!(NamedKind::PositiveInteger.integer(0), None);
+        assert_eq!(
+            NamedKind::PositiveInteger.integer(2),
+            Some(NamedValue::Integer(2))
+        );
     }
 }

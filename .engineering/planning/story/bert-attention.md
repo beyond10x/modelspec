@@ -2,7 +2,7 @@
 format: aep.planning-md/3
 id: story:bert-attention
 kind: story
-status: draft
+status: implemented
 title: Multi-head bidirectional attention with a key mask, gradient-checked on the CPU
 summary: Adds attention(q, k, v, key_mask, heads = A) over flattened [B*S, H] rows, the first named compile-time operator argument, and three gradient ops, with an f64 finite-difference check.
 relations:
@@ -50,7 +50,11 @@ scope:
   path: ui/src/generated/
 - confidence: cited
   path: website/docs/reference/operators.md
-revision: 3
+revision: 6
+transitions:
+- {from: "draft", to: "proposed", at: "2026-10-25T02:40:31Z", actor: "human:timo", revision: 4}
+- {from: "proposed", to: "active", at: "2026-10-25T02:40:31Z", actor: "human:timo", revision: 5}
+- {from: "active", to: "implemented", at: "2026-10-25T04:52:31Z", actor: "human:timo", revision: 6, decided_on: {"recorded":{"test_result":1,"review_outcome":1}}}
 ---
 # Multi-head bidirectional attention with a key mask, gradient-checked on the CPU
 

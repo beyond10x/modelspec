@@ -1,0 +1,13 @@
+{
+  "at": "2026-10-25T04:52:31Z",
+  "actor": "human:timo",
+  "artifact": "story:bert-attention",
+  "kind": "story",
+  "revision": 5,
+  "change": {
+    "change": "evidence",
+    "kind": "test_result",
+    "source": "task ci",
+    "reference": "2bc59adab8a1d35b314d26665700f54097ee9093"
+  }
+}
