@@ -678,7 +678,7 @@ impl Checker {
             }
             Err(error) => {
                 self.diagnostics
-                    .push(op_diagnostic(&call.callee.name, error, &call.span));
+                    .push(op_diagnostic(&call.callee.name, error, &types, &call.span));
                 None
             }
         }
@@ -740,8 +740,30 @@ impl Checker {
     }
 }
 
-/// The user diagnostic for a registry error of the operator called `name` at `span`.
-fn op_diagnostic(name: OpName<'_>, error: OpError, span: &SourceSpan) -> Diagnostic {
+/// The `layer_norm` operand that [`ops::infer`] refuses first, in the order it checks them: `x`
+/// of rank 2, then `gamma`, then `beta`, each of the dtype of `x`, of rank 1 and as long as a row
+/// of `x`. `None` unless `types` holds the three operand types.
+fn layer_norm_operand(types: &[&TensorType]) -> Option<&'static str> {
+    let [x, gamma, beta] = types else {
+        return None;
+    };
+    if x.rank() != 2 {
+        return Some("x");
+    }
+    [("gamma", gamma), ("beta", beta)]
+        .into_iter()
+        .find(|(_, row)| row.dtype != x.dtype || row.rank() != 1 || row.shape[0] != x.shape[1])
+        .map(|(operand, _)| operand)
+}
+
+/// The user diagnostic for a registry error of the operator called `name` at `span`, its operands
+/// of the types `types` (empty where they are not known).
+fn op_diagnostic(
+    name: OpName<'_>,
+    error: OpError,
+    types: &[&TensorType],
+    span: &SourceSpan,
+) -> Diagnostic {
     match error {
         OpError::Arity { expected, got, .. } => Diagnostic::new(
             codes::ARGUMENT_COUNT,
@@ -749,14 +771,19 @@ fn op_diagnostic(name: OpName<'_>, error: OpError, span: &SourceSpan) -> Diagnos
         ),
         OpError::ShapeMismatch { lhs, rhs, .. } => {
             let rule = if name == "mse" {
-                "`mse` needs operands of identical shape"
+                "`mse` needs operands of identical shape".to_owned()
             } else if name == "add_rows" {
-                "`add_rows(x, b)` needs `b` of shape [H] for `x` of shape [N, H]"
+                "`add_rows(x, b)` needs `b` of shape [H] for `x` of shape [N, H]".to_owned()
             } else if name == "layer_norm" {
-                "`layer_norm(x, gamma, beta)` needs `gamma` and `beta` of shape [H] for `x` of \
-                 shape [N, H]"
+                let rule = "`layer_norm(x, gamma, beta)` needs `gamma` and `beta` of shape [H] \
+                            for `x` of shape [N, H]";
+                match layer_norm_operand(types) {
+                    Some(operand) => format!("{rule}; `{operand}` has type {rhs}"),
+                    None => rule.to_owned(),
+                }
             } else {
                 "operands need the same shape, or one of them rank 0; M0 has no broadcasting"
+                    .to_owned()
             };
             Diagnostic::new(
                 codes::SHAPE_MISMATCH,
@@ -774,14 +801,12 @@ fn op_diagnostic(name: OpName<'_>, error: OpError, span: &SourceSpan) -> Diagnos
             };
             let wrong = operands.and_then(|ops| ops.into_iter().find(|&(_, r)| r == expected));
             if name == "layer_norm" {
-                return Diagnostic::new(
-                    codes::RANK,
-                    format!(
-                        "`layer_norm` needs `x` of rank 2 and `gamma` and `beta` of rank 1; \
-                         got {got}"
-                    ),
-                )
-                .at(span.clone());
+                let rule = "`layer_norm` needs `x` of rank 2 and `gamma` and `beta` of rank 1";
+                let message = match layer_norm_operand(types) {
+                    Some(operand) => format!("{rule}; `{operand}` has type {got}"),
+                    None => format!("{rule}; got {got}"),
+                };
+                return Diagnostic::new(codes::RANK, message).at(span.clone());
             }
             match (operands, wrong) {
                 (Some([(first, r1), (second, r2)]), Some((operand, _))) => Diagnostic::new(
@@ -928,7 +953,7 @@ mod tests {
             expected: 1,
             got: TensorType::f32(&[1, 5]),
         };
-        let diagnostic = op_diagnostic("layer_norm", error, &span());
+        let diagnostic = op_diagnostic("layer_norm", error, &[], &span());
         assert_eq!(diagnostic.code, codes::RANK);
         assert_eq!(
             diagnostic.message,
@@ -940,7 +965,7 @@ mod tests {
             lhs: TensorType::f32(&[4, 5]),
             rhs: TensorType::f32(&[6]),
         };
-        let diagnostic = op_diagnostic("layer_norm", error, &span());
+        let diagnostic = op_diagnostic("layer_norm", error, &[], &span());
         assert_eq!(diagnostic.code, codes::SHAPE_MISMATCH);
         let notes = format!("{diagnostic:?}");
         assert!(
@@ -952,9 +977,53 @@ mod tests {
             expected: 2,
             got: TensorType::f32(&[3]),
         };
-        let diagnostic = op_diagnostic("softmax", error, &span());
+        let diagnostic = op_diagnostic("softmax", error, &[], &span());
         assert_eq!(diagnostic.code, codes::RANK);
         assert_eq!(diagnostic.message, "`softmax` needs rank-2 operands");
+    }
+
+    /// `layer_norm`'s E-TYPE-003 note and E-TYPE-004 message name the operand the registry
+    /// refuses, `x`, `gamma` or `beta`, with its type, as `add_rows` does (coordinator decision
+    /// D33), so a long `gamma` and a long `beta` read differently.
+    #[test]
+    fn layer_norm_errors_name_the_refused_operand() {
+        let f32 = TensorType::f32;
+        let cases = [
+            (
+                [f32(&[4, 5]), f32(&[6]), f32(&[5])],
+                codes::SHAPE_MISMATCH,
+                "`gamma` has type Tensor<f32, [6]>",
+            ),
+            (
+                [f32(&[4, 5]), f32(&[5]), f32(&[6])],
+                codes::SHAPE_MISMATCH,
+                "`beta` has type Tensor<f32, [6]>",
+            ),
+            (
+                [f32(&[5]), f32(&[5]), f32(&[5])],
+                codes::RANK,
+                "`x` has type Tensor<f32, [5]>",
+            ),
+            (
+                [f32(&[4, 5]), f32(&[1, 5]), f32(&[5])],
+                codes::RANK,
+                "`gamma` has type Tensor<f32, [1, 5]>",
+            ),
+            (
+                [f32(&[4, 5]), f32(&[5]), f32(&[1, 5])],
+                codes::RANK,
+                "`beta` has type Tensor<f32, [1, 5]>",
+            ),
+        ];
+        for (operands, code, named) in cases {
+            let types: Vec<&TensorType> = operands.iter().collect();
+            let error = crate::ops::infer(&crate::ir::tensor::TensorOp::LayerNorm, &types, None)
+                .unwrap_err();
+            let diagnostic = op_diagnostic("layer_norm", error, &types, &span());
+            assert_eq!(diagnostic.code, code, "{diagnostic:?}");
+            let text = format!("{diagnostic:?}");
+            assert!(text.contains(named), "{named}: {text}");
+        }
     }
 
     #[test]
@@ -968,7 +1037,7 @@ mod tests {
             },
             OpError::MissingDeclaredType { op: "Input" },
         ] {
-            let diagnostic = op_diagnostic("add", error, &span());
+            let diagnostic = op_diagnostic("add", error, &[], &span());
             assert_eq!(diagnostic.code, codes::INTERNAL);
             assert_eq!(diagnostic.span, Some(span()));
             assert!(!codes::ALL.contains(&diagnostic.code));
@@ -984,7 +1053,7 @@ mod tests {
             expected: DType::F32,
             got: TensorType::i32(&[4]),
         };
-        let diagnostic = op_diagnostic("add", error, &span());
+        let diagnostic = op_diagnostic("add", error, &[], &span());
         assert_eq!(diagnostic.code, codes::DTYPE);
         assert_eq!(diagnostic.code.as_str(), "E-TYPE-018");
         assert_eq!(diagnostic.span, Some(span()));
@@ -1036,7 +1105,7 @@ mod tests {
             ),
         ];
         for (name, op, expected, got, rule, operand) in cases {
-            let diagnostic = op_diagnostic(name, OpError::Rank { op, expected, got }, &span());
+            let diagnostic = op_diagnostic(name, OpError::Rank { op, expected, got }, &[], &span());
             assert_eq!(diagnostic.code, codes::RANK);
             assert_eq!(diagnostic.message, format!("{rule}; {operand}"));
         }
@@ -1045,7 +1114,7 @@ mod tests {
             expected: 2,
             got: TensorType::f32(&[3]),
         };
-        let matmul = op_diagnostic("matmul", error, &span());
+        let matmul = op_diagnostic("matmul", error, &[], &span());
         assert_eq!(matmul.message, "`matmul` needs rank-2 operands");
     }
 
