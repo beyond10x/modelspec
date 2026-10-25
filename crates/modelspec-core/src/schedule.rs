@@ -82,7 +82,8 @@ pub enum ScheduleError {
     TooManyInvocations { value: ValueId, invocations: u64 },
     /// The op has no Vulkan kernel yet (`E-TARGET-011`): `Embedding`, `EmbeddingGrad`, `AddRows`,
     /// `SumRows`, `Gelu`, `GeluGrad`, `LayerNorm`, `LayerNormGradX`, `LayerNormGradGamma`,
-    /// `Softmax` and `SoftmaxGrad` run on the CPU interpreter only.
+    /// `Softmax`, `SoftmaxGrad`, `Attention`, `AttentionGradQ`, `AttentionGradK` and
+    /// `AttentionGradV` run on the CPU interpreter only.
     #[error("{value} is {op}, which has no Vulkan kernel")]
     NoKernel { value: ValueId, op: &'static str },
 }
@@ -643,7 +644,11 @@ fn schedule_with(
             | TensorOp::LayerNormGradX
             | TensorOp::LayerNormGradGamma
             | TensorOp::Softmax
-            | TensorOp::SoftmaxGrad => match built {
+            | TensorOp::SoftmaxGrad
+            | TensorOp::Attention { .. }
+            | TensorOp::AttentionGradQ { .. }
+            | TensorOp::AttentionGradK { .. }
+            | TensorOp::AttentionGradV { .. } => match built {
                 Kernels::None => continue,
                 Kernels::Vulkan => {
                     return Err(ScheduleError::NoKernel {

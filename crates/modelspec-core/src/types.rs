@@ -16,7 +16,12 @@
 //! function's arguments; the loss is rank 0 and calls `model.forward` exactly once, counting calls
 //! nested in the arguments of another (the prediction is that call's value, DESIGN.md § 2.1);
 //! the `sgd` learning rate is a positive finite `f32`;
-//! `steps` is positive. The parser already enforces that `seed` fits `u64`, that the optimizer is
+//! `steps` is positive. An operator that takes named compile-time arguments
+//! ([`ops::named_parameters`], `heads` of `attention`) gets each exactly once, as a literal of its
+//! kind (E-TYPE-001 when omitted, E-TYPE-002 when unknown or repeated, E-TYPE-019 for another
+//! value); every other call takes positional arguments only. An operand that takes no gradient
+//! ([`ops::constant_operands`], the `key_mask` of `attention`) must not read a parameter
+//! (E-TYPE-021). The parser already enforces that `seed` fits `u64`, that the optimizer is
 //! `sgd` and that literals are finite `f64`s. A `vulkan(<index>)` device is not validated.
 
 use crate::diag::{Code, Diagnostic, SourceSpan};
@@ -46,18 +51,24 @@ pub mod codes {
     }
 
     declare! {
-        /// An operator or model function called with the wrong number of arguments.
+        /// An operator or model function called with the wrong number of arguments, or an
+        /// operator call that omits a named argument the operator takes, such as `heads` of
+        /// `attention`.
         ARGUMENT_COUNT = "E-TYPE-001";
-        /// A named argument (`a = x`) to an operator or a model function.
+        /// A named argument (`a = x`) to a model function or to an operator that takes no named
+        /// argument of that name, or a named argument given twice.
         NAMED_ARGUMENT = "E-TYPE-002";
         /// `add`, `sub`, `mul` or `mse` operands of different shapes, neither of them rank 0, an
-        /// `add_rows(x, b)` whose `b` is not as long as a row of `x`, or a
-        /// `layer_norm(x, gamma, beta)` whose `gamma` or `beta` is not as long as a row of `x`.
+        /// `add_rows(x, b)` whose `b` is not as long as a row of `x`, a
+        /// `layer_norm(x, gamma, beta)` whose `gamma` or `beta` is not as long as a row of `x`,
+        /// or an `attention(q, k, v, key_mask, heads = A)` whose `k` or `v` differs from `q` in
+        /// shape or whose `key_mask` of shape `[B, S]` has `B * S` other than the rows of `q`.
         SHAPE_MISMATCH = "E-TYPE-003";
         /// A `matmul`, `transpose` or `softmax` operand that is not rank 2, an `embedding` whose
         /// table is not rank 2 or whose ids are not rank 1, an `add_rows(x, b)` whose `x` is not
-        /// rank 2 or whose `b` is not rank 1, or a `layer_norm(x, gamma, beta)` whose `x` is not
-        /// rank 2 or whose `gamma` or `beta` is not rank 1.
+        /// rank 2 or whose `b` is not rank 1, a `layer_norm(x, gamma, beta)` whose `x` is not
+        /// rank 2 or whose `gamma` or `beta` is not rank 1, or an `attention` operand that is not
+        /// rank 2.
         RANK = "E-TYPE-004";
         /// An integer literal where a tensor is expected.
         INTEGER_LITERAL = "E-TYPE-005";
@@ -92,6 +103,15 @@ pub mod codes {
         /// operator or the table of `embedding`, a `param` of type `i32`, or a function declared
         /// to return `i32` (DESIGN.md § 2.2).
         DTYPE = "E-TYPE-018";
+        /// A named operator argument whose value is not a literal of its kind, such as
+        /// `heads = x` or `heads = 0` of `attention`, whose `heads` is an integer literal of at
+        /// least 1 (DESIGN.md § 2.1).
+        NAMED_VALUE = "E-TYPE-019";
+        /// An `attention` whose `heads` does not divide the width `H` of `q`, `k` and `v`.
+        HEADS_DIVIDE = "E-TYPE-020";
+        /// An operand that takes no gradient, the `key_mask` of `attention`, that reads a model
+        /// parameter, directly, through a `let` or through a `model.<function>(...)` call.
+        CONSTANT_OPERAND = "E-TYPE-021";
     }
 
     /// A compiler verification failure, not a user error (DESIGN.md § 8.1): the checker reached a
@@ -173,6 +193,8 @@ struct Env<'a> {
     params: &'a [Option<TensorType>],
     args: &'a [Option<TensorType>],
     lets: &'a [Option<TensorType>],
+    /// Whether each earlier `let` reads a model parameter, directly or through another `let`.
+    param_lets: &'a [bool],
     data: &'a [Option<TensorType>],
     in_train: bool,
     /// The train block's model, when its `model` setting resolved.
@@ -374,6 +396,7 @@ impl Checker {
             scope.bind_local(&arg.name, Binding::Arg(ArgRef(i)), &mut self.diagnostics);
         }
         let mut let_types: Vec<Option<TensorType>> = Vec::new();
+        let mut param_lets: Vec<bool> = Vec::new();
         let mut lets = Vec::new();
         for (i, binding) in f.lets.iter().enumerate() {
             let env = Env {
@@ -381,12 +404,14 @@ impl Checker {
                 params,
                 args: &sig.args,
                 lets: &let_types,
+                param_lets: &param_lets,
                 data: &[],
                 in_train: false,
                 model: None,
             };
             let value = self.expr(&binding.value, &env);
             let_types.push(value.as_ref().map(|v| v.ty.clone()));
+            param_lets.push(value.as_ref().is_some_and(|v| reads_param(v, &param_lets)));
             scope.bind_local(
                 &binding.name,
                 Binding::Let(LetRef(i)),
@@ -403,6 +428,7 @@ impl Checker {
             params,
             args: &sig.args,
             lets: &let_types,
+            param_lets: &param_lets,
             data: &[],
             in_train: false,
             model: None,
@@ -462,6 +488,7 @@ impl Checker {
             params: &[],
             args: &[],
             lets: &[],
+            param_lets: &[],
             data: &data_types,
             in_train: true,
             model: model_known.then_some((names, signatures)),
@@ -660,15 +687,129 @@ impl Checker {
         valid.then_some(typed)
     }
 
+    /// The operands and named compile-time arguments of a call to `op`, which takes the named
+    /// arguments `named` (DESIGN.md § 2.1). A positional argument is an operand; a named one
+    /// that `op` does not take, or that the call gives twice, is E-TYPE-002 at the argument; a
+    /// value other than a literal of the parameter's kind is E-TYPE-019 at the argument and is
+    /// not typed; a named argument the call omits is E-TYPE-001 at the call. The values come
+    /// back in the order of `named`.
+    fn named_args(
+        &mut self,
+        call: &ast::Call,
+        named: &[ops::NamedParameter],
+        env: &Env<'_>,
+    ) -> Option<(Vec<HirExpr>, Vec<ops::NamedValue>)> {
+        let callee = &call.callee.name;
+        let mut operands = Vec::new();
+        let mut values: Vec<Option<ops::NamedValue>> = vec![None; named.len()];
+        let mut given = vec![false; named.len()];
+        let mut valid = true;
+        for arg in &call.args {
+            let Some(name) = &arg.name else {
+                match self.expr(&arg.value, env) {
+                    Some(value) => operands.push(value),
+                    None => valid = false,
+                }
+                continue;
+            };
+            let Some(index) = named.iter().position(|p| p.name == name.name) else {
+                let takes: Vec<String> = named.iter().map(|p| format!("`{}`", p.name)).collect();
+                self.report(
+                    codes::NAMED_ARGUMENT,
+                    format!(
+                        "named argument `{}`; `{callee}` takes the named argument(s) {}",
+                        name.name,
+                        takes.join(", ")
+                    ),
+                    &arg.span,
+                );
+                valid = false;
+                continue;
+            };
+            if std::mem::replace(&mut given[index], true) {
+                self.report(
+                    codes::NAMED_ARGUMENT,
+                    format!(
+                        "named argument `{}` of `{callee}` is given twice",
+                        name.name
+                    ),
+                    &arg.span,
+                );
+                valid = false;
+                continue;
+            }
+            let parameter = named[index];
+            let value = match arg.value.kind {
+                ast::ExprKind::Int(literal) => parameter.kind.integer(literal),
+                _ => None,
+            };
+            if value.is_none() {
+                self.report(
+                    codes::NAMED_VALUE,
+                    format!(
+                        "`{}` of `{callee}` takes {}",
+                        parameter.name,
+                        parameter.kind.describe()
+                    ),
+                    &arg.span,
+                );
+                valid = false;
+            }
+            values[index] = value;
+        }
+        let missing: Vec<String> = named
+            .iter()
+            .zip(&given)
+            .filter(|(_, given)| !**given)
+            .map(|(p, _)| format!("`{}` ({})", p.name, p.kind.describe()))
+            .collect();
+        if !missing.is_empty() {
+            self.report(
+                codes::ARGUMENT_COUNT,
+                format!(
+                    "`{callee}` needs the named argument(s) {}",
+                    missing.join(", ")
+                ),
+                &call.span,
+            );
+            valid = false;
+        }
+        if !valid {
+            return None;
+        }
+        Some((operands, values.into_iter().collect::<Option<_>>()?))
+    }
+
     fn op_call(&mut self, call: &ast::Call, env: &Env<'_>) -> Option<HirExpr> {
         let op = resolve::resolve_operator(&call.callee, &mut self.diagnostics);
-        let args = self.args(&call.callee.name, &call.args, env);
-        let (op, args) = (op?, args?);
+        let named = op.as_ref().map_or(&[][..], ops::named_parameters);
+        let args = if named.is_empty() {
+            self.args(&call.callee.name, &call.args, env)
+                .map(|args| (args, Vec::new()))
+        } else {
+            self.named_args(call, named, env)
+        };
+        let (op, (args, values)) = (op?, args?);
+        let op = ops::with_named(&op, &values);
         let types: Vec<&TensorType> = args.iter().map(|a| &a.ty).collect();
         match ops::infer(&op, &types, None) {
             Ok(ty) => {
                 if !self.counts_fit(&ty, &call.span) {
                     return None;
+                }
+                for &(index, operand) in ops::constant_operands(&op) {
+                    if reads_param(&args[index], env.param_lets) {
+                        self.report(
+                            codes::CONSTANT_OPERAND,
+                            format!(
+                                "`{operand}` of `{}` reads a model parameter; it takes no \
+                                 gradient, so it must not depend on a `param`",
+                                call.callee.name
+                            ),
+                            &args[index].span,
+                        );
+                        return None;
+                    }
                 }
                 Some(HirExpr {
                     kind: HirExprKind::Op { op, args },
@@ -740,6 +881,18 @@ impl Checker {
     }
 }
 
+/// Whether `expr` may read a model parameter: a parameter, a `let` that reads one
+/// (`param_lets`), an operator over one, or a `model.<function>(...)` call, whose value is taken
+/// to read the model's parameters.
+fn reads_param(expr: &HirExpr, param_lets: &[bool]) -> bool {
+    match &expr.kind {
+        HirExprKind::Param(_) | HirExprKind::Call { .. } => true,
+        HirExprKind::Let(r) => param_lets.get(r.0).copied().unwrap_or(false),
+        HirExprKind::Op { args, .. } => args.iter().any(|a| reads_param(a, param_lets)),
+        HirExprKind::Arg(_) | HirExprKind::Data(_) | HirExprKind::Scalar(_) => false,
+    }
+}
+
 /// The `layer_norm` operand that [`ops::infer`] refuses first, in the order it checks them: `x`
 /// of rank 2, then `gamma`, then `beta`, each of the dtype of `x`, of rank 1 and as long as a row
 /// of `x`. `None` unless `types` holds the three operand types.
@@ -774,6 +927,10 @@ fn op_diagnostic(
                 "`mse` needs operands of identical shape".to_owned()
             } else if name == "add_rows" {
                 "`add_rows(x, b)` needs `b` of shape [H] for `x` of shape [N, H]".to_owned()
+            } else if name == "attention" {
+                "`attention(q, k, v, key_mask, heads = A)` needs `q`, `k` and `v` of one shape \
+                 [N, H] and `key_mask` of shape [B, S] with B * S = N"
+                    .to_owned()
             } else if name == "layer_norm" {
                 let rule = "`layer_norm(x, gamma, beta)` needs `gamma` and `beta` of shape [H] \
                             for `x` of shape [N, H]";
@@ -835,6 +992,11 @@ fn op_diagnostic(
         .with("lhs", lhs.to_string())
         .with("rhs", rhs.to_string())
         .note(format!("expected rhs dimension[0] = {expected}; got {got}")),
+        OpError::HeadsDivide { heads, width, .. } => Diagnostic::new(
+            codes::HEADS_DIVIDE,
+            format!("`{name}` needs `heads` to divide the width {width} of `q`, `k` and `v`; got heads = {heads}"),
+        )
+        .note("each head reads an equal slice of the width: H / heads columns"),
         OpError::OperandDType {
             index,
             expected,
@@ -939,7 +1101,8 @@ mod tests {
                 "add_rows",
                 "gelu",
                 "layer_norm",
-                "softmax"
+                "softmax",
+                "attention"
             ]
         );
     }
@@ -1143,5 +1306,88 @@ train T {
         let (_, forward) = hir.model.function("forward").expect("forward");
         assert_eq!(forward.args[0].ty, TensorType::i32(&[4]));
         assert_eq!(forward.result.ty, TensorType::f32(&[4, 3]));
+    }
+
+    /// A file whose `forward` binds `lets` and returns `result`, over `x: [6, 4]`, a key mask
+    /// argument `m: [2, 3]` and parameters `w: [4, 4]` and `p: [2, 3]`.
+    fn attention_source(lets: &str, result: &str) -> String {
+        format!(
+            "model M {{
+    param w: Tensor<f32, [4, 4]> = xavier_uniform();
+    param p: Tensor<f32, [2, 3]> = ones();
+    fn forward(x: Tensor<f32, [6, 4]>, m: Tensor<f32, [2, 3]>) -> Tensor<f32, [6, 4]> {{
+        {lets}
+        return {result};
+    }}
+}}
+train T {{
+    model = M;
+    input x: Tensor<f32, [6, 4]>;
+    input m: Tensor<f32, [2, 3]>;
+    target y: Tensor<f32, [6, 4]>;
+    loss = mse(model.forward(x, m), y);
+    optimizer = sgd(lr = 0.1);
+    steps = 1;
+    seed = 0;
+    device = cpu;
+}}
+"
+        )
+    }
+
+    /// The codes `check` reports for `attention_source(lets, result)`.
+    fn attention_codes(lets: &str, result: &str) -> Vec<String> {
+        match check_source("m.mspec", &attention_source(lets, result)) {
+            Ok(_) => Vec::new(),
+            Err(diagnostics) => diagnostics
+                .iter()
+                .map(|d| d.code.as_str().to_owned())
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn attention_with_literal_heads_checks_and_carries_them_in_its_op() {
+        let source = attention_source("", "attention(matmul(x, w), x, x, m, heads = 4)");
+        let hir = check_source("m.mspec", &source).expect("checks");
+        let (_, forward) = hir.model.function("forward").expect("forward");
+        assert!(matches!(
+            &forward.result.kind,
+            HirExprKind::Op { op: TensorOp::Attention { heads: 4 }, args } if args.len() == 4
+        ));
+        assert_eq!(forward.result.ty, TensorType::f32(&[6, 4]));
+    }
+
+    /// `heads` is an integer literal of at least 1: 0, a float literal and a name are each one
+    /// E-TYPE-019; given twice it is E-TYPE-002; on an operator without named arguments a named
+    /// argument stays E-TYPE-002.
+    #[test]
+    fn named_operator_arguments_are_integer_literals_given_once() {
+        for heads in ["0", "2.0", "x"] {
+            let result = format!("attention(x, x, x, m, heads = {heads})");
+            assert_eq!(attention_codes("", &result), ["E-TYPE-019"], "{heads}");
+        }
+        assert_eq!(
+            attention_codes("", "attention(x, x, x, m, heads = 2, heads = 2)"),
+            ["E-TYPE-002"]
+        );
+        assert_eq!(
+            attention_codes("", "matmul(x, w, heads = x)"),
+            ["E-TYPE-002"]
+        );
+    }
+
+    /// A key mask that reads a parameter, directly, through an operator or through a `let`, is
+    /// E-TYPE-021; one built from arguments alone checks.
+    #[test]
+    fn a_key_mask_that_reads_a_parameter_is_e_type_021() {
+        let call = "attention(x, x, x, k, heads = 2)";
+        assert_eq!(attention_codes("let k = p;", call), ["E-TYPE-021"]);
+        assert_eq!(attention_codes("let k = mul(m, p);", call), ["E-TYPE-021"]);
+        assert_eq!(
+            attention_codes("let q = add(m, p); let k = relu(q);", call),
+            ["E-TYPE-021"]
+        );
+        assert!(attention_codes("let k = relu(m);", call).is_empty());
     }
 }

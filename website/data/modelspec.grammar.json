@@ -14,6 +14,7 @@
     "gelu",
     "layer_norm",
     "softmax",
+    "attention",
     "xavier_uniform",
     "zeros",
     "ones",

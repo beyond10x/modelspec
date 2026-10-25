@@ -44,8 +44,8 @@
   "x-ess-provenance": {
     "system": "modelspec",
     "specification_version": "v1",
-    "source_digest": "a40602a5065178fdd515929eb64df185e906f8c9235757ab5222244114c76a6c",
-    "contract_digest": "slice-sha256/2:89b86a39cb3492b7e7078fed03a01710aa83cce099a4385074e40a4558dab1ab",
+    "source_digest": "169adcc54dbc4fab5a58644692e586089a3dd40da9a5d762831eb0f92027abe1",
+    "contract_digest": "slice-sha256/2:01a7ba84adaf97a956f4954b7a5c8ef62e1b4c63481c54c2c73f3378785fd8e8",
     "regenerate": "ess generate"
   },
   "$defs": {
@@ -207,7 +207,7 @@
     },
     "modelspec.observatory.TensorOperator": {
       "title": "TensorOperator",
-      "description": "The Tensor IR operations, ReluGrad, BroadcastScalar, EmbeddingGrad, SumRows, GeluGrad, LayerNormGradX, LayerNormGradGamma and SoftmaxGrad being internal gradient ops (DESIGN.md § 3.1, § 4; `TensorOp` in `modelspec-core/src/ir/tensor.rs`). The operators of epic:bert-from-scratch join as the compiler gains them.",
+      "description": "The Tensor IR operations, ReluGrad, BroadcastScalar, EmbeddingGrad, SumRows, GeluGrad, LayerNormGradX, LayerNormGradGamma, SoftmaxGrad, AttentionGradQ, AttentionGradK and AttentionGradV being internal gradient ops (DESIGN.md § 3.1, § 4; `TensorOp` in `modelspec-core/src/ir/tensor.rs`). The operators of epic:bert-from-scratch join as the compiler gains them.",
       "x-ess-name": "modelspec.observatory.TensorOperator",
       "x-ess-kind": "enum",
       "type": "string",
@@ -236,7 +236,11 @@
         "LayerNormGradX",
         "LayerNormGradGamma",
         "Softmax",
-        "SoftmaxGrad"
+        "SoftmaxGrad",
+        "Attention",
+        "AttentionGradQ",
+        "AttentionGradK",
+        "AttentionGradV"
       ]
     }
   }
