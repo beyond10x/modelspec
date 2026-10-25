@@ -14,11 +14,14 @@
 //! site (DESIGN.md § 2.3): an `i32[2]` `Input` named `<Model>.<fn>.dropout#<k>`, where `<fn>` is
 //! the function the call is written in (`train` for the loss itself, a keyword no function can
 //! take) and `k` the call's index among the `dropout` calls of that function in source order,
-//! from 0, counting calls with `p = 0.0`. The token input is made at the first call of its site;
-//! a function inlined twice shares its sites, so both copies read one token. `p = 0.0` lowers to
-//! the operand itself, no node and no token. The training host supplies every site's token each
-//! step; [`without_dropout`] makes the program every other run reads, dropout the identity
-//! (coordinator decision D47, 2026-10-25).
+//! from 0, counting calls with `p = 0.0`. Every inlining of a function is its own site, so two
+//! calls of one function draw two masks: the first inlining of `<fn>` in the program keeps the
+//! name `<Model>.<fn>.dropout#<k>`, and the second and later ones are
+//! `<Model>.<fn>@<c>.dropout#<k>`, `c` counting from 1 in the order the calls are inlined
+//! (coordinator decision D54, 2026-10-25). `p = 0.0` lowers to the operand itself, no node and
+//! no token. The training host supplies every site's token each step; [`without_dropout`] makes
+//! the program every other run reads, dropout the identity (coordinator decision D47,
+//! 2026-10-25).
 //!
 //! The loss is the program's single output. Every node carries the span of the source construct
 //! it came from: the declaration for `Input` and `ParamRead`, the expression otherwise. Nothing
@@ -117,6 +120,7 @@ pub fn lower(hir: &Hir) -> Result<LoweredProgram, LowerError> {
         forward: model.function("forward").map(|(f, _)| f),
         predictions: Vec::new(),
         inlining: Vec::new(),
+        inlined: vec![0; model.functions.len()],
         loss: &train.loss,
         tokens: BTreeMap::new(),
     };
@@ -227,8 +231,12 @@ struct Lowering<'h> {
     forward: Option<FnRef>,
     /// The value of each inlined `model.forward(...)` call, in evaluation order.
     predictions: Vec<ValueId>,
-    /// The functions being inlined, innermost last; a call of one of them would not terminate.
-    inlining: Vec<FnRef>,
+    /// The functions being inlined, innermost last, each with its inlining instance `c` (0 for
+    /// the first inlining of the function in the program); a call of one of them would not
+    /// terminate.
+    inlining: Vec<(FnRef, usize)>,
+    /// How many times each function has been inlined so far, by [`FnRef`] index.
+    inlined: Vec<usize>,
     /// The train block's loss, the body of the dropout sites named `<Model>.train.dropout#<k>`.
     loss: &'h HirExpr,
     /// The RNG token input of each dropout site lowered so far, by site name.
@@ -312,23 +320,29 @@ impl Lowering<'_> {
     }
 
     /// The RNG token input of the dropout site of the call at `span`, made at its first call:
-    /// `<Model>.<fn>.dropout#<k>` for the function being inlined, or `train` for the loss.
+    /// `<Model>.<fn>.dropout#<k>` for the first inlining of the function being inlined,
+    /// `<Model>.<fn>@<c>.dropout#<k>` for its inlining `c` from 1, or `train` for the loss
+    /// (coordinator decision D54, 2026-10-25).
     fn token(&mut self, span: &SourceSpan) -> Result<ValueId, LowerError> {
         let model = self.model;
         let (function, mut calls) = match self.inlining.last() {
-            Some(f) => {
+            Some(&(f, instance)) => {
                 let f = &model.functions[f.0];
                 let mut calls = Vec::new();
                 for binding in &f.lets {
                     dropout_calls(&binding.value, &mut calls);
                 }
                 dropout_calls(&f.result, &mut calls);
-                (f.name.as_str(), calls)
+                let name = match instance {
+                    0 => f.name.clone(),
+                    c => format!("{}@{c}", f.name),
+                };
+                (name, calls)
             }
             None => {
                 let mut calls = Vec::new();
                 dropout_calls(self.loss, &mut calls);
-                ("train", calls)
+                ("train".to_owned(), calls)
             }
         };
         calls.sort_unstable();
@@ -363,7 +377,7 @@ impl Lowering<'_> {
                 what: format!("function {} is not declared", function.0),
             });
         };
-        if self.inlining.contains(&function) {
+        if self.inlining.iter().any(|&(f, _)| f == function) {
             return Err(LowerError::Malformed {
                 span: span.clone(),
                 what: format!("`{}` calls itself", f.name),
@@ -380,7 +394,9 @@ impl Lowering<'_> {
                 ),
             });
         }
-        self.inlining.push(function);
+        let instance = self.inlined[function.0];
+        self.inlined[function.0] += 1;
+        self.inlining.push((function, instance));
         let mut frame = Frame::Function {
             args,
             lets: Vec::with_capacity(f.lets.len()),
@@ -448,8 +464,9 @@ train Fit {
     }
 
     /// A site is `<Model>.<fn>.dropout#<k>`, `k` counting every `dropout` call of the function in
-    /// source order, `p = 0.0` included; a function inlined twice shares its site's token, and a
-    /// call in the loss is a `train` site. Each token is an `i32[2]` input.
+    /// source order, `p = 0.0` included; the second inlining of a function is a site of its own,
+    /// `<Model>.<fn>@1.dropout#<k>`, with its own token, and a call in the loss is a `train`
+    /// site. Each token is an `i32[2]` input.
     #[test]
     fn dropout_sites_are_named_by_function_and_source_order() {
         let lowered = lowered(SITES);
@@ -462,6 +479,7 @@ train Fit {
                 "Reg.forward.dropout#0",
                 "Reg.forward.dropout#2",
                 "Reg.extra.dropout#0",
+                "Reg.extra@1.dropout#0",
                 "Reg.train.dropout#0",
             ]
         );
@@ -494,7 +512,7 @@ train Fit {
                 (0.5, token_of("Reg.forward.dropout#0")),
                 (0.25, token_of("Reg.forward.dropout#2")),
                 (0.5, token_of("Reg.extra.dropout#0")),
-                (0.5, token_of("Reg.extra.dropout#0")),
+                (0.5, token_of("Reg.extra@1.dropout#0")),
                 (0.1, token_of("Reg.train.dropout#0")),
             ]
         );
