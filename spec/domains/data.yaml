@@ -1,12 +1,6 @@
 domain: modelspec.data
 
-summary: The training data of a run. Dense f32 tensor files for `modelspec train --data`, `--eval` and `--init` (story:train-data-dense-tensors); for a masked-language-model run, its tokenizer, vocabulary, corpus and masking policy (epic:bert-from-scratch). The tokenizer and data pipeline are Rust in the runtime or training host; a model specification does no I/O (DESIGN.md § 2.3).
-
-# UNMAPPED: where a run records the corpus, tokenizer and masking policy it trained with (fields of
-# TrainingRun, data bindings of the artifact, or a new record) is not settled, and neither is
-# whether masking is drawn per step from the run seed or fixed when the corpus is prepared. No
-# relation to modelspec.training.TrainingRun is declared. DESIGN.md § 12 lists the data interface
-# as an open design question. Open question for the owner.
+summary: The training data of a run. Dense f32 tensor files for `modelspec train --data`, `--eval` and `--init` (story:train-data-dense-tensors); for a masked-language-model run, its tokenizer, vocabulary, corpus and masking policy (epic:bert-from-scratch). The tokenizer and data pipeline are Rust in the runtime or training host; a model specification does no I/O (DESIGN.md § 2.3). A run records the corpus, tokenizer and masking policy it trained with as one TrainingDataBinding, which modelspec.training.TrainingRun references through data_binding_id; masking is drawn per step from the run seed, never fixed when the corpus is prepared or packed (coordinator decision D26, 2026-10-24, `.engineering/waves/bert-1.md`).
 
 types:
   - name: modelspec.data.DenseTensorFile
@@ -96,10 +90,10 @@ types:
         summary: The id of `[UNK]`, the token a word stands for when the vocabulary cannot encode it (coordinator decision D19, 2026-10-24, `.engineering/waves/bert-1.md`).
       - name: cls_token_id
         type: Integer
-        summary: The id of `[CLS]`, the token that opens a sequence (coordinator decision D19, 2026-10-24, `.engineering/waves/bert-1.md`).
+        summary: The id of `[CLS]`, the token that opens a sequence (coordinator decision D19, 2026-10-24, `.engineering/waves/bert-1.md`). A packed pre-training sequence holds none (coordinator decision D26, 2026-10-24, `.engineering/waves/bert-1.md`).
       - name: sep_token_id
         type: Integer
-        summary: The id of `[SEP]`, the token that closes a sequence (coordinator decision D19, 2026-10-24, `.engineering/waves/bert-1.md`).
+        summary: The id of `[SEP]`, the token that closes a sequence (coordinator decision D19, 2026-10-24, `.engineering/waves/bert-1.md`). In a packed token stream it stands between two documents (coordinator decision D26, 2026-10-24, `.engineering/waves/bert-1.md`).
     invariants:
       - distinct: {in: tokens, as: token}
       - mask_token_id >= 0
@@ -151,7 +145,7 @@ types:
   - name: modelspec.data.MaskingPolicy
     kind: struct
     naming:
-      summary: The masked-language-modelling policy; of the selected tokens a fraction is replaced by the vocabulary's mask token, a fraction by a random token and the rest kept, 80/10/10 (epic:bert-from-scratch). The three fractions sum to 1, which ESS does not state here. Draws use the Philox key/counter derivation (DESIGN.md § 2.3) with stream tag 3, the next after the tags 0 to 2 of DESIGN.md § 2.3 (story:bert-mlm-batches adds it there). The values are BERT's (Devlin, Chang, Lee, Toutanova 2018, § 3.1) — selection_rate 0.15, mask_fraction 0.8, random_fraction 0.1, keep_fraction 0.1 (coordinator decision D19, 2026-10-24, `.engineering/waves/bert-1.md`).
+      summary: The masked-language-modelling policy; of the selected tokens a fraction is replaced by the vocabulary's mask token, a fraction by a random token and the rest kept, 80/10/10 (epic:bert-from-scratch). The three fractions sum to 1, which ESS does not state here. Draws use the Philox key/counter derivation (DESIGN.md § 2.3) with stream tag 3, the next after the tags 0 to 2 of DESIGN.md § 2.3, keyed by the run seed and drawn anew at every step (coordinator decision D26, 2026-10-24, `.engineering/waves/bert-1.md`). Row n of the batch of step k, flattened to N = B × S rows, takes the block of counter [n, 3, id as u32, (id >> 32) as u32], where id is k for the Train split and k + 2^63 for the HeldOut split. The row is selected when its token is not one of the five special tokens and the uniform draw (w + 0.5) / 2^32 of word 0 is below selection_rate; a selected row becomes `[MASK]` when the uniform draw of word 1 is below mask_fraction, a random token when it is below mask_fraction + random_fraction, and keeps its token otherwise. The random token is 5 + ⌊w2 × (V − 5) / 2^32⌋ for word 2 w2 and vocabulary size V, so it is never a special token. The values are BERT's (Devlin, Chang, Lee, Toutanova 2018, § 3.1) — selection_rate 0.15, mask_fraction 0.8, random_fraction 0.1, keep_fraction 0.1 (coordinator decision D19, 2026-10-24, `.engineering/waves/bert-1.md`).
     fields:
       - name: selection_rate
         type: Binary64
@@ -168,10 +162,34 @@ types:
       - random_fraction >= 0
       - keep_fraction >= 0
 
+  - name: modelspec.data.TrainingDataBindingId
+    kind: newtype
+    of: Uuid
+
+  - name: modelspec.data.PackedDatasetId
+    kind: newtype
+    of: Uuid
+
+  - name: modelspec.data.PackedSplit
+    kind: struct
+    naming:
+      summary: One split of a PackedDataset, the file `train.tokens` for Train and `heldout.tokens` for HeldOut, little-endian `i32` token ids with no header, sequence_count × seq_len values (coordinator decision D26, 2026-10-24, `.engineering/waves/bert-1.md`).
+    fields:
+      - name: role
+        type: modelspec.data.SplitRole
+      - name: sequence_count
+        type: Integer
+        summary: The number of sequences of seq_len tokens the split's token stream holds, its partial tail dropped. A split whose stream is shorter than one sequence is refused (coordinator decision D26, 2026-10-24, `.engineering/waves/bert-1.md`).
+      - name: content_hash
+        type: modelspec.artifact.ContentHash
+        summary: The blake3 hash of the split's packed file, 64 lowercase hexadecimal digits (coordinator decision D26, 2026-10-24, `.engineering/waves/bert-1.md`).
+    invariants:
+      - sequence_count > 0
+
 entities:
   - name: modelspec.data.Dataset
     naming:
-      summary: The pre-training corpus, a small public one, and its splits (epic:bert-from-scratch "corpus/dataset"). Its data order in a run is deterministic from the run seed (DESIGN.md § 2.3). The corpus is WikiText-103 in its raw (non-tokenized) release `wikitext-103-raw-v1` (Merity, Xiong, Bradbury, Socher 2016, "Pointer Sentinel Mixture Models"), licensed CC BY-SA 3.0. The operator obtains the release's files `wiki.train.raw`, `wiki.valid.raw` and `wiki.test.raw` and passes their directory to `modelspec data prepare <corpus-dir> --out <dir>`, which reads only local files and writes the splits and this record as `dataset.json` in `<dir>`. A Dataset holds raw text, its splits being files of documents identified by content. Packed token sequences are a later entity, written by story:bert-mlm-batches, that references a Dataset and a Tokenizer, so a Dataset has no relation to Tokenizer and a tokenizer change does not rewrite the splits. dataset_id is the leading 16 bytes, as a version-8 UUID, of the blake3 hash over the 32-byte blake3 digests of the splits, Train then HeldOut. name is the file name of the corpus directory. Two runs on the same files write byte-identical output (coordinator decision D19, 2026-10-24, `.engineering/waves/bert-1.md`).
+      summary: The pre-training corpus, a small public one, and its splits (epic:bert-from-scratch "corpus/dataset"). Its data order in a run is deterministic from the run seed (DESIGN.md § 2.3). The corpus is WikiText-103 in its raw (non-tokenized) release `wikitext-103-raw-v1` (Merity, Xiong, Bradbury, Socher 2016, "Pointer Sentinel Mixture Models"), licensed CC BY-SA 3.0. The operator obtains the release's files `wiki.train.raw`, `wiki.valid.raw` and `wiki.test.raw` and passes their directory to `modelspec data prepare <corpus-dir> --out <dir>`, which reads only local files and writes the splits and this record as `dataset.json` in `<dir>`. A Dataset holds raw text, its splits being files of documents identified by content. Packed token sequences are a later entity, PackedDataset, written by story:bert-mlm-batches, that references a Dataset and a Tokenizer through its TrainingDataBinding, so a Dataset has no relation to Tokenizer and a tokenizer change does not rewrite the splits. dataset_id is the leading 16 bytes, as a version-8 UUID, of the blake3 hash over the 32-byte blake3 digests of the splits, Train then HeldOut. name is the file name of the corpus directory. Two runs on the same files write byte-identical output (coordinator decision D19, 2026-10-24, `.engineering/waves/bert-1.md`).
     identity:
       name: dataset_id
       type: modelspec.data.DatasetId
@@ -189,7 +207,7 @@ entities:
 
   - name: modelspec.data.Tokenizer
     naming:
-      summary: A tokenizer and the vocabulary it maps text to (epic:bert-from-scratch). `modelspec data tokenizer --dataset <dir> --vocab-size <n> --out <file>` trains one on the Train split of a Dataset, never on its HeldOut split, and writes this record as JSON to `<file>`. Normalization lowercases the text with Unicode's lowercase mapping (`str::to_lowercase`), drops control characters, separates words at whitespace and makes every character that is neither alphanumeric nor whitespace a word of its own, as BERT's BasicTokenizer does without accent stripping, except that format characters such as the zero-width joiner and the soft hyphen are words of their own here, where BERT's BasicTokenizer drops them; no normalization crate is used. The alphabet is the 1,000 most frequent characters of the Train split's words, ties broken by the character's byte order, or the (n - 5) / 2 most frequent when the vocabulary size leaves no room for two tokens per character, and after the five special tokens each alphabet character enters the vocabulary twice, as `c` and then as the continuation `##c`. Training is WordPiece as the published trainer of the `tokenizers` library, which wraps that library's BPE trainer and ranks merges by pair frequency (coordinator decision D25, 2026-10-24, `.engineering/waves/bert-1.md`, replacing the likelihood score of D23); it counts the words of the Train split once and, on that word table (a word with a character outside the alphabet or over 100 characters takes no part), repeatedly merges the adjacent pair (a, b) with the highest count(ab), ties broken by the byte order of the merged token, which is a followed by b without its `##` and is not added a second time when the vocabulary already holds it, until the vocabulary has exactly n tokens; when no pair is left first, the command exits 1 naming the size reached. A size below the special tokens plus two tokens per character of the full alphabet trains only while some word is spelled wholly in the shortened alphabet, and otherwise is refused with exit 1 naming the size reached and the number of tokens the alphabet alone needs. Encoding matches each word greedily, longest match first, against the vocabulary, as BERT's WordpieceTokenizer does, and a word over 100 characters or with a remainder no token matches encodes to `[UNK]` whole; `encode` adds no `[CLS]` and `[SEP]` frame (story:bert-mlm-batches adds it). Decoding joins the pieces of a word without a space, their `##` removed, and the words with one space, so `decode(encode(t))` equals the normalized form of t wherever no word encoded to `[UNK]`. The record's tokenizer_id is the leading 16 bytes, as a version-8 UUID, of the blake3 hash over the token list in id order, each token followed by a newline, and its vocabulary lists the tokens in id order with the ids of the special tokens. The vocabulary size of the real run is 8,192, coordinator decision D19 (coordinator decision D23, 2026-10-24, `.engineering/waves/bert-1.md`).
+      summary: A tokenizer and the vocabulary it maps text to (epic:bert-from-scratch). `modelspec data tokenizer --dataset <dir> --vocab-size <n> --out <file>` trains one on the Train split of a Dataset, never on its HeldOut split, and writes this record as JSON to `<file>`. Normalization lowercases the text with Unicode's lowercase mapping (`str::to_lowercase`), drops control characters, separates words at whitespace and makes every character that is neither alphanumeric nor whitespace a word of its own, as BERT's BasicTokenizer does without accent stripping, except that format characters such as the zero-width joiner and the soft hyphen are words of their own here, where BERT's BasicTokenizer drops them; no normalization crate is used. The alphabet is the 1,000 most frequent characters of the Train split's words, ties broken by the character's byte order, or the (n - 5) / 2 most frequent when the vocabulary size leaves no room for two tokens per character, and after the five special tokens each alphabet character enters the vocabulary twice, as `c` and then as the continuation `##c`. Training is WordPiece as the published trainer of the `tokenizers` library, which wraps that library's BPE trainer and ranks merges by pair frequency (coordinator decision D25, 2026-10-24, `.engineering/waves/bert-1.md`, replacing the likelihood score of D23); it counts the words of the Train split once and, on that word table (a word with a character outside the alphabet or over 100 characters takes no part), repeatedly merges the adjacent pair (a, b) with the highest count(ab), ties broken by the byte order of the merged token, which is a followed by b without its `##` and is not added a second time when the vocabulary already holds it, until the vocabulary has exactly n tokens; when no pair is left first, the command exits 1 naming the size reached. A size below the special tokens plus two tokens per character of the full alphabet trains only while some word is spelled wholly in the shortened alphabet, and otherwise is refused with exit 1 naming the size reached and the number of tokens the alphabet alone needs. Encoding matches each word greedily, longest match first, against the vocabulary, as BERT's WordpieceTokenizer does, and a word over 100 characters or with a remainder no token matches encodes to `[UNK]` whole; `encode` adds no `[CLS]` and `[SEP]` frame; story:bert-mlm-batches joins the documents of a split with `[SEP]` and adds no `[CLS]` (coordinator decision D26, 2026-10-24, `.engineering/waves/bert-1.md`). Decoding joins the pieces of a word without a space, their `##` removed, and the words with one space, so `decode(encode(t))` equals the normalized form of t wherever no word encoded to `[UNK]`. The record's tokenizer_id is the leading 16 bytes, as a version-8 UUID, of the blake3 hash over the token list in id order, each token followed by a newline, and its vocabulary lists the tokens in id order with the ids of the special tokens. The vocabulary size of the real run is 8,192, coordinator decision D19 (coordinator decision D23, 2026-10-24, `.engineering/waves/bert-1.md`).
     identity:
       name: tokenizer_id
       type: modelspec.data.TokenizerId
@@ -198,6 +216,76 @@ entities:
         type: modelspec.data.TokenizerKind
       - name: vocabulary
         type: modelspec.data.Vocabulary
+    lifecycle:
+      initial: Recorded
+      states: [Recorded]
+      terminal: [Recorded]
+
+  - name: modelspec.data.TrainingDataBinding
+    naming:
+      summary: What a masked-language-model run trains on, the record a run keeps of its corpus, tokenizer and masking policy - a Dataset, a Tokenizer, the sequence length and a MaskingPolicy. Masking is drawn per step from the run seed on stream tag 3 (MaskingPolicy, DESIGN.md § 2.3), never fixed when the corpus is prepared or packed, so the binding holds the policy and no mask. binding_id is the leading 16 bytes, as a version-8 UUID, of the blake3 hash over dataset_id, tokenizer_id, seq_len and the policy's selection_rate, mask_fraction, random_fraction and keep_fraction, in that order, each UUID as its 16 bytes, seq_len as a little-endian u64 and each rate as its little-endian IEEE binary64 bits. `modelspec data pack` writes it as `binding.json` beside its PackedDataset, with BERT's policy; modelspec.training.TrainingRun references it through data_binding_id, which story:bert-train-data-binding writes (coordinator decision D26, 2026-10-24, `.engineering/waves/bert-1.md`).
+    identity:
+      name: binding_id
+      type: modelspec.data.TrainingDataBindingId
+    fields:
+      - name: dataset_id
+        type: modelspec.data.DatasetId
+      - name: tokenizer_id
+        type: modelspec.data.TokenizerId
+      - name: seq_len
+        type: Integer
+        summary: The number of tokens of every sequence, S (coordinator decision D26, 2026-10-24, `.engineering/waves/bert-1.md`).
+      - name: masking_policy
+        type: modelspec.data.MaskingPolicy
+    invariants:
+      - seq_len > 0
+    relations:
+      - name: dataset
+        kind: references
+        target: modelspec.data.Dataset
+        cardinality: one
+        via: dataset_id
+      - name: tokenizer
+        kind: references
+        target: modelspec.data.Tokenizer
+        cardinality: one
+        via: tokenizer_id
+    lifecycle:
+      initial: Recorded
+      states: [Recorded]
+      terminal: [Recorded]
+
+  - name: modelspec.data.PackedDataset
+    naming:
+      summary: The token sequences of a Dataset under a Tokenizer, the input of masked-language-model batches (epic:bert-from-scratch, "sequence packing"). `modelspec data pack --dataset <dir> --tokenizer <file> --seq-len <S> --out <dir>` encodes the documents of each split in order (a document as DatasetSplit.document_count defines it), joins them with `[SEP]` (id 3) between two documents and no `[CLS]`, and cuts the stream into sequences of S consecutive ids with no regard to document boundaries, the partial tail dropped, so no sequence needs padding. It writes `train.tokens`, `heldout.tokens` (PackedSplit), the TrainingDataBinding as `binding.json` and this record as `packed.json` in `<dir>`; two runs on the same inputs write byte-identical output. packed_id is the leading 16 bytes, as a version-8 UUID, of the blake3 hash over the 32-byte blake3 digests of the packed files, Train then HeldOut, and seq_len as 8 little-endian bytes, in that order, so two sequence lengths that cut the same ids give two ids (coordinator decision D29, 2026-10-25, `.engineering/waves/bert-1.md`, amending D26). Data order of a run with seed s and batch size B over the n Train sequences - epoch e visits them ascending by the 64-bit key w1 × 2^32 + w0 of the Philox block of counter [i, 5, e as u32, (e >> 32) as u32] under seed s for sequence i, ties by i (stream tag 5, DESIGN.md § 2.3); step k is batch k mod ⌊n / B⌋ of epoch ⌊k / ⌊n / B⌋⌋, batch b taking positions b × B to (b + 1) × B - 1 of the order, so an incomplete last batch is never used. The HeldOut split is read in stored order, step k taking batch k mod ⌊n / B⌋ (coordinator decision D26, 2026-10-24, `.engineering/waves/bert-1.md`).
+    identity:
+      name: packed_id
+      type: modelspec.data.PackedDatasetId
+    fields:
+      - name: binding_id
+        type: modelspec.data.TrainingDataBindingId
+      - name: seq_len
+        type: Integer
+        summary: The number of tokens of every sequence, the binding's seq_len (coordinator decision D26, 2026-10-24, `.engineering/waves/bert-1.md`).
+      - name: vocabulary_size
+        type: Integer
+        summary: The number of tokens of the tokenizer's vocabulary, V; every id of a packed file lies in [0, V), a random substitution draws from [5, V) and the baseline smooths over the V - 5 tokens that are not special. Added so a batch and the baseline can be computed from the packed directory alone (coordinator decision D26, 2026-10-24, `.engineering/waves/bert-1.md`).
+      - name: splits
+        type: List<modelspec.data.PackedSplit>
+      - name: heldout_unigram_baseline_nats
+        type: Binary64
+        summary: The cross-entropy, in nats, of the tokens of the packed HeldOut split that are not special under the unigram frequencies of the packed Train split with add-one smoothing, -(1 / M) Σ ln((c(t) + 1) / (C + V - 5)) over the M held-out tokens t, where c(t) counts t among the C Train tokens that are not special; the target of pre-training is measured against it (story:bert-tiny-gpu-pretraining; coordinator decision D26, 2026-10-24, `.engineering/waves/bert-1.md`).
+    invariants:
+      - seq_len > 0
+      - vocabulary_size > 5
+      - distinct: {in: splits, as: split, by: split.role}
+      - heldout_unigram_baseline_nats > 0
+    relations:
+      - name: binding
+        kind: references
+        target: modelspec.data.TrainingDataBinding
+        cardinality: one
+        via: binding_id
     lifecycle:
       initial: Recorded
       states: [Recorded]

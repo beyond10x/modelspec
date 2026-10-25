@@ -118,6 +118,9 @@ entities:
       - name: device_profile_id
         type: Optional<modelspec.device.DeviceProfileId>
         summary: Present exactly when the artifact's backend is Vulkan; a CPU run has no Vulkan device (DESIGN.md § 6.1 backend/device/driver). ESS cannot state the rule across the two entities.
+      - name: data_binding_id
+        type: Optional<modelspec.data.TrainingDataBindingId>
+        summary: The corpus, tokenizer, sequence length and masking policy a masked-language-model run trained on; absent for a run on synthetic or dense data. story:bert-train-data-binding writes it (coordinator decision D26, 2026-10-24, `.engineering/waves/bert-1.md`).
     invariants:
       - start_step >= 0
       - current_step >= start_step
@@ -144,6 +147,11 @@ entities:
         target: modelspec.checkpoint.Checkpoint
         cardinality: one
         via: resumed_from_checkpoint_id
+      - name: data_binding
+        kind: references
+        target: modelspec.data.TrainingDataBinding
+        cardinality: one
+        via: data_binding_id
       # The run's event stream: one event per step and per lifecycle change, each describing this
       # run and meaningless without it (epic:training-observatory).
       - name: events

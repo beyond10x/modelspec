@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/modelspec.data.PackedSplit",
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "2780fc2df39bcdb8fe1b0a1a8765b9646088cbf41c58bc8b5e2d7f095711bc42",
+    "contract_digest": "slice-sha256/2:2f3573af6699a6ec2dc40aad6d5b47ea6ad063c21848ceb60ffe4122512e409f",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.artifact.ContentHash": {
+      "title": "ContentHash",
+      "description": "A blake3 digest under explicit serialization and version rules (DESIGN.md § 7).",
+      "x-ess-name": "modelspec.artifact.ContentHash",
+      "x-ess-kind": "newtype",
+      "type": "string"
+    },
+    "modelspec.data.PackedSplit": {
+      "title": "PackedSplit",
+      "description": "One split of a PackedDataset, the file `train.tokens` for Train and `heldout.tokens` for HeldOut, little-endian `i32` token ids with no header, sequence_count × seq_len values (coordinator decision D26, 2026-10-24, `.engineering/waves/bert-1.md`).",
+      "x-ess-name": "modelspec.data.PackedSplit",
+      "x-ess-kind": "struct",
+      "type": "object",
+      "properties": {
+        "role": {
+          "$ref": "#/$defs/modelspec.data.SplitRole"
+        },
+        "sequence_count": {
+          "description": "The number of sequences of seq_len tokens the split's token stream holds, its partial tail dropped. A split whose stream is shorter than one sequence is refused (coordinator decision D26, 2026-10-24, `.engineering/waves/bert-1.md`).",
+          "type": "integer",
+          "minimum": 1
+        },
+        "content_hash": {
+          "$ref": "#/$defs/modelspec.artifact.ContentHash",
+          "description": "The blake3 hash of the split's packed file, 64 lowercase hexadecimal digits (coordinator decision D26, 2026-10-24, `.engineering/waves/bert-1.md`)."
+        }
+      },
+      "required": [
+        "role",
+        "sequence_count",
+        "content_hash"
+      ],
+      "additionalProperties": false,
+      "x-ess-invariants": [
+        "sequence_count > 0"
+      ]
+    },
+    "modelspec.data.SplitRole": {
+      "title": "SplitRole",
+      "description": "What a split is used for; MLM loss and accuracy are evaluated on the held-out split (epic:bert-from-scratch).",
+      "x-ess-name": "modelspec.data.SplitRole",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "Train",
+        "HeldOut"
+      ]
+    }
+  }
+}

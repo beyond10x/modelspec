@@ -4,8 +4,8 @@
   "x-ess-provenance": {
     "system": "modelspec",
     "specification_version": "v1",
-    "source_digest": "6641b1d81a42f864f8e0c7ef5b05ddcb662f605fc532443d15126548501b0997",
-    "contract_digest": "slice-sha256/2:204e5889023d65af174ec56d02b897ebb467a495c86fdc3b15ba964f5d55e0cd",
+    "source_digest": "2780fc2df39bcdb8fe1b0a1a8765b9646088cbf41c58bc8b5e2d7f095711bc42",
+    "contract_digest": "slice-sha256/2:75e5132849fa889e2bb1152d1ec97be48d3f67e6611ae4c341b90243023252c5",
     "regenerate": "ess generate"
   },
   "$defs": {
@@ -40,13 +40,13 @@
           "const": 1
         },
         "cls_token_id": {
-          "description": "The id of `[CLS]`, the token that opens a sequence (coordinator decision D19, 2026-10-24, `.engineering/waves/bert-1.md`).",
+          "description": "The id of `[CLS]`, the token that opens a sequence (coordinator decision D19, 2026-10-24, `.engineering/waves/bert-1.md`). A packed pre-training sequence holds none (coordinator decision D26, 2026-10-24, `.engineering/waves/bert-1.md`).",
           "type": "integer",
           "minimum": 0,
           "const": 2
         },
         "sep_token_id": {
-          "description": "The id of `[SEP]`, the token that closes a sequence (coordinator decision D19, 2026-10-24, `.engineering/waves/bert-1.md`).",
+          "description": "The id of `[SEP]`, the token that closes a sequence (coordinator decision D19, 2026-10-24, `.engineering/waves/bert-1.md`). In a packed token stream it stands between two documents (coordinator decision D26, 2026-10-24, `.engineering/waves/bert-1.md`).",
           "type": "integer",
           "minimum": 0,
           "const": 3
