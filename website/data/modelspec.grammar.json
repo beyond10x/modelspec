@@ -15,6 +15,7 @@
     "layer_norm",
     "softmax",
     "attention",
+    "cross_entropy",
     "xavier_uniform",
     "zeros",
     "ones",

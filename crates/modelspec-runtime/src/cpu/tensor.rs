@@ -54,6 +54,10 @@ pub trait Element:
     /// (DESIGN.md § 4).
     fn sqrt(self) -> Self;
 
+    /// The natural logarithm of `self`, as the standard library computes it for `f32` and `f64`;
+    /// the interpreter's `cross_entropy` and its gradient use it (DESIGN.md § 4).
+    fn ln(self) -> Self;
+
     /// The AVX2 `matmul` kernel for this type ([`Kernel::Avx2`](super::matmul::Kernel::Avx2)):
     /// writes `out`, `m * n` elements, and returns true; `m`, `k` and `n` are nonzero. False,
     /// writing nothing, where the type has no such kernel or the CPU no AVX2 or no FMA, which is
@@ -98,6 +102,10 @@ impl Element for f32 {
         f32::sqrt(self)
     }
 
+    fn ln(self) -> Self {
+        f32::ln(self)
+    }
+
     #[cfg(target_arch = "x86_64")]
     fn matmul_avx2(
         out: &mut [Self],
@@ -133,6 +141,10 @@ impl Element for f64 {
 
     fn sqrt(self) -> Self {
         f64::sqrt(self)
+    }
+
+    fn ln(self) -> Self {
+        f64::ln(self)
     }
 
     #[cfg(target_arch = "x86_64")]

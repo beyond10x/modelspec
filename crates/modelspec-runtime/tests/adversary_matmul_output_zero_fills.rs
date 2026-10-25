@@ -59,6 +59,9 @@ impl Element for Plain {
     fn sqrt(self) -> Self {
         Plain(self.0.sqrt())
     }
+    fn ln(self) -> Self {
+        Plain(self.0.ln())
+    }
 }
 
 fn operands<T: Element>(m: usize, k: usize, n: usize) -> (Vec<T>, Vec<T>) {

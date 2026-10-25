@@ -137,11 +137,13 @@ pub fn with_named(op: &TensorOp, values: &[NamedValue]) -> TensorOp {
 }
 
 /// The operands of the source operator `op` that take no gradient, by index and source name:
-/// `key_mask` of `attention`. A parameter cannot reach one, since training needs a gradient for
-/// every parameter the loss reads (DESIGN.md § 2.2).
+/// `key_mask` of `attention`, `labels` and `weights` of `cross_entropy`. A parameter cannot
+/// reach one, since training needs a gradient for every parameter the loss reads (DESIGN.md
+/// § 2.2).
 pub fn constant_operands(op: &TensorOp) -> &'static [(usize, &'static str)] {
     match op {
         TensorOp::Attention { .. } => &[(3, "key_mask")],
+        TensorOp::CrossEntropy => &[(1, "labels"), (2, "weights")],
         _ => &[],
     }
 }
@@ -170,8 +172,8 @@ pub fn arity(op: &TensorOp) -> usize {
         | TensorOp::GeluGrad
         | TensorOp::LayerNormGradGamma
         | TensorOp::SoftmaxGrad => 2,
-        TensorOp::LayerNorm | TensorOp::LayerNormGradX => 3,
-        TensorOp::Attention { .. } => 4,
+        TensorOp::LayerNorm | TensorOp::LayerNormGradX | TensorOp::CrossEntropy => 3,
+        TensorOp::Attention { .. } | TensorOp::CrossEntropyGrad => 4,
         TensorOp::AttentionGradQ { .. }
         | TensorOp::AttentionGradK { .. }
         | TensorOp::AttentionGradV { .. } => 5,
@@ -179,10 +181,13 @@ pub fn arity(op: &TensorOp) -> usize {
 }
 
 /// The element type operand `index` of `op` must have: `i32` for the ids of `Embedding` and
-/// `EmbeddingGrad`, `f32` for every other operand (DESIGN.md § 2.2).
+/// `EmbeddingGrad` and the labels of `CrossEntropy` and `CrossEntropyGrad`, `f32` for every other
+/// operand (DESIGN.md § 2.2).
 pub fn operand_dtype(op: &TensorOp, index: usize) -> DType {
     match (op, index) {
-        (TensorOp::Embedding, 1) | (TensorOp::EmbeddingGrad { .. }, 0) => DType::I32,
+        (TensorOp::Embedding, 1)
+        | (TensorOp::EmbeddingGrad { .. }, 0)
+        | (TensorOp::CrossEntropy | TensorOp::CrossEntropyGrad, 1) => DType::I32,
         _ => DType::F32,
     }
 }
@@ -372,7 +377,33 @@ pub fn infer(
             same_shape(name, operands[0], operands[4])?;
             Ok(operands[0].clone())
         }
+        TensorOp::CrossEntropy => {
+            cross_entropy_operands(name, operands)?;
+            Ok(scalar_of(operands[0]))
+        }
+        TensorOp::CrossEntropyGrad => {
+            cross_entropy_operands(name, &operands[..3])?;
+            rank(name, operands[3], 0)?;
+            Ok(operands[0].clone())
+        }
     }
+}
+
+/// The operands `logits, labels, weights` of `CrossEntropy` and its gradient op, in this order:
+/// `logits` of rank 2, `labels` of rank 1 and `weights` of rank 1, then `labels` and `weights`
+/// each as long as the rows of `logits`. A length that differs is a shape mismatch against
+/// `logits`.
+fn cross_entropy_operands(op: &'static str, operands: &[&TensorType]) -> Result<(), OpError> {
+    let (logits, labels, weights) = (operands[0], operands[1], operands[2]);
+    rank(op, logits, 2)?;
+    rank(op, labels, 1)?;
+    rank(op, weights, 1)?;
+    for per_row in [labels, weights] {
+        if per_row.shape[0] != logits.shape[0] {
+            return Err(shape_mismatch(op, logits, per_row));
+        }
+    }
+    Ok(())
 }
 
 /// The operands `q, k, v, key_mask` of `Attention` and its gradient ops: `q` of rank 2, `k` and
@@ -454,8 +485,8 @@ pub trait GradientSink {
 /// the contributions of every use of a value. An operand of rank 0 under a same-shape-or-scalar
 /// op receives the sum of its broadcast contribution. Returns `Ok(None)` for the internal
 /// gradient ops `ReluGrad`, `BroadcastScalar`, `EmbeddingGrad`, `SumRows`, `GeluGrad`,
-/// `LayerNormGradX`, `LayerNormGradGamma`, `SoftmaxGrad`, `AttentionGradQ`, `AttentionGradK`
-/// and `AttentionGradV`, which have no rule.
+/// `LayerNormGradX`, `LayerNormGradGamma`, `SoftmaxGrad`, `AttentionGradQ`, `AttentionGradK`,
+/// `AttentionGradV` and `CrossEntropyGrad`, which have no rule.
 ///
 /// The rules, for `Y = op(A, B, C)` and `G = dL/dY`:
 ///
@@ -476,6 +507,7 @@ pub trait GradientSink {
 /// | `LayerNorm` | `layer_norm_grad_x(A, B, G)` (`LayerNormGradX`: `rstd * (G B - mean(G B) - xhat * mean(G B xhat))` per row) | `layer_norm_grad_gamma(A, G)` (`LayerNormGradGamma`: the rows of `G * xhat` summed in ascending order) | `sum_rows(G)` |
 /// | `Softmax` | `softmax_grad(Y, G)` (`SoftmaxGrad`: `Y * (G - rowsum(G * Y))`) | | |
 /// | `Attention` | `attention_grad_q(A, B, C, D, G)` (`AttentionGradQ`: `scale * dS K` per sequence and head) | `attention_grad_k(A, B, C, D, G)` (`AttentionGradK`: `scale * dS^T Q`, 0 at a masked key) | `attention_grad_v(A, B, C, D, G)` (`AttentionGradV`: `P^T G`, 0 at a masked key) |
+/// | `CrossEntropy` | `cross_entropy_grad(A, B, C, G)` (`CrossEntropyGrad`: `G * C[n] / sum(C) * (P[n, v] - [v = B[n]])`) | none: `B` is `i32` labels | none: `C` is constant weights |
 ///
 /// The constants `1 / numel` and `2 / numel` are `f32` scalars. `Mse`'s `B` is a target in a
 /// training program, an input that receives no gradient; a trainable `B` receives `-dA`.
@@ -486,7 +518,10 @@ pub trait GradientSink {
 /// `A` per row; `Softmax`'s rule reads its own result `Y`. `Attention`'s operand `D` is the key
 /// mask, which receives no gradient; each of its three gradient ops recomputes the probabilities
 /// `P` of a sequence and head from `A`, `B` and `D`, and with `dP = G V^T` takes
-/// `dS = P * (dP - rowsum(P * dP))`; `scale = 1 / sqrt(H / heads)`.
+/// `dS = P * (dP - rowsum(P * dP))`; `scale = 1 / sqrt(H / heads)`. `CrossEntropy`'s operands
+/// `B` (labels) and `C` (weights) receive no gradient; `CrossEntropyGrad` recomputes the row
+/// softmax `P` of `A` through the loss's own code path, and gives zero everywhere when
+/// `sum(C) = 0`.
 pub fn gradient<S: GradientSink + ?Sized>(
     sink: &mut S,
     op: &TensorOp,
@@ -627,6 +662,12 @@ pub fn gradient<S: GradientSink + ?Sized>(
                 }
             }
         }
+        TensorOp::CrossEntropy => {
+            if want(0) {
+                let reads = [operands[0], operands[1], operands[2], g];
+                out[0] = Some(sink.emit(TensorOp::CrossEntropyGrad, &reads)?);
+            }
+        }
         TensorOp::ReluGrad
         | TensorOp::BroadcastScalar { .. }
         | TensorOp::EmbeddingGrad { .. }
@@ -637,7 +678,8 @@ pub fn gradient<S: GradientSink + ?Sized>(
         | TensorOp::SoftmaxGrad
         | TensorOp::AttentionGradQ { .. }
         | TensorOp::AttentionGradK { .. }
-        | TensorOp::AttentionGradV { .. } => {
+        | TensorOp::AttentionGradV { .. }
+        | TensorOp::CrossEntropyGrad => {
             return Ok(None);
         }
     }
@@ -1221,5 +1263,111 @@ mod tests {
             NamedKind::PositiveInteger.integer(2),
             Some(NamedValue::Integer(2))
         );
+    }
+
+    /// `cross_entropy` of `[N, V]` logits, `i32[N]` labels and `f32[N]` weights is rank 0; its
+    /// gradient op, with a rank-0 `G`, has the type of the logits.
+    #[test]
+    fn cross_entropy_of_n_by_v_logits_and_n_labels_and_weights_is_rank_0() {
+        let (logits, labels, weights) = (f32(&[6, 5]), i32(&[6]), f32(&[6]));
+        assert_eq!(
+            infer(&TensorOp::CrossEntropy, &[&logits, &labels, &weights], None),
+            Ok(f32(&[]))
+        );
+        assert_eq!(
+            infer(
+                &TensorOp::CrossEntropyGrad,
+                &[&logits, &labels, &weights, &f32(&[])],
+                None
+            ),
+            Ok(logits.clone())
+        );
+    }
+
+    /// `f32` labels or `i32` weights or logits are dtype errors at their index; labels or weights
+    /// of another length are a shape mismatch against the logits; logits not of rank 2, labels or
+    /// weights not of rank 1, or a `G` not of rank 0, are rank errors.
+    #[test]
+    fn cross_entropy_refuses_other_dtypes_lengths_and_ranks() {
+        let (logits, labels, weights) = (f32(&[6, 5]), i32(&[6]), f32(&[6]));
+        let op = TensorOp::CrossEntropy;
+        for (operands, index, expected) in [
+            (vec![&logits, &weights, &weights], 1, DType::I32),
+            (vec![&logits, &labels, &labels], 2, DType::F32),
+            (vec![&i32(&[6, 5]), &labels, &weights], 0, DType::F32),
+        ] {
+            assert_eq!(
+                infer(&op, &operands, None),
+                Err(OpError::OperandDType {
+                    op: "CrossEntropy",
+                    index,
+                    expected,
+                    got: operands[index].clone(),
+                })
+            );
+        }
+        assert_eq!(
+            infer(&op, &[&logits, &i32(&[7]), &weights], None),
+            Err(OpError::ShapeMismatch {
+                op: "CrossEntropy",
+                lhs: logits.clone(),
+                rhs: i32(&[7]),
+            })
+        );
+        assert_eq!(
+            infer(&op, &[&logits, &labels, &f32(&[5])], None),
+            Err(OpError::ShapeMismatch {
+                op: "CrossEntropy",
+                lhs: logits.clone(),
+                rhs: f32(&[5]),
+            })
+        );
+        for (operands, expected, got) in [
+            (
+                vec![f32(&[6]), labels.clone(), weights.clone()],
+                2,
+                f32(&[6]),
+            ),
+            (
+                vec![logits.clone(), i32(&[6, 1]), weights.clone()],
+                1,
+                i32(&[6, 1]),
+            ),
+            (vec![logits.clone(), labels.clone(), f32(&[])], 1, f32(&[])),
+        ] {
+            let refs: Vec<&TensorType> = operands.iter().collect();
+            assert_eq!(
+                infer(&op, &refs, None),
+                Err(OpError::Rank {
+                    op: "CrossEntropy",
+                    expected,
+                    got,
+                })
+            );
+        }
+        assert_eq!(
+            infer(
+                &TensorOp::CrossEntropyGrad,
+                &[&logits, &labels, &weights, &f32(&[1])],
+                None
+            ),
+            Err(OpError::Rank {
+                op: "CrossEntropyGrad",
+                expected: 0,
+                got: f32(&[1]),
+            })
+        );
+    }
+
+    /// The labels and weights of `cross_entropy` take no gradient; it takes no named argument.
+    #[test]
+    fn cross_entropy_labels_and_weights_are_constant() {
+        assert_eq!(
+            constant_operands(&TensorOp::CrossEntropy),
+            &[(1, "labels"), (2, "weights")]
+        );
+        assert!(named_parameters(&TensorOp::CrossEntropy).is_empty());
+        assert_eq!(operand_dtype(&TensorOp::CrossEntropyGrad, 1), DType::I32);
+        assert_eq!(operand_dtype(&TensorOp::CrossEntropyGrad, 3), DType::F32);
     }
 }

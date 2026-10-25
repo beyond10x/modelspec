@@ -214,6 +214,15 @@ pub enum TensorOp {
     AttentionGradV {
         heads: u64,
     },
+    /// `logits: f32[N, V]`, `labels: i32[N]`, `weights: f32[N]` `-> f32[]`: the weighted mean
+    /// `sum_n weights[n] * (logsumexp(logits[n]) - logits[n, labels[n]]) / sum_n weights[n]`, the
+    /// log-sum-exp max-subtracted; `0.0` when the weights sum to `0.0` (DESIGN.md § 4).
+    CrossEntropy,
+    /// Internal gradient op over operands `logits, labels, weights, G`, `G` of rank 0: the gradient
+    /// of [`Self::CrossEntropy`] with respect to `logits`,
+    /// `G * weights[n] / sum(weights) * (softmax(logits[n]) - onehot(labels[n]))`, all `0.0` when
+    /// the weights sum to `0.0` (DESIGN.md § 4).
+    CrossEntropyGrad,
 }
 
 impl TensorOp {
@@ -249,6 +258,8 @@ impl TensorOp {
             TensorOp::AttentionGradQ { .. } => "AttentionGradQ",
             TensorOp::AttentionGradK { .. } => "AttentionGradK",
             TensorOp::AttentionGradV { .. } => "AttentionGradV",
+            TensorOp::CrossEntropy => "CrossEntropy",
+            TensorOp::CrossEntropyGrad => "CrossEntropyGrad",
         }
     }
 
@@ -552,6 +563,17 @@ impl TensorProgramBuilder {
         self.push(TensorOp::Attention { heads }, &[q, k, v, key_mask])
     }
 
+    /// The weighted cross-entropy of the `[N, V]` `logits` against the `i32[N]` `labels` under
+    /// the `[N]` `weights`, rank 0.
+    pub fn cross_entropy(
+        &mut self,
+        logits: ValueId,
+        labels: ValueId,
+        weights: ValueId,
+    ) -> Result<ValueId, BuildError> {
+        self.push(TensorOp::CrossEntropy, &[logits, labels, weights])
+    }
+
     /// Adds any op except `Input`, typed by the registry.
     pub fn push(&mut self, op: TensorOp, operands: &[ValueId]) -> Result<ValueId, BuildError> {
         self.push_at(op, operands, None)
@@ -661,6 +683,8 @@ mod tests {
             TensorOp::AttentionGradQ { heads: 1 },
             TensorOp::AttentionGradK { heads: 1 },
             TensorOp::AttentionGradV { heads: 1 },
+            TensorOp::CrossEntropy,
+            TensorOp::CrossEntropyGrad,
         ];
         for op in &ops {
             match op {
@@ -692,7 +716,9 @@ mod tests {
                 | TensorOp::Attention { .. }
                 | TensorOp::AttentionGradQ { .. }
                 | TensorOp::AttentionGradK { .. }
-                | TensorOp::AttentionGradV { .. } => {}
+                | TensorOp::AttentionGradV { .. }
+                | TensorOp::CrossEntropy
+                | TensorOp::CrossEntropyGrad => {}
             }
         }
         ops

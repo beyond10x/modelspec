@@ -286,6 +286,9 @@ impl Element for Wrapped {
     fn sqrt(self) -> Self {
         Wrapped(self.0.sqrt())
     }
+    fn ln(self) -> Self {
+        Wrapped(self.0.ln())
+    }
 }
 
 /// The portable kernel writes every element for a type with no AVX2 code; under `Kernel::Avx2`

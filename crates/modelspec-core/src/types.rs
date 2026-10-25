@@ -9,9 +9,9 @@
 //! Beyond the registry's operator rules, the checker enforces the M0 rules of DESIGN.md § 2.2
 //! and the train-block rules: every declared tensor type has positive dimensions and element and
 //! byte counts within `u64`; an `i32` tensor is declared only by an `input`, a `target` or a
-//! function argument, and read only as the ids of `embedding` (E-TYPE-018 for a parameter or a
-//! function result of `i32`; the registry refuses every other operand); a parameter is
-//! initialized by `xavier_uniform()` and is rank 2; a
+//! function argument, and read only as the ids of `embedding` or the labels of `cross_entropy`
+//! (E-TYPE-018 for a parameter or a function result of `i32`; the registry refuses every other
+//! operand); a parameter is initialized by `xavier_uniform()` and is rank 2; a
 //! function's `return` has its declared type; a `model.<function>(args)` call matches the
 //! function's arguments; the loss is rank 0 and calls `model.forward` exactly once, counting calls
 //! nested in the arguments of another (the prediction is that call's value, DESIGN.md § 2.1);
@@ -21,7 +21,8 @@
 //! kind, after the operands (E-TYPE-001 when omitted, E-TYPE-002 when unknown, repeated or
 //! before an operand, E-TYPE-019 for another value); every other call takes positional arguments
 //! only. An operand that takes no gradient ([`ops::constant_operands`], the `key_mask` of
-//! `attention`) must not read a parameter by dataflow (E-TYPE-021, coordinator decision D41):
+//! `attention`, the `labels` and `weights` of `cross_entropy`) must not read a parameter by
+//! dataflow (E-TYPE-021, coordinator decisions D41 and D43):
 //! not through a `let`, an operator, the result of a `model.<function>(...)` call whose body
 //! reads one, nor an argument of such a call that reaches the result or reaches such an operand
 //! inside the function, which is refused at that argument. The parser already enforces that `seed` fits `u64`, that the optimizer is
@@ -67,14 +68,17 @@ pub mod codes {
         /// `add`, `sub`, `mul` or `mse` operands of different shapes, neither of them rank 0, an
         /// `add_rows(x, b)` whose `b` is not as long as a row of `x`, a
         /// `layer_norm(x, gamma, beta)` whose `gamma` or `beta` is not as long as a row of `x`,
-        /// or an `attention(q, k, v, key_mask, heads = A)` whose `k` or `v` differs from `q` in
-        /// shape or whose `key_mask` of shape `[B, S]` has `B * S` other than the rows of `q`.
+        /// an `attention(q, k, v, key_mask, heads = A)` whose `k` or `v` differs from `q` in shape
+        /// or whose `key_mask` of shape `[B, S]` has `B * S` other than the rows of `q`, or a
+        /// `cross_entropy(logits, labels, weights)` whose `labels` or `weights` is not as long as
+        /// the rows of `logits`.
         SHAPE_MISMATCH = "E-TYPE-003";
         /// A `matmul`, `transpose` or `softmax` operand that is not rank 2, an `embedding` whose
         /// table is not rank 2 or whose ids are not rank 1, an `add_rows(x, b)` whose `x` is not
         /// rank 2 or whose `b` is not rank 1, a `layer_norm(x, gamma, beta)` whose `x` is not
-        /// rank 2 or whose `gamma` or `beta` is not rank 1, or an `attention` operand that is not
-        /// rank 2.
+        /// rank 2 or whose `gamma` or `beta` is not rank 1, an `attention` operand that is not
+        /// rank 2, or a `cross_entropy` whose `logits` is not rank 2 or whose `labels` or
+        /// `weights` is not rank 1.
         RANK = "E-TYPE-004";
         /// An integer literal where a tensor is expected.
         INTEGER_LITERAL = "E-TYPE-005";
@@ -105,9 +109,10 @@ pub mod codes {
         /// A train block's loss that does not call `model.forward` exactly once: the prediction
         /// is the value of that one call.
         FORWARD_CALLS = "E-TYPE-017";
-        /// An `i32` tensor used other than as the ids of `embedding`: an operand of any other
-        /// operator or the table of `embedding`, a `param` of type `i32`, or a function declared
-        /// to return `i32` (DESIGN.md § 2.2).
+        /// An `i32` tensor used other than as the ids of `embedding` or the labels of
+        /// `cross_entropy`: an operand of any other operator, the table of `embedding`, the
+        /// `logits` or `weights` of `cross_entropy`, an `f32` where those ids or labels go, a
+        /// `param` of type `i32`, or a function declared to return `i32` (DESIGN.md § 2.2).
         DTYPE = "E-TYPE-018";
         /// A named operator argument whose value is not a literal of its kind, such as
         /// `heads = x` or `heads = 0` of `attention`, whose `heads` is an integer literal of at
@@ -115,11 +120,12 @@ pub mod codes {
         NAMED_VALUE = "E-TYPE-019";
         /// An `attention` whose `heads` does not divide the width `H` of `q`, `k` and `v`.
         HEADS_DIVIDE = "E-TYPE-020";
-        /// An operand that takes no gradient, the `key_mask` of `attention`, whose value reads a
-        /// model parameter by dataflow: directly, through a `let`, through a
-        /// `model.<function>(...)` call whose result reads one, or through an argument of a
-        /// model function call that reaches the operand inside the function, reported at that
-        /// argument. A model function that reads no parameter is no reason to refuse.
+        /// An operand that takes no gradient, the `key_mask` of `attention` or the `labels` or
+        /// `weights` of `cross_entropy`, whose value reads a model parameter by dataflow:
+        /// directly, through a `let`, through a `model.<function>(...)` call whose result reads
+        /// one, or through an argument of a model function call that reaches the operand inside
+        /// the function, reported at that argument. A model function that reads no parameter is
+        /// no reason to refuse.
         CONSTANT_OPERAND = "E-TYPE-021";
     }
 
@@ -298,7 +304,8 @@ impl Checker {
             self.report(
                 codes::DTYPE,
                 format!(
-                    "`{}` must return f32; `i32` is for the ids of `embedding` only",
+                    "`{}` must return f32; `i32` is for the ids of `embedding` and the labels of \
+                     `cross_entropy` only",
                     f.name.name
                 ),
                 &f.output.dtype.span,
@@ -337,7 +344,8 @@ impl Checker {
             self.report(
                 codes::DTYPE,
                 format!(
-                    "parameter `{}` must be f32; `i32` is for the ids of `embedding` only",
+                    "parameter `{}` must be f32; `i32` is for the ids of `embedding` and the labels \
+                     of `cross_entropy` only",
                     p.name.name
                 ),
                 &p.ty.dtype.span,
@@ -1053,6 +1061,27 @@ fn layer_norm_operand(types: &[&TensorType]) -> Option<&'static str> {
         .map(|(operand, _)| operand)
 }
 
+/// The `cross_entropy` operand that [`ops::infer`] refuses first, in the order it checks them:
+/// `logits` of rank 2, `labels` of rank 1, `weights` of rank 1, then `labels` and `weights`
+/// each as long as the rows of `logits`. `None` unless `types` holds the three operand types.
+fn cross_entropy_operand(types: &[&TensorType]) -> Option<&'static str> {
+    let [logits, labels, weights] = types else {
+        return None;
+    };
+    let ranks = [
+        ("logits", logits, 2),
+        ("labels", labels, 1),
+        ("weights", weights, 1),
+    ];
+    if let Some((operand, _, _)) = ranks.iter().find(|(_, ty, rank)| ty.rank() != *rank) {
+        return Some(operand);
+    }
+    [("labels", labels), ("weights", weights)]
+        .into_iter()
+        .find(|(_, ty)| ty.shape[0] != logits.shape[0])
+        .map(|(operand, _)| operand)
+}
+
 /// The user diagnostic for a registry error of the operator called `name` at `span`, its operands
 /// of the types `types` (empty where they are not known).
 fn op_diagnostic(
@@ -1075,6 +1104,13 @@ fn op_diagnostic(
                 "`attention(q, k, v, key_mask, heads = A)` needs `q`, `k` and `v` of one shape \
                  [N, H] and `key_mask` of shape [B, S] with B * S = N"
                     .to_owned()
+            } else if name == "cross_entropy" {
+                let rule = "`cross_entropy(logits, labels, weights)` needs `labels` and `weights` \
+                            of shape [N] for `logits` of shape [N, V]";
+                match cross_entropy_operand(types) {
+                    Some(operand) => format!("{rule}; `{operand}` has type {rhs}"),
+                    None => rule.to_owned(),
+                }
             } else if name == "layer_norm" {
                 let rule = "`layer_norm(x, gamma, beta)` needs `gamma` and `beta` of shape [H] \
                             for `x` of shape [N, H]";
@@ -1101,6 +1137,15 @@ fn op_diagnostic(
                 _ => None,
             };
             let wrong = operands.and_then(|ops| ops.into_iter().find(|&(_, r)| r == expected));
+            if name == "cross_entropy" {
+                let rule =
+                    "`cross_entropy` needs `logits` of rank 2 and `labels` and `weights` of rank 1";
+                let message = match cross_entropy_operand(types) {
+                    Some(operand) => format!("{rule}; `{operand}` has type {got}"),
+                    None => format!("{rule}; got {got}"),
+                };
+                return Diagnostic::new(codes::RANK, message).at(span.clone());
+            }
             if name == "layer_norm" {
                 let rule = "`layer_norm` needs `x` of rank 2 and `gamma` and `beta` of rank 1";
                 let message = match layer_norm_operand(types) {
@@ -1151,7 +1196,10 @@ fn op_diagnostic(
             format!("`{name}` operand {} must be {expected}", index + 1),
         )
         .with("got", got.to_string())
-        .note("`i32` tensors are row ids; only `embedding` reads them, as its second operand"),
+        .note(
+            "`i32` tensors are row ids or class labels; only `embedding` and `cross_entropy` read \
+             them, each as its second operand",
+        ),
         error @ (OpError::DTypeMismatch { .. }
         | OpError::MissingDeclaredType { .. }
         | OpError::ParamDType { .. }) => Diagnostic::new(
@@ -1246,9 +1294,137 @@ mod tests {
                 "gelu",
                 "layer_norm",
                 "softmax",
-                "attention"
+                "attention",
+                "cross_entropy"
             ]
         );
+    }
+
+    /// A file whose model `M` has the table `t: [5, 4]` and the parameter `p: [6]`, the model
+    /// functions `functions` and `forward(ids: i32[6]) -> [6, 5]`, the tied decoder; its train
+    /// block declares `ids`, `labels` and `weights` of the types given and has the loss `loss`.
+    fn cross_entropy_source(functions: &str, labels: &str, weights: &str, loss: &str) -> String {
+        format!(
+            "model M {{
+    param t: Tensor<f32, [5, 4]> = xavier_uniform();
+    param p: Tensor<f32, [6]> = ones();
+    {functions}
+    fn forward(ids: Tensor<i32, [6]>) -> Tensor<f32, [6, 5]> {{
+        return matmul(embedding(t, ids), transpose(t));
+    }}
+}}
+train T {{
+    model = M;
+    input ids: Tensor<i32, [6]>;
+    target labels: {labels};
+    target weights: {weights};
+    loss = {loss};
+    optimizer = sgd(lr = 0.1);
+    steps = 1;
+    seed = 0;
+    device = cpu;
+}}
+"
+        )
+    }
+
+    /// The codes `check` reports for `cross_entropy_source(...)`.
+    fn cross_entropy_codes(
+        functions: &str,
+        labels: &str,
+        weights: &str,
+        loss: &str,
+    ) -> Vec<String> {
+        match check_source(
+            "m.mspec",
+            &cross_entropy_source(functions, labels, weights, loss),
+        ) {
+            Ok(_) => Vec::new(),
+            Err(diagnostics) => diagnostics
+                .iter()
+                .map(|d| d.code.as_str().to_owned())
+                .collect(),
+        }
+    }
+
+    const LABELS: &str = "Tensor<i32, [6]>";
+    const WEIGHTS: &str = "Tensor<f32, [6]>";
+    const LOSS: &str = "cross_entropy(model.forward(ids), labels, weights)";
+
+    /// `i32[6]` labels are the second permitted use of an `i32` tensor: the tied decoder checks
+    /// and its loss is a rank-0 `CrossEntropy`.
+    #[test]
+    fn cross_entropy_over_i32_labels_checks() {
+        let source = cross_entropy_source("", LABELS, WEIGHTS, LOSS);
+        let hir = check_source("m.mspec", &source).expect("checks");
+        assert!(matches!(
+            &hir.train.loss.kind,
+            HirExprKind::Op { op: TensorOp::CrossEntropy, args } if args.len() == 3
+        ));
+        assert_eq!(hir.train.loss.ty, TensorType::f32_scalar());
+    }
+
+    /// `f32` labels are E-TYPE-018, labels or weights of another length E-TYPE-003 and logits of
+    /// rank 1 E-TYPE-004, each once.
+    #[test]
+    fn cross_entropy_operand_errors_are_e_type_018_003_and_004() {
+        assert_eq!(
+            cross_entropy_codes("", "Tensor<f32, [6]>", WEIGHTS, LOSS),
+            ["E-TYPE-018"]
+        );
+        assert_eq!(
+            cross_entropy_codes("", "Tensor<i32, [7]>", WEIGHTS, LOSS),
+            ["E-TYPE-003"]
+        );
+        assert_eq!(
+            cross_entropy_codes("", LABELS, "Tensor<f32, [5]>", LOSS),
+            ["E-TYPE-003"]
+        );
+        assert_eq!(
+            cross_entropy_codes(
+                "",
+                LABELS,
+                WEIGHTS,
+                "cross_entropy(sum(model.forward(ids)), labels, weights)"
+            ),
+            ["E-TYPE-004"]
+        );
+    }
+
+    /// The weights take no gradient: weights that read a parameter, directly in a model function
+    /// or through the result of a model function call, are E-TYPE-021, its message naming
+    /// `weights`; weights that pass through a parameter-free model function check.
+    #[test]
+    fn cross_entropy_weights_that_read_a_parameter_are_e_type_021() {
+        let scaled = "fn scaled(a: Tensor<f32, [6]>) -> Tensor<f32, [6]> { return mul(a, p); }";
+        let free = "fn free(a: Tensor<f32, [6]>) -> Tensor<f32, [6]> { return relu(a); }";
+        let inner = "fn inner(z: Tensor<f32, [6, 5]>, l: Tensor<i32, [6]>, a: Tensor<f32, [6]>) -> Tensor<f32, []> { return cross_entropy(z, l, a); }";
+        let functions = [scaled, free, inner].join(" ");
+        let refused = [
+            "cross_entropy(model.forward(ids), labels, model.scaled(weights))",
+            "cross_entropy(model.forward(ids), labels, mul(weights, model.scaled(weights)))",
+            "model.inner(model.forward(ids), labels, model.scaled(weights))",
+        ];
+        for loss in refused {
+            let source = cross_entropy_source(&functions, LABELS, WEIGHTS, loss);
+            let diagnostics = check_source("m.mspec", &source).expect_err(loss);
+            assert_eq!(diagnostics.len(), 1, "{loss}: {diagnostics:?}");
+            assert_eq!(diagnostics[0].code, codes::CONSTANT_OPERAND, "{loss}");
+            assert!(
+                diagnostics[0].message.contains("`weights`"),
+                "{loss}: {}",
+                diagnostics[0].message
+            );
+        }
+        for loss in [
+            "cross_entropy(model.forward(ids), labels, model.free(weights))",
+            "model.inner(model.forward(ids), labels, weights)",
+        ] {
+            assert!(
+                cross_entropy_codes(&functions, LABELS, WEIGHTS, loss).is_empty(),
+                "{loss}"
+            );
+        }
     }
 
     /// `layer_norm` takes `x` of rank 2 and two rows of rank 1: its E-TYPE-004 message states

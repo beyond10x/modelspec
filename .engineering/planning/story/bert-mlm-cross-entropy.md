@@ -2,7 +2,7 @@
 format: aep.planning-md/3
 id: story:bert-mlm-cross-entropy
 kind: story
-status: draft
+status: active
 title: Weighted cross-entropy over integer labels for the MLM loss, gradient-checked on the CPU
 summary: Adds cross_entropy(logits, labels i32, weights) and its gradient op on the CPU interpreter, checked by finite differences also through a tied decoder.
 relations:
@@ -48,7 +48,10 @@ scope:
   path: ui/src/generated/
 - confidence: cited
   path: website/docs/reference/operators.md
-revision: 4
+revision: 6
+transitions:
+- {from: "draft", to: "proposed", at: "2026-10-25T05:03:55Z", actor: "human:timo", revision: 5}
+- {from: "proposed", to: "active", at: "2026-10-25T05:03:56Z", actor: "human:timo", revision: 6}
 ---
 # Weighted cross-entropy over integer labels for the MLM loss, gradient-checked on the CPU
 

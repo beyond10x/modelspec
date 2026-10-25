@@ -25,7 +25,14 @@
 //! the forward's code path, and a masked key's rows of the `k` and `v` gradients stay `+0`
 //! (DESIGN.md § 4, coordinator decision D37). The key mask is checked before the op runs: a
 //! value other than 0 or 1 is [`RuntimeError::KeyMaskValue`], a sequence with no unmasked key
-//! [`RuntimeError::NoUnmaskedKey`].
+//! [`RuntimeError::NoUnmaskedKey`]. `cross_entropy` and its gradient op recompute each row's
+//! maximum and sum of `exp(x - max)` through one code path, every reduction in ascending index
+//! order; the loss is the weighted sum of the row losses, its first product rounded and each
+//! later one fused, over the plain sum of the weights, and a weight sum of 0 gives a loss and a
+//! gradient of `+0` (DESIGN.md § 4, coordinator decision D43). Its labels and weights are checked
+//! before the op runs, row by row: a label outside the classes is
+//! [`RuntimeError::LabelOutOfRange`], a negative or non-finite weight
+//! [`RuntimeError::LossWeight`].
 //!
 //! Every value is allocated through one checked path; a value the host cannot hold is a
 //! [`RuntimeError::Allocation`].
@@ -106,6 +113,23 @@ pub enum RuntimeError {
     /// whose softmax would divide by zero (DESIGN.md § 4).
     #[error("the key mask of {value} masks every key of sequence {sequence}")]
     NoUnmaskedKey { value: ValueId, sequence: usize },
+    /// A label of `cross_entropy` or its gradient op outside `[0, V)`, `V` the classes of its
+    /// logits (DESIGN.md § 4, coordinator decision D43).
+    #[error(
+        "input `{name}` holds label {label} at row {row} of {value}, outside the {classes} \
+         classes of its logits"
+    )]
+    LabelOutOfRange {
+        name: String,
+        value: ValueId,
+        row: usize,
+        label: i32,
+        classes: u64,
+    },
+    /// A weight of `cross_entropy` or its gradient op that is negative or not finite; `-0.0` is
+    /// not negative (DESIGN.md § 4, coordinator decision D43).
+    #[error("the weight of row {row} of {value} is negative or not finite")]
+    LossWeight { value: ValueId, row: usize },
 }
 
 /// No ids, for the programs that read none.
@@ -552,6 +576,16 @@ impl<'p, T: Element> Prepared<'p, T> {
                 let mask = self.view(self.plan.operands[i][3], inputs, params);
                 check_key_mask(node.id, mask)?;
             }
+            if matches!(node.op, TensorOp::CrossEntropy | TensorOp::CrossEntropyGrad) {
+                let reads = &self.plan.operands[i];
+                check_loss_rows(
+                    node.id,
+                    input_name(self.program, reads[1]),
+                    self.ids(reads[1], ids),
+                    self.view(reads[2], inputs, params).data,
+                    self.plan.shapes[reads[0]][1],
+                )?;
+            }
             match self.plan.hold[i] {
                 Hold::InPlace(_) => continue,
                 Hold::Supplied | Hold::Ids => {}
@@ -894,7 +928,105 @@ impl<'p, T: Element> Prepared<'p, T> {
                     }
                 }
             }
+            TensorOp::CrossEntropy => {
+                let labels = self.ids(operands[1], ids);
+                data.push(cross_entropy(arg(0), labels, arg(2).data));
+            }
+            TensorOp::CrossEntropyGrad => {
+                let labels = self.ids(operands[1], ids);
+                cross_entropy_grad(data, arg(0), labels, arg(2).data, arg(3).data[0]);
+            }
         }
+    }
+}
+
+/// Checks the labels and weights of the `cross_entropy` op or gradient op `value` before it
+/// runs, in ascending row order and the label of a row before its weight: each label of the
+/// input `name` in `[0, classes)`, each weight finite and not negative, `-0.0` passing
+/// (coordinator decision D43).
+fn check_loss_rows<T: Element>(
+    value: ValueId,
+    name: &str,
+    labels: &[i32],
+    weights: &[T],
+    classes: u64,
+) -> Result<(), RuntimeError> {
+    for (row, (&label, &weight)) in labels.iter().zip(weights).enumerate() {
+        if u64::try_from(label).map_or(true, |label| label >= classes) {
+            return Err(RuntimeError::LabelOutOfRange {
+                name: name.to_owned(),
+                value,
+                row,
+                label,
+                classes,
+            });
+        }
+        // A NaN or an infinity times 0 is NaN, which equals nothing.
+        let finite = weight * T::ZERO == T::ZERO;
+        if !finite || weight < T::ZERO {
+            return Err(RuntimeError::LossWeight { value, row });
+        }
+    }
+    Ok(())
+}
+
+/// The maximum of `row`, the first element replaced by each later greater one in ascending
+/// order, and the sum of `exp(x - max)` over `row` in ascending order from its first term: the
+/// row softmax of `cross_entropy` and its gradient op (coordinator decision D43).
+fn row_softmax<T: Element>(row: &[T]) -> (T, T) {
+    let max = row[1..]
+        .iter()
+        .fold(row[0], |m, &v| if v > m { v } else { m });
+    (max, sum(row.iter().map(|&v| (v - max).exp())))
+}
+
+/// `sum_n weights[n] * loss_n / sum_n weights[n]` over the rows of `logits` (D43): the row loss
+/// `max + ln(sum) - logits[n, labels[n]]`, the numerator a [`sum_of_products`] and the
+/// denominator a [`sum`], both in ascending `n`, and `+0` when the denominator is 0 (D30).
+fn cross_entropy<T: Element>(logits: View<'_, T>, labels: &[i32], weights: &[T]) -> T {
+    let v = logits.shape[1] as usize;
+    let losses = logits
+        .data
+        .chunks_exact(v)
+        .zip(labels)
+        .map(|(row, &label)| {
+            let (max, total) = row_softmax(row);
+            max + total.ln() - row[label as usize]
+        });
+    let numerator = sum_of_products(weights.iter().copied().zip(losses));
+    let denominator = sum(weights.iter().copied());
+    if denominator == T::ZERO {
+        T::ZERO
+    } else {
+        numerator / denominator
+    }
+}
+
+/// The gradient of [`cross_entropy`] with respect to `logits`, into `data`: per element
+/// `g * weights[n] / sum(weights) * (p[n, v] - [v == labels[n]])` left to right, `p` recomputed
+/// through [`row_softmax`]; every element `+0` when the weight sum is 0 (D30, D43).
+fn cross_entropy_grad<T: Element>(
+    data: &mut Vec<T>,
+    logits: View<'_, T>,
+    labels: &[i32],
+    weights: &[T],
+    g: T,
+) {
+    let denominator = sum(weights.iter().copied());
+    if denominator == T::ZERO {
+        data.resize(logits.len(), T::ZERO);
+        return;
+    }
+    let one = T::from_f32(1.0);
+    let v = logits.shape[1] as usize;
+    let rows = logits.data.chunks_exact(v).zip(labels).zip(weights);
+    for ((row, &label), &weight) in rows {
+        let (max, total) = row_softmax(row);
+        let scale = g * weight / denominator;
+        data.extend(row.iter().enumerate().map(|(c, &x)| {
+            let target = if c == label as usize { one } else { T::ZERO };
+            scale * ((x - max).exp() / total - target)
+        }));
     }
 }
 
