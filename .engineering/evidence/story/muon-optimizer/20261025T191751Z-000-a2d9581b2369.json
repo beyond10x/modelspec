@@ -1,0 +1,13 @@
+{
+  "at": "2026-10-25T19:17:51Z",
+  "actor": "human:timo",
+  "artifact": "story:muon-optimizer",
+  "kind": "story",
+  "revision": 4,
+  "change": {
+    "change": "evidence",
+    "kind": "test_result",
+    "source": "task ci",
+    "reference": "3ad04740eb70f485fa601f1045913571788b7b60"
+  }
+}
