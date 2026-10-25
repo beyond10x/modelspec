@@ -70,7 +70,8 @@ pub fn arity(op: &TensorOp) -> usize {
         | TensorOp::ReduceMean
         | TensorOp::BroadcastScalar { .. }
         | TensorOp::SumRows
-        | TensorOp::Gelu => 1,
+        | TensorOp::Gelu
+        | TensorOp::Softmax => 1,
         TensorOp::Add
         | TensorOp::Sub
         | TensorOp::Mul
@@ -80,7 +81,10 @@ pub fn arity(op: &TensorOp) -> usize {
         | TensorOp::Embedding
         | TensorOp::EmbeddingGrad { .. }
         | TensorOp::AddRows
-        | TensorOp::GeluGrad => 2,
+        | TensorOp::GeluGrad
+        | TensorOp::LayerNormGradGamma
+        | TensorOp::SoftmaxGrad => 2,
+        TensorOp::LayerNorm | TensorOp::LayerNormGradX => 3,
     }
 }
 
@@ -236,7 +240,61 @@ pub fn infer(
                 shape: vec![g.shape[1]],
             })
         }
+        TensorOp::LayerNorm => {
+            let (x, gamma, beta) = (operands[0], operands[1], operands[2]);
+            rows_of(name, x, &[gamma, beta])?;
+            Ok(x.clone())
+        }
+        TensorOp::LayerNormGradX => {
+            let (x, gamma, g) = (operands[0], operands[1], operands[2]);
+            rows_of(name, x, &[gamma])?;
+            same_shape(name, x, g)?;
+            Ok(x.clone())
+        }
+        TensorOp::LayerNormGradGamma => {
+            let (x, g) = (operands[0], operands[1]);
+            rank(name, x, 2)?;
+            same_shape(name, x, g)?;
+            Ok(TensorType {
+                dtype: x.dtype,
+                shape: vec![x.shape[1]],
+            })
+        }
+        TensorOp::Softmax => {
+            let x = operands[0];
+            rank(name, x, 2)?;
+            Ok(x.clone())
+        }
+        TensorOp::SoftmaxGrad => {
+            let (y, g) = (operands[0], operands[1]);
+            rank(name, y, 2)?;
+            same_shape(name, y, g)?;
+            Ok(y.clone())
+        }
     }
+}
+
+/// `x` of rank 2 and each of `rows` of rank 1 and as long as a row of `x`: a row of another rank
+/// is a rank error, one of another length a shape mismatch against `x`.
+fn rows_of(op: &'static str, x: &TensorType, rows: &[&TensorType]) -> Result<(), OpError> {
+    rank(op, x, 2)?;
+    for row in rows {
+        same_dtype(op, x, row)?;
+        rank(op, row, 1)?;
+        if row.shape[0] != x.shape[1] {
+            return Err(shape_mismatch(op, x, row));
+        }
+    }
+    Ok(())
+}
+
+/// `a` and `b` of one dtype and one shape.
+fn same_shape(op: &'static str, a: &TensorType, b: &TensorType) -> Result<(), OpError> {
+    same_dtype(op, a, b)?;
+    if a.shape != b.shape {
+        return Err(shape_mismatch(op, a, b));
+    }
+    Ok(())
 }
 
 /// Where a gradient rule puts the nodes it builds; each is typed through [`infer`].
@@ -252,39 +310,45 @@ pub trait GradientSink {
 
 /// The reverse-mode gradient rule of `op` (DESIGN.md § 4, the rows of its table).
 ///
-/// `operands` are the node's operands and `g` the adjoint of its result. Returns, in operand
-/// order, the contribution to the adjoint of each operand `i` with `wanted[i]`, and `None` for
-/// the others; a contribution has its operand's type. The caller sums the contributions of every
-/// use of a value. An operand of rank 0 under a same-shape-or-scalar op receives the sum of its
-/// broadcast contribution. Returns `Ok(None)` for the internal gradient ops `ReluGrad`,
-/// `BroadcastScalar`, `EmbeddingGrad`, `SumRows` and `GeluGrad`, which have no rule.
+/// `operands` are the node's operands, `result` the value it defines and `g` the adjoint of that
+/// value. Returns, in operand order, the contribution to the adjoint of each operand `i` with
+/// `wanted[i]`, and `None` for the others; a contribution has its operand's type. The caller sums
+/// the contributions of every use of a value. An operand of rank 0 under a same-shape-or-scalar
+/// op receives the sum of its broadcast contribution. Returns `Ok(None)` for the internal
+/// gradient ops `ReluGrad`, `BroadcastScalar`, `EmbeddingGrad`, `SumRows`, `GeluGrad`,
+/// `LayerNormGradX`, `LayerNormGradGamma` and `SoftmaxGrad`, which have no rule.
 ///
-/// The rules, for `Y = op(A, B)` and `G = dL/dY`:
+/// The rules, for `Y = op(A, B, C)` and `G = dL/dY`:
 ///
-/// | op | `dA` | `dB` |
-/// | --- | --- | --- |
-/// | `Add` | `G` | `G` |
-/// | `Sub` | `G` | `-G` |
-/// | `Mul` | `G * B` | `G * A` |
-/// | `MatMul` | `G @ transpose(B)` | `transpose(A) @ G` |
-/// | `Relu` | `where(A > 0, G, 0)` (`ReluGrad`; 0 at `A = 0`) | |
-/// | `Transpose` | `transpose(G)` | |
-/// | `ReduceSum` | `broadcast_scalar(G, shape(A))` | |
-/// | `ReduceMean` | `broadcast_scalar(G * (1 / numel(A)), shape(A))` | |
-/// | `Mse` | `(A - B) * (G * (2 / numel(A)))` | `-dA` |
-/// | `Embedding` | `embedding_grad(B, G, rows(A))` (`EmbeddingGrad`: row `G[n]` added to row `B[n]`) | none: `B` is `i32` ids |
-/// | `AddRows` | `G` | `sum_rows(G)` (`SumRows`: the rows of `G` summed in ascending order) |
-/// | `Gelu` | `gelu_grad(A, G)` (`GeluGrad`: `gelu'(A) * G`) | |
+/// | op | `dA` | `dB` | `dC` |
+/// | --- | --- | --- | --- |
+/// | `Add` | `G` | `G` | |
+/// | `Sub` | `G` | `-G` | |
+/// | `Mul` | `G * B` | `G * A` | |
+/// | `MatMul` | `G @ transpose(B)` | `transpose(A) @ G` | |
+/// | `Relu` | `where(A > 0, G, 0)` (`ReluGrad`; 0 at `A = 0`) | | |
+/// | `Transpose` | `transpose(G)` | | |
+/// | `ReduceSum` | `broadcast_scalar(G, shape(A))` | | |
+/// | `ReduceMean` | `broadcast_scalar(G * (1 / numel(A)), shape(A))` | | |
+/// | `Mse` | `(A - B) * (G * (2 / numel(A)))` | `-dA` | |
+/// | `Embedding` | `embedding_grad(B, G, rows(A))` (`EmbeddingGrad`: row `G[n]` added to row `B[n]`) | none: `B` is `i32` ids | |
+/// | `AddRows` | `G` | `sum_rows(G)` (`SumRows`: the rows of `G` summed in ascending order) | |
+/// | `Gelu` | `gelu_grad(A, G)` (`GeluGrad`: `gelu'(A) * G`) | | |
+/// | `LayerNorm` | `layer_norm_grad_x(A, B, G)` (`LayerNormGradX`: `rstd * (G B - mean(G B) - xhat * mean(G B xhat))` per row) | `layer_norm_grad_gamma(A, G)` (`LayerNormGradGamma`: the rows of `G * xhat` summed in ascending order) | `sum_rows(G)` |
+/// | `Softmax` | `softmax_grad(Y, G)` (`SoftmaxGrad`: `Y * (G - rowsum(G * Y))`) | | |
 ///
 /// The constants `1 / numel` and `2 / numel` are `f32` scalars. `Mse`'s `B` is a target in a
 /// training program, an input that receives no gradient; a trainable `B` receives `-dA`.
 /// `EmbeddingGrad` adds the rows of `G` in ascending `n`, so a row read twice accumulates in a
 /// fixed order, and a row never read stays exactly zero. `SumRows` starts from row 0 and adds
-/// each later row in ascending order. `gelu'` is the derivative of the tanh form of `Gelu`.
+/// each later row in ascending order. `gelu'` is the derivative of the tanh form of `Gelu`. For
+/// `LayerNorm`, `xhat = (A - mean) * rstd` and `rstd = 1 / sqrt(var + 1e-12)` are recomputed from
+/// `A` per row; `Softmax`'s rule reads its own result `Y`.
 pub fn gradient<S: GradientSink + ?Sized>(
     sink: &mut S,
     op: &TensorOp,
     operands: &[ValueId],
+    result: ValueId,
     g: ValueId,
     wanted: &[bool],
 ) -> Result<Option<Vec<Option<ValueId>>>, S::Error> {
@@ -389,11 +453,31 @@ pub fn gradient<S: GradientSink + ?Sized>(
                 out[0] = Some(sink.emit(TensorOp::GeluGrad, &[operands[0], g])?);
             }
         }
+        TensorOp::LayerNorm => {
+            let (x, gamma) = (operands[0], operands[1]);
+            if want(0) {
+                out[0] = Some(sink.emit(TensorOp::LayerNormGradX, &[x, gamma, g])?);
+            }
+            if want(1) {
+                out[1] = Some(sink.emit(TensorOp::LayerNormGradGamma, &[x, g])?);
+            }
+            if want(2) {
+                out[2] = Some(sink.emit(TensorOp::SumRows, &[g])?);
+            }
+        }
+        TensorOp::Softmax => {
+            if want(0) {
+                out[0] = Some(sink.emit(TensorOp::SoftmaxGrad, &[result, g])?);
+            }
+        }
         TensorOp::ReluGrad
         | TensorOp::BroadcastScalar { .. }
         | TensorOp::EmbeddingGrad { .. }
         | TensorOp::SumRows
-        | TensorOp::GeluGrad => {
+        | TensorOp::GeluGrad
+        | TensorOp::LayerNormGradX
+        | TensorOp::LayerNormGradGamma
+        | TensorOp::SoftmaxGrad => {
             return Ok(None);
         }
     }
@@ -717,6 +801,157 @@ mod tests {
             (TensorOp::SumRows, vec![i32(&[5, 3])], 0),
             (TensorOp::Gelu, vec![i32(&[5, 3])], 0),
             (TensorOp::GeluGrad, vec![x.clone(), i32(&[5, 3])], 1),
+        ] {
+            let refs: Vec<&TensorType> = operands.iter().collect();
+            assert_eq!(
+                infer(&op, &refs, None),
+                Err(OpError::OperandDType {
+                    op: op.name(),
+                    index,
+                    expected: DType::F32,
+                    got: operands[index].clone(),
+                }),
+                "{op:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn layer_norm_of_an_n_by_h_x_and_two_h_rows_is_n_by_h() {
+        let (x, row) = (f32(&[4, 5]), f32(&[5]));
+        assert_eq!(
+            infer(&TensorOp::LayerNorm, &[&x, &row, &row], None),
+            Ok(x.clone())
+        );
+        assert_eq!(
+            infer(&TensorOp::LayerNormGradX, &[&x, &row, &x], None),
+            Ok(x.clone())
+        );
+        assert_eq!(
+            infer(&TensorOp::LayerNormGradGamma, &[&x, &x], None),
+            Ok(row)
+        );
+    }
+
+    /// A `gamma` or `beta` of another length is a shape mismatch against `x`; an `x` not of rank
+    /// 2, or a `gamma` or `beta` not of rank 1, is a rank error.
+    #[test]
+    fn layer_norm_refuses_rows_of_another_width_and_operands_of_other_ranks() {
+        let (x, row, long) = (f32(&[4, 5]), f32(&[5]), f32(&[6]));
+        assert_eq!(
+            infer(&TensorOp::LayerNorm, &[&x, &long, &row], None),
+            Err(OpError::ShapeMismatch {
+                op: "LayerNorm",
+                lhs: x.clone(),
+                rhs: long.clone(),
+            })
+        );
+        assert_eq!(
+            infer(&TensorOp::LayerNorm, &[&x, &row, &long], None),
+            Err(OpError::ShapeMismatch {
+                op: "LayerNorm",
+                lhs: x.clone(),
+                rhs: long.clone(),
+            })
+        );
+        assert_eq!(
+            infer(&TensorOp::LayerNorm, &[&row, &row, &row], None),
+            Err(OpError::Rank {
+                op: "LayerNorm",
+                expected: 2,
+                got: row.clone(),
+            })
+        );
+        for (gamma, beta, wrong) in [
+            (f32(&[1, 5]), row.clone(), f32(&[1, 5])),
+            (row.clone(), f32(&[]), f32(&[])),
+        ] {
+            assert_eq!(
+                infer(&TensorOp::LayerNorm, &[&x, &gamma, &beta], None),
+                Err(OpError::Rank {
+                    op: "LayerNorm",
+                    expected: 1,
+                    got: wrong,
+                })
+            );
+        }
+        assert_eq!(
+            infer(&TensorOp::LayerNormGradX, &[&x, &row, &f32(&[5, 4])], None),
+            Err(OpError::ShapeMismatch {
+                op: "LayerNormGradX",
+                lhs: x.clone(),
+                rhs: f32(&[5, 4]),
+            })
+        );
+        assert_eq!(
+            infer(&TensorOp::LayerNormGradGamma, &[&x, &f32(&[4, 6])], None),
+            Err(OpError::ShapeMismatch {
+                op: "LayerNormGradGamma",
+                lhs: x,
+                rhs: f32(&[4, 6]),
+            })
+        );
+    }
+
+    /// `softmax` keeps the shape of a rank-2 operand and refuses any other rank; `SoftmaxGrad`
+    /// needs two operands of one rank-2 shape.
+    #[test]
+    fn softmax_keeps_a_rank_2_shape_and_refuses_other_ranks() {
+        let x = f32(&[4, 6]);
+        assert_eq!(infer(&TensorOp::Softmax, &[&x], None), Ok(x.clone()));
+        assert_eq!(
+            infer(&TensorOp::SoftmaxGrad, &[&x, &x], None),
+            Ok(x.clone())
+        );
+        for shape in [&[][..], &[6], &[2, 4, 6]] {
+            assert_eq!(
+                infer(&TensorOp::Softmax, &[&f32(shape)], None),
+                Err(OpError::Rank {
+                    op: "Softmax",
+                    expected: 2,
+                    got: f32(shape),
+                })
+            );
+        }
+        assert_eq!(
+            infer(&TensorOp::SoftmaxGrad, &[&x, &f32(&[6, 4])], None),
+            Err(OpError::ShapeMismatch {
+                op: "SoftmaxGrad",
+                lhs: x,
+                rhs: f32(&[6, 4]),
+            })
+        );
+    }
+
+    /// The operands of the five norm and softmax ops are `f32`: row ids are refused in every
+    /// position.
+    #[test]
+    fn the_norm_and_softmax_ops_refuse_an_i32_operand() {
+        let x = f32(&[4, 5]);
+        let row = f32(&[5]);
+        for (op, operands, index) in [
+            (
+                TensorOp::LayerNorm,
+                vec![i32(&[4, 5]), row.clone(), row.clone()],
+                0,
+            ),
+            (
+                TensorOp::LayerNorm,
+                vec![x.clone(), row.clone(), i32(&[5])],
+                2,
+            ),
+            (
+                TensorOp::LayerNormGradX,
+                vec![x.clone(), i32(&[5]), x.clone()],
+                1,
+            ),
+            (
+                TensorOp::LayerNormGradGamma,
+                vec![x.clone(), i32(&[4, 5])],
+                1,
+            ),
+            (TensorOp::Softmax, vec![i32(&[4, 5])], 0),
+            (TensorOp::SoftmaxGrad, vec![x.clone(), i32(&[4, 5])], 1),
         ] {
             let refs: Vec<&TensorType> = operands.iter().collect();
             assert_eq!(

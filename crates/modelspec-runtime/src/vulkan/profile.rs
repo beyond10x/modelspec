@@ -16,6 +16,7 @@ use std::time::Duration;
 
 use modelspec_core::ir::kernel::{DispatchCount, ExecutionPlan, KernelModuleId};
 
+use super::pipeline::PipelineStatistics;
 use super::runner::RunStats;
 
 /// The steps a profiled run counts as warm-up before its steady state.
@@ -195,6 +196,10 @@ pub struct Profile {
     /// Compiling the kernels: the runner's SPIR-V emission, plus what the caller adds for the
     /// compile before it (the CLI adds the compile of the file and of its artifact).
     pub compile: Duration,
+    /// What the run read of the statistics of its pipelines' executables, per kernel of the plan
+    /// in plan order ([`PipelineStatistics`]): not captured on a device opened without
+    /// `VK_KHR_pipeline_executable_properties`, and the reason when a query failed.
+    pub pipeline_statistics: PipelineStatistics,
 }
 
 /// `flop <f> bytes <b> gflop_per_s <g> gb_per_s <h>` for the `(flop, bytes)` of `count`, the
@@ -252,6 +257,35 @@ impl Profile {
                 }
             }
             None => out.push_str("profile kernel timings unavailable: no timestamp queries\n"),
+        }
+        match &self.pipeline_statistics {
+            PipelineStatistics::Reported(kernels) => {
+                for kernel in kernels {
+                    let id = kernel.kernel_module_id;
+                    for (index, executable) in kernel.executables.iter().enumerate() {
+                        let _ = writeln!(
+                            out,
+                            "profile pipeline {id} executable {index} name {:?} subgroup_size {} \
+                             description {:?}",
+                            executable.name, executable.subgroup_size, executable.description
+                        );
+                        for statistic in &executable.statistics {
+                            let _ = writeln!(
+                                out,
+                                "profile pipeline {id} executable {index} statistic {:?} {} \
+                                 description {:?}",
+                                statistic.name, statistic.value, statistic.description
+                            );
+                        }
+                    }
+                }
+            }
+            PipelineStatistics::NotCaptured => {
+                out.push_str("profile pipeline statistics: not reported\n");
+            }
+            PipelineStatistics::Failed(reason) => {
+                let _ = writeln!(out, "profile pipeline statistics: not reported ({reason})");
+            }
         }
         let us = |d: Duration| d.as_secs_f64() * 1e6;
         let _ = writeln!(out, "profile dispatches {}", stats.dispatches);

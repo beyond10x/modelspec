@@ -676,9 +676,9 @@ fn build(
         .filter(|operand| matches!(operand, Operand::Buffer(_)))
         .count();
     let shared = match body {
-        Body::Stage1 | Body::Stage2 { .. } => Some(TREE),
-        Body::LossSum { chunk, .. } => Some(chunk),
-        Body::MatMul { layout, .. } => Some(layout.shared_values()),
+        Body::Stage1 | Body::Stage2 { .. } => Some((TREE, false)),
+        Body::LossSum { chunk, .. } => Some((chunk, false)),
+        Body::MatMul { layout, tile, .. } => Some((layout.shared_values(), tile.vector_reads())),
         _ => None,
     };
     let matmul_vars = match body {
@@ -886,6 +886,9 @@ struct Shell {
     /// The written bindings, after the read ones; the last is the result.
     outs: Vec<Word>,
     shared: Option<Word>,
+    /// The `vec4` of `f32` and its workgroup pointer when workgroup memory is an array of them
+    /// ([`MatMulTile::vector_reads`]); `None` when it is an array of `f32`.
+    shared_vectors: Option<(Word, Word)>,
     /// The invocation's flat index over every workgroup.
     index: Word,
     /// The invocation's index in its workgroup, when the module uses workgroup memory.
@@ -915,7 +918,7 @@ impl Shell {
         reads: usize,
         writes: usize,
         workgroup_size: u32,
-        shared: Option<u32>,
+        shared: Option<(u32, bool)>,
         matmul_vars: usize,
         float_controls: bool,
         exact: bool,
@@ -1005,7 +1008,16 @@ impl Shell {
             .map(|at| bind(&mut b, write_ptr, reads as u32 + at))
             .collect();
         let pc = b.variable(pc_ptr, None, StorageClass::PushConstant, None);
-        let shared_var = if let Some(length) = shared {
+        // Workgroup memory of `length` `f32` values, an array of `vec4` when `vectors`.
+        let mut shared_vectors = None;
+        let shared_var = if let Some((length, vectors)) = shared {
+            let (element, length) = if vectors {
+                let vec4 = b.type_vector(f32_ty, 4);
+                shared_vectors = Some((vec4, b.type_pointer(None, StorageClass::Workgroup, vec4)));
+                (vec4, length / 4)
+            } else {
+                (f32_ty, length)
+            };
             let length = match u32_constants.get(&length) {
                 Some(&id) => id,
                 None => {
@@ -1014,7 +1026,7 @@ impl Shell {
                     id
                 }
             };
-            let array = b.type_array(f32_ty, length);
+            let array = b.type_array(element, length);
             let array_ptr = b.type_pointer(None, StorageClass::Workgroup, array);
             Some(b.variable(array_ptr, None, StorageClass::Workgroup, None))
         } else {
@@ -1078,6 +1090,7 @@ impl Shell {
             buffers,
             outs,
             shared: shared_var,
+            shared_vectors,
             index,
             local,
             count,
@@ -1221,7 +1234,30 @@ impl Shell {
 
     fn shared_at(&mut self, at: Word) -> Result<Word, EmitError> {
         let shared = self.shared.expect("a module with workgroup memory");
+        if self.shared_vectors.is_some() {
+            let (two, three) = (self.uint(2), self.uint(3));
+            let vector = self.b.shift_right_logical(self.u32_ty, None, at, two)?;
+            let lane = self.b.bitwise_and(self.u32_ty, None, at, three)?;
+            return Ok(self
+                .b
+                .access_chain(self.shared_ptr, None, shared, [vector, lane])?);
+        }
         Ok(self.b.access_chain(self.shared_ptr, None, shared, [at])?)
+    }
+
+    /// The 4 `f32` values of vector `at` of workgroup memory declared as `vec4`s, as one load.
+    fn load_shared_vector(&mut self, at: Word) -> Result<[Word; 4], EmitError> {
+        let shared = self.shared.expect("a module with workgroup memory");
+        let (vec4, ptr) = self.shared_vectors.expect("workgroup memory of vectors");
+        let ptr = self.b.access_chain(ptr, None, shared, [at])?;
+        let vector = self.b.load(vec4, None, ptr, None, [])?;
+        let mut values = [0; 4];
+        for (lane, value) in values.iter_mut().enumerate() {
+            *value = self
+                .b
+                .composite_extract(self.f32_ty, None, vector, [lane as u32])?;
+        }
+        Ok(values)
     }
 
     fn load_shared(&mut self, at: Word) -> Result<Word, EmitError> {
@@ -1681,6 +1717,13 @@ impl Shell {
     /// conflicts when the device has the workgroup memory for it, so the products read the same
     /// values as for the operand bound as is; every product and sum is that of the operand bound
     /// as is, and the instructions for an operand bound as is are unchanged.
+    ///
+    /// A tile with [`MatMulTile::vector_reads`] (the block of 256 invocations) gives each
+    /// invocation runs of 4 adjacent columns and rows, stages both blocks `k`-major
+    /// ([`MatMulTile::vector_layout`]) in workgroup memory declared as `vec4`s, and per `k` reads
+    /// each run of 4 values of `b` and of `a` with one vector load, then fuses the products of
+    /// that `k` in the order of the scalar reads, row by row and column by column: every
+    /// product and sum is the one the scalar tile computes for that output element.
     fn matmul(
         &mut self,
         [m, k, n]: [u32; 3],
@@ -1723,11 +1766,25 @@ impl Shell {
         let b_stride_c = self.uint(layout.b_stride);
         // Per column `c` of the invocation's block: its output column `j`, and where its `b`
         // values start in a buffer, at `k` 0 of the tile.
+        // A tile with vector reads (`MatMulTile::vector_reads`) gives each invocation runs of 4
+        // adjacent columns and rows, both blocks staged `k`-major.
+        let vectors = tile.vector_reads();
+        let (thread_col4, thread_row4) = if vectors {
+            let four = self.uint(4);
+            (self.mul(thread_col, four)?, self.mul(thread_row, four)?)
+        } else {
+            (thread_col, thread_row)
+        };
         let mut local_cols = Vec::new();
         let mut b_cols = Vec::new();
         for c in 0..per {
-            let offset = self.uint(c * lanes);
-            let col = self.add(thread_col, offset)?;
+            let col = if vectors {
+                let offset = self.uint(c / 4 * lanes * 4 + c % 4);
+                self.add(thread_col4, offset)?
+            } else {
+                let offset = self.uint(c * lanes);
+                self.add(thread_col, offset)?
+            };
             let at = if transposed {
                 self.mul(col, b_stride_c)?
             } else {
@@ -1738,12 +1795,35 @@ impl Shell {
         }
         let mut local_rows = Vec::new();
         for q in 0..tile.rows {
-            let offset = self.uint(q * thread_rows);
-            local_rows.push(self.add(thread_row, offset)?);
+            if vectors {
+                let offset = self.uint(q / 4 * thread_rows * 4 + q % 4);
+                local_rows.push(self.add(thread_row4, offset)?);
+            } else {
+                let offset = self.uint(q * thread_rows);
+                local_rows.push(self.add(thread_row, offset)?);
+            }
         }
+        // Where each row's `a` values start in a buffer, at `k` 0 of the tile: the row of a
+        // `k`-major block, else the row times the stride.
         let mut a_rows = Vec::new();
         for &row in &local_rows {
-            a_rows.push(self.mul(row, a_stride_c)?);
+            a_rows.push(if vectors {
+                row
+            } else {
+                self.mul(row, a_stride_c)?
+            });
+        }
+        // With vector reads, the vector of each run of 4 columns and rows at `k` 0 of the tile.
+        let mut b_vectors = Vec::new();
+        let mut a_vectors = Vec::new();
+        if vectors {
+            let two = self.uint(2);
+            for &at in b_cols.iter().step_by(4) {
+                b_vectors.push(self.b.shift_right_logical(u32_ty, None, at, two)?);
+            }
+            for &at in a_rows.iter().step_by(4) {
+                a_vectors.push(self.b.shift_right_logical(u32_ty, None, at, two)?);
+            }
         }
 
         // This invocation's staging slots, the same in every tile: the `a` values it stages,
@@ -1814,7 +1894,10 @@ impl Shell {
                     let along_at = self.mul(along, stride)?;
                     self.add(along_at, line)?
                 };
-                let to = if is_a {
+                let to = if is_a && vectors {
+                    let k_at = self.mul(along, a_stride_c)?;
+                    self.add(k_at, across)?
+                } else if is_a {
                     let r_at = self.mul(across, a_stride_c)?;
                     self.add(r_at, along)?
                 } else {
@@ -1904,36 +1987,46 @@ impl Shell {
         // `k`, the invocation reads its `b` value of each of its columns into registers, then
         // per row its `a` value and that row's products, accumulator `q * per + c` holding row
         // `q` and column `c` of its block.
-        let compute =
-            |s: &mut Self, buffer: Word, len: u32, opening: bool| -> Result<(), EmitError> {
-                let vars = s.matmul_vars[..accumulators].to_vec();
-                let mut sums: Vec<Option<Word>> = Vec::new();
-                for &var in &vars {
-                    sums.push(if opening {
-                        None
-                    } else {
-                        Some(s.b.load(s.f32_ty, None, var, None, [])?)
-                    });
-                }
-                let mut b_starts = Vec::new();
-                for &b_col in &b_cols {
-                    b_starts.push(s.add(buffer, b_col)?);
-                }
-                let mut a_starts = Vec::new();
-                for &a_row in &a_rows {
-                    a_starts.push(s.add(buffer, a_row)?);
-                }
-                for p in 0..len {
-                    let p_c = s.uint(p);
-                    let b_step = s.uint(if transposed { p } else { p * b_line });
+        let compute = |s: &mut Self,
+                       buffer: Word,
+                       buffer_value: u32,
+                       len: u32,
+                       opening: bool|
+         -> Result<(), EmitError> {
+            let vars = s.matmul_vars[..accumulators].to_vec();
+            let mut sums: Vec<Option<Word>> = Vec::new();
+            for &var in &vars {
+                sums.push(if opening {
+                    None
+                } else {
+                    Some(s.b.load(s.f32_ty, None, var, None, [])?)
+                });
+            }
+            let mut b_starts = Vec::new();
+            for &b_col in &b_cols {
+                b_starts.push(s.add(buffer, b_col)?);
+            }
+            let mut a_starts = Vec::new();
+            for &a_row in &a_rows {
+                a_starts.push(s.add(buffer, a_row)?);
+            }
+            for p in 0..len {
+                if vectors {
+                    // Per `k`, one vector load per run of 4 columns of `b` and of 4 rows
+                    // of `a`, then the products in the order of the scalar reads.
                     let mut bs = Vec::new();
-                    for &b_start in &b_starts {
-                        let b_at = s.add(b_start, b_step)?;
-                        bs.push(s.load_shared(b_at)?);
+                    for &at in &b_vectors {
+                        let offset = s.uint((buffer_value + p * b_line) / 4);
+                        let at = s.add(at, offset)?;
+                        bs.extend(s.load_shared_vector(at)?);
                     }
-                    for (row_sums, &a_start) in sums.chunks_mut(per as usize).zip(&a_starts) {
-                        let a_at = s.add(a_start, p_c)?;
-                        let a = s.load_shared(a_at)?;
+                    let mut a_values = Vec::new();
+                    for &at in &a_vectors {
+                        let offset = s.uint((buffer_value + p * a_stride) / 4);
+                        let at = s.add(at, offset)?;
+                        a_values.extend(s.load_shared_vector(at)?);
+                    }
+                    for (row_sums, &a) in sums.chunks_mut(per as usize).zip(&a_values) {
                         for (sum, &b) in row_sums.iter_mut().zip(&bs) {
                             *sum = Some(match *sum {
                                 None => s.f_mul(a, b)?,
@@ -1941,14 +2034,33 @@ impl Shell {
                             });
                         }
                     }
+                    continue;
                 }
-                for (&var, sum) in vars.iter().zip(sums) {
-                    if let Some(sum) = sum {
-                        s.b.store(var, sum, None, [])?;
+                let p_c = s.uint(if vectors { p * a_stride } else { p });
+                let b_step = s.uint(if transposed { p } else { p * b_line });
+                let mut bs = Vec::new();
+                for &b_start in &b_starts {
+                    let b_at = s.add(b_start, b_step)?;
+                    bs.push(s.load_shared(b_at)?);
+                }
+                for (row_sums, &a_start) in sums.chunks_mut(per as usize).zip(&a_starts) {
+                    let a_at = s.add(a_start, p_c)?;
+                    let a = s.load_shared(a_at)?;
+                    for (sum, &b) in row_sums.iter_mut().zip(&bs) {
+                        *sum = Some(match *sum {
+                            None => s.f_mul(a, b)?,
+                            Some(acc) => s.f_fma(a, b, acc)?,
+                        });
                     }
                 }
-                Ok(())
-            };
+            }
+            for (&var, sum) in vars.iter().zip(sums) {
+                if let Some(sum) = sum {
+                    s.b.store(var, sum, None, [])?;
+                }
+            }
+            Ok(())
+        };
         let buffer_values = layout.buffer_values;
         let buffers = layout.buffers;
         let buffer_of =
@@ -1976,7 +2088,8 @@ impl Shell {
                 queue.push_back(fetch(s, start, len)?);
             }
             let buffer = buffer_of(s, i as u32);
-            compute(s, buffer, len_of(i), i == 0)?;
+            let buffer_value = (i as u32 % buffers) * buffer_values;
+            compute(s, buffer, buffer_value, len_of(i), i == 0)?;
             if i + 1 < count {
                 let next = queue.pop_front().expect("fetched ahead");
                 let buffer = buffer_of(s, i as u32 + 1);
@@ -2192,7 +2305,9 @@ mod tests {
     /// stores to in `layout`, as [`Shell::matmul`] computes it.
     fn staged_at(tile: &MatMulTile, layout: &MatMulLayout, is_a: bool, at: (u32, u32)) -> u32 {
         let (along, across) = at;
-        if is_a {
+        if is_a && tile.vector_reads() {
+            along * layout.a_stride + across
+        } else if is_a {
             across * layout.a_stride + along
         } else if tile.cols_per_invocation == 1 {
             layout.b_offset + across * layout.b_stride + along
@@ -2201,7 +2316,8 @@ mod tests {
         }
     }
 
-    /// The bank conflicts of staging operand `a` (`is_a`) or `b` of `tile`, bound transposed,
+    /// The bank conflicts of staging operand `a` (`is_a`) or `b` of `tile`, bound transposed
+    /// when `transposed`,
     /// into `layout`: over every store of 32 consecutive staging elements, the elements of the
     /// 32 invocations of one subgroup, the most distinct addresses one of 32 banks of 4 bytes
     /// takes. 1 is a store without conflicts.
@@ -2210,8 +2326,9 @@ mod tests {
         layout: &MatMulLayout,
         (m, k, n): (u32, u32, u32),
         is_a: bool,
+        transposed: bool,
     ) -> u32 {
-        let staging = Staging::of(tile, m, k, n, is_a, true);
+        let staging = Staging::of(tile, m, k, n, is_a, transposed);
         let total = total(tile, is_a);
         (0..total)
             .step_by(32)
@@ -2267,8 +2384,8 @@ mod tests {
                 }
                 let case = format!("[{m}, {k}] x [{k}, {n}] {tile} a {is_a}");
                 let layout = tile.layout_within(only(is_a), RTX3090_SHARED_BYTES);
-                let before = conflicts(&tile, &tile.layout([false, false]), (m, k, n), is_a);
-                let after = conflicts(&tile, &layout, (m, k, n), is_a);
+                let before = conflicts(&tile, &tile.layout([false, false]), (m, k, n), is_a, true);
+                let after = conflicts(&tile, &layout, (m, k, n), is_a, true);
                 assert_eq!(after, 1, "{case}: {before} unpadded, {after} padded");
                 checked += 1;
             }
@@ -2279,7 +2396,8 @@ mod tests {
     /// The padding never adds conflicts and never moves an operand read as is: over sampled
     /// shapes and both invocation limits, a padded operand stores without conflicts, any other
     /// transposed operand stores as unpadded, and the strides of a matmul reading neither
-    /// operand transposed are those of the tile before the change.
+    /// operand transposed are those of the tile before the change, but for the `k`-major `a`
+    /// of a tile with vector reads ([`MatMulTile::vector_layout`]).
     #[test]
     fn the_padding_removes_conflicts_and_leaves_an_operand_read_as_is_where_it_was() {
         let mut state = 0x5eed_u64;
@@ -2295,13 +2413,17 @@ mod tests {
             for limit in [128, 256] {
                 let tile = MatMulTile::of_invocations(m.into(), k.into(), n.into(), limit);
                 let plain = tile.layout([false, false]);
-                assert_eq!(plain.a_stride, tile.depth, "{tile}");
+                if tile.vector_reads() {
+                    assert_eq!(plain.a_stride, tile.rows_per_workgroup() + 4, "{tile}");
+                } else {
+                    assert_eq!(plain.a_stride, tile.depth, "{tile}");
+                }
                 assert_eq!(plain.b_stride, tile.b_stride(), "{tile}");
                 for is_a in [true, false] {
                     let case = format!("[{m}, {k}] x [{k}, {n}] {tile} a {is_a}");
                     let layout = tile.layout_within(only(is_a), RTX3090_SHARED_BYTES);
-                    let before = conflicts(&tile, &plain, (m, k, n), is_a);
-                    let after = conflicts(&tile, &layout, (m, k, n), is_a);
+                    let before = conflicts(&tile, &plain, (m, k, n), is_a, true);
+                    let after = conflicts(&tile, &layout, (m, k, n), is_a, true);
                     if padded(&tile, is_a) {
                         assert_eq!(after, 1, "{case}: {before} unpadded");
                     } else {
@@ -2311,5 +2433,57 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The block of 256 invocations reads vectors ([`MatMulTile::vector_reads`]) and the tiles of
+    /// 128 do not; its layout stages both operands `k`-major, every stride, offset and buffer a
+    /// multiple of 4 values so that each vector read is aligned, and its staging stores of `a`
+    /// and `b`, read as is or transposed, take one address per bank per subgroup store, for the
+    /// `mlp_sweep` b8192 h4096 shapes and sampled ones.
+    #[test]
+    fn the_block_stages_k_major_aligned_for_vector_reads_without_bank_conflicts() {
+        let mut shapes = vec![(8192, 784, 4096), (784, 8192, 4096), (8192, 64, 128)];
+        let mut state = 0x000b_10c4_u64;
+        for _ in 0..200 {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            let pick = |shift: u32, bound: u64, from: u64| from + (state >> shift) % bound;
+            shapes.push((
+                pick(10, 9000, 256) as u32,
+                pick(30, 9000, 64) as u32,
+                pick(45, 9000, 128) as u32,
+            ));
+        }
+        let mut blocks = 0;
+        for (m, k, n) in shapes {
+            let tile = MatMulTile::of_invocations(m.into(), k.into(), n.into(), 256);
+            assert_eq!(tile.vector_reads(), tile.workgroup_size == 256, "{tile}");
+            assert!(!MatMulTile::of(m.into(), k.into(), n.into()).vector_reads());
+            if !tile.vector_reads() {
+                continue;
+            }
+            blocks += 1;
+            for flags in [[false, false], [true, false], [false, true], [true, true]] {
+                let layout = tile.layout_within(flags, RTX3090_SHARED_BYTES);
+                let case = format!("[{m}, {k}] x [{k}, {n}] {tile} {flags:?} {layout:?}");
+                assert_eq!(layout, tile.vector_layout(flags), "{case}");
+                for value in [
+                    layout.a_stride,
+                    layout.b_stride,
+                    layout.b_offset,
+                    layout.buffer_values,
+                ] {
+                    assert!(value.is_multiple_of(4), "{case}");
+                }
+                assert!(layout.a_stride >= tile.rows_per_workgroup(), "{case}");
+                assert!(layout.b_stride >= tile.cols, "{case}");
+                for (is_a, transposed) in [(true, flags[0]), (false, flags[1])] {
+                    let found = conflicts(&tile, &layout, (m, k, n), is_a, transposed);
+                    assert_eq!(found, 1, "{case} a {is_a}");
+                }
+            }
+        }
+        assert!(blocks >= 50, "{blocks} blocks checked");
     }
 }

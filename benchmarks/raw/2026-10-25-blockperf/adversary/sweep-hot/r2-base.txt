@@ -1,0 +1,12 @@
+# gpu-apps-before [] 2026-10-25T00:35:35Z
+# binary: <scratch>/bin/mlp_sweep-base (9135029cc91144fc)
+# command: <scratch>/bin/mlp_sweep-base --bench --point 8192:4096 --min-seconds 6 (cwd <scratch>/base/crates/modelspec-runtime)
+# before: 2026/10/25 02:35:35.465, 85, 1680 MHz, P0
+mlp_sweep: warning: not a clean checkout: Build { version: Some("0.9.0"), commit: None, dirty: None }
+mlp_sweep: batch 8192 hidden 4096: 107239964672 FLOP per step
+mlp_sweep:   calibration: 832 steps in 7.102 s
+mlp_sweep:   timed: 832 steps in 7.132 s, 8572.472 us per step
+mlp_sweep:   timed: 832 steps in 7.209 s, 8664.363 us per step
+mlp_sweep:   timed: 832 steps in 7.148 s, 8591.686 us per step
+# exit 0
+# after: 2026/10/25 02:36:07.511, 80, 1905 MHz, P0

@@ -51,6 +51,21 @@ types:
       - views.count >= 1
       - views.count <= 2
 
+  - name: modelspec.artifact.MatMulLimits
+    kind: struct
+    naming:
+      summary: The device limits a plan's matmul tiles were scheduled within, read from the DeviceProfile the compile was given (DESIGN.md § 3.1, § 5.2, § 7.1).
+    fields:
+      - name: invocations
+        type: Integer
+        summary: Invocations per workgroup, the smaller of DeviceProfile.max_workgroup_invocations and max_workgroup_size.x.
+      - name: shared_bytes
+        type: Integer
+        summary: Bytes of workgroup memory, DeviceProfile.max_shared_memory_bytes.
+    invariants:
+      - invocations >= 128
+      - shared_bytes >= 16384
+
   - name: modelspec.artifact.DataRole
     kind: enum
     naming:
@@ -206,7 +221,10 @@ entities:
         summary: Recorded in the artifact hash (DESIGN.md § 3.3).
       - name: deterministic
         type: Boolean
-        summary: A compile setting; every floating-point reduction runs in an order fixed by the shape alone, workgroup sizes are fixed in the plan at compile time (no shipped command reads them from a DeviceProfile, and no reduction's workgroup size depends on one), and the CPU order is one admissible order, so it is recorded in the artifact hash (DESIGN.md § 3.3, § 5.2, § 6.1).
+        summary: A compile setting; every floating-point reduction runs in an order fixed by the shape alone, workgroup sizes are fixed in the plan at compile time (a matmul's tile may be chosen within the matmul_limits of the DeviceProfile the compile was given, which leaves the order of each output element unchanged, and no reduction's workgroup size depends on one), and the CPU order is one admissible order, so it is recorded in the artifact hash (DESIGN.md § 3.3, § 5.2, § 6.1).
+      - name: matmul_limits
+        type: Optional<modelspec.artifact.MatMulLimits>
+        summary: The device limits the plan was scheduled within, absent for a plan scheduled for every Vulkan device; recorded in the manifest and so in the artifact hash. The reader refuses a plan with a workgroup past the recorded invocations (E-ARTIFACT-003), and a device that reports less than either limit is refused before any dispatch (E-ARTIFACT-005), naming the recorded and the reported value of both (DESIGN.md § 5.2, § 7.1).
       - name: compiler_version
         type: String
         summary: Manifest; recorded for reproducibility (DESIGN.md § 6.1).

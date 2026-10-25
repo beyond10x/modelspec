@@ -33,8 +33,12 @@
       "type": "boolean"
     },
     "deterministic": {
-      "description": "A compile setting; every floating-point reduction runs in an order fixed by the shape alone, workgroup sizes are fixed in the plan at compile time (no shipped command reads them from a DeviceProfile, and no reduction's workgroup size depends on one), and the CPU order is one admissible order, so it is recorded in the artifact hash (DESIGN.md § 3.3, § 5.2, § 6.1).",
+      "description": "A compile setting; every floating-point reduction runs in an order fixed by the shape alone, workgroup sizes are fixed in the plan at compile time (a matmul's tile may be chosen within the matmul_limits of the DeviceProfile the compile was given, which leaves the order of each output element unchanged, and no reduction's workgroup size depends on one), and the CPU order is one admissible order, so it is recorded in the artifact hash (DESIGN.md § 3.3, § 5.2, § 6.1).",
       "type": "boolean"
+    },
+    "matmul_limits": {
+      "$ref": "#/$defs/modelspec.artifact.MatMulLimits",
+      "description": "The device limits the plan was scheduled within, absent for a plan scheduled for every Vulkan device; recorded in the manifest and so in the artifact hash. The reader refuses a plan with a workgroup past the recorded invocations (E-ARTIFACT-003), and a device that reports less than either limit is refused before any dispatch (E-ARTIFACT-005), naming the recorded and the reported value of both (DESIGN.md § 5.2, § 7.1)."
     },
     "compiler_version": {
       "description": "Manifest; recorded for reproducibility (DESIGN.md § 6.1).",
@@ -115,8 +119,8 @@
   "x-ess-provenance": {
     "system": "modelspec",
     "specification_version": "v1",
-    "source_digest": "cb65661d492b4821f46839753d15cf96071f8f2c6cd0249eb75956c524aab399",
-    "contract_digest": "slice-sha256/2:f8888232c411cfca129fc8a4ec0491b4978c8dbac0b84e4ed35111596738e91a",
+    "source_digest": "e2a1b7bf99ffb08b8be11d3acd949b469f3311a10b1f04f1d0322f2666dde9c6",
+    "contract_digest": "slice-sha256/2:a9b563dd7a23abd70f20a17a5976ccb50d1e1e69fc2b23ebc5e3f1204c8cd45e",
     "regenerate": "ess generate"
   },
   "$defs": {
@@ -264,6 +268,34 @@
       "type": "string",
       "format": "uuid",
       "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    },
+    "modelspec.artifact.MatMulLimits": {
+      "title": "MatMulLimits",
+      "description": "The device limits a plan's matmul tiles were scheduled within, read from the DeviceProfile the compile was given (DESIGN.md § 3.1, § 5.2, § 7.1).",
+      "x-ess-name": "modelspec.artifact.MatMulLimits",
+      "x-ess-kind": "struct",
+      "type": "object",
+      "properties": {
+        "invocations": {
+          "description": "Invocations per workgroup, the smaller of DeviceProfile.max_workgroup_invocations and max_workgroup_size.x.",
+          "type": "integer",
+          "minimum": 128
+        },
+        "shared_bytes": {
+          "description": "Bytes of workgroup memory, DeviceProfile.max_shared_memory_bytes.",
+          "type": "integer",
+          "minimum": 16384
+        }
+      },
+      "required": [
+        "invocations",
+        "shared_bytes"
+      ],
+      "additionalProperties": false,
+      "x-ess-invariants": [
+        "invocations >= 128",
+        "shared_bytes >= 16384"
+      ]
     },
     "modelspec.artifact.ParameterSpec": {
       "title": "ParameterSpec",

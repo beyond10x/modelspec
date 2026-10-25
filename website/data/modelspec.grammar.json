@@ -12,6 +12,8 @@
     "embedding",
     "add_rows",
     "gelu",
+    "layer_norm",
+    "softmax",
     "xavier_uniform",
     "zeros",
     "ones",

@@ -1,0 +1,25 @@
+b10x-build-slot: slot 1 of 3, 115G free
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.06s
+     Running tests/adversary_blockperf_limits.rs (target/debug/deps/adversary_blockperf_limits-5b3bd6f093263b7c)
+
+running 1 test
+test a_manifest_breaking_the_matmul_limits_invariants_is_refused ... FAILED
+
+failures:
+
+---- a_manifest_breaking_the_matmul_limits_invariants_is_refused stdout ----
+
+thread 'a_manifest_breaking_the_matmul_limits_invariants_is_refused' (1027222) panicked at crates/modelspec-core/tests/adversary_blockperf_limits.rs:161:5:
+spec/domains/artifact.yaml MatMulLimits: shared_bytes >= 16384: [
+    "shared-below-16k: accepted, matmul_limits Some(MatMulLimits { invocations: 1024, shared_bytes: 8192 })",
+    "shared-zero: accepted, matmul_limits Some(MatMulLimits { invocations: 1024, shared_bytes: 0 })",
+]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    a_manifest_breaking_the_matmul_limits_invariants_is_refused
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.02s
+
+error: test failed, to rerun pass `-p modelspec-core --test adversary_blockperf_limits`

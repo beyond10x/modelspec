@@ -8,13 +8,15 @@
 //! an autodiff or SGD failure on verified Tensor IR is a compiler bug and is reported under
 //! [`codes::COMPILER_BUG`], never as a user code (DESIGN.md § 8.1).
 
-use crate::artifact::{Backend, CompiledArtifact};
+use crate::artifact::{Backend, CompiledArtifact, E_ARTIFACT_005};
 use crate::autodiff::differentiate;
+use crate::device::DeviceProfile;
 use crate::diag::Diagnostic;
 use crate::hir::Hir;
+use crate::ir::kernel::MatMulLimits;
 use crate::ir::tensor::{TensorProgram, ValueId};
 use crate::ir::training::{TrainConfig, TrainingStep, attach_sgd};
-use crate::ir::verify::{verify, verify_plan, verify_step};
+use crate::ir::verify::{verify, verify_plan_for, verify_step};
 use crate::lower::{self, LoweredProgram};
 use crate::passes::dce;
 use crate::resolve::OPERATORS;
@@ -79,16 +81,51 @@ pub fn compile_artifact(
     source: &str,
     backend: Backend,
 ) -> Result<CompiledArtifact, Vec<Diagnostic>> {
+    compile_artifact_for(path, source, backend, None)
+}
+
+/// [`compile_artifact`] for the device `profile` describes: the plan is scheduled within its
+/// limits ([`schedule::schedule_for`] with [`MatMulLimits::of`] the profile), verified against
+/// it ([`verify_plan_for`]), and the artifact records those limits
+/// ([`CompiledArtifact::matmul_limits`]). A profile whose limits are below the Vulkan minimum
+/// the smallest tile needs ([`MatMulLimits::checked`]) describes a device no plan runs on: it
+/// is refused with [`E_ARTIFACT_005`] naming the field, its bound and the reported value, so no
+/// artifact records such limits. Without a profile it is [`compile_artifact`].
+pub fn compile_artifact_for(
+    path: &str,
+    source: &str,
+    backend: Backend,
+    profile: Option<&DeviceProfile>,
+) -> Result<CompiledArtifact, Vec<Diagnostic>> {
     let compiled = compile_training(path, source)?;
-    let scheduled = match backend {
-        Backend::Cpu => schedule::schedule_views,
-        Backend::Vulkan => schedule::schedule,
-    };
-    let plan = scheduled(
-        &compiled.training,
-        compiled.forward.prediction,
-        &compiled.config,
-    )
+    let limits = profile
+        .map(|profile| MatMulLimits::of(profile).checked())
+        .transpose()
+        .map_err(|below| {
+            vec![
+                Diagnostic::new(
+                    E_ARTIFACT_005,
+                    "the device profile reports less than the Vulkan minimum the smallest matmul \
+                     tile needs, so no plan runs on it",
+                )
+                .with("field", below.field)
+                .with("bound", below.bound.to_string())
+                .with("reported", below.value.to_string()),
+            ]
+        })?;
+    let plan = match backend {
+        Backend::Cpu => schedule::schedule_views(
+            &compiled.training,
+            compiled.forward.prediction,
+            &compiled.config,
+        ),
+        Backend::Vulkan => schedule::schedule_for(
+            &compiled.training,
+            compiled.forward.prediction,
+            &compiled.config,
+            limits,
+        ),
+    }
     .map_err(|error| {
         if error.is_target_limit() {
             vec![
@@ -107,14 +144,11 @@ pub fn compile_artifact(
             )]
         }
     })?;
-    verify_plan(&plan)
+    verify_plan_for(&plan, profile)
         .map_err(|error| vec![compiler_bug("the execution plan does not verify", &error)])?;
-    Ok(CompiledArtifact::new(
-        backend,
-        source,
-        &compiled.training,
-        plan,
-    ))
+    let mut artifact = CompiledArtifact::new(backend, source, &compiled.training, plan);
+    artifact.matmul_limits = limits;
+    Ok(artifact)
 }
 
 /// Differentiates the single output of `forward`, its loss, attaches SGD at `lr` and verifies

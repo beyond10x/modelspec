@@ -16,6 +16,10 @@
 //! `SumRows`, the bias gradient of `add_rows`, starts each column from row 0 and adds every later
 //! row in ascending order, each partial sum rounded; `EmbeddingGrad` adds rows in ascending `n`.
 //! `gelu` and its gradient are computed in the element type, with its `exp` (DESIGN.md § 4).
+//! `layer_norm`, `softmax` and their gradient ops work row by row: each row reduction sums in
+//! ascending column order from the first column, and the gradient of `gamma` sums rows in
+//! ascending order from row 0; a sum of products fuses each product after the first, as the
+//! `mse` sum does (DESIGN.md § 4).
 //!
 //! Every value is allocated through one checked path; a value the host cannot hold is a
 //! [`RuntimeError::Allocation`].
@@ -715,7 +719,98 @@ impl<'p, T: Element> Prepared<'p, T> {
                 let (a, g) = (arg(0), arg(1));
                 data.extend(a.data.iter().zip(g.data).map(|(&a, &g)| gelu_grad(a, g)));
             }
+            TensorOp::LayerNorm => {
+                let (x, gamma, beta) = (arg(0), arg(1), arg(2));
+                for row in x.data.chunks_exact(gamma.len()) {
+                    let (mean, rstd) = row_moments(row);
+                    data.extend(
+                        row.iter()
+                            .zip(gamma.data.iter().zip(beta.data))
+                            .map(|(&x, (&gamma, &beta))| (x - mean) * rstd * gamma + beta),
+                    );
+                }
+            }
+            TensorOp::LayerNormGradX => {
+                let (x, gamma, g) = (arg(0), arg(1), arg(2));
+                let h = gamma.len();
+                let width = T::from_count(h as u64);
+                for (row, g_row) in x.data.chunks_exact(h).zip(g.data.chunks_exact(h)) {
+                    let (mean, rstd) = row_moments(row);
+                    let xhat = |j: usize| (row[j] - mean) * rstd;
+                    let gx = |j: usize| g_row[j] * gamma.data[j];
+                    let mean_gx = sum((0..h).map(gx)) / width;
+                    let mean_gx_xhat = sum_of_products((0..h).map(|j| (gx(j), xhat(j)))) / width;
+                    data.extend(
+                        (0..h).map(|j| rstd * ((gx(j) - mean_gx) - xhat(j) * mean_gx_xhat)),
+                    );
+                }
+            }
+            TensorOp::LayerNormGradGamma => {
+                let (x, g) = (arg(0), arg(1));
+                let h = n;
+                let rows = x.data.chunks_exact(h).zip(g.data.chunks_exact(h));
+                for (k, (row, g_row)) in rows.enumerate() {
+                    let (mean, rstd) = row_moments(row);
+                    let terms = row.iter().zip(g_row).map(|(&x, &g)| (g, (x - mean) * rstd));
+                    if k == 0 {
+                        data.extend(terms.map(|(g, xhat)| g * xhat));
+                    } else {
+                        for (out, (g, xhat)) in data.iter_mut().zip(terms) {
+                            *out = g.mul_add(xhat, *out);
+                        }
+                    }
+                }
+                data.resize(n, T::ZERO);
+            }
+            TensorOp::Softmax => {
+                let x = arg(0);
+                for row in x.data.chunks_exact(x.shape[1] as usize) {
+                    let max = row[1..]
+                        .iter()
+                        .fold(row[0], |m, &v| if v > m { v } else { m });
+                    let start = data.len();
+                    data.extend(row.iter().map(|&v| (v - max).exp()));
+                    let total = sum(data[start..].iter().copied());
+                    for e in &mut data[start..] {
+                        *e = *e / total;
+                    }
+                }
+            }
+            TensorOp::SoftmaxGrad => {
+                let (y, g) = (arg(0), arg(1));
+                let k = y.shape[1] as usize;
+                for (y_row, g_row) in y.data.chunks_exact(k).zip(g.data.chunks_exact(k)) {
+                    let d = sum_of_products(g_row.iter().copied().zip(y_row.iter().copied()));
+                    data.extend(y_row.iter().zip(g_row).map(|(&y, &g)| y * (g - d)));
+                }
+            }
         }
+    }
+}
+
+/// `eps` of `layer_norm`, `1e-12` as an `f32` constant (DESIGN.md § 4).
+const LAYER_NORM_EPS: f32 = 1e-12;
+
+/// The mean and `1 / sqrt(var + eps)` of one `layer_norm` row, in two passes (coordinator
+/// decision D32): the mean is the row summed in ascending column order from its first element and
+/// divided by its length; the biased variance is the sum of the squared deviations from that
+/// mean, as [`sum_of_products`] adds them, divided by the length. The square root and the
+/// division are each rounded once.
+fn row_moments<T: Element>(row: &[T]) -> (T, T) {
+    let width = T::from_count(row.len() as u64);
+    let mean = sum(row.iter().copied()) / width;
+    let variance = sum_of_products(row.iter().map(|&x| (x - mean, x - mean))) / width;
+    let rstd = T::from_f32(1.0) / (variance + T::from_f32(LAYER_NORM_EPS)).sqrt();
+    (mean, rstd)
+}
+
+/// The sum of the products `a * b` in iteration order: the first product rounded and the start
+/// of the sum, each later one fused into it with [`Element::mul_add`], rounded once, as the
+/// `mse` loss sum is (DESIGN.md § 2.2, § 12 ADR-009); `+0` for no terms.
+fn sum_of_products<T: Element>(mut terms: impl Iterator<Item = (T, T)>) -> T {
+    match terms.next() {
+        Some((a, b)) => terms.fold(a * b, |acc, (a, b)| a.mul_add(b, acc)),
+        None => T::ZERO,
     }
 }
 

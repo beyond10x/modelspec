@@ -29,7 +29,9 @@
 //! build it ran from: the package version, the git commit of the checkout and whether its
 //! tracked files differed from that commit (`git status --porcelain --untracked-files=no`,
 //! read when the sweep starts; left out where git does not answer). A point that does not
-//! compile or run prints its refusal and the sweep goes on. Progress goes to stderr.
+//! compile or run prints its refusal and the sweep goes on. Progress goes to stderr. Every point is
+//! scheduled within the workgroup invocations and workgroup memory of the device it runs on
+//! (`compile_artifact_for`), as `train --backend vulkan` schedules it.
 //!
 //! `--fast-math` compiles every point with `fast_math` set (DESIGN.md § 12 ADR-008) and writes
 //! its lines as the side `modelspec-vulkan-fast-math`, a figure reported beside the
@@ -54,7 +56,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use clap::Parser;
 use modelspec_core::artifact::{Backend, CompiledArtifact};
-use modelspec_core::compile::{CompiledTraining, compile_artifact, compile_training};
+use modelspec_core::compile::{CompiledTraining, compile_artifact_for, compile_training};
 use modelspec_core::device::DeviceProfile;
 use modelspec_runtime::train::data::{SyntheticData, synthetic};
 use modelspec_runtime::vulkan::Device;
@@ -253,11 +255,14 @@ struct On<'d> {
     fast_math: bool,
 }
 
-/// The point's source for `steps` steps, compiled for training and for Vulkan with `fast_math`.
+/// The point's source for `steps` steps, compiled for training and for Vulkan with `fast_math`,
+/// its plan scheduled within the limits of the device `profile` as `train --backend vulkan`
+/// schedules it.
 fn compile(
     point: Point,
     steps: u64,
     fast_math: bool,
+    profile: &DeviceProfile,
 ) -> Result<(CompiledTraining, CompiledArtifact), String> {
     let name = point.file_name();
     let source = point.source(steps);
@@ -269,7 +274,8 @@ fn compile(
             .join("\n")
     };
     let compiled = compile_training(&name, &source).map_err(refusal)?;
-    let mut artifact = compile_artifact(&name, &source, Backend::Vulkan).map_err(refusal)?;
+    let mut artifact =
+        compile_artifact_for(&name, &source, Backend::Vulkan, Some(profile)).map_err(refusal)?;
     artifact.fast_math = fast_math;
     Ok((compiled, artifact))
 }
@@ -299,12 +305,12 @@ fn run(
 /// the runs.
 fn measure(on: &On<'_>, point: Point, min_seconds: f64) -> Result<(u64, Vec<TimedRun>), String> {
     let target = min_seconds * 1.2;
-    let warm = compile(point, sweep::WARMUP_STEPS, on.fast_math)?;
+    let warm = compile(point, sweep::WARMUP_STEPS, on.fast_math, on.profile)?;
     let data = synthetic(&warm.0.config, &warm.0.forward).map_err(|error| error.to_string())?;
     let warm = run(on, &warm, &data)?;
     let mut steps = sweep::steps_for(warm.elapsed.as_secs_f64(), warm.steps, target);
     for _ in 0..CALIBRATIONS {
-        let stats = run(on, &compile(point, steps, on.fast_math)?, &data)?;
+        let stats = run(on, &compile(point, steps, on.fast_math, on.profile)?, &data)?;
         let seconds = stats.elapsed.as_secs_f64();
         eprintln!("mlp_sweep:   calibration: {steps} steps in {seconds:.3} s");
         if seconds >= min_seconds {
@@ -312,7 +318,7 @@ fn measure(on: &On<'_>, point: Point, min_seconds: f64) -> Result<(u64, Vec<Time
         }
         steps = sweep::steps_for(seconds, steps, target).max(steps + 1);
     }
-    let timed = compile(point, steps, on.fast_math)?;
+    let timed = compile(point, steps, on.fast_math, on.profile)?;
     let mut runs = Vec::with_capacity(sweep::RUNS);
     for _ in 0..sweep::RUNS {
         let stats = run(on, &timed, &data)?;

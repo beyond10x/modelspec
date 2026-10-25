@@ -92,12 +92,14 @@ fn stages() -> Vec<Stage> {
                     version, the size of each plan as the manifest is parsed, that every kernel \
                     module file is present and no longer than its entry, each module hash and \
                     the artifact hash, and then the invariants and the execution plan, in that \
-                    order.",
+                    order; then, before a device runs it, that the device reports at least the \
+                    workgroup limits the plan was scheduled for.",
             codes: vec![
                 modelspec_core::artifact::E_ARTIFACT_001,
                 modelspec_core::artifact::E_ARTIFACT_002,
                 modelspec_core::artifact::E_ARTIFACT_003,
                 modelspec_core::artifact::E_ARTIFACT_004,
+                modelspec_core::artifact::E_ARTIFACT_005,
             ],
         },
         Stage {
@@ -366,6 +368,7 @@ mod tests {
             "E-ARTIFACT-002",
             "E-ARTIFACT-003",
             "E-ARTIFACT-004",
+            "E-ARTIFACT-005",
         ] {
             let anchor = code.to_lowercase();
             assert!(

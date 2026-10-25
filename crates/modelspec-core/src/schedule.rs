@@ -93,7 +93,8 @@ pub enum ScheduleError {
     #[error("{value} dispatches {invocations} invocations, more than a 32-bit index counts")]
     TooManyInvocations { value: ValueId, invocations: u64 },
     /// The op has no Vulkan kernel yet (`E-TARGET-011`): `Embedding`, `EmbeddingGrad`, `AddRows`,
-    /// `SumRows`, `Gelu` and `GeluGrad` run on the CPU interpreter only.
+    /// `SumRows`, `Gelu`, `GeluGrad`, `LayerNorm`, `LayerNormGradX`, `LayerNormGradGamma`,
+    /// `Softmax` and `SoftmaxGrad` run on the CPU interpreter only.
     #[error("{value} is {op}, which has no Vulkan kernel")]
     NoKernel { value: ValueId, op: &'static str },
 }
@@ -779,7 +780,12 @@ fn schedule_with(
             | TensorOp::AddRows
             | TensorOp::SumRows
             | TensorOp::Gelu
-            | TensorOp::GeluGrad => match built {
+            | TensorOp::GeluGrad
+            | TensorOp::LayerNorm
+            | TensorOp::LayerNormGradX
+            | TensorOp::LayerNormGradGamma
+            | TensorOp::Softmax
+            | TensorOp::SoftmaxGrad => match built {
                 Kernels::None => continue,
                 Kernels::Vulkan => {
                     return Err(ScheduleError::NoKernel {
