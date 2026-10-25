@@ -228,18 +228,17 @@ fn every_other_site_of_the_sweep_step_keeps_its_kernel_module_and_order() {
         .filter(|s| s.op == PlanOp::Dispatch)
         .map(|s| s.kernel_module_id.expect("a module").to_string())
         .collect();
-    let fused = ids.get(3).cloned().unwrap_or_default();
-    assert_ne!(
-        fused, "545b0394-3c57-8ee0-b3d0-5d8e483e033a",
-        "the gradient of the hidden activation now carries the relu gradient"
-    );
+    // Position 3, the gradient of the hidden activation, was module
+    // 545b0394-3c57-8ee0-b3d0-5d8e483e033a before the change; it now carries the relu gradient
+    // and reads the pre-activation as a third operand, so its module is a new one, the module
+    // the profiled runs of `benchmarks/raw/2026-10-25-step-sites/sites/` time at that site.
     assert_eq!(
         ids,
         [
             "55ee7765-96e3-8fe0-a2b3-bb064c893270",
             "f39a0278-629b-8a45-91a6-c3bd874b89d8",
             "d58c985d-59cd-89c3-b67b-ab96193fe102",
-            fused.as_str(),
+            "3db8a6bb-05d0-826f-9121-0de6c559b61c",
             "66d0d33c-e218-8098-a57a-4454996f06df",
             "ac5b3fba-1cd9-8dd9-a98d-4d2cf349c408",
             "d661a871-498f-8049-ba2d-d5fffdd46a69",

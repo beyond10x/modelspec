@@ -11,7 +11,7 @@ TF32 off. The GPU was checked empty before every run (`judgement/apps-before.txt
 
 ## The judgement session
 
-`cargo bench -p modelspec-runtime --features vulkan --bench mlp_sweep -- --bench --point 8192:4096
+`cargo bench -p modelspec-runtime --features vulkan --bench mlp_sweep -- --point 8192:4096
 --min-seconds 6` (the bench binary of the handed-over tree) alternated with `python
 opponents/mlp_sweep/mlp_sweep.py --point 8192:4096 --modes eager`, three rounds, with the sampler
 running throughout (`judgement/`).

@@ -549,10 +549,10 @@ fn ancestors(c: &Compiled, roots: &[ValueId]) -> BTreeSet<ValueId> {
 /// gradient operand is a matmul output that nothing else reads is now an epilogue of that
 /// matmul". In `relu(relu(matmul(x, w1)))` the outer gradient `ReluGrad(a1, g)` has such a `g`,
 /// and `a1`, the inner `relu`, is stored before it: the forward matmul's `relu` epilogue writes
-/// it to a buffer of its own. `schedule.rs` refuses the epilogue because `a1` is in `absorbed`
-/// (`!absorbed.contains(&x)`), which also holds a `relu` epilogue that has a buffer.
+/// it to a buffer of its own. `schedule.rs` refused the epilogue because `a1` was in `absorbed`
+/// (`!absorbed.contains(&x)`), which also holds a `relu` epilogue that has a buffer; fix pass 1
+/// (coordinator decision D65) refuses only an `x` without a buffer, a fused `lr * g` product.
 #[test]
-#[ignore = "ADV-S1-F1: the documented ReluGrad epilogue rule is wider than schedule.rs implements"]
 fn adv_s1_f1_relu_grad_of_an_epilogue_activation_is_an_epilogue_as_design_states() {
     let c = compiled("relu_of_relu", &relu_of_relu());
     let fused = assert_every_matmul_gated_relu_grad_is_an_epilogue("relu_of_relu", &c);

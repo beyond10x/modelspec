@@ -2234,5 +2234,6 @@ runs:
     gpu: NVIDIA GeForce RTX 3090
     driver: 610.57.04
     sm_clock: "SM MHz 1575–1650 (median 1605, n=151) in the 3 timed spans"
+    note: the opponent's record says dirty, the tree then held the uncommitted change of story:step-sites-beat-pytorch, committed as 91e9bbd, whose bench binary the same session ran; opponents/ is the same at 3ef38aa and 91e9bbd
     source: story:step-sites-beat-pytorch judgement session, the median of 3 back-to-back runs, raw records benchmarks/raw/2026-10-25-step-sites/judgement/r3-pytorch-eager.jsonl
     state: Recorded

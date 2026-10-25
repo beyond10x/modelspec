@@ -149,6 +149,19 @@ fn models() -> Vec<(&'static str, String)> {
     ]
 }
 
+/// The FNV-1a digest of the bits of `values`, printed so that two runs on one device can be
+/// compared bit for bit when device 0 negotiates only the tolerance class.
+fn digest(values: &[f32]) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for value in values {
+        for byte in value.to_bits().to_le_bytes() {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    }
+    hash
+}
+
 #[test]
 #[ignore = "needs a Vulkan device"]
 fn every_probe_model_trains_to_the_cpu_bits_and_its_final_loss_is_the_infer_loss() {
@@ -234,6 +247,17 @@ fn every_probe_model_trains_to_the_cpu_bits_and_its_final_loss_is_the_infer_loss
         eprintln!(
             "{name}: {per_step} dispatches per step, final loss {last:e}, class {:?}",
             stats.class
+        );
+        let parameters: Vec<f32> = gpu
+            .state
+            .values
+            .values()
+            .flat_map(|v| v.data().iter().copied())
+            .collect();
+        eprintln!(
+            "{name}: device bits, parameters {:016x}, losses {:016x}",
+            digest(&parameters),
+            digest(&gpu.losses)
         );
     }
     drop(device);

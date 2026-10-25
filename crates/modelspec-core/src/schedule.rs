@@ -359,7 +359,10 @@ fn fusions(
     };
 
     // A `ReluGrad(x, g)` whose adjoint `g` is a matmul output that it alone reads is that
-    // matmul's epilogue, when `x` has a buffer before the matmul runs.
+    // matmul's epilogue, when `x` has a buffer before the matmul runs. Of the ops absorbed so
+    // far only a fused `lr * g` product has none: a `relu` or `ReluGrad` epilogue stores its
+    // value in a view its matmul writes.
+    let unstored: BTreeSet<ValueId> = scaled.values().copied().collect();
     let mut relu_grad_of = BTreeMap::new();
     for node in nodes {
         let [x, g] = node.operands[..] else {
@@ -377,7 +380,7 @@ fn fusions(
             && !folded.contains_key(&node.id)
             && !constants.contains_key(&x)
             && !transposed.contains_key(&x)
-            && !absorbed.contains(&x)
+            && !unstored.contains(&x)
             && position.get(&x).is_some_and(|&p| p < position[&g])
             && !updated_before(x, at);
         if fits {
