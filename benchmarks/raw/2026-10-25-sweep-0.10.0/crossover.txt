@@ -1,0 +1,9 @@
+{"side":"modelspec-vulkan","batch":100,"verdict":"reached","hidden":256,"pitch_slide":false}
+{"side":"modelspec-vulkan","batch":1000,"verdict":"reached","hidden":256,"pitch_slide":true}
+{"side":"modelspec-vulkan","batch":8192,"verdict":"reached","hidden":256,"pitch_slide":false}
+{"side":"pytorch-eager","batch":100,"verdict":"not reached","hidden":null,"pitch_slide":false}
+{"side":"pytorch-eager","batch":1000,"verdict":"reached","hidden":4096,"pitch_slide":true}
+{"side":"pytorch-eager","batch":8192,"verdict":"reached","hidden":256,"pitch_slide":false}
+{"side":"pytorch-compile","batch":100,"verdict":"not reached","hidden":null,"pitch_slide":false}
+{"side":"pytorch-compile","batch":1000,"verdict":"reached","hidden":4096,"pitch_slide":true}
+{"side":"pytorch-compile","batch":8192,"verdict":"reached","hidden":1024,"pitch_slide":false}

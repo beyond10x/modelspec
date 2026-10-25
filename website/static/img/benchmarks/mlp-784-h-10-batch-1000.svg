@@ -3,13 +3,17 @@
 <rect width="880" height="500" fill="#ffffff"/>
 <text x="78" y="28" font-size="15" font-weight="600" fill="#111827">MLP 784-H-10 sweep, batch 1000: µs per step against hidden width</text>
 <line x1="78" y1="388.0" x2="856.0" y2="388.0" stroke="#d1d5db"/>
-<text x="70.0" y="392.0" text-anchor="end" fill="#374151">100</text>
-<line x1="78" y1="336.8" x2="856.0" y2="336.8" stroke="#f3f4f6"/>
-<line x1="78" y1="269.2" x2="856.0" y2="269.2" stroke="#f3f4f6"/>
-<line x1="78" y1="218.0" x2="856.0" y2="218.0" stroke="#d1d5db"/>
-<text x="70.0" y="222.0" text-anchor="end" fill="#374151">1,000</text>
-<line x1="78" y1="166.8" x2="856.0" y2="166.8" stroke="#f3f4f6"/>
-<line x1="78" y1="99.2" x2="856.0" y2="99.2" stroke="#f3f4f6"/>
+<text x="70.0" y="392.0" text-anchor="end" fill="#374151">10</text>
+<line x1="78" y1="353.9" x2="856.0" y2="353.9" stroke="#f3f4f6"/>
+<line x1="78" y1="308.8" x2="856.0" y2="308.8" stroke="#f3f4f6"/>
+<line x1="78" y1="274.7" x2="856.0" y2="274.7" stroke="#d1d5db"/>
+<text x="70.0" y="278.7" text-anchor="end" fill="#374151">100</text>
+<line x1="78" y1="240.5" x2="856.0" y2="240.5" stroke="#f3f4f6"/>
+<line x1="78" y1="195.5" x2="856.0" y2="195.5" stroke="#f3f4f6"/>
+<line x1="78" y1="161.3" x2="856.0" y2="161.3" stroke="#d1d5db"/>
+<text x="70.0" y="165.3" text-anchor="end" fill="#374151">1,000</text>
+<line x1="78" y1="127.2" x2="856.0" y2="127.2" stroke="#f3f4f6"/>
+<line x1="78" y1="82.1" x2="856.0" y2="82.1" stroke="#f3f4f6"/>
 <line x1="78" y1="48.0" x2="856.0" y2="48.0" stroke="#d1d5db"/>
 <text x="70.0" y="52.0" text-anchor="end" fill="#374151">10,000</text>
 <rect x="78" y="48" width="778.0" height="340" fill="none" stroke="#9ca3af"/>
@@ -23,21 +27,21 @@
 <text x="758.8" y="407.0" text-anchor="middle" fill="#374151">4096</text>
 <text x="467.0" y="428.0" text-anchor="middle" fill="#111827">hidden width H</text>
 <text transform="translate(18 218.0) rotate(-90)" text-anchor="middle" fill="#111827">µs per step, log scale</text>
-<polyline points="175.2,383.5 369.8,328.6 564.2,270.3 758.8,179.1" fill="none" stroke="#1d4ed8" stroke-width="2.5"/>
-<circle cx="175.2" cy="383.5" r="4.5" fill="#1d4ed8"/>
-<circle cx="369.8" cy="328.6" r="4.5" fill="#1d4ed8"/>
-<circle cx="564.2" cy="270.3" r="4.5" fill="#1d4ed8"/>
-<circle cx="758.8" cy="179.1" r="4.5" fill="#1d4ed8"/>
-<polyline points="175.2,279.0 369.8,280.3 564.2,261.5 758.8,218.4" fill="none" stroke="#dc2626" stroke-width="1.8" stroke-dasharray="6 4"/>
-<rect x="171.2" y="275.0" width="8" height="8" fill="#ffffff" stroke="#dc2626" stroke-width="2"/>
-<rect x="365.8" y="276.3" width="8" height="8" fill="#ffffff" stroke="#dc2626" stroke-width="2"/>
-<rect x="560.2" y="257.5" width="8" height="8" fill="#ffffff" stroke="#dc2626" stroke-width="2"/>
-<rect x="754.8" y="214.4" width="8" height="8" fill="#ffffff" stroke="#dc2626" stroke-width="2"/>
-<polyline points="175.2,266.3 369.8,258.7 564.2,246.9 758.8,218.4" fill="none" stroke="#ea580c" stroke-width="1.8" stroke-dasharray="6 4"/>
-<rect x="171.2" y="262.3" width="8" height="8" fill="#ffffff" stroke="#ea580c" stroke-width="2"/>
-<rect x="365.8" y="254.7" width="8" height="8" fill="#ffffff" stroke="#ea580c" stroke-width="2"/>
-<rect x="560.2" y="242.9" width="8" height="8" fill="#ffffff" stroke="#ea580c" stroke-width="2"/>
-<rect x="754.8" y="214.4" width="8" height="8" fill="#ffffff" stroke="#ea580c" stroke-width="2"/>
+<polyline points="175.2,277.1 369.8,237.6 564.2,214.9 758.8,160.3" fill="none" stroke="#1d4ed8" stroke-width="2.5"/>
+<circle cx="175.2" cy="277.1" r="4.5" fill="#1d4ed8"/>
+<circle cx="369.8" cy="237.6" r="4.5" fill="#1d4ed8"/>
+<circle cx="564.2" cy="214.9" r="4.5" fill="#1d4ed8"/>
+<circle cx="758.8" cy="160.3" r="4.5" fill="#1d4ed8"/>
+<polyline points="175.2,205.7 369.8,204.5 564.2,202.1 758.8,164.6" fill="none" stroke="#dc2626" stroke-width="1.8" stroke-dasharray="6 4"/>
+<rect x="171.2" y="201.7" width="8" height="8" fill="#ffffff" stroke="#dc2626" stroke-width="2"/>
+<rect x="365.8" y="200.5" width="8" height="8" fill="#ffffff" stroke="#dc2626" stroke-width="2"/>
+<rect x="560.2" y="198.1" width="8" height="8" fill="#ffffff" stroke="#dc2626" stroke-width="2"/>
+<rect x="754.8" y="160.6" width="8" height="8" fill="#ffffff" stroke="#dc2626" stroke-width="2"/>
+<polyline points="175.2,190.0 369.8,191.7 564.2,190.8 758.8,164.7" fill="none" stroke="#ea580c" stroke-width="1.8" stroke-dasharray="6 4"/>
+<rect x="171.2" y="186.0" width="8" height="8" fill="#ffffff" stroke="#ea580c" stroke-width="2"/>
+<rect x="365.8" y="187.7" width="8" height="8" fill="#ffffff" stroke="#ea580c" stroke-width="2"/>
+<rect x="560.2" y="186.8" width="8" height="8" fill="#ffffff" stroke="#ea580c" stroke-width="2"/>
+<rect x="754.8" y="160.7" width="8" height="8" fill="#ffffff" stroke="#ea580c" stroke-width="2"/>
 <line x1="78.0" y1="448.0" x2="106.0" y2="448.0" stroke="#1d4ed8" stroke-width="2"/>
 <circle cx="92.0" cy="448.0" r="4.5" fill="#1d4ed8"/>
 <text x="114.0" y="452.0" fill="#111827">ModelSpec Vulkan</text>
