@@ -18,18 +18,23 @@
 //! the `sgd` learning rate is a positive finite `f32`;
 //! `steps` is positive. An operator that takes named compile-time arguments
 //! ([`ops::named_parameters`], `heads` of `attention`) gets each exactly once, as a literal of its
-//! kind (E-TYPE-001 when omitted, E-TYPE-002 when unknown or repeated, E-TYPE-019 for another
-//! value); every other call takes positional arguments only. An operand that takes no gradient
-//! ([`ops::constant_operands`], the `key_mask` of `attention`) must not read a parameter
-//! (E-TYPE-021). The parser already enforces that `seed` fits `u64`, that the optimizer is
+//! kind, after the operands (E-TYPE-001 when omitted, E-TYPE-002 when unknown, repeated or
+//! before an operand, E-TYPE-019 for another value); every other call takes positional arguments
+//! only. An operand that takes no gradient ([`ops::constant_operands`], the `key_mask` of
+//! `attention`) must not read a parameter by dataflow (E-TYPE-021, coordinator decision D41):
+//! not through a `let`, an operator, the result of a `model.<function>(...)` call whose body
+//! reads one, nor an argument of such a call that reaches the result or reaches such an operand
+//! inside the function, which is refused at that argument. The parser already enforces that `seed` fits `u64`, that the optimizer is
 //! `sgd` and that literals are finite `f64`s. A `vulkan(<index>)` device is not validated.
+
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::diag::{Code, Diagnostic, SourceSpan};
 use crate::hir::{
     ArgRef, DataRef, Device, FnRef, Hir, HirArg, HirData, HirExpr, HirExprKind, HirFunction,
     HirLet, HirModel, HirParam, HirTrain, LetRef,
 };
-use crate::ir::tensor::{Initializer, TensorType};
+use crate::ir::tensor::{Initializer, TensorOp, TensorType};
 use crate::ops::{self, OpError};
 use crate::resolve::{self, Binding, ModelNames, Scope};
 use crate::syntax::{self, ast};
@@ -56,7 +61,8 @@ pub mod codes {
         /// `attention`.
         ARGUMENT_COUNT = "E-TYPE-001";
         /// A named argument (`a = x`) to a model function or to an operator that takes no named
-        /// argument of that name, or a named argument given twice.
+        /// argument of that name, a named argument given twice, or a named argument before an
+        /// operand: the named arguments follow the operands.
         NAMED_ARGUMENT = "E-TYPE-002";
         /// `add`, `sub`, `mul` or `mse` operands of different shapes, neither of them rank 0, an
         /// `add_rows(x, b)` whose `b` is not as long as a row of `x`, a
@@ -109,8 +115,11 @@ pub mod codes {
         NAMED_VALUE = "E-TYPE-019";
         /// An `attention` whose `heads` does not divide the width `H` of `q`, `k` and `v`.
         HEADS_DIVIDE = "E-TYPE-020";
-        /// An operand that takes no gradient, the `key_mask` of `attention`, that reads a model
-        /// parameter, directly, through a `let` or through a `model.<function>(...)` call.
+        /// An operand that takes no gradient, the `key_mask` of `attention`, whose value reads a
+        /// model parameter by dataflow: directly, through a `let`, through a
+        /// `model.<function>(...)` call whose result reads one, or through an argument of a
+        /// model function call that reaches the operand inside the function, reported at that
+        /// argument. A model function that reads no parameter is no reason to refuse.
         CONSTANT_OPERAND = "E-TYPE-021";
     }
 
@@ -193,8 +202,10 @@ struct Env<'a> {
     params: &'a [Option<TensorType>],
     args: &'a [Option<TensorType>],
     lets: &'a [Option<TensorType>],
-    /// Whether each earlier `let` reads a model parameter, directly or through another `let`.
-    param_lets: &'a [bool],
+    /// What each earlier `let` reads by dataflow.
+    let_reads: &'a [Reads],
+    /// The dataflow of each model function, in the train block.
+    flows: &'a [Flow],
     data: &'a [Option<TensorType>],
     in_train: bool,
     /// The train block's model, when its `model` setting resolved.
@@ -230,7 +241,7 @@ impl Checker {
                 }),
             }
         }
-        let functions: Vec<Option<HirFunction>> = ast
+        let (functions, flows): (Vec<Option<HirFunction>>, Vec<Flow>) = ast
             .model
             .items
             .iter()
@@ -240,8 +251,8 @@ impl Checker {
             })
             .zip(&signatures)
             .map(|(f, sig)| self.function(f, sig, &names, &param_types))
-            .collect();
-        let train = self.train(&ast.train, &names, &signatures);
+            .unzip();
+        let train = self.train(&ast.train, &names, &signatures, &flows);
         Some(Hir {
             model: HirModel {
                 name: ast.model.name.name.clone(),
@@ -384,19 +395,22 @@ impl Checker {
         (Some(ty), Some(param))
     }
 
+    /// The checked function, and its dataflow for the calls to it ([`Flow`]), taken from the
+    /// parts that checked when the function itself does not.
     fn function(
         &mut self,
         f: &ast::Function,
         sig: &Signature,
         names: &ModelNames,
         params: &[Option<TensorType>],
-    ) -> Option<HirFunction> {
+    ) -> (Option<HirFunction>, Flow) {
         let mut scope = Scope::function(names, &f.name);
         for (i, arg) in f.params.iter().enumerate() {
             scope.bind_local(&arg.name, Binding::Arg(ArgRef(i)), &mut self.diagnostics);
         }
         let mut let_types: Vec<Option<TensorType>> = Vec::new();
-        let mut param_lets: Vec<bool> = Vec::new();
+        let mut let_reads: Vec<Reads> = Vec::new();
+        let mut flow = Flow::default();
         let mut lets = Vec::new();
         for (i, binding) in f.lets.iter().enumerate() {
             let env = Env {
@@ -404,14 +418,19 @@ impl Checker {
                 params,
                 args: &sig.args,
                 lets: &let_types,
-                param_lets: &param_lets,
+                let_reads: &let_reads,
+                flows: &[],
                 data: &[],
                 in_train: false,
                 model: None,
             };
             let value = self.expr(&binding.value, &env);
             let_types.push(value.as_ref().map(|v| v.ty.clone()));
-            param_lets.push(value.as_ref().is_some_and(|v| reads_param(v, &param_lets)));
+            let read = value.as_ref().map_or_else(Reads::default, |v| {
+                constant_args(v, &let_reads, &mut flow.constant);
+                reads(v, &let_reads, &[])
+            });
+            let_reads.push(read);
             scope.bind_local(
                 &binding.name,
                 Binding::Let(LetRef(i)),
@@ -428,12 +447,17 @@ impl Checker {
             params,
             args: &sig.args,
             lets: &let_types,
-            param_lets: &param_lets,
+            let_reads: &let_reads,
+            flows: &[],
             data: &[],
             in_train: false,
             model: None,
         };
         let result = self.expr(&f.result.value, &env);
+        if let Some(result) = &result {
+            constant_args(result, &let_reads, &mut flow.constant);
+            flow.result = reads(result, &let_reads, &[]);
+        }
         let result = match (result, &sig.output) {
             (Some(result), Some(output)) if result.ty != *output => {
                 self.report(
@@ -460,14 +484,17 @@ impl Checker {
                 })
             })
             .collect::<Option<Vec<_>>>();
-        Some(HirFunction {
-            name: f.name.name.clone(),
-            args: args?,
-            output: sig.output.clone()?,
-            lets: lets.into_iter().collect::<Option<_>>()?,
-            result: result?,
-            span: f.span.clone(),
-        })
+        let function = (|| {
+            Some(HirFunction {
+                name: f.name.name.clone(),
+                args: args?,
+                output: sig.output.clone()?,
+                lets: lets.into_iter().collect::<Option<_>>()?,
+                result: result?,
+                span: f.span.clone(),
+            })
+        })();
+        (function, flow)
     }
 
     fn train(
@@ -475,6 +502,7 @@ impl Checker {
         t: &ast::Train,
         names: &ModelNames,
         signatures: &[Signature],
+        flows: &[Flow],
     ) -> Option<HirTrain> {
         let model_known = resolve::resolve_train_model(t, names, &mut self.diagnostics);
         let mut scope = Scope::train(t);
@@ -488,7 +516,8 @@ impl Checker {
             params: &[],
             args: &[],
             lets: &[],
-            param_lets: &[],
+            let_reads: &[],
+            flows,
             data: &data_types,
             in_train: true,
             model: model_known.then_some((names, signatures)),
@@ -689,7 +718,8 @@ impl Checker {
 
     /// The operands and named compile-time arguments of a call to `op`, which takes the named
     /// arguments `named` (DESIGN.md § 2.1). A positional argument is an operand; a named one
-    /// that `op` does not take, or that the call gives twice, is E-TYPE-002 at the argument; a
+    /// before an operand, that `op` does not take, or that the call gives twice, is E-TYPE-002
+    /// at the argument; a
     /// value other than a literal of the parameter's kind is E-TYPE-019 at the argument and is
     /// not typed; a named argument the call omits is E-TYPE-001 at the call. The values come
     /// back in the order of `named`.
@@ -704,7 +734,7 @@ impl Checker {
         let mut values: Vec<Option<ops::NamedValue>> = vec![None; named.len()];
         let mut given = vec![false; named.len()];
         let mut valid = true;
-        for arg in &call.args {
+        for (at, arg) in call.args.iter().enumerate() {
             let Some(name) = &arg.name else {
                 match self.expr(&arg.value, env) {
                     Some(value) => operands.push(value),
@@ -712,7 +742,24 @@ impl Checker {
                 }
                 continue;
             };
-            let Some(index) = named.iter().position(|p| p.name == name.name) else {
+            let position = named.iter().position(|p| p.name == name.name);
+            if call.args[at + 1..].iter().any(|a| a.name.is_none()) {
+                self.report(
+                    codes::NAMED_ARGUMENT,
+                    format!(
+                        "named argument `{}` of `{callee}` comes before an operand; named \
+                         arguments follow the operands",
+                        name.name
+                    ),
+                    &arg.span,
+                );
+                if let Some(index) = position {
+                    given[index] = true;
+                }
+                valid = false;
+                continue;
+            }
+            let Some(index) = position else {
                 let takes: Vec<String> = named.iter().map(|p| format!("`{}`", p.name)).collect();
                 self.report(
                     codes::NAMED_ARGUMENT,
@@ -798,7 +845,7 @@ impl Checker {
                     return None;
                 }
                 for &(index, operand) in ops::constant_operands(&op) {
-                    if reads_param(&args[index], env.param_lets) {
+                    if reads(&args[index], env.let_reads, env.flows).param {
                         self.report(
                             codes::CONSTANT_OPERAND,
                             format!(
@@ -873,6 +920,25 @@ impl Checker {
         if !valid {
             return None;
         }
+        let constant = env.flows.get(function.0).map(|flow| &flow.constant);
+        for (&index, operand) in constant.into_iter().flatten() {
+            if reads(&args[index], env.let_reads, env.flows).param {
+                self.report(
+                    codes::CONSTANT_OPERAND,
+                    format!(
+                        "argument {} of `{}` reads a model parameter and reaches {operand} in \
+                         it; that operand takes no gradient, so it must not depend on a `param`",
+                        index + 1,
+                        sig.name
+                    ),
+                    &args[index].span,
+                );
+                valid = false;
+            }
+        }
+        if !valid {
+            return None;
+        }
         Some(HirExpr {
             kind: HirExprKind::Call { function, args },
             ty: sig.output.clone()?,
@@ -881,16 +947,94 @@ impl Checker {
     }
 }
 
-/// Whether `expr` may read a model parameter: a parameter, a `let` that reads one
-/// (`param_lets`), an operator over one, or a `model.<function>(...)` call, whose value is taken
-/// to read the model's parameters.
-fn reads_param(expr: &HirExpr, param_lets: &[bool]) -> bool {
-    match &expr.kind {
-        HirExprKind::Param(_) | HirExprKind::Call { .. } => true,
-        HirExprKind::Let(r) => param_lets.get(r.0).copied().unwrap_or(false),
-        HirExprKind::Op { args, .. } => args.iter().any(|a| reads_param(a, param_lets)),
-        HirExprKind::Arg(_) | HirExprKind::Data(_) | HirExprKind::Scalar(_) => false,
+/// What a value reads by dataflow (coordinator decision D41): whether a model parameter reaches
+/// it, and which arguments of the enclosing model function do.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct Reads {
+    param: bool,
+    args: BTreeSet<usize>,
+}
+
+impl Reads {
+    fn join(mut self, other: Reads) -> Reads {
+        self.param |= other.param;
+        self.args.extend(other.args);
+        self
     }
+}
+
+/// The dataflow of a model function that a call to it needs (D41): what its result reads, and
+/// which of its arguments reach an operand that takes no gradient, each with that operand's
+/// name for the message (`` `key_mask` of `attention` ``).
+#[derive(Clone, Debug, Default)]
+struct Flow {
+    result: Reads,
+    constant: BTreeMap<usize, String>,
+}
+
+/// What `expr` reads by dataflow: a `param` reads a parameter and an argument itself; a `let`
+/// reads what its value reads (`let_reads`); an operator reads what any operand reads; a
+/// `model.<function>(...)` call reads what the function's result reads, with each argument of
+/// the function that reaches its result replaced by what the call's argument reads (`flows`).
+fn reads(expr: &HirExpr, let_reads: &[Reads], flows: &[Flow]) -> Reads {
+    match &expr.kind {
+        HirExprKind::Param(_) => Reads {
+            param: true,
+            args: BTreeSet::new(),
+        },
+        HirExprKind::Arg(r) => Reads {
+            param: false,
+            args: BTreeSet::from([r.0]),
+        },
+        HirExprKind::Let(r) => let_reads.get(r.0).cloned().unwrap_or_default(),
+        HirExprKind::Op { args, .. } => args
+            .iter()
+            .map(|a| reads(a, let_reads, flows))
+            .fold(Reads::default(), Reads::join),
+        HirExprKind::Call { function, args } => {
+            let Some(flow) = flows.get(function.0) else {
+                return Reads::default();
+            };
+            let through = flow.result.args.iter().filter_map(|&i| args.get(i));
+            through.map(|a| reads(a, let_reads, flows)).fold(
+                Reads {
+                    param: flow.result.param,
+                    args: BTreeSet::new(),
+                },
+                Reads::join,
+            )
+        }
+        HirExprKind::Data(_) | HirExprKind::Scalar(_) => Reads::default(),
+    }
+}
+
+/// Adds to `out` each argument of the enclosing model function that reaches an operand of an
+/// operator in `expr` that takes no gradient ([`ops::constant_operands`]), with that operand's
+/// name; the first such operand an argument reaches names it.
+fn constant_args(expr: &HirExpr, let_reads: &[Reads], out: &mut BTreeMap<usize, String>) {
+    let HirExprKind::Op { op, args } = &expr.kind else {
+        return;
+    };
+    for &(index, operand) in ops::constant_operands(op) {
+        let Some(arg) = args.get(index) else {
+            continue;
+        };
+        for i in reads(arg, let_reads, &[]).args {
+            out.entry(i)
+                .or_insert_with(|| format!("`{operand}` of `{}`", source_name(op)));
+        }
+    }
+    for arg in args {
+        constant_args(arg, let_reads, out);
+    }
+}
+
+/// The source name of `op`, `attention` for any `Attention { heads }`.
+fn source_name(op: &TensorOp) -> &'static str {
+    resolve::OPERATORS
+        .iter()
+        .find(|(_, o)| std::mem::discriminant(o) == std::mem::discriminant(op))
+        .map_or("an operator", |(name, _)| name)
 }
 
 /// The `layer_norm` operand that [`ops::infer`] refuses first, in the order it checks them: `x`
@@ -1389,5 +1533,164 @@ train T {{
             ["E-TYPE-021"]
         );
         assert!(attention_codes("let k = relu(m);", call).is_empty());
+    }
+
+    /// Each diagnostic `check` reports for `source`, as its code, line and column.
+    fn located(source: &str) -> Vec<(String, u32, u32)> {
+        match check_source("m.mspec", source) {
+            Ok(_) => Vec::new(),
+            Err(diagnostics) => diagnostics
+                .iter()
+                .map(|d| {
+                    let span = d.span.as_ref().expect("a located diagnostic");
+                    (d.code.as_str().to_owned(), span.line, span.column)
+                })
+                .collect(),
+        }
+    }
+
+    /// DESIGN.md § 2.1: the named arguments follow the operands. One before an operand is
+    /// E-TYPE-002 at that named argument, wherever among the operands it stands.
+    #[test]
+    fn a_named_argument_before_an_operand_is_e_type_002_at_the_argument() {
+        for result in [
+            "attention(heads = 2, x, x, x, m)",
+            "attention(x, x, heads = 2, x, m)",
+        ] {
+            let column = 16 + result.find("heads").expect("heads") as u32;
+            assert_eq!(
+                located(&attention_source("", result)),
+                [("E-TYPE-002".to_owned(), 6, column)],
+                "{result}"
+            );
+        }
+        let source = attention_source("", "attention(heads = 2, x, x, x, m)");
+        let message = check_source("m.mspec", &source).expect_err("refused")[0]
+            .message
+            .clone();
+        assert!(
+            message.contains("named arguments follow the operands"),
+            "{message}"
+        );
+        assert!(located(&attention_source("", "attention(x, x, x, m, heads = 2)")).is_empty());
+    }
+
+    /// A model function of `[2, 3]` to `[2, 3]` reading `p`.
+    const PMASK: &str =
+        "fn pmask(a: Tensor<f32, [2, 3]>) -> Tensor<f32, [2, 3]> { return mul(a, p); }";
+    /// A model function of `[2, 3]` to `[2, 3]` reading no parameter.
+    const FREE: &str = "fn free(a: Tensor<f32, [2, 3]>) -> Tensor<f32, [2, 3]> { return relu(a); }";
+    /// A model function whose argument reaches its result through a `let`.
+    const PASS: &str =
+        "fn pass(a: Tensor<f32, [2, 3]>) -> Tensor<f32, [2, 3]> { let b = relu(a); return b; }";
+    /// A model function whose first argument does not reach its result.
+    const DROP: &str = "fn drop(a: Tensor<f32, [2, 3]>, b: Tensor<f32, [2, 3]>) -> Tensor<f32, [2, 3]> { return relu(b); }";
+    /// A model function that binds `p` in a `let` its result does not read.
+    const UNUSED: &str =
+        "fn unused(a: Tensor<f32, [2, 3]>) -> Tensor<f32, [2, 3]> { let q = p; return relu(a); }";
+    /// A model function of `[6, 4]` to `[6, 4]` reading `w`.
+    const SCALED: &str =
+        "fn scaled(a: Tensor<f32, [6, 4]>) -> Tensor<f32, [6, 4]> { return matmul(a, w); }";
+
+    /// A file whose model has the parameters `w: [4, 4]` and `p: [2, 3]`, the one-line model
+    /// functions `functions`, then `forward(x: [6, 4], m: [2, 3])` binding `lets` and returning
+    /// `forward`; the train block's loss, on line 14 at column 12, is `loss`.
+    fn dataflow_source(functions: &str, lets: &str, forward: &str, loss: &str) -> String {
+        format!(
+            "model M {{
+    param w: Tensor<f32, [4, 4]> = xavier_uniform();
+    param p: Tensor<f32, [2, 3]> = ones();
+    {functions}
+    fn forward(x: Tensor<f32, [6, 4]>, m: Tensor<f32, [2, 3]>) -> Tensor<f32, [6, 4]> {{
+        {lets} return {forward};
+    }}
+}}
+train T {{
+    model = M;
+    input x: Tensor<f32, [6, 4]>;
+    input m: Tensor<f32, [2, 3]>;
+    target y: Tensor<f32, [6, 4]>;
+    loss = {loss};
+    optimizer = sgd(lr = 0.1);
+    steps = 1;
+    seed = 0;
+    device = cpu;
+}}
+"
+        )
+    }
+
+    /// The diagnostics of `dataflow_source` with `forward` the attention of `x` under the key
+    /// mask `forward_mask`.
+    fn dataflow(
+        functions: &[&str],
+        lets: &str,
+        forward_mask: &str,
+        loss: &str,
+    ) -> Vec<(String, u32, u32)> {
+        let forward = format!("attention(x, x, x, {forward_mask}, heads = 2)");
+        located(&dataflow_source(&functions.join(" "), lets, &forward, loss))
+    }
+
+    /// E-TYPE-021 on line 14 at `needle` of `loss`.
+    fn refused_at(loss: &str, needle: &str) -> Vec<(String, u32, u32)> {
+        let column = 12 + loss.find(needle).expect("needle in loss") as u32;
+        vec![("E-TYPE-021".to_owned(), 14, column)]
+    }
+
+    /// Coordinator decision D41, 2026-10-25, `.engineering/waves/bert-1.md`: a key mask is
+    /// E-TYPE-021 exactly when its value reads a `param` by dataflow, through `let`s, model
+    /// function bodies and model function arguments alike. A train block argument that reaches
+    /// the key mask inside the callee is refused at the argument.
+    #[test]
+    fn a_key_mask_reading_a_parameter_through_a_function_argument_is_e_type_021() {
+        let all = [PMASK, FREE, PASS, DROP, UNUSED, SCALED];
+        let loss = "mse(model.forward(x, model.pmask(m)), y)";
+        assert_eq!(
+            dataflow(&all, "", "m", loss),
+            refused_at(loss, "model.pmask")
+        );
+        assert_eq!(
+            dataflow(&all, "", "relu(m)", loss),
+            refused_at(loss, "model.pmask")
+        );
+        assert_eq!(
+            dataflow(&all, "let k = relu(m);", "k", loss),
+            refused_at(loss, "model.pmask")
+        );
+        let pass = "mse(model.forward(x, model.pass(model.pmask(m))), y)";
+        assert_eq!(
+            dataflow(&all, "", "m", pass),
+            refused_at(pass, "model.pass")
+        );
+        let operator = "mse(model.forward(x, add(m, model.pmask(m))), y)";
+        assert_eq!(
+            dataflow(&all, "", "m", operator),
+            refused_at(operator, "add")
+        );
+        let direct = "mse(attention(model.forward(x, m), x, x, model.pmask(m), heads = 2), y)";
+        assert_eq!(
+            dataflow(&all, "", "m", direct),
+            refused_at(direct, "model.pmask")
+        );
+    }
+
+    /// D41: a model function that reads no parameter, or whose parameter-reading argument does
+    /// not reach its result, is no reason to refuse; nor is a parameter-reading argument that
+    /// reaches only an operand with a gradient.
+    #[test]
+    fn a_key_mask_that_reads_no_parameter_by_dataflow_checks() {
+        let all = [PMASK, FREE, PASS, DROP, UNUSED, SCALED];
+        assert!(dataflow(&all, "", "m", "mse(model.forward(x, m), y)").is_empty());
+        for loss in [
+            "mse(model.forward(x, model.free(m)), y)",
+            "mse(attention(model.forward(x, m), x, x, model.free(m), heads = 2), y)",
+            "mse(model.forward(x, model.pass(m)), y)",
+            "mse(model.forward(x, model.drop(model.pmask(m), m)), y)",
+            "mse(model.forward(x, model.unused(m)), y)",
+            "mse(model.forward(model.scaled(x), m), y)",
+        ] {
+            assert!(dataflow(&all, "", "m", loss).is_empty(), "{loss}");
+        }
     }
 }

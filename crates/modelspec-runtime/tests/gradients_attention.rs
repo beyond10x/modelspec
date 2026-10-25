@@ -429,3 +429,354 @@ fn attention_key_mask_values_other_than_0_or_1_are_runtime_errors() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------------------------
+// The order of every sum and the scale, bit for bit (DESIGN.md § 4, coordinator decision D37).
+// ---------------------------------------------------------------------------------------------
+
+/// The heads of the order cases: two, so each head is `H/2` columns wide.
+const TWO: usize = 2;
+
+/// Cancelling magnitudes: in `f32` a sum of `1e8`, `1`, `-1e8` and `1` depends on the order of
+/// its terms and on whether a product is rounded before it is added, so `v` and `G` scaled by it
+/// separate ascending from descending sums and fused from unfused ones.
+const CANCEL: [f32; 4] = [1.0e8, 1.0, -1.0e8, 1.0];
+
+/// One attention call at `heads = 2`: `b` sequences of `s` rows of width `h`, the operands and
+/// the adjoint `g` of the gradient ops.
+struct Order {
+    name: String,
+    b: usize,
+    s: usize,
+    h: usize,
+    q: Vec<f32>,
+    k: Vec<f32>,
+    v: Vec<f32>,
+    mask: Vec<f32>,
+    g: Vec<f32>,
+}
+
+/// `a0 * b0` rounded, then each later product fused into the sum with `mul_add`, in the order
+/// given (ADR-009); `0.0` for no terms. Written out here, not taken from the interpreter.
+fn ascending(terms: impl IntoIterator<Item = (f32, f32)>) -> f32 {
+    let mut terms = terms.into_iter();
+    let Some((a, b)) = terms.next() else {
+        return 0.0;
+    };
+    let mut acc = a * b;
+    for (a, b) in terms {
+        acc = a.mul_add(b, acc);
+    }
+    acc
+}
+
+impl Order {
+    /// The case `name` with `q` and `k` drawn in `[-2, -0.2] ∪ [0.2, 2]`, and `v` and `G`
+    /// drawn and scaled by [`CANCEL`]: `v` by key and column, `G` by query and column.
+    fn new(name: &str, b: usize, s: usize, h: usize, mask: &[f32]) -> Self {
+        let mut rng = Rng::new(seed_of(name));
+        let n = b * s;
+        let mut values = |scale: &dyn Fn(usize, usize) -> f32| -> Vec<f32> {
+            (0..n * h)
+                .map(|e| rng.value() * scale(e / h, e % h))
+                .collect()
+        };
+        let q = values(&|_, _| 2.0);
+        let k = values(&|_, _| 2.0);
+        let v = values(&|j, c| CANCEL[(j % s + c) % 4]);
+        let g = values(&|i, c| CANCEL[(i % s + 3 * c) % 4]);
+        Self {
+            name: name.to_owned(),
+            b,
+            s,
+            h,
+            q,
+            k,
+            v,
+            mask: mask.to_vec(),
+            g,
+        }
+    }
+
+    fn n(&self) -> usize {
+        self.b * self.s
+    }
+
+    /// `1 / sqrt(H/2)` in `f32`: the square root rounded, then the division rounded.
+    fn scale(&self) -> f32 {
+        1.0f32 / ((self.h / TWO) as f32).sqrt()
+    }
+
+    fn columns(&self, head: usize) -> std::ops::Range<usize> {
+        let d = self.h / TWO;
+        head * d..(head + 1) * d
+    }
+
+    /// The rows of the sequence of row `i`.
+    fn sequence(&self, i: usize) -> std::ops::Range<usize> {
+        let start = i / self.s * self.s;
+        start..start + self.s
+    }
+
+    /// The unmasked keys of the sequence of row `i`, ascending.
+    fn keys(&self, i: usize) -> Vec<usize> {
+        self.sequence(i).filter(|&j| self.mask[j] == 1.0).collect()
+    }
+
+    /// The ascending fused dot product of `q[i]` and `k[j]` over the head's columns, then times
+    /// the scale.
+    fn score(&self, i: usize, j: usize, head: usize) -> f32 {
+        let h = self.h;
+        ascending(
+            self.columns(head)
+                .map(|c| (self.q[i * h + c], self.k[j * h + c])),
+        ) * self.scale()
+    }
+
+    /// The probability of each unmasked key of query `i` in head `head`: the maximum in
+    /// ascending key order, the first replaced by each later one that is greater, `exp` of each
+    /// score less it, their sum in ascending key order, and each divided by the sum.
+    fn probabilities(&self, i: usize, head: usize) -> Vec<(usize, f32)> {
+        let keys = self.keys(i);
+        let scores: Vec<f32> = keys.iter().map(|&j| self.score(i, j, head)).collect();
+        let mut max = scores[0];
+        for &x in &scores[1..] {
+            if x > max {
+                max = x;
+            }
+        }
+        let e: Vec<f32> = scores.iter().map(|&x| (x - max).exp()).collect();
+        let mut total = e[0];
+        for &x in &e[1..] {
+            total += x;
+        }
+        keys.into_iter()
+            .zip(e)
+            .map(|(j, e)| (j, e / total))
+            .collect()
+    }
+
+    /// The probability of key `j` for query `i` in head `head`; `j` is unmasked.
+    fn probability(&self, i: usize, j: usize, head: usize) -> f32 {
+        let found = self
+            .probabilities(i, head)
+            .into_iter()
+            .find(|&(u, _)| u == j);
+        found.expect("an unmasked key").1
+    }
+
+    /// `dS[i, j] = P (dP - d)` for each unmasked key `j` of query `i` in head `head`, with
+    /// `dP[i, j] = G[i] . v[j]` over the head's columns and `d = sum_j P dP` in ascending key
+    /// order, both fused after the first product.
+    fn score_grads(&self, i: usize, head: usize) -> Vec<(usize, f32)> {
+        let h = self.h;
+        let dp = |j: usize| {
+            ascending(
+                self.columns(head)
+                    .map(|c| (self.g[i * h + c], self.v[j * h + c])),
+            )
+        };
+        let p = self.probabilities(i, head);
+        let d = ascending(p.iter().map(|&(j, pj)| (pj, dp(j))));
+        p.into_iter().map(|(j, pj)| (j, pj * (dp(j) - d))).collect()
+    }
+
+    /// The forward: the sum over unmasked keys in ascending order of `P v[j]`, fused after the
+    /// first product.
+    fn forward(&self) -> Vec<f32> {
+        let h = self.h;
+        let mut out = vec![0.0f32; self.n() * h];
+        for i in 0..self.n() {
+            for head in 0..TWO {
+                let p = self.probabilities(i, head);
+                for c in self.columns(head) {
+                    out[i * h + c] = ascending(p.iter().map(|&(j, pj)| (pj, self.v[j * h + c])));
+                }
+            }
+        }
+        out
+    }
+
+    /// `dQ[i] = scale * sum_j dS[i, j] k[j]` over unmasked keys, ascending, fused after the first.
+    fn grad_q(&self) -> Vec<f32> {
+        let h = self.h;
+        let mut out = vec![0.0f32; self.n() * h];
+        for i in 0..self.n() {
+            for head in 0..TWO {
+                let ds = self.score_grads(i, head);
+                for c in self.columns(head) {
+                    let sum = ascending(ds.iter().map(|&(j, x)| (x, self.k[j * h + c])));
+                    out[i * h + c] = sum * self.scale();
+                }
+            }
+        }
+        out
+    }
+
+    /// `dK[j] = scale * sum_i dS[i, j] q[i]` over the queries of the sequence, ascending, fused
+    /// after the first; `+0` in the row of a masked key.
+    fn grad_k(&self) -> Vec<f32> {
+        let h = self.h;
+        let mut out = vec![0.0f32; self.n() * h];
+        for j in (0..self.n()).filter(|&j| self.mask[j] == 1.0) {
+            for head in 0..TWO {
+                let ds: Vec<f32> = self
+                    .sequence(j)
+                    .map(|i| {
+                        let found = self.score_grads(i, head).into_iter().find(|&(u, _)| u == j);
+                        found.expect("an unmasked key").1
+                    })
+                    .collect();
+                for c in self.columns(head) {
+                    let terms = self
+                        .sequence(j)
+                        .zip(&ds)
+                        .map(|(i, &x)| (x, self.q[i * h + c]));
+                    out[j * h + c] = ascending(terms) * self.scale();
+                }
+            }
+        }
+        out
+    }
+
+    /// `dV[j] = sum_i P[i, j] G[i]` over the queries of the sequence, ascending, fused after the
+    /// first; `+0` in the row of a masked key.
+    fn grad_v(&self) -> Vec<f32> {
+        let h = self.h;
+        let mut out = vec![0.0f32; self.n() * h];
+        for j in (0..self.n()).filter(|&j| self.mask[j] == 1.0) {
+            for head in 0..TWO {
+                for c in self.columns(head) {
+                    let terms = self
+                        .sequence(j)
+                        .map(|i| (self.probability(i, j, head), self.g[i * h + c]));
+                    out[j * h + c] = ascending(terms);
+                }
+            }
+        }
+        out
+    }
+
+    /// The interpreter's `f32` result of `attention` at `heads = 2` (`grad` `None`) or of the
+    /// gradient op `grad` over `q, k, v, key_mask, G`.
+    fn run(&self, grad: Option<TensorOp>) -> Vec<f32> {
+        let (n, h) = (self.n() as u64, self.h as u64);
+        let mut b = TensorProgramBuilder::new();
+        let q = input(&mut b, "q", &[n, h]);
+        let k = input(&mut b, "k", &[n, h]);
+        let v = input(&mut b, "v", &[n, h]);
+        let m = input(&mut b, "key_mask", &[self.b as u64, self.s as u64]);
+        let y = match &grad {
+            None => b.attention(q, k, v, m, TWO as u64).unwrap(),
+            Some(op) => {
+                let g = input(&mut b, "g", &[n, h]);
+                b.push(op.clone(), &[q, k, v, m, g]).unwrap()
+            }
+        };
+        b.output(y).unwrap();
+        let program = b.finish();
+        let shape: &[u64] = &[n, h];
+        let mask_shape: &[u64] = &[self.b as u64, self.s as u64];
+        let mut values: Vec<(&str, &[u64], &[f32])> = vec![
+            ("q", shape, &self.q),
+            ("k", shape, &self.k),
+            ("v", shape, &self.v),
+            ("key_mask", mask_shape, &self.mask),
+        ];
+        if grad.is_some() {
+            values.push(("g", shape, &self.g));
+        }
+        let inputs = host(&values, |x| x);
+        let mut out = evaluate(&program, &inputs, &BTreeMap::new()).unwrap();
+        out.remove(0).data().to_vec()
+    }
+}
+
+/// The order cases, all at `heads = 2`, with masked keys first, in the middle and last in a
+/// sequence: head widths 2, 3, 5, 6 and 7. At width 6, `1 / sqrt(H/2)` in `f32` differs from
+/// `sqrt(2/H)` and from `1 / sqrt(H/2)` computed in `f64` and rounded, and a scale computed either
+/// way changes the bits of the forward and of every gradient op (measured by planting each).
+fn order_cases() -> Vec<Order> {
+    let one = 1.0f32;
+    let cases: [(&str, usize, usize, usize, Vec<f32>); 5] = [
+        ("h4", 2, 4, 4, vec![one, one, 0.0, one, one, one, one, one]),
+        ("h6", 2, 4, 6, vec![0.0, one, one, one, one, one, one, 0.0]),
+        ("h10", 1, 5, 10, vec![one, one, one, 0.0, one]),
+        (
+            "h12",
+            2,
+            4,
+            12,
+            vec![one, 0.0, one, one, one, one, one, one],
+        ),
+        ("h14", 2, 3, 14, vec![one, one, one, one, 0.0, one]),
+    ];
+    cases
+        .into_iter()
+        .map(|(name, b, s, h, mask)| Order::new(&format!("attention_order_{name}"), b, s, h, &mask))
+        .collect()
+}
+
+/// `got` equals `want` bit for bit; the message names the first element that differs.
+fn assert_bits(what: &str, got: &[f32], want: &[f32]) {
+    assert_eq!(got.len(), want.len(), "{what}: length");
+    let differ: Vec<String> = got
+        .iter()
+        .zip(want)
+        .enumerate()
+        .filter(|(_, (g, w))| g.to_bits() != w.to_bits())
+        .map(|(e, (g, w))| format!("[{e}] {g:e} vs {w:e}"))
+        .collect();
+    assert!(
+        differ.is_empty(),
+        "{what}: {} of {} elements differ from the ascending reference: {}",
+        differ.len(),
+        got.len(),
+        differ
+            .iter()
+            .take(4)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+}
+
+/// D37 at `heads = 2`: the forward equals, bit for bit, ascending fused dot products times
+/// `1 / sqrt(H/2)`, the maximum and the `exp` sum over the unmasked keys in ascending order, and
+/// the output summed over the unmasked keys in ascending order, fused after the first product.
+#[test]
+fn attention_order_forward_bit_for_bit_at_two_heads() {
+    for case in order_cases() {
+        assert_bits(&case.name, &case.run(None), &case.forward());
+    }
+}
+
+/// D37 at `heads = 2`: `AttentionGradQ` equals, bit for bit, the reference whose row sum
+/// `sum_j P dP` and `sum_j dS k[j]` run over the unmasked keys in ascending order.
+#[test]
+fn attention_order_grad_q_bit_for_bit_at_two_heads() {
+    for case in order_cases() {
+        let got = case.run(Some(TensorOp::AttentionGradQ { heads: TWO as u64 }));
+        assert_bits(&case.name, &got, &case.grad_q());
+    }
+}
+
+/// D37 at `heads = 2`: `AttentionGradK` equals, bit for bit, the reference whose sum over the
+/// queries runs in ascending order.
+#[test]
+fn attention_order_grad_k_bit_for_bit_at_two_heads() {
+    for case in order_cases() {
+        let got = case.run(Some(TensorOp::AttentionGradK { heads: TWO as u64 }));
+        assert_bits(&case.name, &got, &case.grad_k());
+    }
+}
+
+/// D37 at `heads = 2`: `AttentionGradV` equals, bit for bit, the reference whose sum over the
+/// queries runs in ascending order.
+#[test]
+fn attention_order_grad_v_bit_for_bit_at_two_heads() {
+    for case in order_cases() {
+        let got = case.run(Some(TensorOp::AttentionGradV { heads: TWO as u64 }));
+        assert_bits(&case.name, &got, &case.grad_v());
+    }
+}

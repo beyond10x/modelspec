@@ -181,3 +181,97 @@ fn the_training_ir_holds_attention_and_its_three_gradient_ops() {
         assert!(stdout.contains(op), "{op}:\n{stdout}");
     }
 }
+
+/// A model whose `forward` passes its argument `m` as the key mask, beside model functions that
+/// read `p` (`pmask`), read nothing (`free`), pass their argument through a `let` (`pass`), drop
+/// their first argument (`drop`), bind `p` in a `let` their result does not read (`unused`) and
+/// read `w` (`scaled`); the train block's loss is `loss`.
+fn dataflow_source(loss: &str) -> String {
+    format!(
+        "model M {{
+    param w: Tensor<f32, [4, 4]> = xavier_uniform();
+    param p: Tensor<f32, [2, 3]> = ones();
+    fn pmask(a: Tensor<f32, [2, 3]>) -> Tensor<f32, [2, 3]> {{ return mul(a, p); }}
+    fn free(a: Tensor<f32, [2, 3]>) -> Tensor<f32, [2, 3]> {{ return relu(a); }}
+    fn pass(a: Tensor<f32, [2, 3]>) -> Tensor<f32, [2, 3]> {{ let b = relu(a); return b; }}
+    fn drop(a: Tensor<f32, [2, 3]>, b: Tensor<f32, [2, 3]>) -> Tensor<f32, [2, 3]> {{ return relu(b); }}
+    fn unused(a: Tensor<f32, [2, 3]>) -> Tensor<f32, [2, 3]> {{ let q = p; return relu(a); }}
+    fn scaled(a: Tensor<f32, [6, 4]>) -> Tensor<f32, [6, 4]> {{ return matmul(a, w); }}
+    fn forward(x: Tensor<f32, [6, 4]>, m: Tensor<f32, [2, 3]>) -> Tensor<f32, [6, 4]> {{
+        return attention(matmul(x, w), x, x, m, heads = 2);
+    }}
+}}
+
+train T {{
+    model = M;
+    input x: Tensor<f32, [6, 4]>;
+    input m: Tensor<f32, [2, 3]>;
+    target y: Tensor<f32, [6, 4]>;
+    loss = {loss};
+    optimizer = sgd(lr = 0.1);
+    steps = 1;
+    seed = 0;
+    device = cpu;
+}}
+"
+    )
+}
+
+/// Coordinator decision D41 (2026-10-25, `.engineering/waves/bert-1.md`): a key mask is
+/// `E-TYPE-021` exactly when its value reads a `param` by dataflow, through `let`s, model
+/// function bodies and model function arguments. Each variant either is refused by `check` with
+/// `E-TYPE-021`, or checks clean and lowers to a training program; none reaches a compiler bug.
+#[test]
+fn a_key_mask_reading_a_parameter_by_dataflow_is_refused_and_no_other_reaches_a_compiler_bug() {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("check_attention_dataflow");
+    std::fs::create_dir_all(&dir).expect("the temp dir is writable");
+    let cases = [
+        ("mse(model.forward(x, model.pmask(m)), y)", true),
+        ("mse(model.forward(x, model.pass(model.pmask(m))), y)", true),
+        ("mse(model.forward(x, add(m, model.pmask(m))), y)", true),
+        (
+            "mse(attention(model.forward(x, m), x, x, model.pmask(m), heads = 2), y)",
+            true,
+        ),
+        ("mse(model.forward(x, model.free(m)), y)", false),
+        (
+            "mse(attention(model.forward(x, m), x, x, model.free(m), heads = 2), y)",
+            false,
+        ),
+        ("mse(model.forward(x, model.pass(m)), y)", false),
+        (
+            "mse(model.forward(x, model.drop(model.pmask(m), m)), y)",
+            false,
+        ),
+        ("mse(model.forward(x, model.unused(m)), y)", false),
+        ("mse(model.forward(model.scaled(x), m), y)", false),
+    ];
+    for (i, (loss, refused)) in cases.into_iter().enumerate() {
+        let path = dir.join(format!("case{i}.mspec"));
+        std::fs::write(&path, dataflow_source(loss)).expect("the source is written");
+        let run = |args: &[&str]| {
+            Command::new(env!("CARGO_BIN_EXE_modelspec"))
+                .args(args)
+                .arg(&path)
+                .output()
+                .expect("modelspec runs")
+        };
+        let check = run(&["check"]);
+        let stderr = text(&check.stderr);
+        if refused {
+            assert_eq!(check.status.code(), Some(1), "{loss}:\n{stderr}");
+            assert!(stderr.starts_with("E-TYPE-021: "), "{loss}:\n{stderr}");
+            let heads = stderr.lines().filter(|l| !l.starts_with("  ")).count();
+            assert_eq!(heads, 1, "{loss}: one diagnostic:\n{stderr}");
+        } else {
+            assert_eq!(check.status.code(), Some(0), "{loss}:\n{stderr}");
+            let ir = run(&["ir", "--stage", "training"]);
+            let stderr = text(&ir.stderr);
+            assert_eq!(ir.status.code(), Some(0), "{loss}:\n{stderr}");
+            assert!(
+                text(&ir.stdout).contains("= AttentionGradQ [heads = 2] "),
+                "{loss}"
+            );
+        }
+    }
+}
