@@ -730,19 +730,37 @@ impl PackedData {
 
     /// Replaces the tensors of `batch` with the inputs of training step `k` ([`Self::step`]).
     pub fn fill_step(&self, k: u64, batch: &mut PackedBatch) -> Result<(), DataError> {
+        let drawn = self.draw(SplitRole::Train, k)?;
+        self.fill(drawn, batch);
+        Ok(())
+    }
+
+    /// The directory the data was read from.
+    pub fn dir(&self) -> &Path {
+        &self.dir
+    }
+
+    /// The number of sequences of the split `role`.
+    pub fn sequences(&self, role: SplitRole) -> usize {
+        self.packed.sequence_count(role)
+    }
+
+    /// [`mlm_batch`] of step `k` of the split `role` with the run seed, the binding's masking
+    /// policy and `B` sequences: the training batch of step `k` for `Train`, the held-out batch
+    /// `k` for `HeldOut` (story:bert-heldout-evaluation).
+    pub fn draw(&self, role: SplitRole, k: u64) -> Result<MlmBatch, DataError> {
         let policy = &self.binding.masking_policy;
-        let mut drawn = mlm_batch(
-            &self.packed,
-            SplitRole::Train,
-            policy,
-            self.seed,
-            k,
-            self.batch,
-        )
-        .map_err(|e| DataError::Packed {
-            dir: self.dir.clone(),
-            reason: e.to_string(),
-        })?;
+        mlm_batch(&self.packed, role, policy, self.seed, k, self.batch).map_err(|e| {
+            DataError::Packed {
+                dir: self.dir.clone(),
+                reason: e.to_string(),
+            }
+        })
+    }
+
+    /// Replaces the tensors of `batch` with the declared tensors of `drawn`, each by its
+    /// declaration's name and shape.
+    pub fn fill(&self, mut drawn: MlmBatch, batch: &mut PackedBatch) {
         let MlmBatch {
             ids,
             positions,
@@ -774,7 +792,6 @@ impl PackedData {
                 }
             }
         }
-        Ok(())
     }
 }
 
