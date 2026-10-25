@@ -50,7 +50,7 @@ three diagnostics for one file.
 | `E-SYNTAX` | parser | a typo, or a construct the M0 subset does not have yet. Constructs of the target language such as `module`, `layer` and infix operators each have their own code |
 | `E-NAME` | name resolution | an unknown variable, operator or function, or a name declared twice |
 | `E-TYPE` | type and shape checker | operands whose shapes do not fit, a wrong argument count, or a train-block rule such as the loss calling `model.forward` more than once |
-| `E-DATA` | `train`, after the check | the input and target do not fit the synthetic data loader |
+| `E-DATA` | `train`, after the check | the input and target declarations do not fit the data the run reads: synthetic data, dense `--data` files or a packed directory, or a data file is missing or malformed |
 | `E-TARGET` | `train`, before the check | the backend is not available |
 | `E-INTERNAL` | the compiler | a compiler bug, not a mistake in the model; please [report it](https://github.com/beyond10x/modelspec/issues) with the file |
 

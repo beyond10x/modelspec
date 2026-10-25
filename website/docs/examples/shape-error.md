@@ -15,7 +15,7 @@ The output below was recorded by `modelspec-docs` running the `modelspec` comman
 
 [`crates/modelspec-docs/models/matmul_mismatch.mspec`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-docs/models/matmul_mismatch.mspec):
 
-```modelspec
+```modelspec title="crates/modelspec-docs/models/matmul_mismatch.mspec"
 model Mismatch {
     param w: Tensor<f32, [3, 1]> = xavier_uniform();
 

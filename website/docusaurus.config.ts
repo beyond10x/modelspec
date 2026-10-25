@@ -64,7 +64,7 @@ const config: Config = {
         docs: {
           sidebarPath: './sidebars.ts',
           routeBasePath: 'docs',
-          editUrl: 'https://github.com/beyond10x/modelspec/tree/main/website/',
+          editUrl: 'https://github.com/beyond10x/modelspec/edit/main/website/',
         },
         blog: false,
       } satisfies Preset.Options,

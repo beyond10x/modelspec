@@ -12,7 +12,12 @@ A Rust compiler and runtime for `.mspec` tensor-program specifications. Humans s
 ## State
 
 Milestone M0 implemented (DESIGN.md revision 0.6, § 1 and § 11, iteration 1; wave `m0` closed);
-M1 (`epic:m1-vulkan-execution`) is in progress, latest release 0.10.0. A Cargo workspace of five crates: `modelspec-core`
+M1 (`epic:m1-vulkan-execution`) is in progress, latest release 0.10.0. The active milestone is
+`epic:bert-from-scratch`, M3's BERT proof model: the operators `embedding` (with `i32` row ids),
+`add_rows`, `gelu`, `layer_norm`, `softmax` and `attention` (0.10.0), `cross_entropy` and
+`dropout` (`[Unreleased]`) run on the CPU interpreter only; every command that needs a Vulkan
+kernel for one answers E-TARGET-011 at its call, and their kernels, AdamW and held-out evaluation
+are draft stories. A Cargo workspace of five crates: `modelspec-core`
 (parser, checker, Tensor IR, autodiff, lowering, DCE; no Vulkan), `modelspec-runtime` (CPU oracle,
 SGD training and the corpus preparation, WordPiece tokenizer and MLM batch packing `dataset`; the `vulkan` feature holds Vulkan device discovery, negotiation, SPIR-V
 emission and the training runner `vulkan::runner` through `ash` and `rspirv`; the JSON Schema of
@@ -49,6 +54,14 @@ D26); `dataset::mlm::mlm_batch` draws the 80/10/10 batch of a step from them, ma
 stream tag 3 and the epoch order on tag 5 (DESIGN.md § 2.3). Its tests are
 `cargo test -p modelspec-runtime --test mlm` and `cargo test -p modelspec-cli --test data_pack`,
 on the `corpus-tokenizer` fixture.
+`train <file> --backend cpu --data <dir>` on a packed directory (one holding `binding.json`) feeds
+step `k` the `Train` batch of step `k`, each `input` and `target` naming a batch tensor (`ids`,
+`positions`, `key_mask`, `labels`, `weights`), and prints a `data` line first (DESIGN.md 0.46);
+any other `--data` directory holds dense `f32` files. `--data`, `--init` and `--eval` are CPU only.
+Its tests are `cargo test -p modelspec-cli --test train_data`.
+The documentation site's guide `website/docs/guides/prepare-training-data.md` and concept page
+`website/docs/concepts/bert-operators.md` paste output from these commands; rerun them when the
+output changes.
 CI: `check.yml` runs `task ci`; `shared-gates.yml` runs the
 common source gates; `pages.yml` and `b10x-docs-site.yml` build and publish the documentation site.
 

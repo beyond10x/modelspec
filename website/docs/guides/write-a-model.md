@@ -114,7 +114,7 @@ it with `E-TARGET-001` ([Roadmap](../roadmap.md)).
 
 ## Where to go from here
 
-- [Operators](../reference/operators.md): the nine operators and the shapes each accepts.
+- [Operators](../reference/operators.md): every operator and the shapes each accepts.
 - [Diagnostics](../reference/diagnostics.md): every code the checker can print.
 - [Syntax beyond M0](../examples/beyond-m0.md): modules, layers and generic dimensions, which M0
   refuses.

@@ -1,6 +1,6 @@
 ---
 title: The language
-description: A tour of the .mspec language from DESIGN.md § 2, and the M0 subset the 0.1.0 compiler accepts.
+description: A tour of the .mspec language from DESIGN.md § 2, the subset the 0.10.0 compiler accepts, and the target language it grows into.
 ---
 
 # The language
@@ -8,11 +8,13 @@ description: A tour of the .mspec language from DESIGN.md § 2, and the M0 subse
 A `.mspec` file is declarative, statically typed and pure by default. It says what a model
 computes and how it is trained; it does no I/O and has no runtime objects. This page is a tour of
 [DESIGN.md § 2](https://github.com/beyond10x/modelspec/blob/main/DESIGN.md#2-modelspec-source-language),
-in two parts: the M0 subset that 0.1.0 parses and checks, and the target language it grows into.
+in two parts: the subset that 0.10.0 parses and checks, and the target language it grows into.
+The subset is called M0, after the milestone that defined its syntax; later releases added
+operators, the `i32` element type and named operator arguments to it, and no new statements.
 
-## An M0 file
+## A file of the subset
 
-An M0 file holds one `model` and one `train` block, in either order.
+A file holds one `model` and one `train` block, in either order.
 
 ```modelspec
 model TwoLayer {
@@ -40,44 +42,62 @@ train FitTwoLayer {
 
 ### The model
 
-| Construct | Meaning in M0 |
+| Construct | Meaning |
 |---|---|
-| `param name: Tensor<...> = xavier_uniform();` | a trainable tensor with a stable canonical path, here `TwoLayer.w1`. `xavier_uniform()` needs a rank-2 parameter; `zeros()` and `ones()` take any rank from 1 and draw nothing |
+| `param name: Tensor<...> = xavier_uniform();` | a trainable tensor with a stable canonical path, here `TwoLayer.w1`. `xavier_uniform()` needs a rank-2 parameter; `zeros()` and `ones()` take any rank from 1 and draw nothing. A parameter is always `f32` |
 | `fn name(arg: Tensor<...>, ...) -> Tensor<...> { ... }` | a pure, typed function: any number of `let` bindings, then one `return`. A model may have several; the train block calls `forward` |
 | `let h = expr;` | names an intermediate value. There is no assignment and no mutation |
-| `matmul(a, b)`, `relu(a)`, ... | an operator call with positional arguments. M0 has nine operators and no infix syntax, so `a + b` is written `add(a, b)` ([Operators](../reference/operators.md)) |
+| `matmul(a, b)`, `attention(q, k, v, mask, heads = 2)` | an operator call: positional operands, then the operator's named compile-time arguments, each a literal given once. There is no infix syntax, so `a + b` is written `add(a, b)`. [Operators](../reference/operators.md) lists every operator and its rule |
 | `0.5` | a float literal, typed as a scalar `f32` tensor, for example `mul(x, 0.5)`. An integer literal where a tensor is expected is refused (`E-TYPE-005`): write `1.0`, not `1` |
 
 ### Types and shapes
 
-Every value has the type `Tensor<f32, [d1, d2, ...]>`. Every dimension is a positive integer
-literal, and `[]` is a scalar. `f32` is the only element type. The shape rules are strict on
+Every value has the type `Tensor<f32, [d1, d2, ...]>` or `Tensor<i32, [d1, ...]>`. Every
+dimension is a positive integer literal, and `[]` is a scalar. An `i32` tensor holds row ids or
+labels: it is declared only by an `input` or `target` of the train block or by a function
+parameter, and read only as the ids of `embedding` or the labels of `cross_entropy`. Any other use
+of an `i32`, and an `f32` where ids or labels go, is `E-TYPE-018`. The shape rules are strict on
 purpose (DESIGN.md § 2.2):
 
 - `matmul([M, K], [K, N])` is `[M, N]`, for rank-2 operands only.
 - `add`, `sub` and `mul` take two operands of the same shape, or a scalar and a tensor. There is no
   other broadcasting.
-- `relu` keeps its operand's shape; `transpose([M, N])` is `[N, M]`.
+- `relu`, `gelu` and `dropout` keep their operand's shape; `transpose([M, N])` is `[N, M]`.
 - `sum`, `mean` and `mse` return a scalar; `mse(a, b)` needs `a` and `b` of the same shape.
+- `embedding(table [V, H], ids i32[N])` is `[N, H]`.
+- `add_rows([N, H], [H])` adds the row to every row; `layer_norm([N, H], gamma [H], beta [H])` is
+  `[N, H]`; `softmax` takes a rank-2 operand and keeps its shape.
+- `attention(q, k, v, key_mask, heads = A)` takes `q`, `k` and `v` of one shape `[N, H]` and a key
+  mask `[B, S]` with `N = B · S`, and returns `[N, H]`; `A` must divide `H` (`E-TYPE-020`).
+- `cross_entropy(logits [N, V], labels i32[N], weights [N])` returns a scalar.
 
 A call that breaks a rule is a compile error with its own code, the source position and both
-operand types ([a shape error](../examples/shape-error.md)).
+operand types ([a shape error](../examples/shape-error.md)). The BERT operators have their own
+page, [BERT operators](./bert-operators.md).
+
+### Named operator arguments
+
+`attention` takes `heads`, an integer literal of at least 1, and `dropout` takes `p`, a float
+literal in `[0, 1)`. Each is required, given once and after the operands. A value that is not a
+literal of its kind is `E-TYPE-019`, a name the operator does not take or one given twice is
+`E-TYPE-002`, and a `p` outside `[0, 1)` is `E-TYPE-022`.
 
 ### The train block
 
-| Setting | Meaning in M0 |
+| Setting | Meaning |
 |---|---|
 | `model = Name;` | the model to train |
-| `input x: Tensor<...>;`, `target y: Tensor<...>;` | exactly one of each. The target has the model's output type, and the loss reads both |
+| `input x: Tensor<...>;`, `target y: Tensor<...>;` | on synthetic data and on dense `--data` files, exactly one of each: the target has the model's output type, and the loss reads both. On a packed `--data` directory, each declaration names a tensor of the masked-language-model batch, such as `ids`, `labels` and `weights` ([Prepare training data](../guides/prepare-training-data.md)) |
 | `loss = expr;` | a scalar expression that calls `model.forward` exactly once (`E-TYPE-017` otherwise) |
 | `optimizer = sgd(lr = 0.05);` | plain SGD with a positive learning rate; the only optimizer |
 | `steps = 200;` | the number of updates, at least one |
-| `seed = 7;` | the seed of every random draw: initial parameters and synthetic data ([Training](./training.md)) |
-| `device = cpu;` | `cpu` or `vulkan(<index>)`. The 0.1.0 command line takes the backend from `--backend` instead, and refuses `vulkan` |
+| `seed = 7;` | the seed of every random draw: initial parameters, synthetic data, the batches drawn from a packed directory and dropout masks ([Training](./training.md)) |
+| `device = cpu;` | `cpu` or `vulkan(<index>)`. The command line takes the backend from `--backend`, not from this setting |
 
 ## The target language
 
-DESIGN.md § 2 designs a larger language. This model is its running example, and 0.1.0 refuses it:
+DESIGN.md § 2 designs a larger language. This model is its running example, and 0.10.0 refuses
+it:
 
 ```modelspec
 module Linear<In: dim, Out: dim> {
@@ -101,18 +121,18 @@ model TinyMLP<B: dim> {
 }
 ```
 
-| Construct | Meaning | M0 |
+| Construct | Meaning | 0.10.0 |
 |---|---|---|
 | `module` | a reusable group of parameters and functions | refused, `E-SYNTAX-004` |
 | `layer` | a named module instance, elaborated statically; each instance owns its own weights | refused, `E-SYNTAX-005` |
 | `<B: dim>`, `[B, 32]` | a generic dimension, resolved at compile time | refused, `E-SYNTAX-006` to `E-SYNTAX-008` |
 | `const` | an immutable scalar or tensor | refused, `E-SYNTAX-010` |
 | `infer` | an inference signature | refused, `E-SYNTAX-002` (`expected model or train`) |
-| `target` (top level) | backend constraints kept out of model semantics | later milestones; `target y:` inside `train` is M0 |
+| `target` (top level) | backend constraints kept out of model semantics | later milestones; `target y:` inside `train` is accepted |
 
-The parser does not answer these with a generic syntax error. Each construct beyond M0 has its own
-code naming what is missing, and [Syntax beyond M0](../examples/beyond-m0.md) shows the output. The
-[diagnostic reference](../reference/diagnostics.md) lists every code.
+The parser does not answer these with a generic syntax error. Each construct beyond the subset has
+its own code naming what is missing, and [Syntax beyond M0](../examples/beyond-m0.md) shows the
+output. The [diagnostic reference](../reference/diagnostics.md) lists every code.
 
 Two rules hold for the whole language. Composition does not decide kernel boundaries: functions
 and layers are inlined, and the compiler may fuse or split the operations they contain. And every

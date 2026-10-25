@@ -1,5 +1,5 @@
 {
-  "asOf": "2026-10-23",
+  "asOf": "2026-10-25",
   "format": "b10x-status/1",
   "items": [
     {
@@ -39,9 +39,9 @@
     },
     {
       "area": "Compiler",
-      "detail": "Every gradient rule is checked against central finite differences. Held by test two_layer_relu in crates/modelspec-runtime/tests/gradients.rs.",
+      "detail": "The gradient rules of `matmul`, `add`, `sub`, `mul`, `relu`, `transpose`, `sum`, `mean` and `mse` are checked against central finite differences; the rows below hold the rules of the operators added for BERT. Held by test two_layer_relu in crates/modelspec-runtime/tests/gradients.rs.",
       "href": "/docs/reference/operators",
-      "label": "Reverse-mode autodiff for all nine operators",
+      "label": "Reverse-mode autodiff for every operator",
       "status": "shipped"
     },
     {
@@ -155,6 +155,237 @@
       "href": "/docs/reference/cli",
       "label": "Parameter and gradient statistics on sampled steps",
       "status": "shipped"
+    },
+    {
+      "area": "Performance",
+      "detail": "Since 0.8.0: the step program is verified once per run instead of once per step, each intermediate is freed after its last consumer, and dense batch tensors are refilled in place. Held by test a_prepared_run_calls_each_verifier_once in crates/modelspec-runtime/tests/prepared_step.rs.",
+      "href": "/docs/concepts/training",
+      "label": "A CPU run prepares its step once",
+      "status": "shipped"
+    },
+    {
+      "area": "Performance",
+      "detail": "Since 0.8.0: the parser anchors every lexeme start, so the cost of a span no longer grows with its column. Held by test long_line_span_lookup_scans in crates/modelspec-core/tests/span_lookup.rs.",
+      "href": "/docs/reference/diagnostics",
+      "label": "A diagnostic's position is found by binary search",
+      "status": "shipped"
+    },
+    {
+      "area": "Observatory",
+      "detail": "Since 0.8.0: modelspec train --backend vulkan --stats and --profile print the pipeline barriers and device allocations of a step and the peak device bytes of the run. Held by test stats_and_profile_print_the_same_three_counters in crates/modelspec-cli/tests/adversary_step_counters.rs.",
+      "href": "/docs/reference/cli",
+      "label": "Per-step device counters",
+      "status": "shipped"
+    },
+    {
+      "area": "Project",
+      "detail": "Since 0.8.0: benchmarks/runs.yaml holds every measured run of ModelSpec and its PyTorch opponents, and modelspec-docs draws a chart per workload from it. Held by test the_history_holds_every_run_the_story_names in crates/modelspec-docs/src/benchmarks.rs.",
+      "href": "/docs/benchmarks",
+      "label": "Every benchmark run on one page",
+      "status": "shipped"
+    },
+    {
+      "area": "GPU",
+      "detail": "Since 0.9.0: a matmul of at least 128 blocks of 64 rows accumulates an 8×8 or 8×4 tile per invocation from fragments staged through workgroup memory; the bits do not change. Held by test a_matmul_of_at_least_1024_by_1024_outputs_is_register_blocked_at_least_4_by_4 in crates/modelspec-core/tests/matmul_register_blocked.rs.",
+      "href": "/docs/concepts/pipeline",
+      "label": "Register-blocked matmul for large outputs",
+      "status": "shipped"
+    },
+    {
+      "area": "GPU",
+      "detail": "Since 0.9.0: a transpose that only matmuls read has no dispatch and no buffer; each matmul reads the untransposed view with its strides swapped. Held by test no_step_plan_of_the_story_dispatches_a_transpose in crates/modelspec-core/tests/matmul_transposed_operand.rs.",
+      "href": "/docs/concepts/pipeline",
+      "label": "A transposed matmul operand is read in place",
+      "status": "shipped"
+    },
+    {
+      "area": "GPU",
+      "detail": "Since 0.9.0: compile --fast-math and train --backend vulkan --fast-math drop NoContraction from the kernels, change the artifact hash and compare the run within tolerance; the deterministic run stays the default. Held by test compile_fast_math_sets_fast_math_in_the_artifact_and_changes_its_hash in crates/modelspec-cli/tests/fast_math.rs.",
+      "href": "/docs/reference/cli",
+      "label": "Opt-in fast math",
+      "status": "shipped"
+    },
+    {
+      "area": "Compiler",
+      "detail": "Since 0.10.0: matmul, reductions and the mse loss sum fuse each later product into its sum, on the CPU and on Vulkan, so both give the bits of one fused reference. Held by test every_cpu_matmul_kernel_gives_the_bits_of_the_fused_reference in crates/modelspec-runtime/tests/cpu_fma_oracle.rs.",
+      "href": "/docs/concepts/pipeline",
+      "label": "Deterministic fused multiply-adds in every reduction",
+      "status": "shipped"
+    },
+    {
+      "area": "GPU",
+      "detail": "Since 0.10.0: compile --device-profile and train --backend vulkan schedule the plan within the device's limits, and the artifact records them. Held by test compile_with_a_profile_schedules_within_its_limits_and_records_them in crates/modelspec-cli/tests/compile_matmul_limits.rs.",
+      "href": "/docs/reference/cli",
+      "label": "Scheduling for a device profile",
+      "status": "shipped"
+    },
+    {
+      "area": "GPU",
+      "detail": "Since 0.10.0: a chain of elementwise ops whose values are each read once by the next op is one kernel, so the MNIST loss gradient is one dispatch. Held by test the_mnist_loss_gradient_is_one_sub_mul_dispatch_with_no_buffer_for_the_difference in crates/modelspec-core/tests/fuse_chains.rs.",
+      "href": "/docs/concepts/pipeline",
+      "label": "Elementwise chains run as one dispatch",
+      "status": "shipped"
+    },
+    {
+      "area": "Observatory",
+      "detail": "Since 0.10.0: train --backend vulkan --profile prints the executable statistics the driver reports for each kernel of the plan, such as its register count. Held by test the_profile_flag_documents_the_profile_pipeline_lines in crates/modelspec-cli/tests/train_pipeline_statistics.rs.",
+      "href": "/docs/reference/cli",
+      "label": "Pipeline statistics per kernel",
+      "status": "shipped"
+    },
+    {
+      "area": "Language",
+      "detail": "Since 0.10.0: a tensor may be `i32` where an operator reads row ids (`embedding`) or labels (`cross_entropy`); every other use is a type error. Held by test ids_read_only_by_embedding_check_clean in crates/modelspec-cli/tests/check_i32.rs.",
+      "href": "/docs/concepts/language",
+      "label": "`i32` row ids",
+      "status": "shipped"
+    },
+    {
+      "area": "Language",
+      "detail": "Since 0.10.0: a parameter of any rank from 1, such as a bias, may start at zeros() or ones(); neither draws from the seed. Held by test zeros_and_ones_take_a_parameter_of_rank_1_2_and_3 in crates/modelspec-core/tests/initializers.rs.",
+      "href": "/docs/concepts/language",
+      "label": "zeros() and ones() initializers",
+      "status": "shipped"
+    },
+    {
+      "area": "BERT operators",
+      "detail": "Since 0.10.0: a row lookup from an `f32[V,H]` table by `i32[N]` ids; the table gradient is a scatter-add checked against central differences. Held by test embedding_table_gradient_matches_central_differences in crates/modelspec-runtime/tests/gradients_embedding.rs.",
+      "href": "/docs/concepts/bert-operators",
+      "label": "`embedding`",
+      "status": "shipped"
+    },
+    {
+      "area": "BERT operators",
+      "detail": "Since 0.10.0: the bias row of a dense layer and the tanh form of GELU, both gradients checked against central differences. Held by test add_rows_gradients_of_w_and_b_match_central_differences in crates/modelspec-runtime/tests/gradients_dense.rs.",
+      "href": "/docs/concepts/bert-operators",
+      "label": "`add_rows` and `gelu`",
+      "status": "shipped"
+    },
+    {
+      "area": "BERT operators",
+      "detail": "Since 0.10.0: the `gelu` gradient matches central differences from -3 to 3. Held by test gelu_gradient_of_w_matches_central_differences_across_minus_3_to_3 in crates/modelspec-runtime/tests/gradients_dense.rs.",
+      "href": "/docs/concepts/bert-operators",
+      "label": "`gelu` gradient across its range",
+      "status": "shipped"
+    },
+    {
+      "area": "BERT operators",
+      "detail": "Since 0.10.0: row normalization with a gain and a bias, `eps = 1e-12`; the gradients of the input, the gain and the bias are checked against central differences. Held by test layer_norm_gradients_of_w_gamma_and_beta_match_central_differences in crates/modelspec-runtime/tests/gradients_norm.rs.",
+      "href": "/docs/concepts/bert-operators",
+      "label": "`layer_norm`",
+      "status": "shipped"
+    },
+    {
+      "area": "BERT operators",
+      "detail": "Since 0.10.0: a row softmax with the row maximum subtracted before exp; its gradient is checked against central differences. Held by test softmax_gradient_of_w_matches_central_differences in crates/modelspec-runtime/tests/gradients_norm.rs.",
+      "href": "/docs/concepts/bert-operators",
+      "label": "`softmax`",
+      "status": "shipped"
+    },
+    {
+      "area": "BERT operators",
+      "detail": "Since 0.10.0: multi-head scaled dot-product attention with a key mask and the named argument `heads`; the gradients of q, k and v are checked against central differences. Held by test attention_gradients_of_w_q_w_k_and_w_v_match_central_differences in crates/modelspec-runtime/tests/gradients_attention.rs.",
+      "href": "/docs/concepts/bert-operators",
+      "label": "`attention`",
+      "status": "shipped"
+    },
+    {
+      "area": "BERT operators",
+      "detail": "Not yet released: the weighted masked-language-model loss over `f32[N,V]` logits, `i32[N]` labels and `f32[N]` weights; its gradient is checked against central differences. Held by test cross_entropy_gradient_of_w_matches_central_differences in crates/modelspec-runtime/tests/gradients_cross_entropy.rs.",
+      "href": "/docs/concepts/bert-operators",
+      "label": "`cross_entropy`",
+      "status": "shipped"
+    },
+    {
+      "area": "BERT operators",
+      "detail": "Not yet released: `dropout(x, p = 0.1)` draws its mask from the seed, the call site and the step, applies in the training step only and recomputes the mask for its gradient. Held by test gradients_dropout_match_central_differences_at_a_fixed_token in crates/modelspec-runtime/tests/gradients_dropout.rs.",
+      "href": "/docs/concepts/bert-operators",
+      "label": "`dropout`",
+      "status": "shipped"
+    },
+    {
+      "area": "BERT operators",
+      "detail": "Every command that needs a Vulkan kernel for one of them answers E-TARGET-011 at the operator's call, before a device is opened; they train with --backend cpu. Held by test every_command_that_needs_a_vulkan_kernel_answers_e_target_011_at_the_call in crates/modelspec-cli/tests/embedding_no_kernel.rs.",
+      "href": "/docs/reference/diagnostics",
+      "label": "No Vulkan kernel yet for the BERT operators",
+      "status": "shipped"
+    },
+    {
+      "area": "Data",
+      "detail": "Since 0.10.0: modelspec data prepare copies a WikiText-103 raw release's train and validation files into the Train and HeldOut splits and writes their record. Held by test splits_one_per_role_cover_every_fixture_document_and_validate in crates/modelspec-cli/tests/data_prepare.rs.",
+      "href": "/docs/guides/prepare-training-data",
+      "label": "Corpus splits",
+      "status": "shipped"
+    },
+    {
+      "area": "Data",
+      "detail": "Since 0.10.0: modelspec data tokenizer trains on the Train split to the vocabulary size asked for, the five special tokens included. Held by test exact_size in crates/modelspec-cli/tests/data_tokenizer.rs.",
+      "href": "/docs/guides/prepare-training-data",
+      "label": "A WordPiece tokenizer of an exact vocabulary size",
+      "status": "shipped"
+    },
+    {
+      "area": "Data",
+      "detail": "Since 0.10.0: modelspec data pack encodes both splits into sequences of --seq-len tokens and writes their binding and their record with the held-out unigram baseline. Held by test sequences in crates/modelspec-cli/tests/data_pack.rs.",
+      "href": "/docs/guides/prepare-training-data",
+      "label": "Packed sequences of an exact length",
+      "status": "shipped"
+    },
+    {
+      "area": "Data",
+      "detail": "15% of the tokens are selected from the seed, and of those 80% are masked, 10% replaced by a random token and 10% kept. Held by test proportions in crates/modelspec-runtime/tests/mlm.rs.",
+      "href": "/docs/guides/prepare-training-data",
+      "label": "Masked-language-model batches",
+      "status": "shipped"
+    },
+    {
+      "area": "Training",
+      "detail": "Not yet released: modelspec train --backend cpu --data <dir> on a directory modelspec data pack wrote feeds each step its masked-language-model batch, and prints a data line naming the binding. Held by test trains_mlm_bag_on_packed_batches in crates/modelspec-cli/tests/train_data.rs.",
+      "href": "/docs/guides/prepare-training-data",
+      "label": "Training on a packed directory",
+      "status": "shipped"
+    },
+    {
+      "area": "Training",
+      "detail": "Not yet released: the final loss line, --eval and infer run the forward program without dropout. Held by test train_dropout_final_loss_is_the_forward_program_without_dropout in crates/modelspec-cli/tests/train_dropout.rs.",
+      "href": "/docs/concepts/training",
+      "label": "Dropout applies in the training step only",
+      "status": "shipped"
+    },
+    {
+      "area": "Training",
+      "detail": "The masked-language-model loss and accuracy on the HeldOut split at a fixed interval, printed and streamed as metrics. Planned.",
+      "href": "/docs/roadmap",
+      "label": "Held-out evaluation during training",
+      "status": "planned"
+    },
+    {
+      "area": "Training",
+      "detail": "AdamW with decoupled weight decay and a learning-rate warm-up, compiled into the training step. Planned.",
+      "href": "/docs/roadmap",
+      "label": "AdamW with a warm-up schedule",
+      "status": "planned"
+    },
+    {
+      "area": "GPU",
+      "detail": "`embedding`, `add_rows`, `gelu`, `layer_norm`, `softmax` and `dropout` on the device, checked against the CPU interpreter. Planned.",
+      "href": "/docs/roadmap",
+      "label": "Vulkan kernels for the row-wise BERT operators",
+      "status": "planned"
+    },
+    {
+      "area": "GPU",
+      "detail": "A full BERT training step on the GPU. Planned.",
+      "href": "/docs/roadmap",
+      "label": "Vulkan kernels for attention, cross-entropy and AdamW",
+      "status": "planned"
+    },
+    {
+      "area": "Training",
+      "detail": "BERT-tiny as a checked example, pre-trained on the GPU until its held-out loss is below the unigram baseline. Planned.",
+      "href": "/docs/roadmap",
+      "label": "Pre-train BERT-tiny on the GPU",
+      "status": "planned"
     }
   ],
   "source": "generated by modelspec-docs from its capability list, checked against main and the planning store"

@@ -15,7 +15,7 @@ The output below was recorded by `modelspec-docs` running the `modelspec` comman
 
 [`crates/modelspec-docs/models/two_layer_relu.mspec`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-docs/models/two_layer_relu.mspec):
 
-```modelspec
+```modelspec title="crates/modelspec-docs/models/two_layer_relu.mspec"
 model TwoLayer {
     param w1: Tensor<f32, [4, 8]> = xavier_uniform();
     param w2: Tensor<f32, [8, 1]> = xavier_uniform();

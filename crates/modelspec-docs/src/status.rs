@@ -16,7 +16,7 @@ use serde_json::{Value, json};
 pub const FILE: &str = "status.json";
 
 /// The date [`CAPABILITIES`] was last checked against `main` and the planning store.
-pub const AS_OF: &str = "2026-10-23";
+pub const AS_OF: &str = "2026-10-25";
 
 /// What holds a shipped capability.
 #[derive(Clone, Copy)]
@@ -55,6 +55,24 @@ const fn shipped(
         status: "shipped",
         evidence: Some(evidence),
         artifact: None,
+        href,
+    }
+}
+
+const fn planned(
+    area: &'static str,
+    label: &'static str,
+    detail: &'static str,
+    artifact: &'static str,
+    href: &'static str,
+) -> Capability {
+    Capability {
+        area,
+        label,
+        detail,
+        status: "planned",
+        evidence: None,
+        artifact: Some(artifact),
         href,
     }
 }
@@ -108,8 +126,8 @@ pub const CAPABILITIES: &[Capability] = &[
     ),
     shipped(
         "Compiler",
-        "Reverse-mode autodiff for all nine operators",
-        "Every gradient rule is checked against central finite differences.",
+        "Reverse-mode autodiff for every operator",
+        "The gradient rules of `matmul`, `add`, `sub`, `mul`, `relu`, `transpose`, `sum`, `mean` and `mse` are checked against central finite differences; the rows below hold the rules of the operators added for BERT.",
         Evidence::Test("crates/modelspec-runtime/tests/gradients.rs::two_layer_relu"),
         "/docs/reference/operators",
     ),
@@ -253,6 +271,285 @@ pub const CAPABILITIES: &[Capability] = &[
         ),
         "/docs/reference/cli",
     ),
+    shipped(
+        "Performance",
+        "A CPU run prepares its step once",
+        "Since 0.8.0: the step program is verified once per run instead of once per step, each intermediate is freed after its last consumer, and dense batch tensors are refilled in place.",
+        Evidence::Test(
+            "crates/modelspec-runtime/tests/prepared_step.rs::a_prepared_run_calls_each_verifier_once",
+        ),
+        "/docs/concepts/training",
+    ),
+    shipped(
+        "Performance",
+        "A diagnostic's position is found by binary search",
+        "Since 0.8.0: the parser anchors every lexeme start, so the cost of a span no longer grows with its column.",
+        Evidence::Test("crates/modelspec-core/tests/span_lookup.rs::long_line_span_lookup_scans"),
+        "/docs/reference/diagnostics",
+    ),
+    shipped(
+        "Observatory",
+        "Per-step device counters",
+        "Since 0.8.0: modelspec train --backend vulkan --stats and --profile print the pipeline barriers and device allocations of a step and the peak device bytes of the run.",
+        Evidence::Test(
+            "crates/modelspec-cli/tests/adversary_step_counters.rs::stats_and_profile_print_the_same_three_counters",
+        ),
+        "/docs/reference/cli",
+    ),
+    shipped(
+        "Project",
+        "Every benchmark run on one page",
+        "Since 0.8.0: benchmarks/runs.yaml holds every measured run of ModelSpec and its PyTorch opponents, and modelspec-docs draws a chart per workload from it.",
+        Evidence::Test(
+            "crates/modelspec-docs/src/benchmarks.rs::the_history_holds_every_run_the_story_names",
+        ),
+        "/docs/benchmarks",
+    ),
+    shipped(
+        "GPU",
+        "Register-blocked matmul for large outputs",
+        "Since 0.9.0: a matmul of at least 128 blocks of 64 rows accumulates an 8×8 or 8×4 tile per invocation from fragments staged through workgroup memory; the bits do not change.",
+        Evidence::Test(
+            "crates/modelspec-core/tests/matmul_register_blocked.rs::a_matmul_of_at_least_1024_by_1024_outputs_is_register_blocked_at_least_4_by_4",
+        ),
+        "/docs/concepts/pipeline",
+    ),
+    shipped(
+        "GPU",
+        "A transposed matmul operand is read in place",
+        "Since 0.9.0: a transpose that only matmuls read has no dispatch and no buffer; each matmul reads the untransposed view with its strides swapped.",
+        Evidence::Test(
+            "crates/modelspec-core/tests/matmul_transposed_operand.rs::no_step_plan_of_the_story_dispatches_a_transpose",
+        ),
+        "/docs/concepts/pipeline",
+    ),
+    shipped(
+        "GPU",
+        "Opt-in fast math",
+        "Since 0.9.0: compile --fast-math and train --backend vulkan --fast-math drop NoContraction from the kernels, change the artifact hash and compare the run within tolerance; the deterministic run stays the default.",
+        Evidence::Test(
+            "crates/modelspec-cli/tests/fast_math.rs::compile_fast_math_sets_fast_math_in_the_artifact_and_changes_its_hash",
+        ),
+        "/docs/reference/cli",
+    ),
+    shipped(
+        "Compiler",
+        "Deterministic fused multiply-adds in every reduction",
+        "Since 0.10.0: matmul, reductions and the mse loss sum fuse each later product into its sum, on the CPU and on Vulkan, so both give the bits of one fused reference.",
+        Evidence::Test(
+            "crates/modelspec-runtime/tests/cpu_fma_oracle.rs::every_cpu_matmul_kernel_gives_the_bits_of_the_fused_reference",
+        ),
+        "/docs/concepts/pipeline",
+    ),
+    shipped(
+        "GPU",
+        "Scheduling for a device profile",
+        "Since 0.10.0: compile --device-profile and train --backend vulkan schedule the plan within the device's limits, and the artifact records them.",
+        Evidence::Test(
+            "crates/modelspec-cli/tests/compile_matmul_limits.rs::compile_with_a_profile_schedules_within_its_limits_and_records_them",
+        ),
+        "/docs/reference/cli",
+    ),
+    shipped(
+        "GPU",
+        "Elementwise chains run as one dispatch",
+        "Since 0.10.0: a chain of elementwise ops whose values are each read once by the next op is one kernel, so the MNIST loss gradient is one dispatch.",
+        Evidence::Test(
+            "crates/modelspec-core/tests/fuse_chains.rs::the_mnist_loss_gradient_is_one_sub_mul_dispatch_with_no_buffer_for_the_difference",
+        ),
+        "/docs/concepts/pipeline",
+    ),
+    shipped(
+        "Observatory",
+        "Pipeline statistics per kernel",
+        "Since 0.10.0: train --backend vulkan --profile prints the executable statistics the driver reports for each kernel of the plan, such as its register count.",
+        Evidence::Test(
+            "crates/modelspec-cli/tests/train_pipeline_statistics.rs::the_profile_flag_documents_the_profile_pipeline_lines",
+        ),
+        "/docs/reference/cli",
+    ),
+    shipped(
+        "Language",
+        "`i32` row ids",
+        "Since 0.10.0: a tensor may be `i32` where an operator reads row ids (`embedding`) or labels (`cross_entropy`); every other use is a type error.",
+        Evidence::Test(
+            "crates/modelspec-cli/tests/check_i32.rs::ids_read_only_by_embedding_check_clean",
+        ),
+        "/docs/concepts/language",
+    ),
+    shipped(
+        "Language",
+        "zeros() and ones() initializers",
+        "Since 0.10.0: a parameter of any rank from 1, such as a bias, may start at zeros() or ones(); neither draws from the seed.",
+        Evidence::Test(
+            "crates/modelspec-core/tests/initializers.rs::zeros_and_ones_take_a_parameter_of_rank_1_2_and_3",
+        ),
+        "/docs/concepts/language",
+    ),
+    shipped(
+        "BERT operators",
+        "`embedding`",
+        "Since 0.10.0: a row lookup from an `f32[V,H]` table by `i32[N]` ids; the table gradient is a scatter-add checked against central differences.",
+        Evidence::Test(
+            "crates/modelspec-runtime/tests/gradients_embedding.rs::embedding_table_gradient_matches_central_differences",
+        ),
+        "/docs/concepts/bert-operators",
+    ),
+    shipped(
+        "BERT operators",
+        "`add_rows` and `gelu`",
+        "Since 0.10.0: the bias row of a dense layer and the tanh form of GELU, both gradients checked against central differences.",
+        Evidence::Test(
+            "crates/modelspec-runtime/tests/gradients_dense.rs::add_rows_gradients_of_w_and_b_match_central_differences",
+        ),
+        "/docs/concepts/bert-operators",
+    ),
+    shipped(
+        "BERT operators",
+        "`gelu` gradient across its range",
+        "Since 0.10.0: the `gelu` gradient matches central differences from -3 to 3.",
+        Evidence::Test(
+            "crates/modelspec-runtime/tests/gradients_dense.rs::gelu_gradient_of_w_matches_central_differences_across_minus_3_to_3",
+        ),
+        "/docs/concepts/bert-operators",
+    ),
+    shipped(
+        "BERT operators",
+        "`layer_norm`",
+        "Since 0.10.0: row normalization with a gain and a bias, `eps = 1e-12`; the gradients of the input, the gain and the bias are checked against central differences.",
+        Evidence::Test(
+            "crates/modelspec-runtime/tests/gradients_norm.rs::layer_norm_gradients_of_w_gamma_and_beta_match_central_differences",
+        ),
+        "/docs/concepts/bert-operators",
+    ),
+    shipped(
+        "BERT operators",
+        "`softmax`",
+        "Since 0.10.0: a row softmax with the row maximum subtracted before exp; its gradient is checked against central differences.",
+        Evidence::Test(
+            "crates/modelspec-runtime/tests/gradients_norm.rs::softmax_gradient_of_w_matches_central_differences",
+        ),
+        "/docs/concepts/bert-operators",
+    ),
+    shipped(
+        "BERT operators",
+        "`attention`",
+        "Since 0.10.0: multi-head scaled dot-product attention with a key mask and the named argument `heads`; the gradients of q, k and v are checked against central differences.",
+        Evidence::Test(
+            "crates/modelspec-runtime/tests/gradients_attention.rs::attention_gradients_of_w_q_w_k_and_w_v_match_central_differences",
+        ),
+        "/docs/concepts/bert-operators",
+    ),
+    shipped(
+        "BERT operators",
+        "`cross_entropy`",
+        "Not yet released: the weighted masked-language-model loss over `f32[N,V]` logits, `i32[N]` labels and `f32[N]` weights; its gradient is checked against central differences.",
+        Evidence::Test(
+            "crates/modelspec-runtime/tests/gradients_cross_entropy.rs::cross_entropy_gradient_of_w_matches_central_differences",
+        ),
+        "/docs/concepts/bert-operators",
+    ),
+    shipped(
+        "BERT operators",
+        "`dropout`",
+        "Not yet released: `dropout(x, p = 0.1)` draws its mask from the seed, the call site and the step, applies in the training step only and recomputes the mask for its gradient.",
+        Evidence::Test(
+            "crates/modelspec-runtime/tests/gradients_dropout.rs::gradients_dropout_match_central_differences_at_a_fixed_token",
+        ),
+        "/docs/concepts/bert-operators",
+    ),
+    shipped(
+        "BERT operators",
+        "No Vulkan kernel yet for the BERT operators",
+        "Every command that needs a Vulkan kernel for one of them answers E-TARGET-011 at the operator's call, before a device is opened; they train with --backend cpu.",
+        Evidence::Test(
+            "crates/modelspec-cli/tests/embedding_no_kernel.rs::every_command_that_needs_a_vulkan_kernel_answers_e_target_011_at_the_call",
+        ),
+        "/docs/reference/diagnostics",
+    ),
+    shipped(
+        "Data",
+        "Corpus splits",
+        "Since 0.10.0: modelspec data prepare copies a WikiText-103 raw release's train and validation files into the Train and HeldOut splits and writes their record.",
+        Evidence::Test(
+            "crates/modelspec-cli/tests/data_prepare.rs::splits_one_per_role_cover_every_fixture_document_and_validate",
+        ),
+        "/docs/guides/prepare-training-data",
+    ),
+    shipped(
+        "Data",
+        "A WordPiece tokenizer of an exact vocabulary size",
+        "Since 0.10.0: modelspec data tokenizer trains on the Train split to the vocabulary size asked for, the five special tokens included.",
+        Evidence::Test("crates/modelspec-cli/tests/data_tokenizer.rs::exact_size"),
+        "/docs/guides/prepare-training-data",
+    ),
+    shipped(
+        "Data",
+        "Packed sequences of an exact length",
+        "Since 0.10.0: modelspec data pack encodes both splits into sequences of --seq-len tokens and writes their binding and their record with the held-out unigram baseline.",
+        Evidence::Test("crates/modelspec-cli/tests/data_pack.rs::sequences"),
+        "/docs/guides/prepare-training-data",
+    ),
+    shipped(
+        "Data",
+        "Masked-language-model batches",
+        "15% of the tokens are selected from the seed, and of those 80% are masked, 10% replaced by a random token and 10% kept.",
+        Evidence::Test("crates/modelspec-runtime/tests/mlm.rs::proportions"),
+        "/docs/guides/prepare-training-data",
+    ),
+    shipped(
+        "Training",
+        "Training on a packed directory",
+        "Not yet released: modelspec train --backend cpu --data <dir> on a directory modelspec data pack wrote feeds each step its masked-language-model batch, and prints a data line naming the binding.",
+        Evidence::Test(
+            "crates/modelspec-cli/tests/train_data.rs::trains_mlm_bag_on_packed_batches",
+        ),
+        "/docs/guides/prepare-training-data",
+    ),
+    shipped(
+        "Training",
+        "Dropout applies in the training step only",
+        "Not yet released: the final loss line, --eval and infer run the forward program without dropout.",
+        Evidence::Test(
+            "crates/modelspec-cli/tests/train_dropout.rs::train_dropout_final_loss_is_the_forward_program_without_dropout",
+        ),
+        "/docs/concepts/training",
+    ),
+    planned(
+        "Training",
+        "Held-out evaluation during training",
+        "The masked-language-model loss and accuracy on the HeldOut split at a fixed interval, printed and streamed as metrics.",
+        "story:bert-heldout-evaluation",
+        "/docs/roadmap",
+    ),
+    planned(
+        "Training",
+        "AdamW with a warm-up schedule",
+        "AdamW with decoupled weight decay and a learning-rate warm-up, compiled into the training step.",
+        "story:bert-adamw-warmup",
+        "/docs/roadmap",
+    ),
+    planned(
+        "GPU",
+        "Vulkan kernels for the row-wise BERT operators",
+        "`embedding`, `add_rows`, `gelu`, `layer_norm`, `softmax` and `dropout` on the device, checked against the CPU interpreter.",
+        "story:bert-vulkan-kernels-rowwise",
+        "/docs/roadmap",
+    ),
+    planned(
+        "GPU",
+        "Vulkan kernels for attention, cross-entropy and AdamW",
+        "A full BERT training step on the GPU.",
+        "story:bert-vulkan-kernels-attention-loss-adamw",
+        "/docs/roadmap",
+    ),
+    planned(
+        "Training",
+        "Pre-train BERT-tiny on the GPU",
+        "BERT-tiny as a checked example, pre-trained on the GPU until its held-out loss is below the unigram baseline.",
+        "story:bert-tiny-gpu-pretraining",
+        "/docs/roadmap",
+    ),
 ];
 
 /// Whether `source` defines a function called `name`.
@@ -338,7 +635,7 @@ pub fn document_for(
                         "{label}: {artifact} is implemented; move the item to shipped"
                     ));
                 }
-                format!("{} Planned in {artifact}.", capability.detail)
+                format!("{} Planned.", capability.detail)
             }
             ("decided" | "planned", None, None) => {
                 return Err(format!(
@@ -467,10 +764,7 @@ mod tests {
         assert!(warnings.is_empty());
         let document: Value = serde_json::from_str(&text).unwrap();
         assert_eq!(document["format"], "b10x-status/1");
-        assert_eq!(
-            document["items"][0]["detail"],
-            "Detail. Planned in epic:m1."
-        );
+        assert_eq!(document["items"][0]["detail"], "Detail. Planned.");
         let (_, warnings) =
             document_for(&root, &[item("planned", None, Some("epic:m0"))], AS_OF).unwrap();
         assert_eq!(warnings.len(), 1);
@@ -488,5 +782,80 @@ mod tests {
             assert!(document_for(&root, &[refused], AS_OF).is_err());
         }
         let _ = fs::remove_dir_all(&root);
+    }
+
+    /// The text of every shipped capability, label and detail.
+    fn shipped_text() -> Vec<String> {
+        CAPABILITIES
+            .iter()
+            .filter(|capability| capability.status == "shipped")
+            .map(|capability| format!("{} {}", capability.label, capability.detail))
+            .collect()
+    }
+
+    #[test]
+    fn the_list_was_checked_against_the_0_10_0_release() {
+        assert!(AS_OF >= "2026-10-25", "AS_OF {AS_OF} predates 0.10.0");
+    }
+
+    #[test]
+    fn every_registry_operator_has_a_shipped_row() {
+        let shipped = shipped_text();
+        for (name, _) in &modelspec_core::resolve::OPERATORS {
+            assert!(
+                shipped
+                    .iter()
+                    .any(|text| text.contains(&format!("`{name}`"))),
+                "no shipped row names the operator `{name}`"
+            );
+        }
+        for capability in CAPABILITIES {
+            assert!(
+                !capability.label.contains("nine"),
+                "{}: the operator count is not nine",
+                capability.label
+            );
+        }
+    }
+
+    #[test]
+    fn the_data_path_has_shipped_rows() {
+        let shipped = shipped_text();
+        for command in [
+            "modelspec data prepare",
+            "modelspec data tokenizer",
+            "modelspec data pack",
+            "--data",
+            "zeros()",
+            "`i32`",
+            "E-TARGET-011",
+        ] {
+            assert!(
+                shipped.iter().any(|text| text.contains(command)),
+                "no shipped row names {command}"
+            );
+        }
+    }
+
+    #[test]
+    fn no_page_text_names_a_planning_artifact() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let (text, _) = document(&root).unwrap();
+        let document: Value = serde_json::from_str(&text).unwrap();
+        for item in document["items"].as_array().unwrap() {
+            for key in ["label", "detail"] {
+                let value = item[key].as_str().unwrap();
+                assert!(
+                    !value.contains("story:") && !value.contains("epic:"),
+                    "{key} names a planning artifact: {value}"
+                );
+            }
+        }
+        assert!(
+            CAPABILITIES
+                .iter()
+                .any(|capability| capability.status == "planned"),
+            "the planned work of the BERT milestone is on the page"
+        );
     }
 }

@@ -175,7 +175,7 @@ pub struct Args {
     #[arg(long, value_name = "PATH")]
     pub record: Option<PathBuf>,
     /// With --serve, also serve the built observatory UI in DIR (ui/dist after `task ui`) at
-    /// http://ADDR/; the directory is read whole before ADDR is bound.
+    /// path / of ADDR; the directory is read whole before ADDR is bound.
     #[arg(long, value_name = "DIR", requires = "serve")]
     pub ui: Option<PathBuf>,
     /// Train on the data of DIR instead of synthetic data. A DIR that holds binding.json is a

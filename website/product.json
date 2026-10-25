@@ -3,27 +3,27 @@
   "product": {
     "name": "ModelSpec",
     "mark": "Ms",
-    "eyebrow": "A language and compiler for trainable tensor programs · M0",
+    "eyebrow": "A language and compiler for trainable tensor programs · M1",
     "promise": [
       "Specify what the model computes.",
       "The compiler decides how it runs."
     ],
-    "lede": "Write the model, the loss and the optimizer in one .mspec file. ModelSpec checks every name, type and shape before anything runs, lowers the file to a typed tensor IR, derives the gradients, adds the optimizer step and trains the whole step on a CPU reference interpreter. The Vulkan backend for GPU training is the next milestone and is not built yet. No Python, PyTorch or CUDA.",
+    "lede": "Write the model, the loss and the optimizer in one .mspec file. ModelSpec checks every name, type and shape before anything runs, lowers the file to a typed tensor IR, derives the gradients, adds the optimizer step and trains the whole step on a CPU reference interpreter or on one Vulkan GPU. No Python, PyTorch or CUDA.",
     "actions": [
       {"label": "Get started", "href": "/docs/getting-started", "kind": "primary"},
       {"label": "Read the documentation", "href": "/docs/"},
       {"label": "What exists today", "href": "/docs/status"},
       {"label": "Pitch deck", "href": "pathname:///modelspec/pitch/"}
     ],
-    "meta": "One Rust binary · CPU reference training · Vulkan planned · Apache-2.0",
+    "meta": "One Rust binary · CPU reference and Vulkan training · Apache-2.0",
     "kpis": [
-      {"count": "shipped", "label": "capabilities shipped in M0"},
-      {"count": "planned", "label": "capabilities planned for M1"}
+      {"count": "shipped", "label": "capabilities shipped"},
+      {"count": "planned", "label": "capabilities planned"}
     ],
     "art": {
       "kind": "terminal",
       "session": "data/modelspec.terminal.json",
-      "caption": "The repository's example checked and trained on the CPU reference, then refused on Vulkan. Recorded by modelspec-docs from the modelspec command line, not typed."
+      "caption": "The repository's example checked and trained on the CPU reference. Recorded by modelspec-docs from the modelspec command line, not typed."
     }
   },
   "sections": [
@@ -35,7 +35,7 @@
       "items": [
         {
           "title": "Shapes in the types",
-          "description": "Every tensor is Tensor<f32, [dims]>. matmul, add, mse and the other operators check their operands' shapes, and a mismatch names both types and the dimension it expected.",
+          "description": "Every tensor is Tensor<f32, [dims]>, or Tensor<i32, [dims]> for row ids and labels. matmul, add, mse and the other operators check their operands' shapes, and a mismatch names both types and the dimension it expected.",
           "status": "shipped",
           "icon": "evidence",
           "href": "/docs/examples/shape-error"
@@ -70,10 +70,17 @@
         },
         {
           "title": "GPU training through Vulkan and SPIR-V",
-          "description": "Generated SPIR-V kernels on an RTX 3090 through the system Vulkan loader, checked against the CPU reference. M1; not built.",
-          "status": "planned",
+          "description": "modelspec train --backend vulkan runs SPIR-V kernels generated in Rust on one device through the system Vulkan loader, within the GPU tolerance of the CPU reference, since 0.4.0.",
+          "status": "shipped",
           "icon": "action",
-          "href": "/docs/roadmap"
+          "href": "/docs/guides/inspect-a-run"
+        },
+        {
+          "title": "A small BERT, from scratch",
+          "description": "Embedding, attention, layer norm, GELU and the masked-language-model loss run on the CPU reference, and the data commands pack a corpus into token sequences. Their Vulkan kernels are planned.",
+          "status": "planned",
+          "icon": "claim",
+          "href": "/docs/concepts/bert-operators"
         }
       ]
     },
@@ -81,20 +88,20 @@
       "kind": "flow",
       "eyebrow": "One file to a trained model",
       "title": "Parse, check, lower, differentiate, train.",
-      "lede": "Each stage hands a verified value to the next. The CPU interpreter runs the same Training IR a GPU backend will.",
+      "lede": "Each stage hands a verified value to the next. The CPU interpreter and the Vulkan backend run the same Training IR.",
       "steps": [
         {"label": "Source", "title": "Parse", "description": "One model and one train block in the M0 subset; anything beyond it is refused by name."},
         {"label": "Checker", "title": "Check", "description": "Names, types and shapes; every refusal is a coded diagnostic."},
         {"label": "Tensor IR", "title": "Lower", "description": "Typed SSA, verified, with dead code eliminated."},
         {"label": "Training IR", "title": "Differentiate", "description": "Reverse-mode gradients and the SGD update in one program."},
-        {"label": "CPU reference", "title": "Train", "description": "Seeded synthetic data, the loss every 50 steps, the trained parameters."}
+        {"label": "CPU reference", "title": "Train", "description": "Synthetic, dense or packed data, the loss every 50 steps, the trained parameters."}
       ]
     },
     {
       "kind": "status",
       "eyebrow": "Status",
-      "title": "M0 is built. M1 is next.",
-      "lede": "Shipped means a named test or task in the repository holds it. Planned means it is on the M1 roadmap and not built.",
+      "title": "M0 is built. M1 is in progress.",
+      "lede": "Shipped means a named test or task in the repository holds it. Planned means it is work in the repository's planning store and not built.",
       "items": "data/status.json"
     },
     {

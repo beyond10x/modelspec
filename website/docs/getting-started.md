@@ -46,10 +46,17 @@ weight:
 ```text
 init @LinearReg.w: Tensor<f32, [4, 1]> = [0.9730758, -0.34559327, -0.86724, 0.14564086]
 step 0 loss 9.693205
-step 50 loss 0.0032300856
-...
-step 500 loss 0.0000000000561049
-param @LinearReg.w: Tensor<f32, [4, 1]> = [-0.9486646, -0.25639856, 0.4230444, 1.059935]
+step 50 loss 0.003230087
+step 100 loss 0.00024210943
+step 150 loss 0.000032833173
+step 200 loss 0.000004870945
+step 250 loss 0.00000072922063
+step 300 loss 0.00000010928702
+step 350 loss 0.000000016363904
+step 400 loss 0.0000000024583522
+step 450 loss 0.00000000036786574
+step 500 loss 0.00000000005571943
+param @LinearReg.w: Tensor<f32, [4, 1]> = [-0.9486646, -0.25639862, 0.42304444, 1.0599351]
 ```
 
 The same seed prints the same bytes on every run. [Linear regression](./examples/linear-regression.md)
