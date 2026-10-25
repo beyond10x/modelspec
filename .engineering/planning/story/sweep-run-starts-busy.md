@@ -7,7 +7,7 @@ title: 'A timed sweep run starts busy: no GPU idle at the start of a run'
 relations:
 - serves: vision:modelspec
 - depends_on: story:fuse-elementwise-chains-and-gradient-sums
-revision: 3
+revision: 4
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-25T04:08:55Z", actor: "human:timo", revision: 2}
 - {from: "proposed", to: "active", at: "2026-10-25T04:08:55Z", actor: "human:timo", revision: 3}
@@ -52,13 +52,14 @@ better, with the bits of every output unchanged.
 
 ## Acceptance
 
-- **idle-reproduced**: `benchmarks/raw/<date>-sweep-idle/` holds a trace (clock, power and
-  utilization at 100 ms, or `--profile` dispatch timestamps) of the dip on 74a9520 at b8192
-  h4096 and the command that produced it, and one trace of the block-kernel unit's commit or
-  binary without it, interleaved in one session.
-- **idle-bisected**: `diagnosis.md` there names the commit that introduced the idle, with the
-  trace of its parent and of it, and names what the GPU waited on, with the observation (a
-  profile line, a fence wait timed on the host, a log of the runner) that shows it.
+- **idle-diagnosed** (amended by coordinator decision D45, 2026-10-25, after adversary pass 1,
+  finding F3; it replaces idle-reproduced and idle-bisected): `benchmarks/raw/<date>-sweep-idle/`
+  holds a trace (clock, power, utilization and P-state at 100 ms) of the dip on 74a9520 at
+  b8192 h4096 and the command that produced it, and `diagnosis.md` there names what the GPU
+  waited on, with the observation that shows it. The bisect showed that no commit introduced
+  the idle: every commit from 92ba28b to 74a9520 dips, and the block-kernel unit's dip-free
+  trace came from a GPU the previous process had left in P0. The dip-free trace is the fixed
+  binary's, interleaved with 74a9520 in one session.
 - **idle-removed**: with the fix, three timed runs at b8192 h4096 show no sample below 1,500
   MHz after the first second of the run, and the median µs per step is within 5 % of 7,188 or
   below it, GPU alone, in the same session as a run of PyTorch eager CUDA; the harness's
