@@ -5,7 +5,8 @@ import type { Series } from '../lib/series.ts';
 
 // `tag` holds the attributes that say which chart this is, `data-metric` and the series name
 // unless given: a reader of `svg[data-metric]` reads the loss and metric charts and no other.
-const props = defineProps<{ series: Series; version: number; tag?: Record<string, string> }>();
+// `region` is the chart's `data-ux-region` mark for the UI loop's recorder and gates (`ui/ux/`).
+const props = defineProps<{ series: Series; version: number; tag?: Record<string, string>; region?: string }>();
 
 const tag = computed(() => props.tag ?? { 'data-metric': props.series.name });
 
@@ -43,7 +44,7 @@ const axes = computed(() => {
 </script>
 
 <template>
-  <figure class="chart">
+  <figure class="chart" :data-ux-region="region">
     <figcaption>
       <span class="name">{{ series.name }}</span>
       <span v-if="last" class="last">step {{ last.step }}: {{ label(last.value) }}</span>

@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, ref, shallowRef } from 'vue';
 import MetricChart from './components/MetricChart.vue';
 import ParameterPanel from './components/ParameterPanel.vue';
-import { apply, charts, emptyRun, sampleAt } from './lib/series.ts';
+import { LOSS, apply, charts, emptyRun, sampleAt } from './lib/series.ts';
 import { subscribe } from './lib/stream.ts';
 
 // The run is folded in place and redrawn at most once per animation frame: a fast run sends
@@ -76,7 +76,7 @@ const shown = computed(() => {
 
 <template>
   <main :data-run-state="state">
-    <header>
+    <header data-ux-region="header">
       <h1>ModelSpec observatory</h1>
       <p class="status">
         <span class="state" :class="state">{{ state }}</span>
@@ -85,11 +85,17 @@ const shown = computed(() => {
       </p>
       <p v-if="runId" class="run">run {{ runId }}</p>
     </header>
-    <p v-if="state === 'failed'" class="failure" role="alert">{{ failure }}</p>
+    <p v-if="state === 'failed'" class="failure" role="alert" data-ux-region="failure">{{ failure }}</p>
     <section class="charts">
-      <MetricChart v-for="s in series" :key="s.name" :series="s" :version="version" />
+      <MetricChart
+        v-for="s in series"
+        :key="s.name"
+        :series="s"
+        :version="version"
+        :region="s.name === LOSS ? 'loss-chart' : 'metric-chart'"
+      />
     </section>
-    <section v-if="parameters.length > 0" class="parameters">
+    <section v-if="parameters.length > 0" class="parameters" data-ux-region="parameters">
       <label class="pick">
         histograms at
         <select v-model="selected" data-step-select>
