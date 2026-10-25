@@ -45,6 +45,10 @@ pub trait Element:
         self * b + c
     }
 
+    /// `e` raised to `self`, as the standard library computes it for `f32` and `f64`; the
+    /// interpreter's `gelu` and its gradient use it (DESIGN.md § 4).
+    fn exp(self) -> Self;
+
     /// The AVX2 `matmul` kernel for this type ([`Kernel::Avx2`](super::matmul::Kernel::Avx2)):
     /// writes `out`, `m * n` elements, and returns true; `m`, `k` and `n` are nonzero. False,
     /// writing nothing, where the type has no such kernel or the CPU no AVX2 or no FMA, which is
@@ -81,6 +85,10 @@ impl Element for f32 {
         f32::mul_add(self, b, c)
     }
 
+    fn exp(self) -> Self {
+        f32::exp(self)
+    }
+
     #[cfg(target_arch = "x86_64")]
     fn matmul_avx2(
         out: &mut [Self],
@@ -108,6 +116,10 @@ impl Element for f64 {
 
     fn mul_add(self, b: Self, c: Self) -> Self {
         f64::mul_add(self, b, c)
+    }
+
+    fn exp(self) -> Self {
+        f64::exp(self)
     }
 
     #[cfg(target_arch = "x86_64")]

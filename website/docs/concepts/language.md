@@ -42,7 +42,7 @@ train FitTwoLayer {
 
 | Construct | Meaning in M0 |
 |---|---|
-| `param name: Tensor<...> = xavier_uniform();` | a trainable tensor with a stable canonical path, here `TwoLayer.w1`. `xavier_uniform()` is the one initializer, and it needs a rank-2 parameter |
+| `param name: Tensor<...> = xavier_uniform();` | a trainable tensor with a stable canonical path, here `TwoLayer.w1`. `xavier_uniform()` needs a rank-2 parameter; `zeros()` and `ones()` take any rank from 1 and draw nothing |
 | `fn name(arg: Tensor<...>, ...) -> Tensor<...> { ... }` | a pure, typed function: any number of `let` bindings, then one `return`. A model may have several; the train block calls `forward` |
 | `let h = expr;` | names an intermediate value. There is no assignment and no mutation |
 | `matmul(a, b)`, `relu(a)`, ... | an operator call with positional arguments. M0 has nine operators and no infix syntax, so `a + b` is written `add(a, b)` ([Operators](../reference/operators.md)) |

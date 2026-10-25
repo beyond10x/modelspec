@@ -590,4 +590,48 @@ mod tests {
         );
         assert!(differentiate_inputs(&forward, loss, &["t"]).is_ok());
     }
+
+    /// `mse(gelu(add_rows(matmul(x, w), b)), t)` with `w` and `b` parameters.
+    fn dense() -> (TensorProgram, ValueId) {
+        let mut b = TensorProgramBuilder::new();
+        let w = b
+            .declare_param("w", TensorType::f32(&[4, 3]), Initializer::XavierUniform)
+            .unwrap();
+        let bias = b
+            .declare_param("b", TensorType::f32(&[3]), Initializer::Zeros)
+            .unwrap();
+        let x = b.input("x", TensorType::f32(&[5, 4])).unwrap();
+        let w = b.param_read(w).unwrap();
+        let bias = b.param_read(bias).unwrap();
+        let xw = b.matmul(x, w).unwrap();
+        let z = b.add_rows(xw, bias).unwrap();
+        let y = b.gelu(z).unwrap();
+        let t = b.input("t", TensorType::f32(&[5, 3])).unwrap();
+        let loss = b.mse(y, t).unwrap();
+        b.output(loss).unwrap();
+        (b.finish(), loss)
+    }
+
+    /// The bias gradient is one `SumRows` of the adjoint of the `add_rows` result, which is a
+    /// `GeluGrad` of the pre-activation; the adjoint of `x W` is that same `GeluGrad`.
+    #[test]
+    fn the_bias_gradient_is_a_sum_rows_of_a_gelu_grad() {
+        let (forward, loss) = dense();
+        let training = differentiate(&forward, loss).unwrap();
+        let program = &training.program;
+        let db = program.node(training.gradients[&ParamId(1)]).unwrap();
+        assert_eq!(db.op, TensorOp::SumRows);
+        assert_eq!(db.ty, TensorType::f32(&[3]));
+        let dz = program.node(db.operands[0]).unwrap();
+        assert_eq!(dz.op, TensorOp::GeluGrad);
+        let z = forward
+            .nodes
+            .iter()
+            .find(|n| n.op == TensorOp::AddRows)
+            .unwrap();
+        assert_eq!(dz.operands[0], z.id, "GeluGrad reads the pre-activation");
+        let dw = program.node(training.gradients[&ParamId(0)]).unwrap();
+        assert_eq!(dw.op, TensorOp::MatMul);
+        assert_eq!(dw.operands[1], dz.id, "dW = transpose(x) @ dZ");
+    }
 }

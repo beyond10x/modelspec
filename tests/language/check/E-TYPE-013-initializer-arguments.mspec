@@ -1,4 +1,4 @@
-// expect E-TYPE-013 3:36 initializer `xavier_uniform(...)` is not supported; M0 has `xavier_uniform()`
+// expect E-TYPE-013 3:36 initializer `xavier_uniform(...)` is not supported; the initializers are `xavier_uniform()`, `zeros()` and `ones()`
 model LinearReg {
     param w: Tensor<f32, [4, 1]> = xavier_uniform(1.0);
 

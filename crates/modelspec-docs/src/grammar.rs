@@ -24,7 +24,7 @@ const TENSOR: &str = "Tensor";
 
 /// The grammar's word lists, as JSON.
 pub fn document() -> Result<String> {
-    let initializers = [Initializer::XavierUniform].map(|init| init.to_string());
+    let initializers = Initializer::ALL.map(|init| init.to_string());
     let mut builtins: Vec<String> = OPERATORS.iter().map(|(name, _)| name.to_string()).collect();
     builtins.extend(initializers);
     builtins.extend(PARSER_WORDS.iter().map(|word| word.to_string()));

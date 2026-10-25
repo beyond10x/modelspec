@@ -80,8 +80,8 @@ pub enum ScheduleError {
     BufferTooLarge { buffer: u32, bytes: u64 },
     #[error("{value} dispatches {invocations} invocations, more than a 32-bit index counts")]
     TooManyInvocations { value: ValueId, invocations: u64 },
-    /// The op has no Vulkan kernel yet (`E-TARGET-011`): `Embedding` and `EmbeddingGrad` run on
-    /// the CPU interpreter only.
+    /// The op has no Vulkan kernel yet (`E-TARGET-011`): `Embedding`, `EmbeddingGrad`, `AddRows`,
+    /// `SumRows`, `Gelu` and `GeluGrad` run on the CPU interpreter only.
     #[error("{value} is {op}, which has no Vulkan kernel")]
     NoKernel { value: ValueId, op: &'static str },
 }
@@ -632,7 +632,12 @@ fn schedule_with(
                 );
                 (vec![stage1, stage2], Some(partials))
             }
-            TensorOp::Embedding | TensorOp::EmbeddingGrad { .. } => match built {
+            TensorOp::Embedding
+            | TensorOp::EmbeddingGrad { .. }
+            | TensorOp::AddRows
+            | TensorOp::SumRows
+            | TensorOp::Gelu
+            | TensorOp::GeluGrad => match built {
                 Kernels::None => continue,
                 Kernels::Vulkan => {
                     return Err(ScheduleError::NoKernel {

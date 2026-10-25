@@ -376,7 +376,7 @@ fn model_forward_resolves_when_forward_is_not_the_first_function() {
 fn wrong_initializer_does_not_hide_an_independent_matmul_mismatch() {
     let source = with_train(
         "model LinearReg {
-    param w: Tensor<f32, [3, 1]> = zeros();
+    param w: Tensor<f32, [3, 1]> = uniform();
 
     fn forward(x: Tensor<f32, [8, 4]>) -> Tensor<f32, [8, 1]> {
         return matmul(x, w);

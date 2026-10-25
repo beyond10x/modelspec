@@ -50,10 +50,12 @@ pub mod codes {
         ARGUMENT_COUNT = "E-TYPE-001";
         /// A named argument (`a = x`) to an operator or a model function.
         NAMED_ARGUMENT = "E-TYPE-002";
-        /// `add`, `sub`, `mul` or `mse` operands of different shapes, neither of them rank 0.
+        /// `add`, `sub`, `mul` or `mse` operands of different shapes, neither of them rank 0, or
+        /// an `add_rows(x, b)` whose `b` is not as long as a row of `x`.
         SHAPE_MISMATCH = "E-TYPE-003";
-        /// A `matmul` or `transpose` operand that is not rank 2, or an `embedding` whose table is
-        /// not rank 2 or whose ids are not rank 1.
+        /// A `matmul` or `transpose` operand that is not rank 2, an `embedding` whose table is
+        /// not rank 2 or whose ids are not rank 1, or an `add_rows(x, b)` whose `x` is not rank 2
+        /// or whose `b` is not rank 1.
         RANK = "E-TYPE-004";
         /// An integer literal where a tensor is expected.
         INTEGER_LITERAL = "E-TYPE-005";
@@ -71,9 +73,11 @@ pub mod codes {
         STEPS = "E-TYPE-011";
         /// `matmul([M, K], [K', N])` with `K != K'` (DESIGN.md § 8.1).
         MATMUL_CONTRACTING = "E-TYPE-012";
-        /// A parameter initializer other than `xavier_uniform()`.
+        /// A parameter initializer other than `xavier_uniform()`, `zeros()` and `ones()`, or one
+        /// of them called with arguments.
         INITIALIZER = "E-TYPE-013";
-        /// `xavier_uniform()` on a parameter that is not rank 2.
+        /// `xavier_uniform()` on a parameter that is not rank 2, or `zeros()` or `ones()` on a
+        /// rank-0 parameter.
         INITIALIZER_RANK = "E-TYPE-014";
         /// A tensor type with a dimension of 0 (DESIGN.md § 2.2).
         ZERO_DIMENSION = "E-TYPE-015";
@@ -306,29 +310,43 @@ impl Checker {
             return (None, None);
         }
         let ty = self.declared(&p.ty);
-        let init = &p.init;
-        if init.callee.name != "xavier_uniform" || !init.args.is_empty() {
+        let call = &p.init;
+        let init = Initializer::from_name(&call.callee.name).filter(|_| call.args.is_empty());
+        let Some(init) = init else {
             self.report(
                 codes::INITIALIZER,
                 format!(
-                    "initializer `{}(...)` is not supported; M0 has `xavier_uniform()`",
-                    init.callee.name
+                    "initializer `{}(...)` is not supported; the initializers are \
+                     `xavier_uniform()`, `zeros()` and `ones()`",
+                    call.callee.name
                 ),
-                &init.span,
+                &call.span,
             );
             return (ty, None);
-        }
+        };
         let Some(ty) = ty else {
             return (None, None);
         };
-        if ty.rank() != 2 {
-            self.report(
-                codes::INITIALIZER_RANK,
-                format!(
-                    "`xavier_uniform()` needs a rank-2 parameter; `{}` has type {ty}",
-                    p.name.name
-                ),
-                &init.span,
+        let (fits, rule, other) = match init {
+            Initializer::XavierUniform => (
+                ty.rank() == 2,
+                "needs a rank-2 parameter",
+                "`zeros()` and `ones()` take a parameter of any rank from 1",
+            ),
+            Initializer::Zeros | Initializer::Ones => (
+                ty.rank() >= 1,
+                "needs a parameter of rank 1 or more",
+                "`xavier_uniform()` needs rank 2",
+            ),
+        };
+        if !fits {
+            self.diagnostics.push(
+                Diagnostic::new(
+                    codes::INITIALIZER_RANK,
+                    format!("`{init}()` {rule}; `{}` has type {ty}", p.name.name),
+                )
+                .at(call.span.clone())
+                .note(other),
             );
             return (Some(ty), None);
         }
@@ -336,7 +354,7 @@ impl Checker {
             name: p.name.name.clone(),
             path: format!("{model}.{}", p.name.name),
             ty: ty.clone(),
-            init: Initializer::XavierUniform,
+            init,
             span: p.span.clone(),
         };
         (Some(ty), Some(param))
@@ -730,6 +748,8 @@ fn op_diagnostic(name: OpName<'_>, error: OpError, span: &SourceSpan) -> Diagnos
         OpError::ShapeMismatch { lhs, rhs, .. } => {
             let rule = if name == "mse" {
                 "`mse` needs operands of identical shape"
+            } else if name == "add_rows" {
+                "`add_rows(x, b)` needs `b` of shape [H] for `x` of shape [N, H]"
             } else {
                 "operands need the same shape, or one of them rank 0; M0 has no broadcasting"
             };
@@ -741,11 +761,28 @@ fn op_diagnostic(name: OpName<'_>, error: OpError, span: &SourceSpan) -> Diagnos
             .with("rhs", rhs.to_string())
             .note(rule)
         }
-        OpError::Rank { expected, got, .. } => Diagnostic::new(
-            codes::RANK,
-            format!("`{name}` needs rank-{expected} operands"),
-        )
-        .with("got", got.to_string()),
+        OpError::Rank { expected, got, .. } => {
+            let operands = match name {
+                "add_rows" => Some([("x", 2), ("b", 1)]),
+                "embedding" => Some([("table", 2), ("ids", 1)]),
+                _ => None,
+            };
+            let wrong = operands.and_then(|ops| ops.into_iter().find(|&(_, r)| r == expected));
+            match (operands, wrong) {
+                (Some([(first, r1), (second, r2)]), Some((operand, _))) => Diagnostic::new(
+                    codes::RANK,
+                    format!(
+                        "`{name}` needs `{first}` of rank {r1} and `{second}` of rank {r2}; \
+                         `{operand}` has type {got}"
+                    ),
+                ),
+                _ => Diagnostic::new(
+                    codes::RANK,
+                    format!("`{name}` needs rank-{expected} operands"),
+                )
+                .with("got", got.to_string()),
+            }
+        }
         OpError::MatMulContracting {
             lhs,
             rhs,
@@ -858,7 +895,9 @@ mod tests {
                 "sum",
                 "mean",
                 "mse",
-                "embedding"
+                "embedding",
+                "add_rows",
+                "gelu"
             ]
         );
     }
@@ -899,6 +938,60 @@ mod tests {
             "{}",
             diagnostic.message
         );
+    }
+
+    /// `add_rows` and `embedding` take operands of two ranks, so their E-TYPE-004 message states
+    /// the rank of each operand and names the operand that has another.
+    #[test]
+    fn a_rank_error_of_an_operator_with_two_operand_ranks_states_each_rank() {
+        let add_rows = "`add_rows` needs `x` of rank 2 and `b` of rank 1";
+        let embedding = "`embedding` needs `table` of rank 2 and `ids` of rank 1";
+        let cases = [
+            (
+                "add_rows",
+                "AddRows",
+                2,
+                TensorType::f32(&[3]),
+                add_rows,
+                "`x` has type Tensor<f32, [3]>",
+            ),
+            (
+                "add_rows",
+                "AddRows",
+                1,
+                TensorType::f32(&[1, 3]),
+                add_rows,
+                "`b` has type Tensor<f32, [1, 3]>",
+            ),
+            (
+                "embedding",
+                "Embedding",
+                2,
+                TensorType::f32(&[6]),
+                embedding,
+                "`table` has type Tensor<f32, [6]>",
+            ),
+            (
+                "embedding",
+                "Embedding",
+                1,
+                TensorType::i32(&[2, 4]),
+                embedding,
+                "`ids` has type Tensor<i32, [2, 4]>",
+            ),
+        ];
+        for (name, op, expected, got, rule, operand) in cases {
+            let diagnostic = op_diagnostic(name, OpError::Rank { op, expected, got }, &span());
+            assert_eq!(diagnostic.code, codes::RANK);
+            assert_eq!(diagnostic.message, format!("{rule}; {operand}"));
+        }
+        let error = OpError::Rank {
+            op: "MatMul",
+            expected: 2,
+            got: TensorType::f32(&[3]),
+        };
+        let matmul = op_diagnostic("matmul", error, &span());
+        assert_eq!(matmul.message, "`matmul` needs rank-2 operands");
     }
 
     /// `i32` is declared by inputs, targets and function arguments and read by `embedding`.

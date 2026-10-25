@@ -32,7 +32,7 @@ value under `seed = 42` however the file is laid out and in whatever order the c
 
 | Stream | What is drawn | How |
 |---|---|---|
-| `0` | the initial parameters | each parameter's initializer: `xavier_uniform` is uniform on `±sqrt(6 / (In + Out))` |
+| `0` | the initial parameters | each parameter's initializer: `xavier_uniform` is uniform on `±sqrt(6 / (In + Out))`; `zeros` and `ones` draw nothing |
 | `1` | the teacher parameters | the same initializer, on a different stream |
 | `2` | the input | standard normal, by Box-Muller |
 

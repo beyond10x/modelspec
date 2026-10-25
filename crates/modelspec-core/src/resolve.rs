@@ -59,7 +59,7 @@ pub mod codes {
 }
 
 /// The built-in operators a source call may name, and the Tensor IR op each one is.
-pub static OPERATORS: [(&str, TensorOp); 10] = [
+pub static OPERATORS: [(&str, TensorOp); 12] = [
     ("matmul", TensorOp::MatMul),
     ("add", TensorOp::Add),
     ("sub", TensorOp::Sub),
@@ -70,6 +70,8 @@ pub static OPERATORS: [(&str, TensorOp); 10] = [
     ("mean", TensorOp::ReduceMean),
     ("mse", TensorOp::Mse),
     ("embedding", TensorOp::Embedding),
+    ("add_rows", TensorOp::AddRows),
+    ("gelu", TensorOp::Gelu),
 ];
 
 /// The Tensor IR op the source operator `name` is.
