@@ -2,7 +2,7 @@
 format: aep.planning-md/3
 id: story:bert-heldout-evaluation
 kind: story
-status: active
+status: implemented
 title: Held-out MLM loss and accuracy during training, printed and streamed as metrics
 summary: 'Adds --eval-every: held-out MLM loss and accuracy over the HeldOut split with dropout off, printed as eval lines and streamed as two StepCompleted metric samples.'
 relations:
@@ -28,10 +28,11 @@ scope:
   path: crates/modelspec-runtime/src/train/runner.rs
 - confidence: cited
   path: website/docs/reference/
-revision: 5
+revision: 6
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-25T09:50:22Z", actor: "human:timo", revision: 4}
 - {from: "proposed", to: "active", at: "2026-10-25T09:50:22Z", actor: "human:timo", revision: 5}
+- {from: "active", to: "implemented", at: "2026-10-25T12:24:42Z", actor: "human:timo", revision: 6, decided_on: {"recorded":{"test_result":1,"review_outcome":1}}}
 ---
 # Held-out MLM loss and accuracy during training, printed and streamed as metrics
 
