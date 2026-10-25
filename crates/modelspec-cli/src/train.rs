@@ -53,8 +53,9 @@
 //! with [`E_TARGET_001`] before the file is read. `--fast-math` compiles the artifact with
 //! `fast_math` set (DESIGN.md § 12 ADR-008): its kernels carry no `NoContraction`, the run is
 //! compared within tolerance, and `--stats` names the class `tolerance`. `--data`, `--init`,
-//! `--eval` and `--statistics-every` are CPU-only, and `--device`, `--stats`, `--profile` and
-//! `--fast-math` Vulkan-only: naming one with the other backend is a usage error (exit 2).
+//! `--eval`, `--eval-every` and `--statistics-every` are CPU-only, and `--device`, `--stats`,
+//! `--profile` and `--fast-math` Vulkan-only: naming one with the other backend is a usage error
+//! (exit 2).
 //!
 //! `--data <dir>` trains on dense `f32` files instead of synthetic data, `--init <dir>` starts
 //! the parameters that have a file from it, and `--eval <dir>` adds a last line
@@ -76,6 +77,22 @@
 //! declaration names a batch tensor; its refusal then follows one line naming the directory and
 //! `binding.json` ([`data::read_as_dense`]), and `--eval` beside a packed `--data` is a usage
 //! error (coordinator decision D56).
+//!
+//! `--eval-every <n>` beside a packed `--data` directory evaluates the held-out split
+//! ([`modelspec_runtime::train::eval`]; story:bert-heldout-evaluation, coordinator decision D55).
+//! Evaluation happens at every multiple of `n` among the run's steps and at the run's last step,
+//! so a resumed run evaluates no step 0 of its own and starts at the first multiple of `n` at or
+//! after the step it resumes at. At an evaluated step `k` the forward program without dropout
+//! runs on the parameters after `k` updates, the ones the loss of step `k` is of, over every full
+//! batch of `B` sequences of the `HeldOut` split drawn with the run seed, so the last
+//! `count mod B` held-out sequences are never evaluated, and stdout has
+//! `eval <k> loss <v> accuracy <a>` after the `step <k>` line, which an evaluated step always
+//! gets; the `StepCompleted` of step `k` carries the metric samples `heldout_mlm_loss` and
+//! `heldout_mlm_accuracy` with those values, every other one an empty `metrics` list.
+//! `--eval-every` without `--data`,
+//! beside a dense `--data` directory or with `n = 0` is a usage error on one line (exit 2), and a
+//! `HeldOut` split of fewer sequences than a batch is reported on one line before the first step
+//! (exit 1).
 //!
 //! `--steps <n>` runs `n` steps instead of the block's. `--checkpoint <path>` writes the state
 //! after the last step as a `.msckpt` file ([`checkpoint`]; DESIGN.md § 6.2), and
@@ -135,13 +152,16 @@ use modelspec_core::compile::{self, CompiledTraining};
 use modelspec_core::diag::{Code, Diagnostic};
 use modelspec_core::ir::tensor::ParamId;
 use modelspec_observatory::{
-    EVENTS_PATH, EventSequence, ParameterStatistics, Recorder, RunEventBody, RunFailed, RunStarted,
-    Server, StatisticsSubject, StepCompleted, TrainingRunId, Ui,
+    EVENTS_PATH, EventSequence, MetricSample, ParameterStatistics, Recorder, RunEventBody,
+    RunFailed, RunStarted, Server, StatisticsSubject, StepCompleted, TrainingRunId, Ui,
 };
 use modelspec_runtime::cpu::HostTensor;
 use modelspec_runtime::dataset::mlm::TrainingDataBinding;
 use modelspec_runtime::train::checkpoint::{self, Checkpoint, CheckpointError};
 use modelspec_runtime::train::data::{self, DataError, DataSource, DenseData, PackedData};
+use modelspec_runtime::train::eval::{
+    HELDOUT_MLM_ACCURACY, HELDOUT_MLM_LOSS, HeldOut, HeldOutMetrics,
+};
 use modelspec_runtime::train::init;
 use modelspec_runtime::train::optimizer::ParamState;
 use modelspec_runtime::train::runner::{self, Data, Diverged, Eval, Observed, Run, RunError};
@@ -195,6 +215,16 @@ pub struct Args {
     /// beside a packed --data directory it is a usage error.
     #[arg(long, value_name = "DIR")]
     pub eval: Option<PathBuf>,
+    /// With a packed --data directory, run the forward program without dropout over every full
+    /// batch of the HeldOut split and print `eval <k> loss <v> accuracy <a>` after the
+    /// `step <k>` line; the step's StepCompleted carries them as the metric samples
+    /// heldout_mlm_loss and heldout_mlm_accuracy. Evaluation happens at every multiple of N
+    /// among the run's steps and at the run's last step, so a resumed run evaluates no step 0 of
+    /// its own and starts at the first multiple of N at or after the step it resumes at. The
+    /// last (count mod B) HeldOut sequences are never evaluated, count the split's sequences and
+    /// B the batch. CPU only.
+    #[arg(long, value_name = "N")]
+    pub eval_every: Option<u64>,
     /// Run N steps instead of the steps of the file's train block; a resumed run ends at its
     /// checkpoint's step plus N.
     #[arg(long, value_name = "N")]
@@ -260,6 +290,7 @@ fn misplaced_flag(args: &Args) -> Option<&'static str> {
             ("--data", args.data.is_some()),
             ("--init", args.init.is_some()),
             ("--eval", args.eval.is_some()),
+            ("--eval-every", args.eval_every.is_some()),
             ("--statistics-every", args.statistics_every.is_some()),
         ]
         .into_iter()
@@ -324,6 +355,8 @@ struct Files {
     read_as_dense: Option<String>,
     init: Option<PathBuf>,
     eval: Option<PathBuf>,
+    /// The N of `--eval-every`, given only beside a packed `--data` directory.
+    eval_every: Option<u64>,
     checkpoint: Option<PathBuf>,
     checkpoint_every: Option<u64>,
     /// The step and parameters of `--resume`, read and matched before the server binds.
@@ -440,6 +473,24 @@ pub fn run(args: Args, stdout: &mut dyn Write, stderr: &mut dyn Write) -> u8 {
         );
         return crate::EXIT_USAGE;
     }
+    match args.eval_every {
+        Some(0) => {
+            let _ = writeln!(
+                stderr,
+                "error: the argument '--eval-every' takes a step count of at least 1, not 0"
+            );
+            return crate::EXIT_USAGE;
+        }
+        Some(_) if args.data.is_none() => {
+            let _ = writeln!(
+                stderr,
+                "error: the argument '--eval-every' evaluates the HeldOut split of a packed MLM \
+                 directory and needs '--data <DIR>' naming one"
+            );
+            return crate::EXIT_USAGE;
+        }
+        _ => {}
+    }
     #[cfg(not(feature = "vulkan"))]
     if args.backend == Backend::Vulkan {
         let _ = writeln!(
@@ -526,6 +577,15 @@ pub fn run(args: Args, stdout: &mut dyn Write, stderr: &mut dyn Write) -> u8 {
             stderr,
             "error: the argument '--eval' reads dense evaluation tensors, and the '--data' \
              directory {} is a packed MLM directory",
+            dir.display()
+        );
+        return crate::EXIT_USAGE;
+    }
+    if let (Some(dir), None, Some(_)) = (&args.data, &binding, args.eval_every) {
+        let _ = writeln!(
+            stderr,
+            "error: the argument '--eval-every' evaluates the HeldOut split of a packed MLM \
+             directory, and the '--data' directory {} holds no binding.json",
             dir.display()
         );
         return crate::EXIT_USAGE;
@@ -622,6 +682,7 @@ pub fn run(args: Args, stdout: &mut dyn Write, stderr: &mut dyn Write) -> u8 {
         read_as_dense,
         init: args.init,
         eval: args.eval,
+        eval_every: args.eval_every,
         checkpoint: args.checkpoint,
         checkpoint_every: args.checkpoint_every,
         resume,
@@ -712,15 +773,18 @@ fn train(
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
 ) -> Result<(), RunFailed> {
-    let step_completed = |step, loss: f32, parameters| {
+    let step_completed = |step, loss: f32, metrics, parameters| {
         emit(RunEventBody::StepCompleted(StepCompleted {
             step,
             loss: f64::from(loss),
-            metrics: Vec::new(),
+            metrics,
             parameters,
         }));
     };
     let params = paths(compiled);
+    // The held-out metrics of each evaluated step (`--eval-every`), filled as the run goes on, so
+    // a run that stops prints those of the steps before it stopped.
+    let mut evals: BTreeMap<u64, HeldOutMetrics> = BTreeMap::new();
     let observed: Result<(Run, Option<Eval>), Failure> = 'run: {
         #[cfg(feature = "vulkan")]
         if let Engine::Vulkan {
@@ -777,7 +841,8 @@ fn train(
             ) {
                 Ok((run, counted, profiled)) => {
                     for (k, &loss) in (run.start_step..).zip(&run.losses) {
-                        step_completed(k, loss, device_parameters(&params, &run, last, k));
+                        let parameters = device_parameters(&params, &run, last, k);
+                        step_completed(k, loss, Vec::new(), parameters);
                     }
                     let _ = write!(stderr, "{}", counters(&counted, profiled));
                     let end = run.start_step + counted.steps;
@@ -803,7 +868,7 @@ fn train(
                     } = *stopped;
                     for (k, &loss) in (diverged.run.start_step..).zip(&diverged.run.losses) {
                         let parameters = device_parameters(&params, &diverged.run, last, k);
-                        step_completed(k, loss, parameters);
+                        step_completed(k, loss, Vec::new(), parameters);
                     }
                     Err(Failure::Diverged(
                         Box::new(diverged),
@@ -840,7 +905,23 @@ fn train(
             }
             _ => Ok(()),
         };
+        // Drawn once, before the first step, so a split too small for a batch is refused then.
+        let held_out = match (files.eval_every, &loaded.data) {
+            (Some(_), Some(TrainData::Packed(packed))) => match HeldOut::new(compiled, packed) {
+                Ok(held_out) => Some(held_out),
+                Err(error) => break 'run Err(error.into()),
+            },
+            _ => None,
+        };
         let observe = |o: &Observed<'_>| {
+            let metrics = match (&held_out, files.eval_every) {
+                (Some(held_out), Some(n)) if o.step.is_multiple_of(n) || o.step == end => {
+                    let measured = held_out.evaluate(compiled, o.values).map_err(Box::new)?;
+                    evals.insert(o.step, measured);
+                    metric_samples(measured)
+                }
+                _ => Vec::new(),
+            };
             let sampled =
                 o.step == start || o.step == end || o.step.is_multiple_of(statistics_every);
             let parameters = if sampled {
@@ -848,9 +929,10 @@ fn train(
             } else {
                 Vec::new()
             };
-            step_completed(o.step, o.loss, parameters);
+            step_completed(o.step, o.loss, metrics, parameters);
+            Ok(())
         };
-        let run = match runner::run_on(
+        let run = match runner::run_checked(
             compiled,
             loaded.data.as_ref().map(TrainData::as_data),
             &loaded.init,
@@ -888,7 +970,7 @@ fn train(
         }
         Err(Failure::Diverged(diverged, counters)) => {
             let Diverged { diagnostic, run } = *diverged;
-            let printed = report(compiled, files.binding.as_ref(), &run, None, false);
+            let printed = report(compiled, files.binding.as_ref(), &run, &evals, None, false);
             let _ = stdout
                 .write_all(printed.as_bytes())
                 .and_then(|()| stdout.flush());
@@ -909,7 +991,7 @@ fn train(
             });
         }
     };
-    let printed = report(compiled, files.binding.as_ref(), &run, eval, true);
+    let printed = report(compiled, files.binding.as_ref(), &run, &evals, eval, true);
     let body = printed.trim_end_matches('\n');
     let (head, last) = printed.split_at(body.rfind('\n').map_or(0, |i| i + 1));
     let written = stdout
@@ -995,11 +1077,12 @@ fn device_parameters(
 
 /// The stdout of a run: of a finished one, or without its `param` lines of one that stopped at
 /// its last loss (E-TRAIN-001); a run on a packed directory starts with the `data` line of its
-/// `binding`.
+/// `binding`. Each step of `evals` gets its `step` line and, after it, its `eval` line.
 fn report(
     compiled: &CompiledTraining,
     binding: Option<&TrainingDataBinding>,
     run: &Run,
+    evals: &BTreeMap<u64, HeldOutMetrics>,
     eval: Option<Eval>,
     finished: bool,
 ) -> String {
@@ -1029,8 +1112,12 @@ fn report(
     tensors(&mut out, "init", &run.initial);
     let last = run.start_step + (run.losses.len() as u64 - 1);
     for (k, loss) in (run.start_step..).zip(&run.losses) {
-        if k == run.start_step || k.is_multiple_of(LOSS_EVERY) || k == last {
+        let evaluated = evals.get(&k);
+        if k == run.start_step || k.is_multiple_of(LOSS_EVERY) || k == last || evaluated.is_some() {
             let _ = writeln!(out, "step {k} loss {loss}");
+        }
+        if let Some(HeldOutMetrics { loss, accuracy }) = evaluated {
+            let _ = writeln!(out, "eval {k} loss {loss} accuracy {accuracy}");
         }
     }
     if finished {
@@ -1040,6 +1127,20 @@ fn report(
         let _ = writeln!(out, "eval loss={loss} accuracy={accuracy}");
     }
     out
+}
+
+/// The metric samples of an evaluated step: `heldout_mlm_loss`, then `heldout_mlm_accuracy`.
+fn metric_samples(measured: HeldOutMetrics) -> Vec<MetricSample> {
+    vec![
+        MetricSample {
+            name: HELDOUT_MLM_LOSS.to_owned(),
+            value: f64::from(measured.loss),
+        },
+        MetricSample {
+            name: HELDOUT_MLM_ACCURACY.to_owned(),
+            value: f64::from(measured.accuracy),
+        },
+    ]
 }
 
 fn list(values: &[f32]) -> String {
