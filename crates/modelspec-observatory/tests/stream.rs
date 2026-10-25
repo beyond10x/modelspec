@@ -37,6 +37,7 @@ fn bodies() -> Vec<RunEventBody> {
         RunEventBody::RunStarted(RunStarted {
             steps: 1,
             start_step: 0,
+            data_binding_id: None,
         }),
         step(0, 2.5),
         step(1, 0.125),
@@ -120,6 +121,7 @@ fn a_frame_is_event_id_and_data_lines_and_a_blank_line() {
     sequence.event(RunEventBody::RunStarted(RunStarted {
         steps: 0,
         start_step: 0,
+        data_binding_id: None,
     }));
     let event = sequence.event(step(0, 1.0));
     let text = frame(&event);

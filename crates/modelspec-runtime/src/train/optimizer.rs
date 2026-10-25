@@ -130,7 +130,7 @@ pub fn evaluate_step(
     state: &ParamState,
 ) -> Result<Evaluated, StepError> {
     let mut prepared = PreparedStep::new(step)?;
-    let loss = prepared.run(inputs, state, false)?;
+    let loss = prepared.run(inputs, &BTreeMap::new(), state, false)?;
     let updates = prepared
         .writes
         .iter()
@@ -247,7 +247,19 @@ impl<'s> PreparedStep<'s> {
         inputs: &BTreeMap<String, HostTensor<f32>>,
         state: &ParamState,
     ) -> Result<PendingStep<'_, 's>, StepError> {
-        let loss = self.run(inputs, state, true)?;
+        self.evaluate_with_ids(inputs, &BTreeMap::new(), state)
+    }
+
+    /// [`Self::evaluate`] with `ids`, a tensor for exactly the program's `i32` inputs, by name, as
+    /// [`crate::cpu::evaluate_with_ids`] takes them: the row ids and labels of a
+    /// masked-language-model batch (story:bert-train-data-binding).
+    pub fn evaluate_with_ids(
+        &mut self,
+        inputs: &BTreeMap<String, HostTensor<f32>>,
+        ids: &BTreeMap<String, HostTensor<i32>>,
+        state: &ParamState,
+    ) -> Result<PendingStep<'_, 's>, StepError> {
+        let loss = self.run(inputs, ids, state, true)?;
         Ok(PendingStep {
             prepared: self,
             loss,
@@ -263,12 +275,14 @@ impl<'s> PreparedStep<'s> {
         Ok(self.evaluate(inputs, state)?.apply(state))
     }
 
-    /// Runs the program on `state` and sorts its outputs by role. With `again`, each gradient
-    /// keeps a second buffer for the next run, which writes into it while the caller may still
-    /// hold the first.
+    /// Runs the program on `inputs`, `ids` and `state` and sorts its outputs by role. With
+    /// `again`, each gradient keeps a second buffer for the next run, which writes into it while
+    /// the caller may still hold the first. A run without ids refills the output list of the
+    /// last run; a run with ids gets a new list, its outputs still moved from storage.
     fn run(
         &mut self,
         inputs: &BTreeMap<String, HostTensor<f32>>,
+        ids: &BTreeMap<String, HostTensor<i32>>,
         state: &ParamState,
         again: bool,
     ) -> Result<f32, StepError> {
@@ -287,8 +301,12 @@ impl<'s> PreparedStep<'s> {
                 return Err(StepError::VersionExhausted { param, current });
             }
         }
-        self.program
-            .run_into(inputs, &state.values, &mut self.outputs)?;
+        if ids.is_empty() {
+            self.program
+                .run_into(inputs, &state.values, &mut self.outputs)?;
+        } else {
+            self.outputs = self.program.run_with_ids(inputs, ids, &state.values)?;
+        }
         let mut loss = f32::NAN;
         for (position, output) in self.outputs.drain(..).enumerate() {
             match self.roles[position] {

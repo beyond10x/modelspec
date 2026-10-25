@@ -59,6 +59,7 @@ fn started() -> RunEventBody {
     RunEventBody::RunStarted(RunStarted {
         steps: 1,
         start_step: 0,
+        data_binding_id: None,
     })
 }
 

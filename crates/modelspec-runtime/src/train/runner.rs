@@ -10,8 +10,11 @@
 //! [`run_with`] trains on dense data read from files instead, optionally from parameter values read
 //! from files, and [`evaluate_dense`] measures the trained parameters on an eval directory.
 //! [`run_from`] resumes at a checkpoint's step and reports the state after each update, for
-//! `--checkpoint-every`. A run depends on nothing but the compiled program, its seed, its start
-//! step, and the files of `--data`, `--init` and `--resume`.
+//! `--checkpoint-every`. [`run_on`] is [`run_from`] on either kind of `--data`, dense files or a
+//! packed masked-language-model directory ([`Data`]), whose step `k` feeds the batch of step `k`
+//! in `f32` and `i32` tensors (story:bert-train-data-binding). A run depends on nothing but the
+//! compiled program, its seed, its start step, and the files of `--data`, `--init` and
+//! `--resume`.
 //!
 //! [`run_with`] and [`run_from`] show each step to their observer as an [`Observed`]: its loss,
 //! the parameter values that loss is of and, for a step that makes an update, the gradients the
@@ -25,10 +28,15 @@ use modelspec_core::ir::tensor::ParamId;
 use thiserror::Error;
 
 use super::checkpoint::CheckpointError;
-use super::data::{DataError, DenseBatch, DenseData, SyntheticData, synthetic};
+use super::data::{
+    DataError, DenseBatch, DenseData, PackedBatch, PackedData, SyntheticData, synthetic,
+};
 use super::init::{InitError, Stream, initialize};
 use super::optimizer::{ParamState, PreparedStep, StepError};
-use crate::cpu::{HostTensor, RuntimeError, evaluate, evaluate_all};
+use crate::cpu::{HostTensor, RuntimeError, evaluate_all, evaluate_with_ids};
+
+/// No `i32` tensors, the step inputs of synthetic and dense data.
+static NO_IDS: BTreeMap<String, HostTensor<i32>> = BTreeMap::new();
 
 /// The loss of a training step, or a parameter after the update of a step, is NaN or ±inf: the
 /// run stops at the first such step and prints no final parameters.
@@ -186,6 +194,28 @@ pub fn run_from(
     data: Option<&DenseData>,
     init: &BTreeMap<ParamId, HostTensor<f32>>,
     start: u64,
+    observe: impl FnMut(&Observed<'_>),
+    after: impl FnMut(u64, &ParamState) -> Result<(), CheckpointError>,
+) -> Result<Run, RunError> {
+    run_on(compiled, data.map(Data::Dense), init, start, observe, after)
+}
+
+/// The data of `--data`: dense files, or a packed masked-language-model directory.
+#[derive(Clone, Copy)]
+pub enum Data<'a> {
+    Dense(&'a DenseData),
+    Packed(&'a PackedData),
+}
+
+/// Runs as [`run_from`] does, on `data` of either kind. With packed data step `k` feeds
+/// [`PackedData::step`]`(k)`, the batch of step `k` of the run that started at 0, so a resumed run
+/// feeds the batches of the run that never stopped; the loss after the last update is the
+/// forward program on the batch of step `start + steps`. A packed run has no teacher.
+pub fn run_on(
+    compiled: &CompiledTraining,
+    data: Option<Data<'_>>,
+    init: &BTreeMap<ParamId, HostTensor<f32>>,
+    start: u64,
     mut observe: impl FnMut(&Observed<'_>),
     mut after: impl FnMut(u64, &ParamState) -> Result<(), CheckpointError>,
 ) -> Result<Run, RunError> {
@@ -198,7 +228,8 @@ pub fn run_from(
     let mut initial = initialize(forward, config.seed, Stream::Init)?;
     initial.extend(init.iter().map(|(&p, v)| (p, v.clone())));
     let mut feed = match data {
-        Some(dense) => Feed::Dense(dense, DenseBatch::default()),
+        Some(Data::Dense(dense)) => Feed::Dense(dense, DenseBatch::default()),
+        Some(Data::Packed(packed)) => Feed::Packed(packed, PackedBatch::default()),
         None => Feed::Synthetic(synthetic(config, &compiled.forward)?),
     };
     let mut state = ParamState::new(&compiled.training, initial.clone());
@@ -219,8 +250,9 @@ pub fn run_from(
                 prepared = Some(ready);
             }
             let prepared = prepared.as_mut().expect("prepared above");
+            let (inputs, ids) = feed.inputs(step)?;
             let evaluated = prepared
-                .evaluate(feed.inputs(step), &state)
+                .evaluate_with_ids(inputs, ids, &state)
                 .map_err(|source| RunError::Step { step, source })?;
             observe(&Observed {
                 step,
@@ -230,7 +262,8 @@ pub fn run_from(
             });
             evaluated.apply(&mut state)
         } else {
-            let loss = evaluate(forward, feed.inputs(end), &state.values)?[0].data()[0];
+            let (inputs, ids) = feed.inputs(end)?;
+            let loss = evaluate_with_ids(forward, inputs, ids, &state.values)?[0].data()[0];
             observe(&Observed {
                 step,
                 loss,
@@ -265,30 +298,41 @@ pub fn run_from(
     })
 }
 
-/// Where the inputs of a step come from: synthetic data, the same every step, or dense data and
-/// the one batch every step of the run is filled into.
+/// The `f32` and the `i32` inputs of one step, by name.
+type StepInputs<'f> = (
+    &'f BTreeMap<String, HostTensor<f32>>,
+    &'f BTreeMap<String, HostTensor<i32>>,
+);
+
+/// Where the inputs of a step come from: synthetic data, the same every step, or dense or packed
+/// data and the one batch every step of the run is filled into.
 enum Feed<'a> {
     Synthetic(SyntheticData),
     Dense(&'a DenseData, DenseBatch),
+    Packed(&'a PackedData, PackedBatch),
 }
 
 impl Feed<'_> {
-    /// The inputs of step `step`.
-    fn inputs(&mut self, step: u64) -> &BTreeMap<String, HostTensor<f32>> {
+    /// The inputs of step `step`: `f32` tensors, and the `i32` tensors only packed data has.
+    fn inputs(&mut self, step: u64) -> Result<StepInputs<'_>, DataError> {
         match self {
-            Feed::Synthetic(s) => &s.inputs,
+            Feed::Synthetic(s) => Ok((&s.inputs, &NO_IDS)),
             Feed::Dense(data, batch) => {
                 data.fill_step(step, batch);
-                batch.inputs()
+                Ok((batch.inputs(), &NO_IDS))
+            }
+            Feed::Packed(data, batch) => {
+                data.fill_step(step, batch)?;
+                Ok((batch.inputs(), batch.ids()))
             }
         }
     }
 
-    /// The teacher parameters of synthetic data; dense data has none.
+    /// The teacher parameters of synthetic data; dense and packed data have none.
     fn teacher(self) -> BTreeMap<ParamId, HostTensor<f32>> {
         match self {
             Feed::Synthetic(s) => s.teacher,
-            Feed::Dense(..) => BTreeMap::new(),
+            Feed::Dense(..) | Feed::Packed(..) => BTreeMap::new(),
         }
     }
 }
@@ -353,6 +397,7 @@ mod tests {
     use modelspec_core::compile::compile_training;
     use modelspec_core::ir::training::StateVersion;
 
+    use crate::cpu::evaluate;
     use crate::train::data::E_DATA_003;
 
     const EXAMPLE: &str = include_str!("../../../../examples/linear_regression.mspec");

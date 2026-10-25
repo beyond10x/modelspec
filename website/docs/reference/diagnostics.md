@@ -84,7 +84,7 @@ The type and shape checker. Operator rules come from the operator registry ([Ope
 
 ## Training data
 
-The data loaders of `modelspec train`, synthetic data and the dense files of `--data`, `--init` and `--eval`, which run after a file checks and before the first step.
+The data loaders of `modelspec train`, synthetic data, the dense files of `--data`, `--init` and `--eval` and the packed masked-language-model directory of `--data`, which run after a file checks and before the first step.
 
 | Code | Meaning | Declared in |
 |---|---|---|
@@ -92,6 +92,8 @@ The data loaders of `modelspec train`, synthetic data and the dense files of `--
 | <a id="e-data-002"></a>`E-DATA-002` | The `target` is not of the model output type. | [`crates/modelspec-runtime/src/train/data.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-runtime/src/train/data.rs) |
 | <a id="e-data-003"></a>`E-DATA-003` | A declared `input` or `target` is not read by the loss. | [`crates/modelspec-runtime/src/train/data.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-runtime/src/train/data.rs) |
 | <a id="e-data-004"></a>`E-DATA-004` | A declared `input` or `target` is `i32`: synthetic data draws `f32` values and dense files hold `f32`, so neither can supply row ids. | [`crates/modelspec-runtime/src/train/data.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-runtime/src/train/data.rs) |
+| <a id="e-data-005"></a>`E-DATA-005` | A declared `input` or `target` of a run on a packed `--data` directory names no tensor of the masked-language-model batch (`ids`, `positions`, `key_mask`, `labels`, `weights`), or the `train` block of such a run declares none. | [`crates/modelspec-runtime/src/train/data.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-runtime/src/train/data.rs) |
+| <a id="e-data-006"></a>`E-DATA-006` | A declared `input` or `target` of a run on a packed `--data` directory is not of the type of its batch tensor: `i32` for `ids`, `positions` and `labels`, `f32` for `key_mask` and `weights`, of shape `[B, S]` or `[B·S]` with `S` the packed sequence length and one `B` for every declaration. | [`crates/modelspec-runtime/src/train/data.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-runtime/src/train/data.rs) |
 | <a id="e-data-007"></a>`E-DATA-007` | A data, order or `--init` file is missing, unreadable, or not a whole number of samples (for `--init`, not the parameter's size), or a data or `--init` file holds a NaN or an infinity, or the data files differ in sample count, or the `input` and `target` do not share a leading batch dimension `B`, or the `--init` directory cannot be read or holds no parameter's file. | [`crates/modelspec-runtime/src/train/data.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-runtime/src/train/data.rs) |
 | <a id="e-data-008"></a>`E-DATA-008` | `order.u32` holds fewer than `steps · B` indices, or an index not below the sample count. | [`crates/modelspec-runtime/src/train/data.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-runtime/src/train/data.rs) |
 | <a id="e-data-009"></a>`E-DATA-009` | The `--eval` sample count is not a multiple of the batch dimension `B`. | [`crates/modelspec-runtime/src/train/data.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-runtime/src/train/data.rs) |

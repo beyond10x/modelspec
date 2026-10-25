@@ -69,6 +69,21 @@ impl Default for TrainingRunId {
     }
 }
 
+/// `modelspec.data.TrainingDataBindingId`: the id of the `TrainingDataBinding` a run on a packed
+/// masked-language-model directory trains on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
+#[serde(transparent)]
+pub struct TrainingDataBindingId(pub Uuid);
+
+impl std::str::FromStr for TrainingDataBindingId {
+    type Err = uuid::Error;
+
+    /// The id in its hyphenated text form, as `binding.json` holds it.
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        Uuid::parse_str(text).map(Self)
+    }
+}
+
 /// `modelspec.observatory.RunEventId`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
 #[serde(transparent)]
@@ -130,6 +145,11 @@ pub struct RunStarted {
     pub steps: u64,
     /// `TrainingRun.start_step`, the step of the first `StepCompleted`.
     pub start_step: u64,
+    /// `TrainingRun.data_binding_id`, the binding of a run on a packed masked-language-model
+    /// directory, absent for a run on synthetic or dense data.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub data_binding_id: Option<TrainingDataBindingId>,
 }
 
 /// `modelspec.observatory.StepCompleted`.
