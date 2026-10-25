@@ -29,11 +29,11 @@
     },
     {
       "id": "end-state",
-      "ask": "How did the run end?",
+      "ask": "How did the run end, and at which step of how many?",
       "role": "paragraph",
-      "text": "^(connecting|streaming|finished|failed)\\b",
-      "read": "^(?<state>connecting|streaming|finished|failed)\\b",
-      "answer": { "state": "run_state" }
+      "text": "^(finished|failed)\\b",
+      "read": "^(?<state>finished|failed) step (?<step>\\d+) of (?<steps>\\d+)\\b",
+      "answer": { "state": "run_state", "step": "last_step", "steps": "steps" }
     }
   ]
 }

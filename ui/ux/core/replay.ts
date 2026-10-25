@@ -2,7 +2,8 @@
 // --ui <dist>` serves the app and the recorded run; it sends the whole run at once. A pacing
 // proxy in front of it passes every request through except `/events`, which it holds open and
 // writes one recorded frame at a time when the harness says so, as a live `train --serve` stream
-// would, so the app draws every state of the run and the gates read each.
+// would, so the app draws every state of the run and the gates read each; or, once started at a
+// cadence, one frame every so many milliseconds whatever the page or the harness does.
 
 import { type ChildProcess, spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
@@ -93,12 +94,21 @@ export interface Pacer {
   /** Writes the next `count` frames; ends the stream after the last. Returns how many remain. */
   push(count?: number): number;
   remaining(): number;
+  /**
+   * Writes one frame every `cadenceMs` from now until the last, on a timer of its own that waits
+   * for nothing; resolves once the last frame is written.
+   */
+  start(cadenceMs: number): Promise<void>;
+  /** How many frames had been written at `time` (`performance.now()` of this process). */
+  sentAt(time: number): number;
   stop(): Promise<void>;
 }
 
 /** A proxy at a free loopback port in front of `origin` that paces `script` over `/events`. */
 export async function pace(origin: Origin, script: readonly Frame[]): Promise<Pacer> {
   let next = 0;
+  let timer: ReturnType<typeof setInterval> | null = null;
+  const written: number[] = [];
   let stream: ServerResponse | null = null;
   let onConnect: () => void = () => undefined;
   const connected = new Promise<void>((resolve) => {
@@ -131,24 +141,48 @@ export async function pace(origin: Origin, script: readonly Frame[]): Promise<Pa
   });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const { port } = server.address() as AddressInfo;
+  const push = (count = 1) => {
+    if (stream === null) {
+      throw new Error('push before the page opened /events');
+    }
+    const end = Math.min(script.length, next + count);
+    stream.write(script.slice(next, end).map((f) => f.text).join(''));
+    const now = performance.now();
+    for (let i = next; i < end; i++) {
+      written.push(now);
+    }
+    next = end;
+    if (next === script.length) {
+      stream.end();
+    }
+    return script.length - next;
+  };
   return {
     url: `http://127.0.0.1:${port}/`,
     connected,
-    push(count = 1) {
-      if (stream === null) {
-        throw new Error('push before the page opened /events');
-      }
-      const end = Math.min(script.length, next + count);
-      stream.write(script.slice(next, end).map((f) => f.text).join(''));
-      next = end;
-      if (next === script.length) {
-        stream.end();
-      }
-      return script.length - next;
-    },
+    push,
     remaining: () => script.length - next,
+    start: (cadenceMs: number) =>
+      new Promise<void>((resolve) => {
+        if (next === script.length) {
+          resolve();
+          return;
+        }
+        timer = setInterval(() => {
+          if (push(1) === 0 && timer !== null) {
+            clearInterval(timer);
+            timer = null;
+            resolve();
+          }
+        }, cadenceMs);
+      }),
+    sentAt: (time: number) => written.filter((t) => t <= time).length,
     stop: () =>
       new Promise<void>((resolve) => {
+        if (timer !== null) {
+          clearInterval(timer);
+          timer = null;
+        }
         stream?.destroy();
         server.closeAllConnections();
         server.close(() => resolve());

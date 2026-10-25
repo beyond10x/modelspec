@@ -1,7 +1,8 @@
 // The screen-only user of the ui-iteration-loop skill (§ 7): deterministic code, no model. It
 // reads the page only through the accessibility tree, by role and accessible name, or by role
 // and the text the tree exposes for a role that takes no name from its content; it uses only
-// elements wholly inside the viewport and not covered at their centre; a key press is one action.
+// elements wholly inside the viewport and not covered at their centre, and only values drawn as
+// text the eye can see (`textSeen`: in view, uncovered, not transparent); a key press is one action.
 // Its only movement is the keyboard: `PageDown`, and `Home` from the bottom of the page, which
 // reverses its course and so counts as a steer.
 
@@ -111,11 +112,98 @@ async function answers(page: Page, task: BotTask): Promise<{ locator: Locator; s
   return found;
 }
 
-/** What the screen shows for `task` without an action: the first visible answer, if any. */
+/**
+ * Whether every value of `values` is drawn inside `el` as text the eye can see (runs in the page).
+ * A value is seen when some text node of the element's name or text holds it as a whole token and
+ * the range of exactly those characters (`Range.getBoundingClientRect`) has a size and lies wholly
+ * in the viewport; `elementFromPoint` at its centre is the text's element or inside it; the caret
+ * positions at its left and right edges (`caretPositionFromPoint`) fall on that text node at the
+ * value's first and last character, which a cover painted over it, a pseudo-element included,
+ * moves; no element from the text's up to the root has opacity 0; and the text's element is
+ * `visibility: visible` and its colour is not transparent. A figure's name is its `figcaption`.
+ */
+export function textSeen(el: Element, values: string[]): boolean {
+  const root =
+    el.localName === 'figure' && !el.hasAttribute('aria-label') && !el.hasAttribute('aria-labelledby')
+      ? (el.querySelector(':scope > figcaption') ?? el)
+      : el;
+  const vw = document.documentElement.clientWidth;
+  const vh = document.documentElement.clientHeight;
+  const caret = (x: number, y: number): { node: Node; offset: number } | null => {
+    const d = document as Document & { caretPositionFromPoint?: (x: number, y: number) => { offsetNode: Node; offset: number } | null };
+    if (typeof d.caretPositionFromPoint === 'function') {
+      const p = d.caretPositionFromPoint(x, y);
+      return p === null ? null : { node: p.offsetNode, offset: p.offset };
+    }
+    const r = document.caretRangeFromPoint(x, y);
+    return r === null ? null : { node: r.startContainer, offset: r.startOffset };
+  };
+  const seen = (node: Text, start: number, end: number): boolean => {
+    const parent = node.parentElement;
+    if (parent === null) {
+      return false;
+    }
+    const range = document.createRange();
+    range.setStart(node, start);
+    range.setEnd(node, end);
+    const b = range.getBoundingClientRect();
+    if (b.width <= 0 || b.height <= 0 || b.left < -0.5 || b.top < -0.5 || b.right > vw + 0.5 || b.bottom > vh + 0.5) {
+      return false;
+    }
+    const y = (b.top + b.bottom) / 2;
+    const hit = document.elementFromPoint((b.left + b.right) / 2, y);
+    if (hit === null || !(hit === parent || parent.contains(hit))) {
+      return false;
+    }
+    const left = caret(b.left + 1, y);
+    const right = caret(b.right - 1, y);
+    if (left?.node !== node || right?.node !== node || left.offset !== start || right.offset !== end) {
+      return false;
+    }
+    for (let a: Element | null = parent; a !== null; a = a.parentElement) {
+      if (Number.parseFloat(getComputedStyle(a).opacity) === 0) {
+        return false;
+      }
+    }
+    const style = getComputedStyle(parent);
+    const transparent = /^rgba\(.*,\s*0\)$/.test(style.color) || style.color === 'transparent';
+    return style.visibility === 'visible' && !transparent;
+  };
+  const nodes: Text[] = [];
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  for (let n = walker.nextNode(); n !== null; n = walker.nextNode()) {
+    const parent = n.parentElement;
+    if (parent !== null && parent.closest('title, script, style, template, [aria-hidden="true"]') === null) {
+      nodes.push(n as Text);
+    }
+  }
+  const token = (c: string | undefined) => c !== undefined && /[0-9A-Za-z.]/.test(c);
+  return values.every((value) => {
+    if (value === '') {
+      return true;
+    }
+    return nodes.some((node) => {
+      const text = node.data;
+      for (let i = text.indexOf(value); i >= 0; i = text.indexOf(value, i + 1)) {
+        const end = i + value.length;
+        if (!token(text[i - 1]) && !token(text[end]) && seen(node, i, end)) {
+          return true;
+        }
+      }
+      return false;
+    });
+  });
+}
+
+/**
+ * What the screen shows for `task` without an action: the first answer whose element is wholly in
+ * view and uncovered at its centre and whose every read value is text the eye can see
+ * (`textSeen`), if any.
+ */
 export async function look(page: Page, task: BotTask): Promise<Reading> {
   for (const answer of await answers(page, task)) {
     const box = await visibleBox(page, answer.locator);
-    if (box !== null) {
+    if (box !== null && (await answer.locator.evaluate(textSeen, Object.values(answer.groups)))) {
       return { groups: answer.groups, source: answer.source, box };
     }
   }
@@ -167,16 +255,25 @@ async function settleScroll(page: Page): Promise<void> {
 /**
  * Performs `task` from the page as it is: looks, and while no visible element answers, presses
  * `PageDown`, or `Home` at the bottom of the page, until one does or `limit` actions are spent.
+ * While nothing on the page answers at all (the end state the task asks about is not there yet),
+ * it waits `waitMs` and looks again instead of pressing a key, at most `limit` times; each wait is
+ * a look.
  */
-export async function perform(page: Page, task: BotTask, primary: string, limit: number): Promise<Attempt> {
+export async function perform(page: Page, task: BotTask, primary: string, limit: number, waitMs = 100): Promise<Attempt> {
   let actions = 0;
   let looks = 0;
   let steers = 0;
+  let waits = 0;
   let first: 1 | 2 | 3 | null = null;
   const keys: string[] = [];
   for (;;) {
     looks += 1;
     const seen = await look(page, task);
+    if (seen.groups === null && waits < limit && !(await exists(page, task))) {
+      waits += 1;
+      await page.waitForTimeout(waitMs);
+      continue;
+    }
     if (first === null) {
       first = (await glanceNow(page, task, primary)) ?? 3;
     }

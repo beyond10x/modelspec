@@ -121,20 +121,48 @@ export type Moment = 'connecting' | 'started' | 'first-step' | 'middle-step' | '
 export const MOMENTS: readonly Moment[] = ['connecting', 'started', 'first-step', 'middle-step', 'last-step', 'end'];
 
 /**
- * The compressed clock of a replay: the harness steps the recording one event at a time and the
- * app draws each before the next is sent, so time on the replay is counted in events. A minute is
- * 600 events (10 per second), the unit of `layout_shift.per_minute`.
+ * Time on a replay is counted in events: the recordings carry no timestamps. The layout replays
+ * step the recording one event at a time and the app draws each before the next is sent, so
+ * `layout_shift.per_100_events` is the shift sum of a replay per 100 of its events, whatever the
+ * machine's speed.
  */
-export const EVENTS_PER_MINUTE = 600;
+export const LAYOUT_SHIFT_DEFINITION =
+  "the Layout Instability API's shift sum over a gating replay that sends one event at a time, per 100 replayed events; the worst replay";
+
+/**
+ * The live replay of the screen-only user (`time_to_act`): the proxy sends one event every
+ * `CADENCE_MS` and never waits for the screen or the user, as a running `train --serve` does.
+ */
+export const CADENCE_MS = 40;
+
+/**
+ * The render budget of `time_to_act`: an event the proxy sent less than this long before the user
+ * read the screen is not yet owed to it. A screen that draws an event within a few frames lags 0;
+ * a screen that falls behind lags by the events it owes beyond this.
+ */
+export const RENDER_BUDGET_MS = 250;
+
+/**
+ * The font stack every gated and measured page runs under, injected before the first paint
+ * (`harness.ts`), so that `reading_load` and every box the gates measure are the same words on
+ * this machine and on the CI runner: `DejaVu Sans` for text, `DejaVu Sans Mono` for the elements of
+ * `code` (the app's `ui-monospace` text: the run id and the parameter names). `pnpm ux` refuses
+ * when `fc-list` lists either family missing.
+ */
+export const FONTS = {
+  text: 'DejaVu Sans',
+  code: 'DejaVu Sans Mono',
+  codeSelector: 'code, pre, kbd, samp, [data-ux-region="header"] .run, [data-ux-region="parameter-panel"] h2',
+} as const;
 
 /**
  * `reading_load`: the words a reader faces at one moment, the skill's references leave it open.
- * Defined here: the whitespace-separated words of every rendered text node, HTML or SVG, with at
- * least one client rectangle inside the viewport, counted at each key moment of each gating replay
- * (the closed `<select>` shows only its chosen option, and `<title>` tooltips are not rendered).
- * Lower is better.
+ * Defined here: the whitespace-separated words of every rendered text node, HTML or SVG, whose
+ * range box is at least half inside the viewport by area, counted at each key moment of each
+ * gating replay (the closed `<select>` shows only its chosen option, counted by the same rule,
+ * and `<title>` tooltips are not rendered). Lower is better.
  */
-export const READING_LOAD_DEFINITION = 'words of rendered text nodes inside the viewport at a key moment';
+export const READING_LOAD_DEFINITION = 'words of rendered text nodes whose box is at least half inside the viewport at a key moment';
 
 /** The tolerance class of each ratchet key; the skill's numbers. */
 export const TOLERANCES: Record<ToleranceClass, { absolute?: number; relative?: number }> = {
@@ -149,7 +177,7 @@ export const KEYS: Record<MetricKey, ToleranceClass> = {
   'actions_per_fix.median': 'counts',
   'glance_cost.median': 'counts',
   'glance_cost.p95': 'counts',
-  'layout_shift.per_minute': 'layout_shift',
+  'layout_shift.per_100_events': 'layout_shift',
   'reading_load.max': 'counts',
   'reading_load.median': 'counts',
   'screen_only.actions': 'counts',

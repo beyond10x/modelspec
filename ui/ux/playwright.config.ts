@@ -1,14 +1,22 @@
-// `pnpm ux`: the hermetic levels L2 and L3 of the observatory UI loop and the ratchet after them
-// (story:observatory-ui-iteration-loop). The browser is the executable `CHROME` names, as the Rust
-// browser tests take it; Playwright downloads nothing. No network beyond 127.0.0.1.
+// `pnpm ux`: the hermetic levels L2 and L3 of the observatory UI loop, the ratchet after them and
+// the gates' self-tests beside them (story:observatory-ui-iteration-loop). The browser is the
+// executable `CHROME` names, as the Rust browser tests take it; Playwright downloads nothing. No
+// network beyond 127.0.0.1. Every page runs under the font stack of `FONTS`, which must be
+// installed.
 
 import { rmSync } from 'node:fs';
 import { defineConfig } from '@playwright/test';
 import { OUT_DIR } from './adapter.ts';
+import { missingFonts } from './harness.ts';
 
 const chrome = process.env.CHROME;
 if (chrome === undefined || chrome === '') {
   console.error('pnpm ux: set CHROME to a Chrome or Chromium executable, as task ui-browser takes it');
+  process.exit(2);
+}
+const fonts = missingFonts();
+if (fonts !== null) {
+  console.error(fonts);
   process.exit(2);
 }
 
@@ -37,5 +45,7 @@ export default defineConfig({
   projects: [
     { name: 'gates', testMatch: ['layout.spec.ts', 'screen-only.spec.ts'] },
     { name: 'ratchet', testMatch: ['ratchet.spec.ts'], dependencies: ['gates'] },
+    // Each gate run on a page with one planted defect, so that a weakened gate fails here.
+    { name: 'self-test', testMatch: ['self-test.spec.ts'] },
   ],
 });

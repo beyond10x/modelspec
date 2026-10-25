@@ -63,6 +63,8 @@ export interface ProbeResult {
   shiftSources: string[];
   /** `reading_load` at this moment. */
   words: number;
+  /** The animations and transitions running at this moment (gate 5, reduced motion). */
+  animations: number;
   viewport: { width: number; height: number };
 }
 
@@ -189,6 +191,16 @@ export async function probe(args: ProbeArgs): Promise<ProbeResult> {
 
   let words = 0;
   const count = (text: string) => (text.trim().match(/\S+/g) ?? []).length;
+  // Half or more of the box's area inside the viewport.
+  const halfIn = (r: DOMRect) => {
+    const area = r.width * r.height;
+    if (area <= 0) {
+      return false;
+    }
+    const w = Math.max(0, Math.min(r.right, vw) - Math.max(r.left, 0));
+    const h = Math.max(0, Math.min(r.bottom, vh) - Math.max(r.top, 0));
+    return w * h >= 0.5 * area;
+  };
   const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
   const range = document.createRange();
   for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
@@ -198,14 +210,12 @@ export async function probe(args: ProbeArgs): Promise<ProbeResult> {
       continue;
     }
     range.selectNodeContents(node);
-    const seen = Array.from(range.getClientRects()).some((r) => r.width > 0 && r.height > 0 && r.right > 0 && r.bottom > 0 && r.left < vw && r.top < vh);
-    if (seen) {
+    if (halfIn(range.getBoundingClientRect())) {
       words += count(text);
     }
   }
   for (const select of Array.from(document.querySelectorAll('select'))) {
-    const r = select.getBoundingClientRect();
-    if (rendered(select) && r.right > 0 && r.bottom > 0 && r.left < vw && r.top < vh) {
+    if (rendered(select) && halfIn(select.getBoundingClientRect())) {
       words += count(select.selectedOptions[0]?.textContent ?? '');
     }
   }
@@ -220,6 +230,7 @@ export async function probe(args: ProbeArgs): Promise<ProbeResult> {
     shift,
     shiftSources: largest?.sources ?? [],
     words,
+    animations: document.getAnimations().length,
     viewport: { width: vw, height: vh },
   };
 }

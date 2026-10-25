@@ -2,7 +2,7 @@
 // replay, the aggregated metrics per scenario, `round.json`, `report.md` and the trend row.
 
 import { mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
-import { type Baseline, type Measured, type MetricKey, type Problem, max, median, percentile, perMinute } from './metrics.ts';
+import { type Baseline, type Measured, type MetricKey, type Problem, max, median, per100Events, percentile } from './metrics.ts';
 
 /** A gating or measured-only replay of the layout contract. */
 export interface LayoutFragment {
@@ -11,6 +11,8 @@ export interface LayoutFragment {
   viewport: string;
   theme: string;
   gating: boolean;
+  /** A gating replay of the failed end state (a run ending in `RunFailed`): gated, never ratcheted. */
+  failedEnd: boolean;
   events: number;
   shift: number;
   worstShift: { index: number; event: string; value: number; sources: string[]; shot: string | null } | null;
@@ -70,18 +72,18 @@ export function readFragments(dir: string): Fragment[] {
 }
 
 /**
- * The ratchet keys of each scenario from the gating fragments: layout shift per minute and reading
+ * The ratchet keys of each scenario from the gating fragments: layout shift per 100 events and reading
  * load from the layout replays, the rest from the screen-only replays; the worst over viewports
  * and themes.
  */
-export function aggregate(scenarios: readonly string[], fragments: readonly Fragment[], eventsPerMinute: number): Measured {
+export function aggregate(scenarios: readonly string[], fragments: readonly Fragment[]): Measured {
   const measured: Measured = {};
   for (const scenario of scenarios) {
-    const layout = fragments.filter((f): f is LayoutFragment => f.kind === 'layout' && f.gating && f.scenario === scenario);
+    const layout = fragments.filter((f): f is LayoutFragment => f.kind === 'layout' && f.gating && !f.failedEnd && f.scenario === scenario);
     const screen = fragments.filter((f): f is ScreenFragment => f.kind === 'screen' && f.scenario === scenario);
     const m: Partial<Record<MetricKey, number>> = {};
     if (layout.length > 0) {
-      m['layout_shift.per_minute'] = max(layout.map((f) => perMinute(f.shift, f.events, eventsPerMinute)));
+      m['layout_shift.per_100_events'] = max(layout.map((f) => per100Events(f.shift, f.events)));
       const loads = layout.flatMap((f) => f.readingLoad.map((r) => r.words));
       m['reading_load.max'] = max(loads);
       m['reading_load.median'] = median(loads);
@@ -119,10 +121,17 @@ export function table(scenarios: readonly string[], keys: readonly MetricKey[], 
   return [head, rule, ...rows].join('\n');
 }
 
+/** The code a round measured: HEAD, whether the tree differed from it, and the served app's hash. */
+export interface RoundCommit {
+  head: string;
+  dirty: boolean;
+  ui_dist_sha256: string;
+}
+
 export interface RoundInput {
   round: string;
   date: string;
-  commit: string;
+  commit: RoundCommit;
   scenarios: { name: string; card: string }[];
   keys: readonly MetricKey[];
   measured: Measured;
@@ -134,6 +143,19 @@ export interface RoundInput {
   notRun: string[];
   findings: Record<string, string>[];
   definitions: string[];
+  /** What a reader of the round must know before using its numbers; first in `report.md`. */
+  caveats: string[];
+}
+
+/** The gate counts of `layout` replays. */
+function gateCounts(layout: readonly LayoutFragment[]) {
+  return {
+    replays: layout.length,
+    violations: layout.reduce((n, f) => n + f.violations.length, 0),
+    completion_miss: layout.reduce((n, f) => n + f.completionMiss, 0),
+    false_complete: layout.reduce((n, f) => n + f.falseComplete, 0),
+    axe_serious: layout.reduce((n, f) => n + f.axe.reduce((k, a) => k + a.serious, 0), 0),
+  };
 }
 
 /** `round.json`: the numbers of the round, machine-readable. */
@@ -146,12 +168,12 @@ export function roundJson(input: RoundInput): unknown {
     commit: input.commit,
     scenarios: Object.fromEntries(input.scenarios.map((s) => [s.name, { card: s.card, metrics: input.measured[s.name] ?? {} }])),
     gates: {
-      replays: layout.filter((f) => f.gating).length,
-      violations: layout.filter((f) => f.gating).reduce((n, f) => n + f.violations.length, 0),
-      completion_miss: layout.filter((f) => f.gating).reduce((n, f) => n + f.completionMiss, 0),
-      false_complete: layout.filter((f) => f.gating).reduce((n, f) => n + f.falseComplete, 0),
-      axe_serious: layout.filter((f) => f.gating).reduce((n, f) => n + f.axe.reduce((k, a) => k + a.serious, 0), 0),
+      ...gateCounts(layout.filter((f) => f.gating && !f.failedEnd)),
       screen_only_wrong: screen.reduce((n, f) => n + f.attempts.filter((a) => !a.correct).length, 0),
+    },
+    failed_end: {
+      scenarios: [...new Set(layout.filter((f) => f.failedEnd).map((f) => f.scenario))],
+      gates: gateCounts(layout.filter((f) => f.failedEnd)),
     },
     measured_only: layout
       .filter((f) => !f.gating)
@@ -168,7 +190,14 @@ export function report(input: RoundInput, worst: { scenario: string; what: strin
   const names = input.scenarios.map((s) => s.name);
   const lines: string[] = [];
   lines.push(`# ${input.round}: observatory UI round`, '');
-  lines.push(`Date ${input.date}, commit \`${input.commit}\`. Scenarios: ${input.scenarios.map((s) => `\`${s.name}\` (${s.card})`).join(', ')}.`, '');
+  const c = input.commit;
+  lines.push(
+    `Date ${input.date}, HEAD \`${c.head}\`${c.dirty ? ' with uncommitted changes outside `ui/ux/rounds/` (dirty)' : ' (clean)'}, \`ui/dist\` SHA-256 \`${c.ui_dist_sha256}\`. Scenarios: ${input.scenarios.map((s) => `\`${s.name}\` (${s.card})`).join(', ')}.`,
+    '',
+  );
+  if (input.caveats.length > 0) {
+    lines.push('## Caveats', '', ...input.caveats.map((v, i) => `${i + 1}. ${v}`), '');
+  }
   lines.push('## Metrics', '', 'Measured, with the baseline in parentheses. Lower is better.', '');
   lines.push(table(names, input.keys, input.measured, input.baseline), '');
   if (input.previous !== null) {
@@ -180,7 +209,8 @@ export function report(input: RoundInput, worst: { scenario: string; what: strin
   const gating = layout.filter((f) => f.gating);
   lines.push('| replay | violations | completion_miss | false_complete | axe serious+critical |', '|---|---:|---:|---:|---:|');
   for (const f of gating) {
-    lines.push(`| ${f.scenario} ${f.viewport} ${f.theme} | ${f.violations.length} | ${f.completionMiss} | ${f.falseComplete} | ${f.axe.reduce((n, a) => n + a.serious, 0)} |`);
+    const name = `${f.scenario} ${f.viewport} ${f.theme}${f.failedEnd ? ' (failed end, not ratcheted)' : ''}`;
+    lines.push(`| ${name} | ${f.violations.length} | ${f.completionMiss} | ${f.falseComplete} | ${f.axe.reduce((n, a) => n + a.serious, 0)} |`);
   }
   lines.push('');
   lines.push('## Screen-only user', '', '| scenario | viewport | task | read | correct | actions | looks | steers | glance |', '|---|---|---|---|---|---:|---:|---:|---:|');
@@ -242,14 +272,69 @@ export function readFindings(dir: string): Record<string, string>[] {
     .map((n) => findingHeader(readFileSync(`${dir}/${n}`, 'utf8')));
 }
 
-/** One row of `rounds/trend.md`, its header when the file is new. */
-export function trendRow(input: RoundInput, header: boolean): string {
-  const anchors = input.scenarios.map((s) => s.name);
-  const cols = ['actions_per_fix.max', 'glance_cost.p95', 'layout_shift.per_minute', 'reading_load.max', 'screen_only.actions'] as const;
-  const head = `| round | date | ${anchors.flatMap((a) => cols.map((c) => `${a} ${c}`)).join(' | ')} |`;
-  const rule = `|---|---|${anchors.flatMap(() => cols.map(() => '---:')).join('|')}|`;
-  const row = `| ${input.round} | ${input.date} | ${anchors.flatMap((a) => cols.map((c) => String(input.measured[a]?.[c] ?? 'missing'))).join(' | ')} |`;
-  return header ? `${head}\n${rule}\n${row}\n` : `${row}\n`;
+/** The keys `rounds/trend.md` follows, one column per scenario and key. */
+export const TREND_KEYS = [
+  'actions_per_fix.max',
+  'glance_cost.p95',
+  'layout_shift.per_100_events',
+  'reading_load.max',
+  'screen_only.actions',
+] as const satisfies readonly MetricKey[];
+
+/**
+ * `rounds/trend.md` with the row of `input`: its columns are named per scenario, the header is the
+ * union of the scenarios of `existing` and of `input` (a rotating card adds its own columns), a
+ * row without a value for a column holds `-`, and a rerun of a round replaces its row.
+ */
+export function trend(existing: string | null, input: RoundInput): string {
+  const cells = (line: string) => line.split('|').slice(1, -1).map((c) => c.trim());
+  const table = (existing ?? '').split('\n').filter((l) => l.startsWith('|'));
+  const head = table[0] === undefined ? [] : cells(table[0]);
+  const scenarios: string[] = [];
+  for (const h of head.slice(2)) {
+    const name = h.split(' ')[0];
+    if (name !== undefined && !scenarios.includes(name)) {
+      scenarios.push(name);
+    }
+  }
+  for (const s of input.scenarios) {
+    if (!scenarios.includes(s.name)) {
+      scenarios.push(s.name);
+    }
+  }
+  const rows = new Map<string, Map<string, string>>();
+  for (const line of table.slice(2)) {
+    const values = cells(line);
+    const round = values[0];
+    if (round !== undefined && round !== input.round) {
+      rows.set(round, new Map(head.map((h, i) => [h, values[i] ?? '-'])));
+    }
+  }
+  const mine = new Map<string, string>([
+    ['round', input.round],
+    ['date', input.date],
+  ]);
+  for (const s of input.scenarios) {
+    for (const k of TREND_KEYS) {
+      mine.set(`${s.name} ${k}`, String(input.measured[s.name]?.[k] ?? 'missing'));
+    }
+  }
+  rows.set(input.round, mine);
+  const columns = ['round', 'date', ...scenarios.flatMap((s) => TREND_KEYS.map((k) => `${s} ${k}`))];
+  const out = [
+    `| ${columns.join(' | ')} |`,
+    `|---|---|${columns.slice(2).map(() => '---:').join('|')}|`,
+    ...[...rows.keys()].sort().map((r) => `| ${columns.map((c) => rows.get(r)?.get(c) ?? '-').join(' | ')} |`),
+  ];
+  return `# Trend\n\nOne row per round; lower is better. Columns are named per scenario; \`-\` is a scenario the round did not run.\n\n${out.join('\n')}\n`;
+}
+
+/**
+ * The files of a round's `shots/` that a rerun of the round removes: the ones it generates, each
+ * named after a scenario (`<scenario>-...jpg`). Anything else, `review-*` above all, is kept.
+ */
+export function roundShotsToRemove(files: readonly string[], scenarios: readonly string[]): string[] {
+  return files.filter((f) => f.endsWith('.jpg') && !f.startsWith('review-') && scenarios.some((s) => f.startsWith(`${s}-`)));
 }
 
 /** The HTML of a contact sheet: one row per theme, one cell per moment, from data URLs. */

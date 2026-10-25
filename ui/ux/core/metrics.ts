@@ -17,7 +17,7 @@ export type MetricKey =
   | 'actions_per_fix.median'
   | 'glance_cost.median'
   | 'glance_cost.p95'
-  | 'layout_shift.per_minute'
+  | 'layout_shift.per_100_events'
   | 'reading_load.max'
   | 'reading_load.median'
   | 'screen_only.actions'
@@ -34,7 +34,7 @@ export interface Tolerance {
 
 export interface BaselineEntry {
   value: number;
-  /** The tolerance class, whose numbers are in `Baseline.tolerances`. */
+  /** The tolerance class of the key, as the code's `KEYS` names it; a record, never read for the band. */
   tolerance: ToleranceClass;
   /** The decision that allowed this value to be worse than the one before it. */
   decision?: string;
@@ -78,12 +78,12 @@ export function words(text: string): number {
   return found === null ? 0 : found.length;
 }
 
-/** Layout shift per minute of a replay of `events` events at `eventsPerMinute`. */
-export function perMinute(shift: number, events: number, eventsPerMinute: number): number {
+/** Layout shift per 100 replayed events of a replay of `events` events. */
+export function per100Events(shift: number, events: number): number {
   if (events === 0) {
     return 0;
   }
-  return round(shift / (events / eventsPerMinute), 6);
+  return round((shift / events) * 100, 6);
 }
 
 export function round(n: number, digits: number): number {
@@ -120,24 +120,43 @@ export function band(value: number, tolerance: Tolerance): number {
 export interface Problem {
   scenario: string;
   key: string;
-  kind: 'missing' | 'worse' | 'improved' | 'baseline-worse';
+  kind: 'missing' | 'worse' | 'improved' | 'baseline-worse' | 'tolerance';
   message: string;
+}
+
+/** Whether `decision` names a decision: a string with something other than whitespace in it. */
+export function isDecision(decision: string | null | undefined): decision is string {
+  return typeof decision === 'string' && decision.trim() !== '';
 }
 
 /**
  * The ratchet (skill § 6): every problem of `measured` against `baseline`, and of `baseline`
  * against `main`, the baseline on the main branch when there is one. A value worse than the
  * baseline beyond its band, an improvement beyond its band not taken into the baseline, a value
- * missing from either side, and a baseline value made worse than `main`'s without a decision id.
+ * missing from either side, a baseline value made worse than `main`'s without a decision id, and
+ * a tolerance in `baseline` that disagrees with the code. The band of a key comes only from
+ * `tolerances[keys[key]]`, the code's numbers, never from the file under test.
  */
 export function ratchet(
   scenarios: readonly string[],
   keys: Record<MetricKey, ToleranceClass>,
+  tolerances: Record<ToleranceClass, Tolerance>,
   baseline: Baseline,
   measured: Measured,
   main: Baseline | null,
 ): Problem[] {
   const problems: Problem[] = [];
+  for (const cls of Object.keys(tolerances) as ToleranceClass[]) {
+    const recorded = baseline.tolerances?.[cls];
+    if (JSON.stringify(recorded ?? null) !== JSON.stringify(tolerances[cls])) {
+      problems.push({
+        scenario: '*',
+        key: `tolerances.${cls}`,
+        kind: 'tolerance',
+        message: `baseline.json tolerances.${cls} is ${JSON.stringify(recorded ?? null)}, the code's is ${JSON.stringify(tolerances[cls])}`,
+      });
+    }
+  }
   for (const scenario of scenarios) {
     for (const key of Object.keys(keys) as MetricKey[]) {
       const m = measured[scenario]?.[key];
@@ -150,7 +169,15 @@ export function ratchet(
         problems.push({ scenario, key, kind: 'missing', message: `${scenario} ${key}: no baseline value (measured ${m})` });
         continue;
       }
-      const tolerance = baseline.tolerances[b.tolerance] ?? baseline.tolerances[keys[key]];
+      if (b.tolerance !== keys[key]) {
+        problems.push({
+          scenario,
+          key,
+          kind: 'tolerance',
+          message: `${scenario} ${key}: baseline.json names the tolerance class ${b.tolerance}, the code's KEYS names ${keys[key]}`,
+        });
+      }
+      const tolerance = tolerances[keys[key]];
       const width = band(b.value, tolerance);
       if (m > b.value + width) {
         problems.push({
@@ -169,8 +196,8 @@ export function ratchet(
       }
       const was = main?.scenarios[scenario]?.[key];
       if (main !== null && was !== undefined) {
-        const mainWidth = band(was.value, main.tolerances[was.tolerance] ?? tolerance);
-        if (b.value > was.value + mainWidth && (b.decision === undefined || b.decision === '')) {
+        const mainWidth = band(was.value, tolerance);
+        if (b.value > was.value + mainWidth && !isDecision(b.decision)) {
           problems.push({
             scenario,
             key,
@@ -186,11 +213,13 @@ export function ratchet(
 
 /**
  * `baseline` with every improvement of `measured` taken in and every missing value added; a worse
- * value is taken only with `decision`, which it records.
+ * value is taken only with a `decision` (`isDecision`), which it records. The band is the code's
+ * (`tolerances[keys[key]]`), and a value it writes carries the class `keys` names.
  */
 export function update(
   scenarios: readonly string[],
   keys: Record<MetricKey, ToleranceClass>,
+  tolerances: Record<ToleranceClass, Tolerance>,
   baseline: Baseline,
   measured: Measured,
   decision: string | null,
@@ -209,11 +238,11 @@ export function update(
         entries[key] = { value: m, tolerance };
         continue;
       }
-      const width = band(b.value, next.tolerances[b.tolerance] ?? next.tolerances[tolerance]);
+      const width = band(b.value, tolerances[tolerance]);
       if (m < b.value - width) {
-        entries[key] = { value: m, tolerance: b.tolerance };
-      } else if (m > b.value + width && decision !== null) {
-        entries[key] = { value: m, tolerance: b.tolerance, decision };
+        entries[key] = { value: m, tolerance };
+      } else if (m > b.value + width && isDecision(decision)) {
+        entries[key] = { value: m, tolerance, decision: decision.trim() };
       }
     }
   }

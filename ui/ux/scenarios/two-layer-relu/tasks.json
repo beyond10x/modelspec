@@ -30,8 +30,8 @@
       "id": "end-state",
       "ask": "How did the run end?",
       "role": "paragraph",
-      "text": "^(connecting|streaming|finished|failed)\\b",
-      "read": "^(?<state>connecting|streaming|finished|failed)\\b",
+      "text": "^(finished|failed)\\b",
+      "read": "^(?<state>finished|failed)\\b",
       "answer": { "state": "run_state" }
     }
   ]
