@@ -2,7 +2,9 @@
 //!
 //! One line per parameter, `param @<path>: <type> = <initializer>`, in `ParamId` order; one line
 //! per node, `%2: Tensor<f32, [8, 1]> = MatMul %0, %1`, in definition order, with parameters named
-//! by canonical path; then one `output %n` line per output. Training programs and steps print
+//! by canonical path; then one `output %n` line per output. A `Dropout` or `DropoutGrad` node
+//! prints its `p` and its site, the name of the token input it reads:
+//! `Dropout [p = 0.3, site = Reg.forward.dropout#0] %4, %5`. Training programs and steps print
 //! the same lines with their subgraph tags, output roles, effects and state versions
 //! ([`print_training`], [`print_step`]).
 
@@ -10,7 +12,7 @@ use std::fmt::{self, Write};
 
 use crate::ir::kernel::{ExecutionPlan, PlanStep};
 use crate::ir::tensor::{ParamId, TensorNode, TensorOp, TensorProgram};
-use crate::ir::training::{Optimizer, TrainingProgram, TrainingStep};
+use crate::ir::training::{Moment, Optimizer, OptimizerRule, TrainingProgram, TrainingStep};
 
 /// The text form of `program`, one line each, newline-terminated.
 pub fn print(program: &TensorProgram) -> String {
@@ -26,9 +28,11 @@ pub fn print_training(training: &TrainingProgram) -> String {
 
 /// The text form of a training step: as [`print_training`], with each parameter line followed by
 /// its state version (`param @LinearReg.w: ... = xavier_uniform {v0}`), one line
-/// `optimizer sgd lr = <lr>` after the parameters, each node that carries an effect followed by
-/// it (`{!0 read @LinearReg.w v0}`, `{!1 write @LinearReg.w v1}`), and each update output line
-/// `output %10 update @LinearReg.w`.
+/// `optimizer sgd lr = <lr>` (or `optimizer adamw lr = <lr> weight_decay = ... warmup_steps = <n>`)
+/// after the parameters, each node that carries an effect followed by it
+/// (`{!0 read @LinearReg.w v0}`, `{!1 write @LinearReg.w v1}`, and for an AdamW moment
+/// `{!1 read m@LinearReg.w v0}`), each update output line `output %10 update @LinearReg.w` and
+/// each next-moment output line `output %31 moment v @LinearReg.w`.
 pub fn print_step(step: &TrainingStep) -> String {
     step.to_string()
 }
@@ -63,7 +67,15 @@ fn write_training(
         f.write_char('\n')?;
     }
     if let Some(optimizer) = optimizer {
-        writeln!(f, "optimizer sgd lr = {:?}", optimizer.lr)?;
+        match optimizer.rule {
+            OptimizerRule::Sgd => writeln!(f, "optimizer sgd lr = {:?}", optimizer.lr)?,
+            OptimizerRule::AdamW(a) => writeln!(
+                f,
+                "optimizer adamw lr = {:?} weight_decay = {:?} beta1 = {:?} beta2 = {:?} eps = {:?} \
+                 warmup_steps = {}",
+                optimizer.lr, a.weight_decay, a.beta1, a.beta2, a.eps, a.warmup_steps
+            )?,
+        }
     }
     for node in &program.nodes {
         if let Some(tag) = training.subgraphs.get(&node.id) {
@@ -80,6 +92,17 @@ fn write_training(
                 effect.version
             )?;
         }
+        if let Some(effect) = optimizer.and_then(|o| o.moment_effects.get(&node.id)) {
+            write!(
+                f,
+                " {{{} {} {}{} {}}}",
+                effect.token,
+                effect.access,
+                effect.moment,
+                path(&effect.param),
+                effect.version
+            )?;
+        }
         f.write_char('\n')?;
     }
     for output in &program.outputs {
@@ -92,6 +115,15 @@ fn write_training(
             optimizer.and_then(|o| o.updates.iter().find(|(_, v)| *v == output))
         {
             write!(f, " update {}", path(param))?;
+        } else if let Some((param, moment)) = optimizer.and_then(|o| {
+            o.moments.iter().find_map(|(param, m)| {
+                Moment::BOTH
+                    .into_iter()
+                    .find(|&k| m.next(k) == *output)
+                    .map(|k| (param, k))
+            })
+        }) {
+            write!(f, " moment {moment} {}", path(param))?;
         }
         f.write_char('\n')?;
     }
@@ -235,6 +267,15 @@ pub fn write_node(out: &mut impl Write, program: &TensorProgram, node: &TensorNo
         | TensorOp::AttentionGradQ { heads }
         | TensorOp::AttentionGradK { heads }
         | TensorOp::AttentionGradV { heads } => write!(out, " [heads = {heads}]")?,
+        TensorOp::Dropout { p } | TensorOp::DropoutGrad { p } => {
+            write!(out, " [p = {p:?}, site = ")?;
+            let token = crate::ops::token_operand(&node.op).and_then(|i| node.operands.get(i));
+            match token.and_then(|&t| program.node(t)).map(|n| &n.op) {
+                Some(TensorOp::Input { name }) => out.write_str(name)?,
+                _ => out.write_char('?')?,
+            }
+            out.write_char(']')?;
+        }
         _ => {}
     }
     for (i, operand) in node.operands.iter().enumerate() {

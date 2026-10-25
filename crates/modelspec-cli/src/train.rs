@@ -53,14 +53,46 @@
 //! with [`E_TARGET_001`] before the file is read. `--fast-math` compiles the artifact with
 //! `fast_math` set (DESIGN.md § 12 ADR-008): its kernels carry no `NoContraction`, the run is
 //! compared within tolerance, and `--stats` names the class `tolerance`. `--data`, `--init`,
-//! `--eval` and `--statistics-every` are CPU-only, and `--device`, `--stats`, `--profile` and
-//! `--fast-math` Vulkan-only: naming one with the other backend is a usage error (exit 2).
+//! `--eval`, `--eval-every` and `--statistics-every` are CPU-only, and `--device`, `--stats`,
+//! `--profile` and `--fast-math` Vulkan-only: naming one with the other backend is a usage error
+//! (exit 2).
 //!
 //! `--data <dir>` trains on dense `f32` files instead of synthetic data, `--init <dir>` starts
 //! the parameters that have a file from it, and `--eval <dir>` adds a last line
 //! `eval loss=<mean loss> accuracy=<fraction>` (DESIGN.md § 8; `spec/domains/data.yaml`). Every
 //! file is read before the first step; one that cannot be used is refused with `E-DATA-007`,
 //! `E-DATA-008` or `E-DATA-009` and no `step` line is printed.
+//!
+//! A `--data` directory that holds `binding.json` is a packed masked-language-model directory of
+//! `modelspec data pack` instead ([`data::source`], [`data::packed`]; story:bert-train-data-binding,
+//! coordinator decision D48): each `input` and `target` declaration names a tensor of the batch
+//! (`ids`, `positions`, `key_mask`, `labels`, `weights`), step `k` feeds the `Train` batch of
+//! step `k` drawn with the run seed, and stdout starts with one line `data dataset <dataset_id>
+//! tokenizer <tokenizer_id> seq_len <S> masking <selection>/<mask>/<random>/<keep> binding
+//! <binding_id>` before the first `init` line. The binding is read before anything is served,
+//! recorded or run and its id is the `data_binding_id` of `RunStarted`; a declaration that names
+//! no batch tensor is refused with `E-DATA-005`, one of another dtype or shape with `E-DATA-006`,
+//! and a packed directory that cannot be read is reported on one line naming the file, each
+//! before the first step. A directory without `binding.json` is dense even when every
+//! declaration names a batch tensor; its refusal then follows one line naming the directory and
+//! `binding.json` ([`data::read_as_dense`]), and `--eval` beside a packed `--data` is a usage
+//! error (coordinator decision D56).
+//!
+//! `--eval-every <n>` beside a packed `--data` directory evaluates the held-out split
+//! ([`modelspec_runtime::train::eval`]; story:bert-heldout-evaluation, coordinator decision D55).
+//! Evaluation happens at every multiple of `n` among the run's steps and at the run's last step,
+//! so a resumed run evaluates no step 0 of its own and starts at the first multiple of `n` at or
+//! after the step it resumes at. At an evaluated step `k` the forward program without dropout
+//! runs on the parameters after `k` updates, the ones the loss of step `k` is of, over every full
+//! batch of `B` sequences of the `HeldOut` split drawn with the run seed, so the last
+//! `count mod B` held-out sequences are never evaluated, and stdout has
+//! `eval <k> loss <v> accuracy <a>` after the `step <k>` line, which an evaluated step always
+//! gets; the `StepCompleted` of step `k` carries the metric samples `heldout_mlm_loss` and
+//! `heldout_mlm_accuracy` with those values, every other one an empty `metrics` list.
+//! `--eval-every` without `--data`,
+//! beside a dense `--data` directory or with `n = 0` is a usage error on one line (exit 2), and a
+//! `HeldOut` split of fewer sequences than a batch is reported on one line before the first step
+//! (exit 1).
 //!
 //! `--steps <n>` runs `n` steps instead of the block's. `--checkpoint <path>` writes the state
 //! after the last step as a `.msckpt` file ([`checkpoint`]; DESIGN.md § 6.2), and
@@ -69,7 +101,9 @@
 //! parameters and step `s`: the run ends at `s + steps`, its `init` lines are the values at `s`,
 //! and its `step` lines start at `s`. A checkpoint that cannot be read or does not match the file
 //! and its optimizer is refused with its `E-CKPT` code before anything is served or run; a
-//! checkpoint that cannot be written fails the run on one line.
+//! checkpoint that cannot be written fails the run on one line. A file whose optimizer is
+//! `adamw(...)` takes neither `--checkpoint` nor `--resume`, a usage error, since a checkpoint
+//! does not hold its moments yet (DESIGN.md § 6, coordinator decision D50).
 //!
 //! `--serve <addr>` also streams the run as `text/event-stream` at `http://<addr>/events`
 //! (`spec/domains/observatory.yaml`, `ServeAddress` and `StreamFrame`; [`modelspec_observatory`]).
@@ -119,16 +153,21 @@ use std::sync::mpsc;
 use modelspec_core::compile::{self, CompiledTraining};
 use modelspec_core::diag::{Code, Diagnostic};
 use modelspec_core::ir::tensor::ParamId;
+use modelspec_core::ir::training::OptimizerRule;
 use modelspec_observatory::{
-    EVENTS_PATH, EventSequence, ParameterStatistics, Recorder, RunEventBody, RunFailed, RunStarted,
-    Server, StatisticsSubject, StepCompleted, TrainingRunId, Ui,
+    EVENTS_PATH, EventSequence, MetricSample, ParameterStatistics, Recorder, RunEventBody,
+    RunFailed, RunStarted, Server, StatisticsSubject, StepCompleted, TrainingRunId, Ui,
 };
 use modelspec_runtime::cpu::HostTensor;
+use modelspec_runtime::dataset::mlm::TrainingDataBinding;
 use modelspec_runtime::train::checkpoint::{self, Checkpoint, CheckpointError};
-use modelspec_runtime::train::data::{self, DataError, DenseData};
+use modelspec_runtime::train::data::{self, DataError, DataSource, DenseData, PackedData};
+use modelspec_runtime::train::eval::{
+    HELDOUT_MLM_ACCURACY, HELDOUT_MLM_LOSS, HeldOut, HeldOutMetrics,
+};
 use modelspec_runtime::train::init;
 use modelspec_runtime::train::optimizer::ParamState;
-use modelspec_runtime::train::runner::{self, Diverged, Eval, Observed, Run, RunError};
+use modelspec_runtime::train::runner::{self, Data, Diverged, Eval, Observed, Run, RunError};
 
 /// The selected backend is not available: `--backend vulkan` of `train` or `infer` in a build
 /// without the `vulkan` feature.
@@ -159,22 +198,36 @@ pub struct Args {
     #[arg(long, value_name = "PATH")]
     pub record: Option<PathBuf>,
     /// With --serve, also serve the built observatory UI in DIR (ui/dist after `task ui`) at
-    /// http://ADDR/; the directory is read whole before ADDR is bound.
+    /// path / of ADDR; the directory is read whole before ADDR is bound.
     #[arg(long, value_name = "DIR", requires = "serve")]
     pub ui: Option<PathBuf>,
-    /// Train on the dense f32 files of DIR instead of synthetic data: NAME.f32 for the input and
-    /// the target declaration NAME, row-major little-endian, and an optional order.u32 of sample
-    /// indices.
+    /// Train on the data of DIR instead of synthetic data. A DIR that holds binding.json is a
+    /// packed directory of `modelspec data pack`: each input and target declaration names a
+    /// tensor of the masked-language-model batch (ids, positions, key_mask, labels, weights),
+    /// declared [B, S] or [B*S], and step K feeds the Train batch of step K. Any other DIR holds
+    /// dense f32 files: NAME.f32 for the input and the target declaration NAME, row-major
+    /// little-endian, and an optional order.u32 of sample indices.
     #[arg(long, value_name = "DIR")]
     pub data: Option<PathBuf>,
     /// Start each parameter that has a file DIR/P.f32, P its path without the model name, from
     /// that file instead of its initializer.
     #[arg(long, value_name = "DIR")]
     pub init: Option<PathBuf>,
-    /// After the last step, run the forward program over every sample of DIR, laid out as for
-    /// --data, and print `eval loss=<mean loss> accuracy=<fraction>`.
+    /// After the last step, run the forward program over every sample of DIR, dense f32 files
+    /// laid out as for a dense --data, and print `eval loss=<mean loss> accuracy=<fraction>`;
+    /// beside a packed --data directory it is a usage error.
     #[arg(long, value_name = "DIR")]
     pub eval: Option<PathBuf>,
+    /// With a packed --data directory, run the forward program without dropout over every full
+    /// batch of the HeldOut split and print `eval <k> loss <v> accuracy <a>` after the
+    /// `step <k>` line; the step's StepCompleted carries them as the metric samples
+    /// heldout_mlm_loss and heldout_mlm_accuracy. Evaluation happens at every multiple of N
+    /// among the run's steps and at the run's last step, so a resumed run evaluates no step 0 of
+    /// its own and starts at the first multiple of N at or after the step it resumes at. The
+    /// last (count mod B) HeldOut sequences are never evaluated, count the split's sequences and
+    /// B the batch. CPU only.
+    #[arg(long, value_name = "N")]
+    pub eval_every: Option<u64>,
     /// Run N steps instead of the steps of the file's train block; a resumed run ends at its
     /// checkpoint's step plus N.
     #[arg(long, value_name = "N")]
@@ -240,6 +293,7 @@ fn misplaced_flag(args: &Args) -> Option<&'static str> {
             ("--data", args.data.is_some()),
             ("--init", args.init.is_some()),
             ("--eval", args.eval.is_some()),
+            ("--eval-every", args.eval_every.is_some()),
             ("--statistics-every", args.statistics_every.is_some()),
         ]
         .into_iter()
@@ -297,8 +351,15 @@ impl From<RunError> for Failure {
 /// `--checkpoint` and `--checkpoint-every`.
 struct Files {
     data: Option<PathBuf>,
+    /// The binding of a packed `--data` directory, read before the server binds; `None` for
+    /// dense data and for a run without `--data`.
+    binding: Option<TrainingDataBinding>,
+    /// The line printed before a refusal of the dense `--data` directory ([`data::read_as_dense`]).
+    read_as_dense: Option<String>,
     init: Option<PathBuf>,
     eval: Option<PathBuf>,
+    /// The N of `--eval-every`, given only beside a packed `--data` directory.
+    eval_every: Option<u64>,
     checkpoint: Option<PathBuf>,
     checkpoint_every: Option<u64>,
     /// The step and parameters of `--resume`, read and matched before the server binds.
@@ -307,9 +368,24 @@ struct Files {
 
 /// The files of a run, read before its first step.
 struct Loaded {
-    data: Option<DenseData>,
+    data: Option<TrainData>,
     init: BTreeMap<ParamId, HostTensor<f32>>,
     eval: Option<DenseData>,
+}
+
+/// The data of `--data`: dense files or a packed directory.
+enum TrainData {
+    Dense(DenseData),
+    Packed(PackedData),
+}
+
+impl TrainData {
+    fn as_data(&self) -> Data<'_> {
+        match self {
+            TrainData::Dense(dense) => Data::Dense(dense),
+            TrainData::Packed(packed) => Data::Packed(packed),
+        }
+    }
 }
 
 impl Files {
@@ -325,22 +401,31 @@ impl Files {
         Some(path.with_file_name(format!("{stem}-{k}.msckpt")))
     }
 
-    fn load(&self, compiled: &CompiledTraining) -> Result<Loaded, DataError> {
+    /// The files of the run, or why one cannot be used, with the line printed before it when
+    /// the dense `--data` directory was refused ([`Self::read_as_dense`]).
+    fn load(&self, compiled: &CompiledTraining) -> Result<Loaded, Box<(DataError, Option<&str>)>> {
         let forward = &compiled.forward;
         let mut config = compiled.config.clone();
         config.steps = config.steps.saturating_add(self.start());
         let config = &config;
-        let data = match &self.data {
-            Some(dir) => Some(data::dense(dir, config, forward)?),
-            None => None,
+        let plain = |error: DataError| Box::new((error, None));
+        let data = match (&self.data, &self.binding) {
+            (Some(dir), Some(binding)) => Some(TrainData::Packed(
+                data::packed(dir, binding.clone(), config, forward).map_err(plain)?,
+            )),
+            (Some(dir), None) => Some(TrainData::Dense(
+                data::dense(dir, config, forward)
+                    .map_err(|error| Box::new((error, self.read_as_dense.as_deref())))?,
+            )),
+            (None, _) => None,
         };
         let init = match (&self.init, &self.resume) {
             (_, Some((_, values))) => values.clone(),
-            (Some(dir), None) => init::read_params(dir, &forward.program)?,
+            (Some(dir), None) => init::read_params(dir, &forward.program).map_err(plain)?,
             (None, None) => BTreeMap::new(),
         };
         let eval = match &self.eval {
-            Some(dir) => Some(data::dense_eval(dir, config, forward)?),
+            Some(dir) => Some(data::dense_eval(dir, config, forward).map_err(plain)?),
             None => None,
         };
         Ok(Loaded { data, init, eval })
@@ -391,6 +476,24 @@ pub fn run(args: Args, stdout: &mut dyn Write, stderr: &mut dyn Write) -> u8 {
         );
         return crate::EXIT_USAGE;
     }
+    match args.eval_every {
+        Some(0) => {
+            let _ = writeln!(
+                stderr,
+                "error: the argument '--eval-every' takes a step count of at least 1, not 0"
+            );
+            return crate::EXIT_USAGE;
+        }
+        Some(_) if args.data.is_none() => {
+            let _ = writeln!(
+                stderr,
+                "error: the argument '--eval-every' evaluates the HeldOut split of a packed MLM \
+                 directory and needs '--data <DIR>' naming one"
+            );
+            return crate::EXIT_USAGE;
+        }
+        _ => {}
+    }
     #[cfg(not(feature = "vulkan"))]
     if args.backend == Backend::Vulkan {
         let _ = writeln!(
@@ -427,6 +530,21 @@ pub fn run(args: Args, stdout: &mut dyn Write, stderr: &mut dyn Write) -> u8 {
     if let Some(steps) = args.steps {
         compiled.config.steps = steps;
     }
+    if let OptimizerRule::AdamW(_) = compiled.training.optimizer.rule {
+        let flag = match (&args.checkpoint, &args.resume) {
+            (Some(_), _) => Some("--checkpoint"),
+            (None, Some(_)) => Some("--resume"),
+            (None, None) => None,
+        };
+        if let Some(flag) = flag {
+            let _ = writeln!(
+                stderr,
+                "error: the argument '{flag}' cannot be used with the `adamw` optimizer of \
+                 {file}; a checkpoint does not hold its first and second moments yet"
+            );
+            return crate::EXIT_USAGE;
+        }
+    }
     let engine = match args.backend {
         Backend::Cpu => Engine::Cpu {
             statistics_every: args.statistics_every.unwrap_or(STATISTICS_EVERY),
@@ -460,6 +578,39 @@ pub fn run(args: Args, stdout: &mut dyn Write, stderr: &mut dyn Write) -> u8 {
                 }
             }
         }
+    };
+    let binding = match &args.data {
+        None => None,
+        Some(dir) => match data::source(dir, &compiled.config) {
+            Ok(DataSource::Dense) => None,
+            Ok(DataSource::Packed(binding)) => Some(binding),
+            Err(error) => {
+                let _ = writeln!(stderr, "modelspec train {file}: {error}");
+                return crate::EXIT_FAILURE;
+            }
+        },
+    };
+    if let (Some(dir), Some(_), Some(_)) = (&args.data, &binding, &args.eval) {
+        let _ = writeln!(
+            stderr,
+            "error: the argument '--eval' reads dense evaluation tensors, and the '--data' \
+             directory {} is a packed MLM directory",
+            dir.display()
+        );
+        return crate::EXIT_USAGE;
+    }
+    if let (Some(dir), None, Some(_)) = (&args.data, &binding, args.eval_every) {
+        let _ = writeln!(
+            stderr,
+            "error: the argument '--eval-every' evaluates the HeldOut split of a packed MLM \
+             directory, and the '--data' directory {} holds no binding.json",
+            dir.display()
+        );
+        return crate::EXIT_USAGE;
+    }
+    let read_as_dense = match (&args.data, &binding) {
+        (Some(dir), None) => data::read_as_dense(dir, &compiled.config),
+        _ => None,
     };
     let ui = match &args.ui {
         None => None,
@@ -545,8 +696,11 @@ pub fn run(args: Args, stdout: &mut dyn Write, stderr: &mut dyn Write) -> u8 {
     };
     let files = Files {
         data: args.data,
+        binding,
+        read_as_dense,
         init: args.init,
         eval: args.eval,
+        eval_every: args.eval_every,
         checkpoint: args.checkpoint,
         checkpoint_every: args.checkpoint_every,
         resume,
@@ -554,6 +708,11 @@ pub fn run(args: Args, stdout: &mut dyn Write, stderr: &mut dyn Write) -> u8 {
     emit(RunEventBody::RunStarted(RunStarted {
         steps: compiled.config.steps,
         start_step: files.start(),
+        // `data::source` refuses a binding whose id is not the UUID of its fields.
+        data_binding_id: files
+            .binding
+            .as_ref()
+            .and_then(|binding| binding.binding_id.parse().ok()),
     }));
     let mut handler = None;
     let outcome = train(
@@ -632,15 +791,18 @@ fn train(
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
 ) -> Result<(), RunFailed> {
-    let step_completed = |step, loss: f32, parameters| {
+    let step_completed = |step, loss: f32, metrics, parameters| {
         emit(RunEventBody::StepCompleted(StepCompleted {
             step,
             loss: f64::from(loss),
-            metrics: Vec::new(),
+            metrics,
             parameters,
         }));
     };
     let params = paths(compiled);
+    // The held-out metrics of each evaluated step (`--eval-every`), filled as the run goes on, so
+    // a run that stops prints those of the steps before it stopped.
+    let mut evals: BTreeMap<u64, HeldOutMetrics> = BTreeMap::new();
     let observed: Result<(Run, Option<Eval>), Failure> = 'run: {
         #[cfg(feature = "vulkan")]
         if let Engine::Vulkan {
@@ -697,7 +859,8 @@ fn train(
             ) {
                 Ok((run, counted, profiled)) => {
                     for (k, &loss) in (run.start_step..).zip(&run.losses) {
-                        step_completed(k, loss, device_parameters(&params, &run, last, k));
+                        let parameters = device_parameters(&params, &run, last, k);
+                        step_completed(k, loss, Vec::new(), parameters);
                     }
                     let _ = write!(stderr, "{}", counters(&counted, profiled));
                     let end = run.start_step + counted.steps;
@@ -723,7 +886,7 @@ fn train(
                     } = *stopped;
                     for (k, &loss) in (diverged.run.start_step..).zip(&diverged.run.losses) {
                         let parameters = device_parameters(&params, &diverged.run, last, k);
-                        step_completed(k, loss, parameters);
+                        step_completed(k, loss, Vec::new(), parameters);
                     }
                     Err(Failure::Diverged(
                         Box::new(diverged),
@@ -742,7 +905,14 @@ fn train(
         };
         let loaded = match files.load(compiled) {
             Ok(loaded) => loaded,
-            Err(error) => break 'run Err(RunError::from(error).into()),
+            Err(failed) => {
+                let (error, before) = *failed;
+                if let Some(line) = before {
+                    end();
+                    let _ = writeln!(stderr, "modelspec train {file}: {line}");
+                }
+                break 'run Err(RunError::from(error).into());
+            }
         };
         let start = files.start();
         let end = start.saturating_add(compiled.config.steps);
@@ -753,7 +923,23 @@ fn train(
             }
             _ => Ok(()),
         };
+        // Drawn once, before the first step, so a split too small for a batch is refused then.
+        let held_out = match (files.eval_every, &loaded.data) {
+            (Some(_), Some(TrainData::Packed(packed))) => match HeldOut::new(compiled, packed) {
+                Ok(held_out) => Some(held_out),
+                Err(error) => break 'run Err(error.into()),
+            },
+            _ => None,
+        };
         let observe = |o: &Observed<'_>| {
+            let metrics = match (&held_out, files.eval_every) {
+                (Some(held_out), Some(n)) if o.step.is_multiple_of(n) || o.step == end => {
+                    let measured = held_out.evaluate(compiled, o.values).map_err(Box::new)?;
+                    evals.insert(o.step, measured);
+                    metric_samples(measured)
+                }
+                _ => Vec::new(),
+            };
             let sampled =
                 o.step == start || o.step == end || o.step.is_multiple_of(statistics_every);
             let parameters = if sampled {
@@ -761,11 +947,12 @@ fn train(
             } else {
                 Vec::new()
             };
-            step_completed(o.step, o.loss, parameters);
+            step_completed(o.step, o.loss, metrics, parameters);
+            Ok(())
         };
-        let run = match runner::run_from(
+        let run = match runner::run_checked(
             compiled,
-            loaded.data.as_ref(),
+            loaded.data.as_ref().map(TrainData::as_data),
             &loaded.init,
             start,
             observe,
@@ -801,8 +988,9 @@ fn train(
         }
         Err(Failure::Diverged(diverged, counters)) => {
             let Diverged { diagnostic, run } = *diverged;
+            let printed = report(compiled, files.binding.as_ref(), &run, &evals, None, false);
             let _ = stdout
-                .write_all(report(compiled, &run, None, false).as_bytes())
+                .write_all(printed.as_bytes())
                 .and_then(|()| stdout.flush());
             end();
             let _ = writeln!(stderr, "{diagnostic}");
@@ -821,7 +1009,7 @@ fn train(
             });
         }
     };
-    let printed = report(compiled, &run, eval, true);
+    let printed = report(compiled, files.binding.as_ref(), &run, &evals, eval, true);
     let body = printed.trim_end_matches('\n');
     let (head, last) = printed.split_at(body.rfind('\n').map_or(0, |i| i + 1));
     let written = stdout
@@ -906,10 +1094,33 @@ fn device_parameters(
 }
 
 /// The stdout of a run: of a finished one, or without its `param` lines of one that stopped at
-/// its last loss (E-TRAIN-001).
-fn report(compiled: &CompiledTraining, run: &Run, eval: Option<Eval>, finished: bool) -> String {
+/// its last loss (E-TRAIN-001); a run on a packed directory starts with the `data` line of its
+/// `binding`. Each step of `evals` gets its `step` line and, after it, its `eval` line.
+fn report(
+    compiled: &CompiledTraining,
+    binding: Option<&TrainingDataBinding>,
+    run: &Run,
+    evals: &BTreeMap<u64, HeldOutMetrics>,
+    eval: Option<Eval>,
+    finished: bool,
+) -> String {
     let params = paths(compiled);
     let mut out = String::new();
+    if let Some(binding) = binding {
+        let policy = &binding.masking_policy;
+        let _ = writeln!(
+            out,
+            "data dataset {} tokenizer {} seq_len {} masking {}/{}/{}/{} binding {}",
+            binding.dataset_id,
+            binding.tokenizer_id,
+            binding.seq_len,
+            policy.selection_rate,
+            policy.mask_fraction,
+            policy.random_fraction,
+            policy.keep_fraction,
+            binding.binding_id
+        );
+    }
     let tensors = |out: &mut String, label: &str, values: &BTreeMap<ParamId, HostTensor<f32>>| {
         for (&path, id) in &params {
             let ty = &compiled.forward.program.params[id].ty;
@@ -919,8 +1130,12 @@ fn report(compiled: &CompiledTraining, run: &Run, eval: Option<Eval>, finished: 
     tensors(&mut out, "init", &run.initial);
     let last = run.start_step + (run.losses.len() as u64 - 1);
     for (k, loss) in (run.start_step..).zip(&run.losses) {
-        if k == run.start_step || k.is_multiple_of(LOSS_EVERY) || k == last {
+        let evaluated = evals.get(&k);
+        if k == run.start_step || k.is_multiple_of(LOSS_EVERY) || k == last || evaluated.is_some() {
             let _ = writeln!(out, "step {k} loss {loss}");
+        }
+        if let Some(HeldOutMetrics { loss, accuracy }) = evaluated {
+            let _ = writeln!(out, "eval {k} loss {loss} accuracy {accuracy}");
         }
     }
     if finished {
@@ -930,6 +1145,20 @@ fn report(compiled: &CompiledTraining, run: &Run, eval: Option<Eval>, finished: 
         let _ = writeln!(out, "eval loss={loss} accuracy={accuracy}");
     }
     out
+}
+
+/// The metric samples of an evaluated step: `heldout_mlm_loss`, then `heldout_mlm_accuracy`.
+fn metric_samples(measured: HeldOutMetrics) -> Vec<MetricSample> {
+    vec![
+        MetricSample {
+            name: HELDOUT_MLM_LOSS.to_owned(),
+            value: f64::from(measured.loss),
+        },
+        MetricSample {
+            name: HELDOUT_MLM_ACCURACY.to_owned(),
+            value: f64::from(measured.accuracy),
+        },
+    ]
 }
 
 fn list(values: &[f32]) -> String {

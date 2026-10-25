@@ -10,6 +10,19 @@
 //!    inlined (DESIGN.md § 2.1): its arguments are lowered in the caller, then each `let` of the
 //!    function in order, then its `return` expression. Each call is inlined afresh.
 //!
+//! A `dropout(x, p = P)` call with `P > 0` is a `Dropout` node over `x` and the RNG token of its
+//! site (DESIGN.md § 2.3): an `i32[2]` `Input` named `<Model>.<fn>.dropout#<k>`, where `<fn>` is
+//! the function the call is written in (`train` for the loss itself, a keyword no function can
+//! take) and `k` the call's index among the `dropout` calls of that function in source order,
+//! from 0, counting calls with `p = 0.0`. Every inlining of a function is its own site, so two
+//! calls of one function draw two masks: the first inlining of `<fn>` in the program keeps the
+//! name `<Model>.<fn>.dropout#<k>`, and the second and later ones are
+//! `<Model>.<fn>@<c>.dropout#<k>`, `c` counting from 1 in the order the calls are inlined
+//! (coordinator decision D54, 2026-10-25). `p = 0.0` lowers to the operand itself, no node and
+//! no token. The training host supplies every site's token each step; [`without_dropout`] makes
+//! the program every other run reads, dropout the identity (coordinator decision D47,
+//! 2026-10-25).
+//!
 //! The loss is the program's single output. Every node carries the span of the source construct
 //! it came from: the declaration for `Input` and `ParamRead`, the expression otherwise. Nothing
 //! is removed here, so a `let`, input or parameter the loss does not use is a dead node until
@@ -20,11 +33,15 @@
 //! The checker guarantees the loss calls `model.forward` exactly once (E-TYPE-017), and that
 //! call's value is the prediction. Any [`LowerError`] is therefore a compiler bug.
 
+use std::collections::BTreeMap;
+
 use thiserror::Error;
 
 use crate::diag::SourceSpan;
 use crate::hir::{FnRef, Hir, HirData, HirExpr, HirExprKind, HirModel};
 use crate::ir::tensor::{BuildError, TensorOp, TensorProgram, TensorProgramBuilder, ValueId};
+use crate::ops;
+use crate::passes::dce;
 
 /// A lowered train block: its Tensor IR and the value of its model's prediction.
 #[derive(Clone, Debug, PartialEq)]
@@ -103,6 +120,9 @@ pub fn lower(hir: &Hir) -> Result<LoweredProgram, LowerError> {
         forward: model.function("forward").map(|(f, _)| f),
         predictions: Vec::new(),
         inlining: Vec::new(),
+        inlined: vec![0; model.functions.len()],
+        loss: &train.loss,
+        tokens: BTreeMap::new(),
     };
     let loss = lowering.expr(&train.loss, &Frame::Train { data: &data })?;
     lowering
@@ -124,6 +144,65 @@ pub fn lower(hir: &Hir) -> Result<LoweredProgram, LowerError> {
         prediction,
         declared_inputs: train.data.clone(),
     })
+}
+
+/// `lowered` with every `Dropout` the identity: each use of a `Dropout` reads its operand
+/// instead, the `Dropout` nodes are removed, and dead-code elimination removes the token inputs
+/// nothing reads any more. Every other node keeps its id; a prediction that was a `Dropout` is
+/// its operand. This is the program of the final loss line, evaluation and inference, which run
+/// without dropout (coordinator decision D47, 2026-10-25).
+pub fn without_dropout(lowered: LoweredProgram) -> LoweredProgram {
+    let LoweredProgram {
+        mut program,
+        prediction,
+        declared_inputs,
+    } = lowered;
+    let mut identity: BTreeMap<ValueId, ValueId> = BTreeMap::new();
+    let mut nodes = Vec::with_capacity(program.nodes.len());
+    for mut node in std::mem::take(&mut program.nodes) {
+        for operand in &mut node.operands {
+            *operand = identity.get(operand).copied().unwrap_or(*operand);
+        }
+        if matches!(node.op, TensorOp::Dropout { .. }) {
+            identity.insert(node.id, node.operands[0]);
+        } else {
+            nodes.push(node);
+        }
+    }
+    program.nodes = nodes;
+    for output in &mut program.outputs {
+        *output = identity.get(output).copied().unwrap_or(*output);
+    }
+    LoweredProgram {
+        program: dce::eliminate(program),
+        prediction: identity.get(&prediction).copied().unwrap_or(prediction),
+        declared_inputs,
+    }
+}
+
+/// The source positions of the `dropout` calls in `expr`, not entering the bodies of the model
+/// functions it calls.
+fn dropout_calls(expr: &HirExpr, out: &mut Vec<(u32, u32)>) {
+    match &expr.kind {
+        HirExprKind::Op { op, args } => {
+            if matches!(op, TensorOp::Dropout { .. }) {
+                out.push((expr.span.line, expr.span.column));
+            }
+            for arg in args {
+                dropout_calls(arg, out);
+            }
+        }
+        HirExprKind::Call { args, .. } => {
+            for arg in args {
+                dropout_calls(arg, out);
+            }
+        }
+        HirExprKind::Param(_)
+        | HirExprKind::Arg(_)
+        | HirExprKind::Let(_)
+        | HirExprKind::Data(_)
+        | HirExprKind::Scalar(_) => {}
+    }
 }
 
 fn build_error(span: &SourceSpan) -> impl FnOnce(BuildError) -> LowerError + '_ {
@@ -152,8 +231,16 @@ struct Lowering<'h> {
     forward: Option<FnRef>,
     /// The value of each inlined `model.forward(...)` call, in evaluation order.
     predictions: Vec<ValueId>,
-    /// The functions being inlined, innermost last; a call of one of them would not terminate.
-    inlining: Vec<FnRef>,
+    /// The functions being inlined, innermost last, each with its inlining instance `c` (0 for
+    /// the first inlining of the function in the program); a call of one of them would not
+    /// terminate.
+    inlining: Vec<(FnRef, usize)>,
+    /// How many times each function has been inlined so far, by [`FnRef`] index.
+    inlined: Vec<usize>,
+    /// The train block's loss, the body of the dropout sites named `<Model>.train.dropout#<k>`.
+    loss: &'h HirExpr,
+    /// The RNG token input of each dropout site lowered so far, by site name.
+    tokens: BTreeMap<String, ValueId>,
 }
 
 impl Lowering<'_> {
@@ -197,9 +284,22 @@ impl Lowering<'_> {
                 .push_at(TensorOp::Scalar(*value), &[], Some(span.clone()))
                 .map_err(build_error(span)),
             HirExprKind::Op { op, args } => {
-                let mut operands = Vec::with_capacity(args.len());
+                let mut operands = Vec::with_capacity(args.len() + 1);
                 for arg in args {
                     operands.push(self.expr(arg, frame)?);
+                }
+                if let TensorOp::Dropout { p } = op {
+                    let [x] = operands[..] else {
+                        return Err(malformed(format!(
+                            "dropout takes 1 operand; got {}",
+                            operands.len()
+                        )));
+                    };
+                    if *p == 0.0 {
+                        return Ok(x);
+                    }
+                    let token = self.token(span)?;
+                    operands.insert(ops::token_operand(op).unwrap_or(1), token);
                 }
                 self.builder
                     .push_at(op.clone(), &operands, Some(span.clone()))
@@ -219,6 +319,51 @@ impl Lowering<'_> {
         }
     }
 
+    /// The RNG token input of the dropout site of the call at `span`, made at its first call:
+    /// `<Model>.<fn>.dropout#<k>` for the first inlining of the function being inlined,
+    /// `<Model>.<fn>@<c>.dropout#<k>` for its inlining `c` from 1, or `train` for the loss
+    /// (coordinator decision D54, 2026-10-25).
+    fn token(&mut self, span: &SourceSpan) -> Result<ValueId, LowerError> {
+        let model = self.model;
+        let (function, mut calls) = match self.inlining.last() {
+            Some(&(f, instance)) => {
+                let f = &model.functions[f.0];
+                let mut calls = Vec::new();
+                for binding in &f.lets {
+                    dropout_calls(&binding.value, &mut calls);
+                }
+                dropout_calls(&f.result, &mut calls);
+                let name = match instance {
+                    0 => f.name.clone(),
+                    c => format!("{}@{c}", f.name),
+                };
+                (name, calls)
+            }
+            None => {
+                let mut calls = Vec::new();
+                dropout_calls(self.loss, &mut calls);
+                ("train".to_owned(), calls)
+            }
+        };
+        calls.sort_unstable();
+        let Ok(k) = calls.binary_search(&(span.line, span.column)) else {
+            return Err(LowerError::Malformed {
+                span: span.clone(),
+                what: format!("the dropout call is not in the body of `{function}`"),
+            });
+        };
+        let site = format!("{}.{function}.dropout#{k}", model.name);
+        if let Some(&token) = self.tokens.get(&site) {
+            return Ok(token);
+        }
+        let token = self
+            .builder
+            .input_at(&site, ops::token_type(), Some(span.clone()))
+            .map_err(build_error(span))?;
+        self.tokens.insert(site, token);
+        Ok(token)
+    }
+
     fn inline(
         &mut self,
         function: FnRef,
@@ -232,7 +377,7 @@ impl Lowering<'_> {
                 what: format!("function {} is not declared", function.0),
             });
         };
-        if self.inlining.contains(&function) {
+        if self.inlining.iter().any(|&(f, _)| f == function) {
             return Err(LowerError::Malformed {
                 span: span.clone(),
                 what: format!("`{}` calls itself", f.name),
@@ -249,7 +394,9 @@ impl Lowering<'_> {
                 ),
             });
         }
-        self.inlining.push(function);
+        let instance = self.inlined[function.0];
+        self.inlined[function.0] += 1;
+        self.inlining.push((function, instance));
         let mut frame = Frame::Function {
             args,
             lets: Vec::with_capacity(f.lets.len()),
@@ -263,5 +410,167 @@ impl Lowering<'_> {
         let result = self.expr(&f.result, &frame)?;
         self.inlining.pop();
         Ok(result)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ir::tensor::TensorType;
+    use crate::ir::verify::verify;
+
+    /// Dropout in `forward` (nested, and one with `p = 0.0`), in `extra`, inlined twice, and in
+    /// the loss itself.
+    const SITES: &str = "model Reg {
+    param w: Tensor<f32, [4, 3]> = xavier_uniform();
+
+    fn forward(x: Tensor<f32, [8, 4]>) -> Tensor<f32, [8, 3]> {
+        let h = matmul(dropout(x, p = 0.5), w);
+        return dropout(relu(dropout(h, p = 0.25)), p = 0.0);
+    }
+
+    fn extra(x: Tensor<f32, [8, 4]>) -> Tensor<f32, [8, 3]> {
+        return dropout(matmul(x, w), p = 0.5);
+    }
+}
+
+train Fit {
+    model = Reg;
+    input x: Tensor<f32, [8, 4]>;
+    target y: Tensor<f32, [8, 3]>;
+    loss = mse(dropout(add(model.forward(x), add(model.extra(x), model.extra(x))), p = 0.1), y);
+    optimizer = sgd(lr = 0.05);
+    steps = 2;
+    seed = 1;
+    device = cpu;
+}
+";
+
+    fn lowered(source: &str) -> LoweredProgram {
+        let hir = crate::types::check_source("sites.mspec", source).expect("it checks");
+        lower(&hir).expect("it lowers")
+    }
+
+    /// The name of every `Input` node, in node order.
+    fn input_names(program: &TensorProgram) -> Vec<&str> {
+        program
+            .nodes
+            .iter()
+            .filter_map(|n| match &n.op {
+                TensorOp::Input { name } => Some(name.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A site is `<Model>.<fn>.dropout#<k>`, `k` counting every `dropout` call of the function in
+    /// source order, `p = 0.0` included; the second inlining of a function is a site of its own,
+    /// `<Model>.<fn>@1.dropout#<k>`, with its own token, and a call in the loss is a `train`
+    /// site. Each token is an `i32[2]` input.
+    #[test]
+    fn dropout_sites_are_named_by_function_and_source_order() {
+        let lowered = lowered(SITES);
+        let program = &lowered.program;
+        assert_eq!(
+            input_names(program),
+            [
+                "x",
+                "y",
+                "Reg.forward.dropout#0",
+                "Reg.forward.dropout#2",
+                "Reg.extra.dropout#0",
+                "Reg.extra@1.dropout#0",
+                "Reg.train.dropout#0",
+            ]
+        );
+        for node in &program.nodes {
+            if let TensorOp::Input { name } = &node.op
+                && name.contains(".dropout#")
+            {
+                assert_eq!(node.ty, TensorType::i32(&[2]), "{name}");
+            }
+        }
+        let token_of = |name: &str| {
+            program
+                .nodes
+                .iter()
+                .find(|n| n.op == TensorOp::Input { name: name.into() })
+                .unwrap()
+                .id
+        };
+        let dropouts: Vec<(f32, ValueId)> = program
+            .nodes
+            .iter()
+            .filter_map(|n| match n.op {
+                TensorOp::Dropout { p } => Some((p, n.operands[1])),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            dropouts,
+            [
+                (0.5, token_of("Reg.forward.dropout#0")),
+                (0.25, token_of("Reg.forward.dropout#2")),
+                (0.5, token_of("Reg.extra.dropout#0")),
+                (0.5, token_of("Reg.extra@1.dropout#0")),
+                (0.1, token_of("Reg.train.dropout#0")),
+            ]
+        );
+        verify(program).expect("the lowered program verifies");
+    }
+
+    /// `p = 0.0` lowers to its operand: no node, no token.
+    #[test]
+    fn dropout_with_p_0_is_its_operand() {
+        let source = SITES
+            .replace("p = 0.5", "p = 0.0")
+            .replace("p = 0.25", "p = 0.0");
+        let source = source.replace("p = 0.1", "p = 0.0");
+        let lowered = lowered(&source);
+        assert!(
+            lowered
+                .program
+                .nodes
+                .iter()
+                .all(|n| !matches!(n.op, TensorOp::Dropout { .. }))
+        );
+        assert_eq!(input_names(&lowered.program), ["x", "y"]);
+    }
+
+    /// [`without_dropout`] removes every `Dropout` and every token, keeps the id of every other
+    /// node, and verifies.
+    #[test]
+    fn without_dropout_is_the_identity_and_keeps_node_ids() {
+        let with = dce::eliminate(lowered(SITES).program);
+        let with = LoweredProgram {
+            program: with,
+            ..lowered(SITES)
+        };
+        let without = without_dropout(with.clone());
+        verify(&without.program).expect("the program without dropout verifies");
+        assert_eq!(input_names(&without.program), ["x", "y"]);
+        for node in &without.program.nodes {
+            assert!(!matches!(node.op, TensorOp::Dropout { .. }));
+            let before = with.program.node(node.id).expect("the id is kept");
+            assert_eq!(before.op, node.op);
+        }
+        assert_eq!(without.prediction, with.prediction);
+        assert!(without.program.node(without.prediction).is_some());
+    }
+
+    /// A prediction that is itself a `Dropout` becomes its operand.
+    #[test]
+    fn without_dropout_maps_a_dropout_prediction_to_its_operand() {
+        let source = SITES.replace(
+            "return dropout(relu(dropout(h, p = 0.25)), p = 0.0);",
+            "return dropout(h, p = 0.25);",
+        );
+        let with = lowered(&source);
+        let node = with.program.node(with.prediction).unwrap();
+        assert!(matches!(node.op, TensorOp::Dropout { .. }));
+        let h = node.operands[0];
+        let without = without_dropout(with);
+        assert_eq!(without.prediction, h);
+        verify(&without.program).expect("it verifies");
     }
 }

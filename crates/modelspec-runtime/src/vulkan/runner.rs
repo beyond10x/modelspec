@@ -1042,13 +1042,20 @@ fn diverged(
     for i in window.clone() {
         let loss = losses[i as usize];
         if !loss.is_finite() {
-            return non_finite(compiled, start + i, loss, &unread).map(|found| (i + 1, found));
+            return non_finite(compiled, start + i, loss, &unread, &BTreeMap::new())
+                .map(|found| (i + 1, found));
         }
     }
     let checks = window.end.checked_sub(1).filter(|_| !window.is_empty());
     let checks = checks.into_iter().chain(last.then_some(window.end));
     for i in checks {
-        if let Some(found) = non_finite(compiled, start + i, losses[i as usize], values) {
+        if let Some(found) = non_finite(
+            compiled,
+            start + i,
+            losses[i as usize],
+            values,
+            &BTreeMap::new(),
+        ) {
             return Some((i + 1, found));
         }
     }

@@ -4,14 +4,22 @@
   "x-ess-provenance": {
     "system": "modelspec",
     "specification_version": "v1",
-    "source_digest": "e593b2e418d8dd26fd85ab70a7ec8aee5d7779dffc79e8418ea44174abad9013",
-    "contract_digest": "slice-sha256/2:09fa7820c5c0c2bccd5c7d00211d3b143c20c72e9e669cbb197e2c2829992f74",
+    "source_digest": "80bb780185d18b44ff5815ee205e78dceca36f978b470f1b877d14816ebbf329",
+    "contract_digest": "slice-sha256/2:9045ba16892a4a26db168181bf35beb2373fb0abc39eed6b41b4a428cce90bdf",
     "regenerate": "ess generate"
   },
   "$defs": {
+    "modelspec.data.TrainingDataBindingId": {
+      "title": "TrainingDataBindingId",
+      "x-ess-name": "modelspec.data.TrainingDataBindingId",
+      "x-ess-kind": "newtype",
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    },
     "modelspec.observatory.RunStarted": {
       "title": "RunStarted",
-      "description": "The event of a run starting, the first of its stream (RunEventBody). It carries the two TrainingRun fields that say which steps follow, start_step through start_step + steps (DESIGN.md § 6); the other record fields are the run's artifact and record, which M0 does not write (story:m0-cpu-sgd-training, Out of scope).",
+      "description": "The event of a run starting, the first of its stream (RunEventBody). It carries the two TrainingRun fields that say which steps follow, start_step through start_step + steps (DESIGN.md § 6), and the TrainingRun field that says what a masked-language-model run trains on, data_binding_id; the other record fields are the run's artifact and record, which M0 does not write (story:m0-cpu-sgd-training, Out of scope).",
       "x-ess-name": "modelspec.observatory.RunStarted",
       "x-ess-kind": "struct",
       "type": "object",
@@ -25,6 +33,10 @@
           "description": "TrainingRun.start_step, the step of the first StepCompleted.",
           "type": "integer",
           "minimum": 0
+        },
+        "data_binding_id": {
+          "$ref": "#/$defs/modelspec.data.TrainingDataBindingId",
+          "description": "TrainingRun.data_binding_id, the binding_id of the `binding.json` of the packed directory `modelspec train --data` trains on; absent for a run on synthetic or dense data (story:bert-train-data-binding, coordinator decision D48, 2026-10-25, `.engineering/waves/bert-1.md`)."
         }
       },
       "required": [

@@ -10,9 +10,10 @@
 //!             "{" ("let" IDENT "=" expr ";")* "return" expr ";" "}"
 //! train    := "train" IDENT "{" setting* "}"
 //! setting  := "model" "=" IDENT ";" | ("input" | "target") IDENT ":" type ";"
-//!           | "loss" "=" expr ";" | "optimizer" "=" "sgd" "(" "lr" "=" FLOAT ")" ";"
+//!           | "loss" "=" expr ";" | "optimizer" "=" optimizer ";"
 //!           | "steps" "=" INT ";" | "seed" "=" INT ";"
 //!           | "device" "=" ("cpu" | "vulkan" "(" INT ")") ";"
+//! optimizer := "sgd" "(" "lr" "=" FLOAT ")" | "adamw" "(" args ")"
 //! type     := "Tensor" "<" ("f32" | "i32") "," "[" [INT ("," INT)*] "]" ">"
 //! expr     := INT | FLOAT | IDENT | call | (IDENT | "model") "." IDENT "(" args ")"
 //! call     := IDENT "(" args ")"
@@ -707,11 +708,18 @@ impl<'s> Parser<'s> {
         if self.peek() != Some(Token::Ident) {
             return Err(self.unexpected("an optimizer"));
         }
+        if self.text() == "adamw" {
+            let span = self.span();
+            self.bump();
+            self.expect(Token::LParen, "`(`")?;
+            let args = self.args()?;
+            return Ok(Optimizer::AdamW { args, span });
+        }
         if self.text() != "sgd" {
             return Err(self.error(
                 codes::OPTIMIZER,
                 format!(
-                    "optimizer `{}` is not in the M0 subset; only `sgd` is",
+                    "optimizer `{}` is not in the M0 subset; only `sgd` and `adamw` are",
                     self.text()
                 ),
             ));
@@ -728,6 +736,22 @@ impl<'s> Parser<'s> {
             return Err(self.unexpected("a float literal"));
         }
         let lr = self.float()?;
+        if self.peek() == Some(Token::Comma) && self.peek_at(1) == Some(Token::Ident) {
+            // A schedule argument such as `warmup_steps = 10`: `sgd` keeps a constant rate, so
+            // the comma before it is refused, naming the argument (coordinator decision D50,
+            // settlement 2).
+            let comma = self.span();
+            self.bump();
+            let argument = self.text();
+            return Err(Diagnostic::new(
+                codes::UNEXPECTED_TOKEN,
+                format!(
+                    "expected `)`, found `,` before `{argument}`; `sgd` takes `lr` alone, at a \
+                     constant rate"
+                ),
+            )
+            .at(comma));
+        }
         self.expect(Token::RParen, "`)`")?;
         Ok(Optimizer::Sgd { lr, lr_span })
     }
@@ -769,6 +793,19 @@ impl<'s> Parser<'s> {
             }
             _ => Err(self.out_of_range("float literal")),
         }
+    }
+
+    /// `-` then a float literal, the value of a named argument such as `p = -0.1`, so the checker
+    /// can name the value it refuses (`E-TYPE-022`). Nowhere else is `-` a sign: an integer
+    /// literal after it, as in `heads = -1`, stays E-SYNTAX-009.
+    fn negative_float(&mut self) -> PResult<Expr> {
+        let span = self.span();
+        self.bump();
+        let value = self.float()?;
+        Ok(Expr {
+            kind: ExprKind::Float(-value),
+            span,
+        })
     }
 
     /// An expression. An operator before or after it is reported as E-SYNTAX-009 by
@@ -850,7 +887,14 @@ impl<'s> Parser<'s> {
             } else {
                 None
             };
-            let value = self.expr()?;
+            let value = if name.is_some()
+                && self.peek() == Some(Token::Minus)
+                && self.peek_at(1) == Some(Token::Float)
+            {
+                self.negative_float()?
+            } else {
+                self.expr()?
+            };
             args.push(Arg { name, value, span });
             match self.peek() {
                 Some(Token::Comma) => self.bump(),

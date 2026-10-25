@@ -1,0 +1,14 @@
+{
+  "at": "2026-10-25T13:29:46Z",
+  "actor": "human:timo",
+  "artifact": "story:bert-adamw-warmup",
+  "kind": "story",
+  "revision": 6,
+  "change": {
+    "change": "evidence",
+    "kind": "review_outcome",
+    "source": "review-result:adversary-adamw-pass-1",
+    "review": "review-result:adversary-adamw-pass-1",
+    "outcome": "fixed"
+  }
+}

@@ -98,7 +98,12 @@ steps: number,
 /**
  * `TrainingRun.start_step`, the step of the first `StepCompleted`.
  */
-start_step: number, };
+start_step: number,
+/**
+ * `TrainingRun.data_binding_id`, the binding of a run on a packed masked-language-model
+ * directory, absent for a run on synthetic or dense data.
+ */
+data_binding_id?: TrainingDataBindingId, };
 
 /**
  * `modelspec.observatory.StatisticsSubject`.
@@ -119,6 +124,12 @@ loss: number | null, metrics: Array<MetricSample>,
  * `Gradient` entry when the step makes an update the parameter has a gradient in.
  */
 parameters: Array<ParameterStatistics>, };
+
+/**
+ * `modelspec.data.TrainingDataBindingId`: the id of the `TrainingDataBinding` a run on a packed
+ * masked-language-model directory trains on.
+ */
+export type TrainingDataBindingId = string;
 
 /**
  * `modelspec.training.TrainingRunId`: minted per `modelspec train` invocation.

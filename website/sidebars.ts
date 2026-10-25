@@ -12,13 +12,18 @@ const sidebars: SidebarsConfig = {
       type: 'category',
       label: 'Concepts',
       collapsed: false,
-      items: ['concepts/language', 'concepts/pipeline', 'concepts/training'],
+      items: ['concepts/language', 'concepts/pipeline', 'concepts/training', 'concepts/bert-operators'],
     },
     {
       type: 'category',
       label: 'Guides',
       collapsed: false,
-      items: ['guides/write-a-model', 'guides/read-a-diagnostic', 'guides/inspect-a-run'],
+      items: [
+        'guides/write-a-model',
+        'guides/read-a-diagnostic',
+        'guides/inspect-a-run',
+        'guides/prepare-training-data',
+      ],
     },
     {
       type: 'category',

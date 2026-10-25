@@ -357,7 +357,9 @@ fn linear_regression_ast_holds_the_source_values() {
     };
     assert_eq!(forward_call.receiver.name, "model");
     assert_eq!(forward_call.method.name, "forward");
-    let Optimizer::Sgd { lr, .. } = train.optimizer.value;
+    let Optimizer::Sgd { lr, .. } = train.optimizer.value else {
+        panic!("expected sgd");
+    };
     assert_eq!(lr, 0.1);
     assert_eq!(train.steps.value, 500);
     assert_eq!(train.seed.value, 42);
@@ -400,7 +402,9 @@ fn linear_regression_nodes_carry_source_positions() {
     };
     assert_eq!(pos(&loss.args[0].span), (15, 16));
     assert_eq!(pos(&loss.args[1].value.span), (15, 34));
-    let Optimizer::Sgd { lr_span, .. } = &ast.train.optimizer.value;
+    let Optimizer::Sgd { lr_span, .. } = &ast.train.optimizer.value else {
+        panic!("expected sgd");
+    };
     assert_eq!(pos(lr_span), (16, 26));
     assert_eq!(pos(&ast.train.device.span), (19, 5));
 }
@@ -569,7 +573,9 @@ fn float_literals_accept_exponents_and_print_back_exactly() {
         ("1e-7", 1e-7),
     ] {
         let ast = parse_ok(&edit("lr = 0.1", &format!("lr = {text}")));
-        let Optimizer::Sgd { lr, .. } = ast.train.optimizer.value;
+        let Optimizer::Sgd { lr, .. } = ast.train.optimizer.value else {
+            panic!("expected sgd");
+        };
         assert_eq!(lr, value, "{text}");
         let mut again = parse_ok(&print(&ast));
         let mut first = ast;

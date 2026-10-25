@@ -4,14 +4,14 @@
   "x-ess-provenance": {
     "system": "modelspec",
     "specification_version": "v1",
-    "source_digest": "e593b2e418d8dd26fd85ab70a7ec8aee5d7779dffc79e8418ea44174abad9013",
-    "contract_digest": "slice-sha256/2:ab2e7d6e9c8c6ca7a7129167b25236f48cba9a0d53a4e093da670fb9f36d9ced",
+    "source_digest": "80bb780185d18b44ff5815ee205e78dceca36f978b470f1b877d14816ebbf329",
+    "contract_digest": "slice-sha256/2:116833f6bdff32a7ad89aa2c6851e4b96191ea0b9ee55d441f068a6d8e4fe01e",
     "regenerate": "ess generate"
   },
   "$defs": {
     "modelspec.training.LearningRateSchedule": {
       "title": "LearningRateSchedule",
-      "description": "How the learning rate varies over steps; a linear warmup over the first warmup_steps steps up to OptimizerConfig.learning_rate (epic:bert-from-scratch, AdamW with warmup).",
+      "description": "How the learning rate varies over steps, settled by coordinator decision D50 of 2026-10-25 under the operator's grant of 2026-10-24, after Devlin et al. 2019. With t counting steps from 1 and steps the run's total, the rate is lr*t/warmup_steps for t <= warmup_steps and lr*(steps-t)/(steps-warmup_steps) after, lr being OptimizerConfig.learning_rate; it starts above zero, peaks at lr at step warmup_steps and reaches zero at the last step. warmup_steps = 0 means no warmup; warmup_steps >= steps is refused (E-TYPE-024, or a run error when --steps shortens the run). The host computes each step's rate in Binary64 and rounds it once to Binary32 (DESIGN.md § 2.1, § 6).",
       "x-ess-name": "modelspec.training.LearningRateSchedule",
       "x-ess-kind": "struct",
       "type": "object",

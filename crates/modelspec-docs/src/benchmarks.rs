@@ -478,12 +478,64 @@ struct Chart {
     carry_forward: bool,
 }
 
-const WIDTH: f64 = 880.0;
-const LEFT: f64 = 78.0;
-const RIGHT: f64 = 24.0;
-const TOP: f64 = 48.0;
-const PLOT_HEIGHT: f64 = 340.0;
-const LEGEND_ROW: f64 = 20.0;
+/// The width a chart is drawn at, in CSS pixels. A phone shows the content column at about
+/// 358 px, so a chart is scaled by no less than 358 / 440 there and its text of [`FONT`] px stays
+/// above 12 px; a wide screen shows it at this size.
+const WIDTH: f64 = 440.0;
+const LEFT: f64 = 88.0;
+const RIGHT: f64 = 16.0;
+/// The top of the plot, below the title's two lines.
+const TOP: f64 = 62.0;
+const PLOT_HEIGHT: f64 = 300.0;
+const LEGEND_ROW: f64 = 24.0;
+/// The size of every label and tick; the title is [`TITLE_FONT`].
+const FONT: f64 = 15.0;
+const TITLE_FONT: f64 = 17.0;
+/// About the width of one character at [`FONT`], to lay labels out without a font.
+const CHAR_WIDTH: f64 = 0.56 * FONT;
+
+/// The chart's own colours in the light theme: title and legend, ticks, major and minor grid
+/// lines, the plot frame, and the inside of an opponent's open square, which is the light page
+/// canvas. A chart has no background of its own, so it sits on the page in either theme.
+const INK: &str = "#111827";
+const MUTED: &str = "#374151";
+const GRID: &str = "#d1d5db";
+const MINOR: &str = "#e5e7eb";
+const FRAME: &str = "#8b95a1";
+const HOLLOW: &str = "#f4f2eb";
+
+/// The dark-theme colour of each of the chart's own colours. The dark page canvas is `#0c1924`.
+const DARK: [(&str, &str); 6] = [
+    (INK, "#f4f5ed"),
+    (MUTED, "#c3ccd0"),
+    (GRID, "#3a4b57"),
+    (MINOR, "#22333f"),
+    (FRAME, "#6b7c86"),
+    (HOLLOW, "#0c1924"),
+];
+/// The dark-theme series colours, one for each of [`MODELSPEC_COLOURS`] and of
+/// [`OPPONENT_COLOURS`] in their order.
+const MODELSPEC_DARK: [&str; 4] = ["#60a5fa", "#34d399", "#a78bfa", "#22d3ee"];
+const OPPONENT_DARK: [&str; 10] = [
+    "#f87171", "#fb923c", "#facc15", "#f472b6", "#cbd5e1", "#d6a35c", "#fb7185", "#fde047",
+    "#e5e7eb", "#fdba74",
+];
+
+/// The chart's style: under the dark theme every light colour becomes its dark one. A chart is an
+/// `<img>`, and the browser evaluates `prefers-color-scheme` inside it against the
+/// `color-scheme` of the page, which the site sets from its theme toggle.
+fn style() -> String {
+    let rules: String = DARK
+        .iter()
+        .copied()
+        .chain(MODELSPEC_COLOURS.into_iter().zip(MODELSPEC_DARK))
+        .chain(OPPONENT_COLOURS.into_iter().zip(OPPONENT_DARK))
+        .map(|(light, dark)| {
+            format!("[fill=\"{light}\"]{{fill:{dark}}}[stroke=\"{light}\"]{{stroke:{dark}}}")
+        })
+        .collect();
+    format!("<style>@media (prefers-color-scheme: dark){{{rules}}}</style>\n")
+}
 
 fn marker(out: &mut String, x: f64, y: f64, colour: &str, modelspec: bool) {
     if modelspec {
@@ -492,11 +544,119 @@ fn marker(out: &mut String, x: f64, y: f64, colour: &str, modelspec: bool) {
         ));
     } else {
         out.push_str(&format!(
-            "<rect x=\"{:.1}\" y=\"{:.1}\" width=\"8\" height=\"8\" fill=\"#ffffff\" stroke=\"{colour}\" stroke-width=\"2\"/>\n",
+            "<rect x=\"{:.1}\" y=\"{:.1}\" width=\"8\" height=\"8\" fill=\"{HOLLOW}\" stroke=\"{colour}\" stroke-width=\"2\"/>\n",
             x - 4.0,
             y - 4.0
         ));
     }
+}
+
+/// The title on two lines, split after its first `": "`.
+fn title_lines(title: &str) -> (String, String) {
+    match title.split_once(": ") {
+        Some((head, tail)) => (format!("{head}:"), tail.to_owned()),
+        None => (title.to_owned(), String::new()),
+    }
+}
+
+/// The tick labels and the axis label: dates of one year that do not fit their slot are written
+/// `MM-DD`, and the year moves into the axis label.
+fn ticks_and_axis(chart: &Chart, slot: f64) -> (Vec<String>, String) {
+    let too_wide = chart
+        .ticks
+        .iter()
+        .any(|tick| tick.chars().count() as f64 * CHAR_WIDTH > slot - 6.0);
+    let years: std::collections::BTreeSet<&str> = chart
+        .ticks
+        .iter()
+        .map(|tick| &tick[..4.min(tick.len())])
+        .collect();
+    if too_wide && years.len() == 1 && chart.ticks.iter().all(|tick| is_date(tick)) {
+        let year = years.into_iter().next().unwrap_or_default();
+        (
+            chart
+                .ticks
+                .iter()
+                .map(|tick| tick[5..].to_owned())
+                .collect(),
+            format!("{}, {year}", chart.x_label),
+        )
+    } else {
+        (chart.ticks.clone(), chart.x_label.clone())
+    }
+}
+
+/// A label beside a point: where the point is, its text and its colour.
+struct Label<'a> {
+    x: f64,
+    y: f64,
+    text: &'a str,
+    colour: &'a str,
+}
+
+/// The labels as `<text>` elements. Labels with the same text whose points lie within a few
+/// pixels of each other across (one release at one date, in several series) are drawn once, above
+/// the highest point, in the tick colour. Each label takes the first place beside its point, of
+/// above right, below right, above left and below left, that stays inside the plot and clear of
+/// the labels placed before it.
+fn labels(mut found: Vec<Label<'_>>, plot: (f64, f64, f64, f64)) -> String {
+    found.sort_by(|a, b| a.x.total_cmp(&b.x).then(a.y.total_cmp(&b.y)));
+    let mut merged: Vec<Label<'_>> = Vec::new();
+    for label in found {
+        match merged
+            .iter_mut()
+            .find(|kept| kept.text == label.text && (kept.x - label.x).abs() < 10.0)
+        {
+            Some(kept) => {
+                if kept.colour != label.colour {
+                    kept.colour = MUTED;
+                }
+                if label.y < kept.y {
+                    kept.y = label.y;
+                }
+            }
+            None => merged.push(label),
+        }
+    }
+    let (left, top, right, bottom) = plot;
+    let mut placed: Vec<(f64, f64, f64, f64)> = Vec::new();
+    let mut out = String::new();
+    for label in merged {
+        let width = label.text.chars().count() as f64 * CHAR_WIDTH;
+        let candidates = [
+            (label.x + 7.0, label.y - 7.0, false),
+            (label.x + 7.0, label.y + 7.0 + FONT, false),
+            (label.x - 7.0, label.y - 7.0, true),
+            (label.x - 7.0, label.y + 7.0 + FONT, true),
+        ];
+        let boxed = |(x, baseline, end): (f64, f64, bool)| {
+            let x0 = if end { x - width } else { x };
+            (x0, baseline - FONT, x0 + width, baseline + 3.0)
+        };
+        let clear = |b: (f64, f64, f64, f64)| {
+            b.0 >= left
+                && b.2 <= right
+                && b.1 >= top
+                && b.3 <= bottom
+                && placed
+                    .iter()
+                    .all(|p| b.2 <= p.0 || p.2 <= b.0 || b.3 <= p.1 || p.3 <= b.1)
+        };
+        let choice = candidates
+            .iter()
+            .copied()
+            .find(|candidate| clear(boxed(*candidate)))
+            .unwrap_or(candidates[0]);
+        placed.push(boxed(choice));
+        let (x, baseline, end) = choice;
+        out.push_str(&format!(
+            "<text x=\"{x:.1}\" y=\"{baseline:.1}\"{} fill=\"{}\">{}</text>\n",
+            if end { " text-anchor=\"end\"" } else { "" },
+            label.colour,
+            escape(label.text)
+        ));
+    }
+    out
 }
 
 /// The chart as a standalone SVG document.
@@ -517,52 +677,56 @@ fn svg(chart: &Chart) -> String {
     let y_of = |us: f64| TOP + PLOT_HEIGHT * (f64::from(high) - us.log10()) / f64::from(high - low);
     let slots = chart.ticks.len().max(1) as f64;
     let x_of = |x: f64| LEFT + plot_width * (x + 0.5) / slots;
-    let legend_rows = chart.series.len().div_ceil(2) as f64;
-    let height = TOP + PLOT_HEIGHT + 60.0 + legend_rows * LEGEND_ROW + 12.0;
+    let axis = TOP + PLOT_HEIGHT;
+    let legend = axis + 76.0;
+    let height = legend + chart.series.len() as f64 * LEGEND_ROW;
+    let (title, subtitle) = title_lines(&chart.title);
     let mut out = format!(
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{WIDTH}\" height=\"{height}\" viewBox=\"0 0 {WIDTH} {height}\" font-family=\"system-ui, -apple-system, Segoe UI, Roboto, sans-serif\" font-size=\"12\" role=\"img\" aria-label=\"{}\">\n<title>{}</title>\n<rect width=\"{WIDTH}\" height=\"{height}\" fill=\"#ffffff\"/>\n<text x=\"{LEFT}\" y=\"28\" font-size=\"15\" font-weight=\"600\" fill=\"#111827\">{}</text>\n",
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{WIDTH}\" height=\"{height}\" viewBox=\"0 0 {WIDTH} {height}\" font-family=\"system-ui, -apple-system, Segoe UI, Roboto, sans-serif\" font-size=\"{FONT}\" role=\"img\" aria-label=\"{}\">\n<title>{}</title>\n{}<text x=\"16\" y=\"24\" font-size=\"{TITLE_FONT}\" font-weight=\"600\" fill=\"{INK}\">{}</text>\n<text x=\"16\" y=\"46\" font-size=\"{TITLE_FONT}\" font-weight=\"600\" fill=\"{INK}\">{}</text>\n",
         escape(&chart.title),
         escape(&chart.title),
-        escape(&chart.title),
+        style(),
+        escape(&title),
+        escape(&subtitle),
     );
     for decade in low..=high {
         let base = 10f64.powi(decade);
         let y = y_of(base);
         out.push_str(&format!(
-            "<line x1=\"{LEFT}\" y1=\"{y:.1}\" x2=\"{:.1}\" y2=\"{y:.1}\" stroke=\"#d1d5db\"/>\n<text x=\"{:.1}\" y=\"{:.1}\" text-anchor=\"end\" fill=\"#374151\">{}</text>\n",
+            "<line x1=\"{LEFT}\" y1=\"{y:.1}\" x2=\"{:.1}\" y2=\"{y:.1}\" stroke=\"{GRID}\"/>\n<text x=\"{:.1}\" y=\"{:.1}\" text-anchor=\"end\" fill=\"{MUTED}\">{}</text>\n",
             LEFT + plot_width,
             LEFT - 8.0,
-            y + 4.0,
+            y + 5.0,
             number(base)
         ));
         if decade < high {
             for minor in [2.0, 5.0] {
                 let y = y_of(base * minor);
                 out.push_str(&format!(
-                    "<line x1=\"{LEFT}\" y1=\"{y:.1}\" x2=\"{:.1}\" y2=\"{y:.1}\" stroke=\"#f3f4f6\"/>\n",
+                    "<line x1=\"{LEFT}\" y1=\"{y:.1}\" x2=\"{:.1}\" y2=\"{y:.1}\" stroke=\"{MINOR}\"/>\n",
                     LEFT + plot_width
                 ));
             }
         }
     }
     out.push_str(&format!(
-        "<rect x=\"{LEFT}\" y=\"{TOP}\" width=\"{plot_width:.1}\" height=\"{PLOT_HEIGHT}\" fill=\"none\" stroke=\"#9ca3af\"/>\n"
+        "<rect x=\"{LEFT}\" y=\"{TOP}\" width=\"{plot_width:.1}\" height=\"{PLOT_HEIGHT}\" fill=\"none\" stroke=\"{FRAME}\"/>\n"
     ));
-    let axis = TOP + PLOT_HEIGHT;
-    for (i, tick) in chart.ticks.iter().enumerate() {
+    let (ticks, x_label) = ticks_and_axis(chart, plot_width / slots);
+    for (i, tick) in ticks.iter().enumerate() {
         let x = x_of(i as f64);
         out.push_str(&format!(
-            "<line x1=\"{x:.1}\" y1=\"{axis:.1}\" x2=\"{x:.1}\" y2=\"{:.1}\" stroke=\"#9ca3af\"/>\n<text x=\"{x:.1}\" y=\"{:.1}\" text-anchor=\"middle\" fill=\"#374151\">{}</text>\n",
+            "<line x1=\"{x:.1}\" y1=\"{axis:.1}\" x2=\"{x:.1}\" y2=\"{:.1}\" stroke=\"{FRAME}\"/>\n<text x=\"{x:.1}\" y=\"{:.1}\" text-anchor=\"middle\" fill=\"{MUTED}\">{}</text>\n",
             axis + 5.0,
-            axis + 19.0,
+            axis + 22.0,
             escape(tick)
         ));
     }
     out.push_str(&format!(
-        "<text x=\"{:.1}\" y=\"{:.1}\" text-anchor=\"middle\" fill=\"#111827\">{}</text>\n<text transform=\"translate(18 {:.1}) rotate(-90)\" text-anchor=\"middle\" fill=\"#111827\">µs per step, log scale</text>\n",
+        "<text x=\"{:.1}\" y=\"{:.1}\" text-anchor=\"middle\" fill=\"{INK}\">{}</text>\n<text transform=\"translate(18 {:.1}) rotate(-90)\" text-anchor=\"middle\" fill=\"{INK}\">µs per step, log scale</text>\n",
         LEFT + plot_width / 2.0,
-        axis + 40.0,
-        escape(&chart.x_label),
+        axis + 46.0,
+        escape(&x_label),
         TOP + PLOT_HEIGHT / 2.0
     ));
     let (mut ours, mut theirs) = (0, 0);
@@ -579,6 +743,7 @@ fn svg(chart: &Chart) -> String {
             }
         })
         .collect();
+    let mut found = Vec::new();
     for (series, colour) in chart.series.iter().zip(&colours) {
         let mut points: Vec<&Point> = series.points.iter().collect();
         points.sort_by(|a, b| a.x.total_cmp(&b.x));
@@ -610,33 +775,30 @@ fn svg(chart: &Chart) -> String {
             let (x, y) = (x_of(point.x), y_of(point.us));
             marker(&mut out, x, y, colour, series.modelspec);
             if let Some(label) = &point.label {
-                out.push_str(&format!(
-                    "<text x=\"{:.1}\" y=\"{:.1}\" fill=\"{colour}\" font-size=\"11\">{}</text>\n",
-                    x + 7.0,
-                    y - 7.0,
-                    escape(label)
-                ));
+                found.push(Label {
+                    x,
+                    y,
+                    text: label,
+                    colour,
+                });
             }
         }
     }
-    let legend = axis + 60.0;
+    out.push_str(&labels(found, (LEFT, TOP, LEFT + plot_width, axis)));
     for (i, (series, colour)) in chart.series.iter().zip(&colours).enumerate() {
-        let x = LEFT + if i % 2 == 0 { 0.0 } else { plot_width / 2.0 };
-        let y = legend + (i / 2) as f64 * LEGEND_ROW;
+        let y = legend + i as f64 * LEGEND_ROW;
         let dash = if series.modelspec {
             ""
         } else {
             " stroke-dasharray=\"6 4\""
         };
         out.push_str(&format!(
-            "<line x1=\"{x:.1}\" y1=\"{y:.1}\" x2=\"{:.1}\" y2=\"{y:.1}\" stroke=\"{colour}\" stroke-width=\"2\"{dash}/>\n",
-            x + 28.0
+            "<line x1=\"16\" y1=\"{y:.1}\" x2=\"44\" y2=\"{y:.1}\" stroke=\"{colour}\" stroke-width=\"2\"{dash}/>\n"
         ));
-        marker(&mut out, x + 14.0, y, colour, series.modelspec);
+        marker(&mut out, 30.0, y, colour, series.modelspec);
         out.push_str(&format!(
-            "<text x=\"{:.1}\" y=\"{:.1}\" fill=\"#111827\">{}</text>\n",
-            x + 36.0,
-            y + 4.0,
+            "<text x=\"52\" y=\"{:.1}\" fill=\"{INK}\">{}</text>\n",
+            y + 5.0,
             escape(&series.label)
         ));
     }
@@ -1353,6 +1515,65 @@ mod tests {
             );
         }
         assert!(page.contains("| 1 thread"));
+    }
+
+    /// The value of every `name="…"` attribute in `svg`.
+    fn attribute_values<'a>(svg: &'a str, name: &str) -> Vec<&'a str> {
+        let key = format!(" {name}=\"");
+        svg.match_indices(&key)
+            .map(|(at, _)| {
+                let rest = &svg[at + key.len()..];
+                &rest[..rest.find('"').unwrap()]
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_charts_draw_no_background_and_follow_the_dark_theme() {
+        let (_, images) = files(&root()).unwrap();
+        for (name, svg) in &images {
+            let lower = svg.to_ascii_lowercase();
+            for white in ["#fff\"", "#ffffff", "\"white\"", "rgb(255, 255, 255)"] {
+                assert!(!lower.contains(white), "{name} declares {white}");
+            }
+            let (_, dark) = svg
+                .split_once("@media (prefers-color-scheme: dark)")
+                .unwrap_or_else(|| panic!("{name} has no dark-theme rules"));
+            for colour in attribute_values(svg, "fill")
+                .into_iter()
+                .chain(attribute_values(svg, "stroke"))
+                .filter(|colour| colour.starts_with('#'))
+            {
+                assert!(
+                    dark.contains(&format!("[fill=\"{colour}\"]"))
+                        && dark.contains(&format!("[stroke=\"{colour}\"]")),
+                    "{name}: {colour} has no dark-theme colour"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn chart_text_is_at_least_12_px_in_a_390_px_viewport() {
+        // At a 390 px viewport the content column, and so a chart scaled to fit it, is 358 px
+        // wide (the site review of 2026-10-25 measured it).
+        let (_, images) = files(&root()).unwrap();
+        for (name, svg) in &images {
+            let width: f64 = attribute_values(svg, "width")[0].parse().unwrap();
+            let scale = (358.0 / width).min(1.0);
+            let sizes: Vec<f64> = attribute_values(svg, "font-size")
+                .into_iter()
+                .map(|size| size.parse().unwrap())
+                .collect();
+            assert!(!sizes.is_empty(), "{name} sets no font size");
+            for size in sizes {
+                assert!(
+                    size * scale >= 12.0,
+                    "{name}: font-size {size} renders at {:.1} px",
+                    size * scale
+                );
+            }
+        }
     }
 
     #[test]

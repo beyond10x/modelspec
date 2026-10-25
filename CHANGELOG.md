@@ -9,14 +9,34 @@ history.
 
 ## [Unreleased]
 
-### Added
-
-- `cross_entropy(logits: f32[N,V], labels: i32[N], weights: f32[N]) -> f32[]`, the weighted masked-language-model loss, every reduction in ascending order and the weighted sum fused after its first product, whose gradient is the internal `CrossEntropyGrad`, which recomputes the row softmax; checked against central differences in `f64` and `f32` for `matmul(x, w)` logits and the tied decoder `matmul(embedding(table, ids), transpose(table))`; a weight sum of 0 gives the loss 0 and a zero gradient; labels or weights of the wrong length are E-TYPE-003, an operand of the wrong rank E-TYPE-004, `f32` labels E-TYPE-018, and labels or weights whose value reads a parameter E-TYPE-021; a label outside the classes or a negative or non-finite weight is a runtime error naming the row before the op runs; no Vulkan kernel yet (E-TARGET-011); DESIGN.md revision 0.44 (story:bert-mlm-cross-entropy).
-
 ### Changed
 
 - The Vulkan step plan records the `mse` loss sum right after the largest matmul it can share a barrier interval with, the weight gradient of the first layer in the MLPs, instead of in an interval of its own, and the final loss of `train --backend vulkan` and `infer --backend vulkan` record only the steps the loss is computed from (`ExecutionPlan::loss_steps`, new); every bit of the losses, parameters, checkpoints and predictions is unchanged; at `mlp_sweep` b8192 h4096 on the RTX 3090 the step went from 7,293.8 to 7,050.5 µs in the probe session; DESIGN.md revision 0.45 (story:step-sites-beat-pytorch).
 - A `relu_grad` whose gradient operand is a matmul output that nothing else reads is now an epilogue of that matmul in the Vulkan plan (`epilogue ReluGrad`): the matmul reads the pre-activation as a third operand and writes the gated gradient, so the matmul output has no buffer and the separate `relu_grad` dispatch is gone; the MNIST step plan has 9 dispatches, 6 barriers and 12 buffers (was 10, 7 and 13), and `inspect-a-run.md` quotes the new plan; every bit of the losses, parameters, checkpoints and predictions is unchanged; at `mlp_sweep` b8192 h4096 on the RTX 3090 the fused matmul takes 433.9 µs against 805.0 µs for the two dispatches before, and the step with both changes of the story takes 6,858.9 µs against 6,568.5 µs for PyTorch eager (ratio 1.044, was 1.111); DESIGN.md revision 0.46 (story:step-sites-beat-pytorch).
+
+## [0.12.0] - 2026-10-25
+
+AdamW on the CPU interpreter: `optimizer = adamw(...)` trains with decoupled weight decay, per-parameter moments versioned with the parameters, and a learning rate that warms up linearly from 0 and decays linearly to 0 at the run's last step. E-TYPE-023 and E-TYPE-024 refuse out-of-range arguments, E-TRAIN-001 also stops the run on a non-finite moment, a resumed AdamW run is refused while the moments are not checkpointed, and `sgd(lr = F)` keeps its constant rate.
+
+### Added
+
+- `optimizer = adamw(lr = F, weight_decay = F, beta1 = F, beta2 = F, eps = F, warmup_steps = N)` trains with AdamW and decoupled weight decay on the CPU, compiled into the training step's `Optimizer` subgraph with the internal ops `Sqrt` and `Div`, per-parameter moments versioned with the parameters, and a learning rate warming up linearly from 0 and decaying linearly to 0 at the last step; E-TYPE-023 and E-TYPE-024 refuse out-of-range arguments, and `sgd(lr = F)` keeps a constant rate (story:bert-adamw-warmup); E-TRAIN-001 also stops the run when a moment is not finite, and a resumed AdamW run is refused because the moments are not checkpointed yet.
+
+## [0.11.0] - 2026-10-25
+
+Masked-language-model training on the CPU interpreter: the weighted `cross_entropy` loss and `dropout`, `modelspec train --data <packed-dir>` feeding the batches that `modelspec data prepare`, `data tokenizer` and `data pack` write, and `--eval-every <n>` evaluating the held-out split during the run and streaming its loss and accuracy. `task ui-ux` puts the observatory UI iteration loop's hermetic gates and ratchet on every merge, and the documentation site, README and AGENTS.md describe the shipped compiler, with a status row for every capability since 0.8.0 and the test that holds it.
+
+### Added
+
+- `modelspec train --backend cpu --data <packed-dir> --eval-every <n>` evaluates the held-out split with dropout off at every multiple of `n` among the run's steps and at the run's last step, so a resumed run evaluates no step 0 of its own and starts at the first multiple of `n` at or after the step it resumes at, over every full batch of `B` sequences, the last `count mod B` never evaluated, prints `eval <k> loss <v> accuracy <a>` after the `step <k>` line and streams the values as the `StepCompleted` metric samples `heldout_mlm_loss` and `heldout_mlm_accuracy`; without a packed `--data`, with `n = 0` or on `--backend vulkan` it is a usage error; DESIGN.md revision 0.47 (story:bert-heldout-evaluation).
+- `task ui-ux` (in `task ci`): the observatory UI loop's hermetic gates on every merge, Playwright specs under `ui/ux/` that replay the three recorded fixtures one event at a time at 1366x768 and 1280x720 in light and dark under one injected font stack (DejaVu Sans and DejaVu Sans Mono): no scroll, always-visible elements, unmissable completion (also on a run ending in `RunFailed`), axe-core accessibility, no animation under reduced motion after any event, and a screen-only user that reads loss, step, gradient norm and end state against each fixture's truth only from text it can see, with `time_to_act` measured on a live replay at one event every 40 ms; a ratchet that fails on any metric worse than `ui/ux/baseline.json` (`layout_shift.per_100_events` among them), on a tolerance edited in that file, and on a baseline made worse than `origin/main`'s without a decision id; a `self-test` project that plants one defect per gate; round R-00's report, contact sheets and findings are in `ui/ux/rounds/R-00/` and `ui/ux/findings/` (story:observatory-ui-iteration-loop).
+- `dropout(x, p = <float literal>)` on the CPU interpreter, its mask drawn on Philox stream tag 4 from the seed, the call site and the step and recomputed by the internal `DropoutGrad` from the site's `i32[2]` RNG token; it applies in the training step only, so the final loss line, `--eval` and `infer` run without it; `p = 0.0` lowers to the identity, a `p` that is not a float literal is E-TYPE-019 and one outside [0, 1) the new E-TYPE-022, and `dropout` has no Vulkan kernel yet (E-TARGET-011).
+- `modelspec train --backend cpu --data <dir>` on a packed directory (one holding `binding.json`) trains on masked-language-model batches: each `input` and `target` declaration names a batch tensor (`ids`, `positions`, `key_mask`, `labels`, `weights`), step `k` feeds the `Train` batch of step `k` from the run seed, a `data` line names the binding before the first `init` line, `RunStarted` carries `data_binding_id`, and E-DATA-005 and E-DATA-006 refuse a declaration that names no batch tensor or has another dtype or shape (story:bert-train-data-binding); the directory comes from `modelspec data prepare` (story:bert-corpus-splits), `modelspec data tokenizer` (story:bert-tokenizer) and `modelspec data pack` (story:bert-mlm-batches).
+- `cross_entropy(logits: f32[N,V], labels: i32[N], weights: f32[N]) -> f32[]`, the weighted masked-language-model loss, every reduction in ascending order and the weighted sum fused after its first product, whose gradient is the internal `CrossEntropyGrad`, which recomputes the row softmax; checked against central differences in `f64` and `f32` for `matmul(x, w)` logits and the tied decoder `matmul(embedding(table, ids), transpose(table))`; a weight sum of 0 gives the loss 0 and a zero gradient; labels or weights of the wrong length are E-TYPE-003, an operand of the wrong rank E-TYPE-004, `f32` labels E-TYPE-018, and labels or weights whose value reads a parameter E-TYPE-021; a label outside the classes or a negative or non-finite weight is a runtime error naming the row before the op runs; no Vulkan kernel yet (E-TARGET-011); DESIGN.md revision 0.44 (story:bert-mlm-cross-entropy).
+
+### Changed
+
+- The documentation site, README and AGENTS.md describe 0.10.0 and `main`: the status page has a row for every capability since 0.8.0 with the test that holds it and planned rows for the BERT work, a new page on the BERT operators and a guide to `modelspec data prepare`, `data tokenizer` and `data pack` (shipped in 0.10.0, whose entry does not name them), the benchmark charts drop their white background, follow the dark theme and keep text at 12 px or more on a 390 px screen, the CLI reference wraps usage lines to its code box, the example pages title each model with its file, and the pitch deck follows the light theme; the `--serve` and `--ui` help of `train` and `observe` says "path / of ADDR" instead of a URL the site linked.
 
 ## [0.10.0] - 2026-10-25
 
@@ -221,7 +241,9 @@ with `E-TARGET-001`.
 - `examples/linear_regression.mspec` checks and trains; `task check-examples` runs `modelspec check` on it
 - ESS contracts for the compiled artifact, checkpoint, device profile and training run in `spec/`
 
-[Unreleased]: https://github.com/beyond10x/modelspec/compare/0.10.0...HEAD
+[Unreleased]: https://github.com/beyond10x/modelspec/compare/0.12.0...HEAD
+[0.12.0]: https://github.com/beyond10x/modelspec/compare/0.11.0...0.12.0
+[0.11.0]: https://github.com/beyond10x/modelspec/compare/0.10.0...0.11.0
 [0.10.0]: https://github.com/beyond10x/modelspec/compare/0.9.0...0.10.0
 [0.9.0]: https://github.com/beyond10x/modelspec/compare/0.8.0...0.9.0
 [0.8.0]: https://github.com/beyond10x/modelspec/compare/0.7.1...0.8.0

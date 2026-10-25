@@ -1,120 +1,112 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="880" height="580" viewBox="0 0 880 580" font-family="system-ui, -apple-system, Segoe UI, Roboto, sans-serif" font-size="12" role="img" aria-label="MLP 784-H-10 sweep, batch 100: µs per step over date">
+<svg xmlns="http://www.w3.org/2000/svg" width="440" height="726" viewBox="0 0 440 726" font-family="system-ui, -apple-system, Segoe UI, Roboto, sans-serif" font-size="15" role="img" aria-label="MLP 784-H-10 sweep, batch 100: µs per step over date">
 <title>MLP 784-H-10 sweep, batch 100: µs per step over date</title>
-<rect width="880" height="580" fill="#ffffff"/>
-<text x="78" y="28" font-size="15" font-weight="600" fill="#111827">MLP 784-H-10 sweep, batch 100: µs per step over date</text>
-<line x1="78" y1="388.0" x2="856.0" y2="388.0" stroke="#d1d5db"/>
-<text x="70.0" y="392.0" text-anchor="end" fill="#374151">10</text>
-<line x1="78" y1="336.8" x2="856.0" y2="336.8" stroke="#f3f4f6"/>
-<line x1="78" y1="269.2" x2="856.0" y2="269.2" stroke="#f3f4f6"/>
-<line x1="78" y1="218.0" x2="856.0" y2="218.0" stroke="#d1d5db"/>
-<text x="70.0" y="222.0" text-anchor="end" fill="#374151">100</text>
-<line x1="78" y1="166.8" x2="856.0" y2="166.8" stroke="#f3f4f6"/>
-<line x1="78" y1="99.2" x2="856.0" y2="99.2" stroke="#f3f4f6"/>
-<line x1="78" y1="48.0" x2="856.0" y2="48.0" stroke="#d1d5db"/>
-<text x="70.0" y="52.0" text-anchor="end" fill="#374151">1,000</text>
-<rect x="78" y="48" width="778.0" height="340" fill="none" stroke="#9ca3af"/>
-<line x1="207.7" y1="388.0" x2="207.7" y2="393.0" stroke="#9ca3af"/>
-<text x="207.7" y="407.0" text-anchor="middle" fill="#374151">2026-10-23</text>
-<line x1="467.0" y1="388.0" x2="467.0" y2="393.0" stroke="#9ca3af"/>
-<text x="467.0" y="407.0" text-anchor="middle" fill="#374151">2026-10-24</text>
-<line x1="726.3" y1="388.0" x2="726.3" y2="393.0" stroke="#9ca3af"/>
-<text x="726.3" y="407.0" text-anchor="middle" fill="#374151">2026-10-25</text>
-<text x="467.0" y="428.0" text-anchor="middle" fill="#111827">date of the run</text>
-<text transform="translate(18 218.0) rotate(-90)" text-anchor="middle" fill="#111827">µs per step, log scale</text>
-<polyline points="179.1,311.8 438.5,299.8 697.8,305.1" fill="none" stroke="#1d4ed8" stroke-width="2.5"/>
-<circle cx="179.1" cy="311.8" r="4.5" fill="#1d4ed8"/>
-<text x="186.1" y="304.8" fill="#1d4ed8" font-size="11">0.6.0</text>
-<circle cx="438.5" cy="299.8" r="4.5" fill="#1d4ed8"/>
-<text x="445.5" y="292.8" fill="#1d4ed8" font-size="11">0.9.0</text>
-<circle cx="697.8" cy="305.1" r="4.5" fill="#1d4ed8"/>
-<text x="704.8" y="298.1" fill="#1d4ed8" font-size="11">0.10.0</text>
-<polyline points="184.3,274.3 443.7,273.8 703.0,284.0" fill="none" stroke="#059669" stroke-width="2.5"/>
-<circle cx="184.3" cy="274.3" r="4.5" fill="#059669"/>
-<text x="191.3" y="267.3" fill="#059669" font-size="11">0.6.0</text>
-<circle cx="443.7" cy="273.8" r="4.5" fill="#059669"/>
-<text x="450.7" y="266.8" fill="#059669" font-size="11">0.9.0</text>
-<circle cx="703.0" cy="284.0" r="4.5" fill="#059669"/>
-<text x="710.0" y="277.0" fill="#059669" font-size="11">0.10.0</text>
-<polyline points="189.5,214.9 448.8,216.4 708.2,235.1" fill="none" stroke="#7c3aed" stroke-width="2.5"/>
-<circle cx="189.5" cy="214.9" r="4.5" fill="#7c3aed"/>
-<text x="196.5" y="207.9" fill="#7c3aed" font-size="11">0.6.0</text>
-<circle cx="448.8" cy="216.4" r="4.5" fill="#7c3aed"/>
-<text x="455.8" y="209.4" fill="#7c3aed" font-size="11">0.9.0</text>
-<circle cx="708.2" cy="235.1" r="4.5" fill="#7c3aed"/>
-<text x="715.2" y="228.1" fill="#7c3aed" font-size="11">0.10.0</text>
-<polyline points="194.7,121.8 454.0,131.1 713.4,161.7" fill="none" stroke="#0891b2" stroke-width="2.5"/>
-<circle cx="194.7" cy="121.8" r="4.5" fill="#0891b2"/>
-<text x="201.7" y="114.8" fill="#0891b2" font-size="11">0.6.0</text>
-<circle cx="454.0" cy="131.1" r="4.5" fill="#0891b2"/>
-<text x="461.0" y="124.1" fill="#0891b2" font-size="11">0.9.0</text>
-<circle cx="713.4" cy="161.7" r="4.5" fill="#0891b2"/>
-<text x="720.4" y="154.7" fill="#0891b2" font-size="11">0.10.0</text>
-<polyline points="199.9,93.8 718.6,116.9" fill="none" stroke="#dc2626" stroke-width="1.8" stroke-dasharray="6 4"/>
-<line x1="718.6" y1="116.9" x2="856.0" y2="116.9" stroke="#dc2626" stroke-width="1.6" stroke-dasharray="2 3"/>
-<rect x="195.9" y="89.8" width="8" height="8" fill="#ffffff" stroke="#dc2626" stroke-width="2"/>
-<rect x="714.6" y="112.9" width="8" height="8" fill="#ffffff" stroke="#dc2626" stroke-width="2"/>
-<polyline points="205.1,109.3 723.7,117.1" fill="none" stroke="#ea580c" stroke-width="1.8" stroke-dasharray="6 4"/>
-<line x1="723.7" y1="117.1" x2="856.0" y2="117.1" stroke="#ea580c" stroke-width="1.6" stroke-dasharray="2 3"/>
-<rect x="201.1" y="105.3" width="8" height="8" fill="#ffffff" stroke="#ea580c" stroke-width="2"/>
-<rect x="719.7" y="113.1" width="8" height="8" fill="#ffffff" stroke="#ea580c" stroke-width="2"/>
-<polyline points="210.3,108.6 728.9,115.2" fill="none" stroke="#a16207" stroke-width="1.8" stroke-dasharray="6 4"/>
-<line x1="728.9" y1="115.2" x2="856.0" y2="115.2" stroke="#a16207" stroke-width="1.6" stroke-dasharray="2 3"/>
-<rect x="206.3" y="104.6" width="8" height="8" fill="#ffffff" stroke="#a16207" stroke-width="2"/>
-<rect x="724.9" y="111.2" width="8" height="8" fill="#ffffff" stroke="#a16207" stroke-width="2"/>
-<polyline points="215.4,109.8 734.1,116.5" fill="none" stroke="#db2777" stroke-width="1.8" stroke-dasharray="6 4"/>
-<line x1="734.1" y1="116.5" x2="856.0" y2="116.5" stroke="#db2777" stroke-width="1.6" stroke-dasharray="2 3"/>
-<rect x="211.4" y="105.8" width="8" height="8" fill="#ffffff" stroke="#db2777" stroke-width="2"/>
-<rect x="730.1" y="112.5" width="8" height="8" fill="#ffffff" stroke="#db2777" stroke-width="2"/>
-<polyline points="220.6,93.0 739.3,99.5" fill="none" stroke="#4b5563" stroke-width="1.8" stroke-dasharray="6 4"/>
-<line x1="739.3" y1="99.5" x2="856.0" y2="99.5" stroke="#4b5563" stroke-width="1.6" stroke-dasharray="2 3"/>
-<rect x="216.6" y="89.0" width="8" height="8" fill="#ffffff" stroke="#4b5563" stroke-width="2"/>
-<rect x="735.3" y="95.5" width="8" height="8" fill="#ffffff" stroke="#4b5563" stroke-width="2"/>
-<polyline points="225.8,92.3 744.5,97.0" fill="none" stroke="#92400e" stroke-width="1.8" stroke-dasharray="6 4"/>
-<line x1="744.5" y1="97.0" x2="856.0" y2="97.0" stroke="#92400e" stroke-width="1.6" stroke-dasharray="2 3"/>
-<rect x="221.8" y="88.3" width="8" height="8" fill="#ffffff" stroke="#92400e" stroke-width="2"/>
-<rect x="740.5" y="93.0" width="8" height="8" fill="#ffffff" stroke="#92400e" stroke-width="2"/>
-<polyline points="231.0,92.6 749.7,97.9" fill="none" stroke="#be123c" stroke-width="1.8" stroke-dasharray="6 4"/>
-<line x1="749.7" y1="97.9" x2="856.0" y2="97.9" stroke="#be123c" stroke-width="1.6" stroke-dasharray="2 3"/>
-<rect x="227.0" y="88.6" width="8" height="8" fill="#ffffff" stroke="#be123c" stroke-width="2"/>
-<rect x="745.7" y="93.9" width="8" height="8" fill="#ffffff" stroke="#be123c" stroke-width="2"/>
-<polyline points="236.2,93.7 754.9,101.0" fill="none" stroke="#ca8a04" stroke-width="1.8" stroke-dasharray="6 4"/>
-<line x1="754.9" y1="101.0" x2="856.0" y2="101.0" stroke="#ca8a04" stroke-width="1.6" stroke-dasharray="2 3"/>
-<rect x="232.2" y="89.7" width="8" height="8" fill="#ffffff" stroke="#ca8a04" stroke-width="2"/>
-<rect x="750.9" y="97.0" width="8" height="8" fill="#ffffff" stroke="#ca8a04" stroke-width="2"/>
-<line x1="78.0" y1="448.0" x2="106.0" y2="448.0" stroke="#1d4ed8" stroke-width="2"/>
-<circle cx="92.0" cy="448.0" r="4.5" fill="#1d4ed8"/>
-<text x="114.0" y="452.0" fill="#111827">ModelSpec Vulkan, H 64</text>
-<line x1="467.0" y1="448.0" x2="495.0" y2="448.0" stroke="#059669" stroke-width="2"/>
-<circle cx="481.0" cy="448.0" r="4.5" fill="#059669"/>
-<text x="503.0" y="452.0" fill="#111827">ModelSpec Vulkan, H 256</text>
-<line x1="78.0" y1="468.0" x2="106.0" y2="468.0" stroke="#7c3aed" stroke-width="2"/>
-<circle cx="92.0" cy="468.0" r="4.5" fill="#7c3aed"/>
-<text x="114.0" y="472.0" fill="#111827">ModelSpec Vulkan, H 1024</text>
-<line x1="467.0" y1="468.0" x2="495.0" y2="468.0" stroke="#0891b2" stroke-width="2"/>
-<circle cx="481.0" cy="468.0" r="4.5" fill="#0891b2"/>
-<text x="503.0" y="472.0" fill="#111827">ModelSpec Vulkan, H 4096</text>
-<line x1="78.0" y1="488.0" x2="106.0" y2="488.0" stroke="#dc2626" stroke-width="2" stroke-dasharray="6 4"/>
-<rect x="88.0" y="484.0" width="8" height="8" fill="#ffffff" stroke="#dc2626" stroke-width="2"/>
-<text x="114.0" y="492.0" fill="#111827">PyTorch CUDA eager, H 64</text>
-<line x1="467.0" y1="488.0" x2="495.0" y2="488.0" stroke="#ea580c" stroke-width="2" stroke-dasharray="6 4"/>
-<rect x="477.0" y="484.0" width="8" height="8" fill="#ffffff" stroke="#ea580c" stroke-width="2"/>
-<text x="503.0" y="492.0" fill="#111827">PyTorch CUDA eager, H 256</text>
-<line x1="78.0" y1="508.0" x2="106.0" y2="508.0" stroke="#a16207" stroke-width="2" stroke-dasharray="6 4"/>
-<rect x="88.0" y="504.0" width="8" height="8" fill="#ffffff" stroke="#a16207" stroke-width="2"/>
-<text x="114.0" y="512.0" fill="#111827">PyTorch CUDA eager, H 1024</text>
-<line x1="467.0" y1="508.0" x2="495.0" y2="508.0" stroke="#db2777" stroke-width="2" stroke-dasharray="6 4"/>
-<rect x="477.0" y="504.0" width="8" height="8" fill="#ffffff" stroke="#db2777" stroke-width="2"/>
-<text x="503.0" y="512.0" fill="#111827">PyTorch CUDA eager, H 4096</text>
-<line x1="78.0" y1="528.0" x2="106.0" y2="528.0" stroke="#4b5563" stroke-width="2" stroke-dasharray="6 4"/>
-<rect x="88.0" y="524.0" width="8" height="8" fill="#ffffff" stroke="#4b5563" stroke-width="2"/>
-<text x="114.0" y="532.0" fill="#111827">PyTorch CUDA torch.compile, H 64</text>
-<line x1="467.0" y1="528.0" x2="495.0" y2="528.0" stroke="#92400e" stroke-width="2" stroke-dasharray="6 4"/>
-<rect x="477.0" y="524.0" width="8" height="8" fill="#ffffff" stroke="#92400e" stroke-width="2"/>
-<text x="503.0" y="532.0" fill="#111827">PyTorch CUDA torch.compile, H 256</text>
-<line x1="78.0" y1="548.0" x2="106.0" y2="548.0" stroke="#be123c" stroke-width="2" stroke-dasharray="6 4"/>
-<rect x="88.0" y="544.0" width="8" height="8" fill="#ffffff" stroke="#be123c" stroke-width="2"/>
-<text x="114.0" y="552.0" fill="#111827">PyTorch CUDA torch.compile, H 1024</text>
-<line x1="467.0" y1="548.0" x2="495.0" y2="548.0" stroke="#ca8a04" stroke-width="2" stroke-dasharray="6 4"/>
-<rect x="477.0" y="544.0" width="8" height="8" fill="#ffffff" stroke="#ca8a04" stroke-width="2"/>
-<text x="503.0" y="552.0" fill="#111827">PyTorch CUDA torch.compile, H 4096</text>
+<style>@media (prefers-color-scheme: dark){[fill="#111827"]{fill:#f4f5ed}[stroke="#111827"]{stroke:#f4f5ed}[fill="#374151"]{fill:#c3ccd0}[stroke="#374151"]{stroke:#c3ccd0}[fill="#d1d5db"]{fill:#3a4b57}[stroke="#d1d5db"]{stroke:#3a4b57}[fill="#e5e7eb"]{fill:#22333f}[stroke="#e5e7eb"]{stroke:#22333f}[fill="#8b95a1"]{fill:#6b7c86}[stroke="#8b95a1"]{stroke:#6b7c86}[fill="#f4f2eb"]{fill:#0c1924}[stroke="#f4f2eb"]{stroke:#0c1924}[fill="#1d4ed8"]{fill:#60a5fa}[stroke="#1d4ed8"]{stroke:#60a5fa}[fill="#059669"]{fill:#34d399}[stroke="#059669"]{stroke:#34d399}[fill="#7c3aed"]{fill:#a78bfa}[stroke="#7c3aed"]{stroke:#a78bfa}[fill="#0891b2"]{fill:#22d3ee}[stroke="#0891b2"]{stroke:#22d3ee}[fill="#dc2626"]{fill:#f87171}[stroke="#dc2626"]{stroke:#f87171}[fill="#ea580c"]{fill:#fb923c}[stroke="#ea580c"]{stroke:#fb923c}[fill="#a16207"]{fill:#facc15}[stroke="#a16207"]{stroke:#facc15}[fill="#db2777"]{fill:#f472b6}[stroke="#db2777"]{stroke:#f472b6}[fill="#4b5563"]{fill:#cbd5e1}[stroke="#4b5563"]{stroke:#cbd5e1}[fill="#92400e"]{fill:#d6a35c}[stroke="#92400e"]{stroke:#d6a35c}[fill="#be123c"]{fill:#fb7185}[stroke="#be123c"]{stroke:#fb7185}[fill="#ca8a04"]{fill:#fde047}[stroke="#ca8a04"]{stroke:#fde047}[fill="#9ca3af"]{fill:#e5e7eb}[stroke="#9ca3af"]{stroke:#e5e7eb}[fill="#f97316"]{fill:#fdba74}[stroke="#f97316"]{stroke:#fdba74}}</style>
+<text x="16" y="24" font-size="17" font-weight="600" fill="#111827">MLP 784-H-10 sweep, batch 100:</text>
+<text x="16" y="46" font-size="17" font-weight="600" fill="#111827">µs per step over date</text>
+<line x1="88" y1="362.0" x2="424.0" y2="362.0" stroke="#d1d5db"/>
+<text x="80.0" y="367.0" text-anchor="end" fill="#374151">10</text>
+<line x1="88" y1="316.8" x2="424.0" y2="316.8" stroke="#e5e7eb"/>
+<line x1="88" y1="257.2" x2="424.0" y2="257.2" stroke="#e5e7eb"/>
+<line x1="88" y1="212.0" x2="424.0" y2="212.0" stroke="#d1d5db"/>
+<text x="80.0" y="217.0" text-anchor="end" fill="#374151">100</text>
+<line x1="88" y1="166.8" x2="424.0" y2="166.8" stroke="#e5e7eb"/>
+<line x1="88" y1="107.2" x2="424.0" y2="107.2" stroke="#e5e7eb"/>
+<line x1="88" y1="62.0" x2="424.0" y2="62.0" stroke="#d1d5db"/>
+<text x="80.0" y="67.0" text-anchor="end" fill="#374151">1,000</text>
+<rect x="88" y="62" width="336.0" height="300" fill="none" stroke="#8b95a1"/>
+<line x1="144.0" y1="362.0" x2="144.0" y2="367.0" stroke="#8b95a1"/>
+<text x="144.0" y="384.0" text-anchor="middle" fill="#374151">2026-10-23</text>
+<line x1="256.0" y1="362.0" x2="256.0" y2="367.0" stroke="#8b95a1"/>
+<text x="256.0" y="384.0" text-anchor="middle" fill="#374151">2026-10-24</text>
+<line x1="368.0" y1="362.0" x2="368.0" y2="367.0" stroke="#8b95a1"/>
+<text x="368.0" y="384.0" text-anchor="middle" fill="#374151">2026-10-25</text>
+<text x="256.0" y="408.0" text-anchor="middle" fill="#111827">date of the run</text>
+<text transform="translate(18 212.0) rotate(-90)" text-anchor="middle" fill="#111827">µs per step, log scale</text>
+<polyline points="131.7,294.8 243.7,284.1 355.7,288.9" fill="none" stroke="#1d4ed8" stroke-width="2.5"/>
+<circle cx="131.7" cy="294.8" r="4.5" fill="#1d4ed8"/>
+<circle cx="243.7" cy="284.1" r="4.5" fill="#1d4ed8"/>
+<circle cx="355.7" cy="288.9" r="4.5" fill="#1d4ed8"/>
+<polyline points="133.9,261.7 245.9,261.2 357.9,270.2" fill="none" stroke="#059669" stroke-width="2.5"/>
+<circle cx="133.9" cy="261.7" r="4.5" fill="#059669"/>
+<circle cx="245.9" cy="261.2" r="4.5" fill="#059669"/>
+<circle cx="357.9" cy="270.2" r="4.5" fill="#059669"/>
+<polyline points="136.2,209.2 248.2,210.6 360.2,227.1" fill="none" stroke="#7c3aed" stroke-width="2.5"/>
+<circle cx="136.2" cy="209.2" r="4.5" fill="#7c3aed"/>
+<circle cx="248.2" cy="210.6" r="4.5" fill="#7c3aed"/>
+<circle cx="360.2" cy="227.1" r="4.5" fill="#7c3aed"/>
+<polyline points="138.4,127.1 250.4,135.4 362.4,162.3" fill="none" stroke="#0891b2" stroke-width="2.5"/>
+<circle cx="138.4" cy="127.1" r="4.5" fill="#0891b2"/>
+<circle cx="250.4" cy="135.4" r="4.5" fill="#0891b2"/>
+<circle cx="362.4" cy="162.3" r="4.5" fill="#0891b2"/>
+<polyline points="140.6,102.4 364.6,122.8" fill="none" stroke="#dc2626" stroke-width="1.8" stroke-dasharray="6 4"/>
+<line x1="364.6" y1="122.8" x2="424.0" y2="122.8" stroke="#dc2626" stroke-width="1.6" stroke-dasharray="2 3"/>
+<rect x="136.6" y="98.4" width="8" height="8" fill="#f4f2eb" stroke="#dc2626" stroke-width="2"/>
+<rect x="360.6" y="118.8" width="8" height="8" fill="#f4f2eb" stroke="#dc2626" stroke-width="2"/>
+<polyline points="142.9,116.1 366.9,122.9" fill="none" stroke="#ea580c" stroke-width="1.8" stroke-dasharray="6 4"/>
+<line x1="366.9" y1="122.9" x2="424.0" y2="122.9" stroke="#ea580c" stroke-width="1.6" stroke-dasharray="2 3"/>
+<rect x="138.9" y="112.1" width="8" height="8" fill="#f4f2eb" stroke="#ea580c" stroke-width="2"/>
+<rect x="362.9" y="118.9" width="8" height="8" fill="#f4f2eb" stroke="#ea580c" stroke-width="2"/>
+<polyline points="145.1,115.5 369.1,121.3" fill="none" stroke="#a16207" stroke-width="1.8" stroke-dasharray="6 4"/>
+<line x1="369.1" y1="121.3" x2="424.0" y2="121.3" stroke="#a16207" stroke-width="1.6" stroke-dasharray="2 3"/>
+<rect x="141.1" y="111.5" width="8" height="8" fill="#f4f2eb" stroke="#a16207" stroke-width="2"/>
+<rect x="365.1" y="117.3" width="8" height="8" fill="#f4f2eb" stroke="#a16207" stroke-width="2"/>
+<polyline points="147.4,116.5 371.4,122.4" fill="none" stroke="#db2777" stroke-width="1.8" stroke-dasharray="6 4"/>
+<line x1="371.4" y1="122.4" x2="424.0" y2="122.4" stroke="#db2777" stroke-width="1.6" stroke-dasharray="2 3"/>
+<rect x="143.4" y="112.5" width="8" height="8" fill="#f4f2eb" stroke="#db2777" stroke-width="2"/>
+<rect x="367.4" y="118.4" width="8" height="8" fill="#f4f2eb" stroke="#db2777" stroke-width="2"/>
+<polyline points="149.6,101.7 373.6,107.5" fill="none" stroke="#4b5563" stroke-width="1.8" stroke-dasharray="6 4"/>
+<line x1="373.6" y1="107.5" x2="424.0" y2="107.5" stroke="#4b5563" stroke-width="1.6" stroke-dasharray="2 3"/>
+<rect x="145.6" y="97.7" width="8" height="8" fill="#f4f2eb" stroke="#4b5563" stroke-width="2"/>
+<rect x="369.6" y="103.5" width="8" height="8" fill="#f4f2eb" stroke="#4b5563" stroke-width="2"/>
+<polyline points="151.8,101.1 375.8,105.3" fill="none" stroke="#92400e" stroke-width="1.8" stroke-dasharray="6 4"/>
+<line x1="375.8" y1="105.3" x2="424.0" y2="105.3" stroke="#92400e" stroke-width="1.6" stroke-dasharray="2 3"/>
+<rect x="147.8" y="97.1" width="8" height="8" fill="#f4f2eb" stroke="#92400e" stroke-width="2"/>
+<rect x="371.8" y="101.3" width="8" height="8" fill="#f4f2eb" stroke="#92400e" stroke-width="2"/>
+<polyline points="154.1,101.4 378.1,106.0" fill="none" stroke="#be123c" stroke-width="1.8" stroke-dasharray="6 4"/>
+<line x1="378.1" y1="106.0" x2="424.0" y2="106.0" stroke="#be123c" stroke-width="1.6" stroke-dasharray="2 3"/>
+<rect x="150.1" y="97.4" width="8" height="8" fill="#f4f2eb" stroke="#be123c" stroke-width="2"/>
+<rect x="374.1" y="102.0" width="8" height="8" fill="#f4f2eb" stroke="#be123c" stroke-width="2"/>
+<polyline points="156.3,102.3 380.3,108.8" fill="none" stroke="#ca8a04" stroke-width="1.8" stroke-dasharray="6 4"/>
+<line x1="380.3" y1="108.8" x2="424.0" y2="108.8" stroke="#ca8a04" stroke-width="1.6" stroke-dasharray="2 3"/>
+<rect x="152.3" y="98.3" width="8" height="8" fill="#f4f2eb" stroke="#ca8a04" stroke-width="2"/>
+<rect x="376.3" y="104.8" width="8" height="8" fill="#f4f2eb" stroke="#ca8a04" stroke-width="2"/>
+<text x="138.7" y="120.1" fill="#374151">0.6.0</text>
+<text x="250.7" y="128.4" fill="#374151">0.9.0</text>
+<text x="362.7" y="155.3" fill="#374151">0.10.0</text>
+<line x1="16" y1="438.0" x2="44" y2="438.0" stroke="#1d4ed8" stroke-width="2"/>
+<circle cx="30.0" cy="438.0" r="4.5" fill="#1d4ed8"/>
+<text x="52" y="443.0" fill="#111827">ModelSpec Vulkan, H 64</text>
+<line x1="16" y1="462.0" x2="44" y2="462.0" stroke="#059669" stroke-width="2"/>
+<circle cx="30.0" cy="462.0" r="4.5" fill="#059669"/>
+<text x="52" y="467.0" fill="#111827">ModelSpec Vulkan, H 256</text>
+<line x1="16" y1="486.0" x2="44" y2="486.0" stroke="#7c3aed" stroke-width="2"/>
+<circle cx="30.0" cy="486.0" r="4.5" fill="#7c3aed"/>
+<text x="52" y="491.0" fill="#111827">ModelSpec Vulkan, H 1024</text>
+<line x1="16" y1="510.0" x2="44" y2="510.0" stroke="#0891b2" stroke-width="2"/>
+<circle cx="30.0" cy="510.0" r="4.5" fill="#0891b2"/>
+<text x="52" y="515.0" fill="#111827">ModelSpec Vulkan, H 4096</text>
+<line x1="16" y1="534.0" x2="44" y2="534.0" stroke="#dc2626" stroke-width="2" stroke-dasharray="6 4"/>
+<rect x="26.0" y="530.0" width="8" height="8" fill="#f4f2eb" stroke="#dc2626" stroke-width="2"/>
+<text x="52" y="539.0" fill="#111827">PyTorch CUDA eager, H 64</text>
+<line x1="16" y1="558.0" x2="44" y2="558.0" stroke="#ea580c" stroke-width="2" stroke-dasharray="6 4"/>
+<rect x="26.0" y="554.0" width="8" height="8" fill="#f4f2eb" stroke="#ea580c" stroke-width="2"/>
+<text x="52" y="563.0" fill="#111827">PyTorch CUDA eager, H 256</text>
+<line x1="16" y1="582.0" x2="44" y2="582.0" stroke="#a16207" stroke-width="2" stroke-dasharray="6 4"/>
+<rect x="26.0" y="578.0" width="8" height="8" fill="#f4f2eb" stroke="#a16207" stroke-width="2"/>
+<text x="52" y="587.0" fill="#111827">PyTorch CUDA eager, H 1024</text>
+<line x1="16" y1="606.0" x2="44" y2="606.0" stroke="#db2777" stroke-width="2" stroke-dasharray="6 4"/>
+<rect x="26.0" y="602.0" width="8" height="8" fill="#f4f2eb" stroke="#db2777" stroke-width="2"/>
+<text x="52" y="611.0" fill="#111827">PyTorch CUDA eager, H 4096</text>
+<line x1="16" y1="630.0" x2="44" y2="630.0" stroke="#4b5563" stroke-width="2" stroke-dasharray="6 4"/>
+<rect x="26.0" y="626.0" width="8" height="8" fill="#f4f2eb" stroke="#4b5563" stroke-width="2"/>
+<text x="52" y="635.0" fill="#111827">PyTorch CUDA torch.compile, H 64</text>
+<line x1="16" y1="654.0" x2="44" y2="654.0" stroke="#92400e" stroke-width="2" stroke-dasharray="6 4"/>
+<rect x="26.0" y="650.0" width="8" height="8" fill="#f4f2eb" stroke="#92400e" stroke-width="2"/>
+<text x="52" y="659.0" fill="#111827">PyTorch CUDA torch.compile, H 256</text>
+<line x1="16" y1="678.0" x2="44" y2="678.0" stroke="#be123c" stroke-width="2" stroke-dasharray="6 4"/>
+<rect x="26.0" y="674.0" width="8" height="8" fill="#f4f2eb" stroke="#be123c" stroke-width="2"/>
+<text x="52" y="683.0" fill="#111827">PyTorch CUDA torch.compile, H 1024</text>
+<line x1="16" y1="702.0" x2="44" y2="702.0" stroke="#ca8a04" stroke-width="2" stroke-dasharray="6 4"/>
+<rect x="26.0" y="698.0" width="8" height="8" fill="#f4f2eb" stroke="#ca8a04" stroke-width="2"/>
+<text x="52" y="707.0" fill="#111827">PyTorch CUDA torch.compile, H 4096</text>
 </svg>

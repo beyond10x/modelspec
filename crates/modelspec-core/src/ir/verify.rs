@@ -14,7 +14,8 @@ use crate::ir::kernel::{
 };
 use crate::ir::tensor::{DType, Dim, ParamId, TensorOp, TensorProgram, TensorType, ValueId};
 use crate::ir::training::{
-    Access, Effect, EffectToken, StateVersion, Subgraph, TrainingProgram, TrainingStep,
+    Access, C1_INPUT, C2_INPUT, Effect, EffectToken, LR_T_INPUT, Moment, OptimizerRule,
+    StateVersion, Subgraph, TrainingProgram, TrainingStep, moment_input,
 };
 use crate::ops::{self, OpError};
 use crate::schedule::MAX_WORKGROUPS_PER_DIMENSION;
@@ -420,6 +421,53 @@ pub enum TrainingVerifyError {
         lr_bits: u32,
         node_bits: u32,
     },
+    #[error("an SGD step carries AdamW state: {what}")]
+    StateUnderSgd { what: &'static str },
+    #[error("the adamw hyperparameters are out of range")]
+    Hyperparameters,
+    #[error("an AdamW step with updates has no host inputs `lr_t`, `c1` and `c2`")]
+    MissingStepInputs,
+    #[error(
+        "the host input `{name}` is {value}, which is not an optimizer `Input` of that name and \
+         type"
+    )]
+    StepInput { name: String, value: ValueId },
+    #[error("parameter {param} has an update but no moments")]
+    MissingMoments { param: ParamId },
+    #[error("moments are given for parameter {param}, which has no update")]
+    MomentsWithoutUpdate { param: ParamId },
+    #[error(
+        "the {moment} {role} of parameter {param} is {value}, which is not an optimizer value of \
+         the parameter's type{}",
+        if *role == "input" { " read by an `Input` of the moment's name" } else { "" }
+    )]
+    MomentValue {
+        param: ParamId,
+        moment: Moment,
+        role: &'static str,
+        value: ValueId,
+    },
+    #[error(
+        "optimizer {node} is Scalar {}; an AdamW constant is beta1, 1 - beta1, beta2, 1 - beta2, \
+         eps or weight_decay",
+        f32::from_bits(*node_bits)
+    )]
+    AdamWConstant { node: ValueId, node_bits: u32 },
+    #[error(
+        "the {moment} {access} of parameter {param} by {value} carries no {access} effect at \
+         {expected}"
+    )]
+    MomentEffect {
+        param: ParamId,
+        moment: Moment,
+        access: Access,
+        value: ValueId,
+        expected: StateVersion,
+    },
+    #[error("{value} carries a moment effect but is no moment's input or next value")]
+    StrayMomentEffect { value: ValueId },
+    #[error("the write of the {moment} of parameter {param} is ordered before its read")]
+    MomentWriteBeforeRead { param: ParamId, moment: Moment },
 }
 
 /// Checks every Training IR invariant of `training`, reporting the first failure.
@@ -589,18 +637,30 @@ pub fn verify_step_writes(
             return Err(TrainingVerifyError::UndefinedUpdate { param, value });
         }
     }
+    check_optimizer_state(step)?;
     let mut expected = vec![training.loss];
     expected.extend(training.gradients.values());
     expected.extend(optimizer.updates.values());
+    expected.extend(
+        optimizer
+            .moments
+            .values()
+            .flat_map(|m| [m.m_next, m.v_next]),
+    );
     check_outputs(program, expected)?;
 
     let tag = |v: ValueId| training.subgraphs[&v];
     let gradients: BTreeSet<ValueId> = training.gradients.values().copied().collect();
+    let host: BTreeSet<ValueId> = optimizer.host_inputs().into_iter().collect();
     for node in &program.nodes {
         if tag(node.id) != Subgraph::Optimizer {
             continue;
         }
-        let leaf = matches!(node.op, TensorOp::ParamRead { .. } | TensorOp::Input { .. });
+        let leaf = match node.op {
+            TensorOp::ParamRead { .. } => true,
+            TensorOp::Input { .. } => !host.contains(&node.id),
+            _ => false,
+        };
         if leaf || gradients.contains(&node.id) {
             return Err(TrainingVerifyError::MisplacedOptimizerTag {
                 node: node.id,
@@ -667,19 +727,210 @@ pub fn verify_step_writes(
         return Err(TrainingVerifyError::LearningRate { lr_bits });
     }
     for node in &program.nodes {
-        if let TensorOp::Scalar(value) = node.op
-            && tag(node.id) == Subgraph::Optimizer
-            && value.to_bits() != lr_bits
-        {
-            return Err(TrainingVerifyError::LearningRateMismatch {
-                node: node.id,
-                lr_bits,
-                node_bits: value.to_bits(),
+        let TensorOp::Scalar(value) = node.op else {
+            continue;
+        };
+        if tag(node.id) != Subgraph::Optimizer {
+            continue;
+        }
+        let node_bits = value.to_bits();
+        match optimizer.rule {
+            OptimizerRule::Sgd if node_bits != lr_bits => {
+                return Err(TrainingVerifyError::LearningRateMismatch {
+                    node: node.id,
+                    lr_bits,
+                    node_bits,
+                });
+            }
+            OptimizerRule::AdamW(adamw)
+                if !adamw.constants().iter().any(|c| c.to_bits() == node_bits) =>
+            {
+                return Err(TrainingVerifyError::AdamWConstant {
+                    node: node.id,
+                    node_bits,
+                });
+            }
+            _ => {}
+        }
+    }
+
+    let writes = check_effects(step)?;
+    check_moment_effects(step)?;
+    Ok(writes)
+}
+
+/// The optimizer state of a step against its rule, before its output layout is checked. Under
+/// SGD there are no host inputs, moments or moment effects. Under AdamW the hyperparameters are
+/// in range; a step with updates has its three host inputs, each an optimizer-tagged rank-0
+/// `f32` `Input` of its name; and each parameter with an update, and only those, has moments
+/// whose inputs are optimizer-tagged `Input`s of the parameter's type named for the moment and
+/// the parameter's path, and whose next values are optimizer values of that type.
+fn check_optimizer_state(step: &TrainingStep) -> Result<(), TrainingVerifyError> {
+    let training = &step.training;
+    let program = &training.program;
+    let optimizer = &step.optimizer;
+    let adamw = match optimizer.rule {
+        OptimizerRule::Sgd => {
+            let what = if optimizer.step_inputs.is_some() {
+                "host inputs"
+            } else if !optimizer.moments.is_empty() {
+                "moments"
+            } else if !optimizer.moment_effects.is_empty() {
+                "moment effects"
+            } else {
+                return Ok(());
+            };
+            return Err(TrainingVerifyError::StateUnderSgd { what });
+        }
+        OptimizerRule::AdamW(adamw) => adamw,
+    };
+    if !adamw.in_range() {
+        return Err(TrainingVerifyError::Hyperparameters);
+    }
+    let optimizer_value = |value: ValueId, ty: &TensorType| {
+        program.node(value).is_some_and(|node| &node.ty == ty)
+            && training.subgraphs.get(&value) == Some(&Subgraph::Optimizer)
+    };
+    let input_named = |value: ValueId, name: &str| {
+        program
+            .node(value)
+            .is_some_and(|node| matches!(&node.op, TensorOp::Input { name: n } if n == name))
+    };
+    match optimizer.step_inputs {
+        None if !optimizer.updates.is_empty() => {
+            return Err(TrainingVerifyError::MissingStepInputs);
+        }
+        None => {}
+        Some(inputs) => {
+            let rank0 = TensorType::f32_scalar();
+            for (value, name) in [
+                (inputs.lr_t, LR_T_INPUT),
+                (inputs.c1, C1_INPUT),
+                (inputs.c2, C2_INPUT),
+            ] {
+                if !(optimizer_value(value, &rank0) && input_named(value, name)) {
+                    return Err(TrainingVerifyError::StepInput {
+                        name: name.to_owned(),
+                        value,
+                    });
+                }
+            }
+        }
+    }
+    if let Some(&param) = optimizer
+        .updates
+        .keys()
+        .find(|p| !optimizer.moments.contains_key(p))
+    {
+        return Err(TrainingVerifyError::MissingMoments { param });
+    }
+    for (&param, moments) in &optimizer.moments {
+        let decl = program
+            .params
+            .get(&param)
+            .filter(|_| optimizer.updates.contains_key(&param))
+            .ok_or(TrainingVerifyError::MomentsWithoutUpdate { param })?;
+        for moment in Moment::BOTH {
+            let input = moments.input(moment);
+            if !(optimizer_value(input, &decl.ty)
+                && input_named(input, &moment_input(moment, &decl.path)))
+            {
+                return Err(TrainingVerifyError::MomentValue {
+                    param,
+                    moment,
+                    role: "input",
+                    value: input,
+                });
+            }
+            let next = moments.next(moment);
+            if !optimizer_value(next, &decl.ty) {
+                return Err(TrainingVerifyError::MomentValue {
+                    param,
+                    moment,
+                    role: "next value",
+                    value: next,
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The legal effects of the moments of an AdamW step, on a step whose parameter effects verify:
+/// every moment effect carried by a defined node and its token shared with no other effect;
+/// every moment's input carrying a read of that moment at its parameter's version, every next
+/// moment a write of the version after it, and no other moment effect; and each write ordered
+/// after its read.
+fn check_moment_effects(step: &TrainingStep) -> Result<(), TrainingVerifyError> {
+    let program = &step.training.program;
+    let optimizer = &step.optimizer;
+    if let Some(&value) = optimizer
+        .moment_effects
+        .keys()
+        .find(|&&v| program.node(v).is_none())
+    {
+        return Err(TrainingVerifyError::EffectWithoutNode { value });
+    }
+    let mut tokens: BTreeMap<EffectToken, ValueId> = optimizer
+        .effects
+        .iter()
+        .map(|(&value, effect)| (effect.token, value))
+        .collect();
+    for (&second, effect) in &optimizer.moment_effects {
+        if let Some(first) = tokens.insert(effect.token, second) {
+            return Err(TrainingVerifyError::DuplicateEffectToken {
+                token: effect.token,
+                first,
+                second,
             });
         }
     }
 
-    check_effects(step)
+    let mut carried = BTreeSet::new();
+    for (&param, moments) in &optimizer.moments {
+        let current = optimizer
+            .versions
+            .get(&param)
+            .copied()
+            .unwrap_or(StateVersion(0));
+        let next = current.0.checked_add(1).map(StateVersion);
+        for moment in Moment::BOTH {
+            let mut token = |value: ValueId, access: Access, expected: Option<StateVersion>| {
+                carried.insert(value);
+                let effect = optimizer.moment_effects.get(&value);
+                match (effect, expected) {
+                    (Some(e), Some(version))
+                        if e.param == param
+                            && e.moment == moment
+                            && e.access == access
+                            && e.version == version =>
+                    {
+                        Ok(e.token)
+                    }
+                    _ => Err(TrainingVerifyError::MomentEffect {
+                        param,
+                        moment,
+                        access,
+                        value,
+                        expected: expected.unwrap_or(current),
+                    }),
+                }
+            };
+            let read = token(moments.input(moment), Access::Read, Some(current))?;
+            let write = token(moments.next(moment), Access::Write, next)?;
+            if write < read {
+                return Err(TrainingVerifyError::MomentWriteBeforeRead { param, moment });
+            }
+        }
+    }
+    if let Some(&value) = optimizer
+        .moment_effects
+        .keys()
+        .find(|v| !carried.contains(v))
+    {
+        return Err(TrainingVerifyError::StrayMomentEffect { value });
+    }
+    Ok(())
 }
 
 /// The legal effects of DESIGN.md § 3.2, on a step whose graph and updates verify; on success,
@@ -2282,6 +2533,201 @@ mod tests {
         assert_eq!(
             verify(&program),
             Err(VerifyError::IntegerOutput { output: ids })
+        );
+    }
+
+    /// A `Dropout` verifies with an `i32[2]` token input and `p` in `[0, 1)`; a token of another
+    /// shape or a `p` of 1 is refused by the registry rule.
+    #[test]
+    fn a_dropout_needs_an_i32_2_token_and_p_below_1() {
+        let mut b = crate::ir::tensor::TensorProgramBuilder::new();
+        let x = b.input("x", TensorType::f32(&[3, 4])).unwrap();
+        let token = b
+            .input("M.forward.dropout#0", TensorType::i32(&[2]))
+            .unwrap();
+        let y = b.dropout(x, token, 0.5).unwrap();
+        let loss = b.reduce_sum(y).unwrap();
+        b.output(loss).unwrap();
+        let program = b.finish();
+        assert_eq!(verify(&program), Ok(()));
+
+        let mut wide = program.clone();
+        let at = wide.nodes.iter().position(|n| n.id == token).unwrap();
+        wide.nodes[at].ty = TensorType::i32(&[3]);
+        assert!(
+            matches!(
+                verify(&wide),
+                Err(VerifyError::Op {
+                    source: OpError::Token { index: 1, .. },
+                    ..
+                })
+            ),
+            "{:?}",
+            verify(&wide)
+        );
+
+        let mut certain = program;
+        let at = certain.nodes.iter().position(|n| n.id == y).unwrap();
+        certain.nodes[at].op = TensorOp::Dropout { p: 1.0 };
+        assert!(
+            matches!(
+                verify(&certain),
+                Err(VerifyError::Op {
+                    source: OpError::DropoutRate { .. },
+                    ..
+                })
+            ),
+            "{:?}",
+            verify(&certain)
+        );
+    }
+
+    /// The example trained with `adamw`: one parameter, its two moments and their effects.
+    fn adamw_step() -> TrainingStep {
+        let source = EXAMPLE.replace(
+            "sgd(lr = 0.1)",
+            "adamw(lr = 0.1, weight_decay = 0.01, beta1 = 0.9, beta2 = 0.999, eps = 1e-8, \
+             warmup_steps = 10)",
+        );
+        crate::compile::compile_training("adamw.mspec", &source)
+            .expect("the AdamW example compiles")
+            .training
+    }
+
+    /// An AdamW step verifies, and its writes are the parameter writes alone: the moments are
+    /// written beside them, not as parameter versions.
+    #[test]
+    fn an_adamw_step_verifies_with_the_parameter_writes_alone() {
+        let step = adamw_step();
+        let writes = verify_step_writes(&step).expect("the AdamW step verifies");
+        let updates: Vec<(ParamId, ValueId)> = step
+            .optimizer
+            .updates
+            .iter()
+            .map(|(&param, &value)| (param, value))
+            .collect();
+        assert_eq!(writes, updates);
+    }
+
+    /// The optimizer state is checked against the rule: AdamW state under SGD, hyperparameters
+    /// out of range, a parameter with an update and no moments, and a constant that is none of
+    /// the step's are each refused.
+    #[test]
+    fn adamw_state_that_does_not_fit_its_rule_is_refused() {
+        let step = adamw_step();
+        let mut sgd = step.clone();
+        sgd.optimizer.rule = OptimizerRule::Sgd;
+        assert_eq!(
+            verify_step(&sgd),
+            Err(TrainingVerifyError::StateUnderSgd {
+                what: "host inputs"
+            })
+        );
+
+        let mut out_of_range = step.clone();
+        if let OptimizerRule::AdamW(adamw) = &mut out_of_range.optimizer.rule {
+            adamw.beta2 = 1.0;
+        }
+        assert_eq!(
+            verify_step(&out_of_range),
+            Err(TrainingVerifyError::Hyperparameters)
+        );
+
+        let mut no_moments = step.clone();
+        let (&param, _) = no_moments.optimizer.updates.iter().next().unwrap();
+        no_moments.optimizer.moments.clear();
+        assert_eq!(
+            verify_step(&no_moments),
+            Err(TrainingVerifyError::MissingMoments { param })
+        );
+
+        let mut constant = step.clone();
+        let scalar = constant
+            .training
+            .program
+            .nodes
+            .iter_mut()
+            .find(|n| {
+                matches!(n.op, TensorOp::Scalar(_))
+                    && step.training.subgraphs[&n.id] == Subgraph::Optimizer
+            })
+            .unwrap();
+        scalar.op = TensorOp::Scalar(0.5);
+        let node = scalar.id;
+        assert_eq!(
+            verify_step(&constant),
+            Err(TrainingVerifyError::AdamWConstant {
+                node,
+                node_bits: 0.5f32.to_bits()
+            })
+        );
+    }
+
+    /// The moment effects are checked like the parameter effects: a next moment without its
+    /// write, a write ordered before its read, a token another effect holds and an effect on a
+    /// value that is no moment are each refused.
+    #[test]
+    fn adamw_moment_effects_that_do_not_fit_are_refused() {
+        let step = adamw_step();
+        let (&param, &moments) = step.optimizer.moments.iter().next().unwrap();
+
+        let mut missing = step.clone();
+        missing.optimizer.moment_effects.remove(&moments.v_next);
+        assert_eq!(
+            verify_step(&missing),
+            Err(TrainingVerifyError::MomentEffect {
+                param,
+                moment: Moment::Second,
+                access: Access::Write,
+                value: moments.v_next,
+                expected: StateVersion(1),
+            })
+        );
+
+        let mut swapped = step.clone();
+        let effects = &mut swapped.optimizer.moment_effects;
+        let read = effects[&moments.m].token;
+        let write = effects[&moments.m_next].token;
+        effects.get_mut(&moments.m).unwrap().token = write;
+        effects.get_mut(&moments.m_next).unwrap().token = read;
+        assert_eq!(
+            verify_step(&swapped),
+            Err(TrainingVerifyError::MomentWriteBeforeRead {
+                param,
+                moment: Moment::First,
+            })
+        );
+
+        let mut shared = step.clone();
+        let (&first, parameter_effect) = shared.optimizer.effects.iter().next().unwrap();
+        let token = parameter_effect.token;
+        shared
+            .optimizer
+            .moment_effects
+            .get_mut(&moments.v)
+            .unwrap()
+            .token = token;
+        assert_eq!(
+            verify_step(&shared),
+            Err(TrainingVerifyError::DuplicateEffectToken {
+                token,
+                first,
+                second: moments.v,
+            })
+        );
+
+        let mut stray = step.clone();
+        let mut effect = stray.optimizer.moment_effects[&moments.m];
+        effect.token = EffectToken(1000);
+        stray
+            .optimizer
+            .moment_effects
+            .insert(step.training.loss, effect);
+        assert_eq!(
+            verify_step(&stray),
+            Err(TrainingVerifyError::StrayMomentEffect {
+                value: step.training.loss
+            })
         );
     }
 }

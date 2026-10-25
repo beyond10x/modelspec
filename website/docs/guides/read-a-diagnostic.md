@@ -1,6 +1,9 @@
 ---
 title: Read a diagnostic
 description: The layout of every diagnostic modelspec prints, line by line, and where to look up a code.
+sidebar_position: 2
+lede: "Every diagnostic is one line with its code and message, then its position when it has one, then one indented line per detail, and its code is what to look up."
+source: "DESIGN.md § 8.1; crates/modelspec-core/src/diag.rs; the tests check.rs and train_linear.rs of crates/modelspec-cli; the outputs pasted from a run of modelspec check on crates/modelspec-docs/models/matmul_mismatch.mspec and of modelspec train --backend vulkan in a binary built without the vulkan feature."
 ---
 
 # Read a diagnostic
@@ -50,7 +53,7 @@ three diagnostics for one file.
 | `E-SYNTAX` | parser | a typo, or a construct the M0 subset does not have yet. Constructs of the target language such as `module`, `layer` and infix operators each have their own code |
 | `E-NAME` | name resolution | an unknown variable, operator or function, or a name declared twice |
 | `E-TYPE` | type and shape checker | operands whose shapes do not fit, a wrong argument count, or a train-block rule such as the loss calling `model.forward` more than once |
-| `E-DATA` | `train`, after the check | the input and target do not fit the synthetic data loader |
+| `E-DATA` | `train`, after the check | the input and target declarations do not fit the data the run reads: synthetic data, dense `--data` files or a packed directory, or a data file is missing or malformed |
 | `E-TARGET` | `train`, before the check | the backend is not available |
 | `E-INTERNAL` | the compiler | a compiler bug, not a mistake in the model; please [report it](https://github.com/beyond10x/modelspec/issues) with the file |
 

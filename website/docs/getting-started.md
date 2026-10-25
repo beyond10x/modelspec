@@ -1,19 +1,19 @@
 ---
 title: Getting started
-description: Download the modelspec 0.10.0 binary, verify it, and check and train the example model on the CPU reference or a Vulkan GPU.
+description: Download the modelspec 0.12.0 binary, verify it, and check and train the example model on the CPU reference or a Vulkan GPU.
 ---
 
 # Getting started
 
-## Install the 0.10.0 binary
+## Install the 0.12.0 binary
 
-The [0.10.0 release](https://github.com/beyond10x/modelspec/releases/tag/0.10.0) carries one
+The [0.12.0 release](https://github.com/beyond10x/modelspec/releases/tag/0.12.0) carries one
 prebuilt binary, for Linux on x86_64, and its SHA-256 checksum. There is no macOS, Windows or
 aarch64 binary; on those, [build from source](#build-from-source).
 
 ```sh
-base=https://github.com/beyond10x/modelspec/releases/download/0.10.0
-bin=modelspec-0.10.0-x86_64-unknown-linux-gnu
+base=https://github.com/beyond10x/modelspec/releases/download/0.12.0
+bin=modelspec-0.12.0-x86_64-unknown-linux-gnu
 curl -fsSLO "$base/$bin"
 curl -fsSLO "$base/$bin.sha256"
 sha256sum -c "$bin.sha256"
@@ -21,8 +21,8 @@ install -D -m 755 "$bin" ~/.local/bin/modelspec
 modelspec --version
 ```
 
-`sha256sum -c` prints `modelspec-0.10.0-x86_64-unknown-linux-gnu: OK`, and `modelspec --version`
-prints `modelspec 0.10.0`. `install -D` creates `~/.local/bin` if it is missing; that directory
+`sha256sum -c` prints `modelspec-0.12.0-x86_64-unknown-linux-gnu: OK`, and `modelspec --version`
+prints `modelspec 0.12.0`. `install -D` creates `~/.local/bin` if it is missing; that directory
 must be on your `PATH` for the last line to find the binary. The binary links only the C runtime
 (`libc`, `libm` and `libgcc_s`), which every glibc Linux system has. `train --backend vulkan` and
 `inspect-device` open the system Vulkan loader when they run; a machine without one gets
@@ -46,10 +46,17 @@ weight:
 ```text
 init @LinearReg.w: Tensor<f32, [4, 1]> = [0.9730758, -0.34559327, -0.86724, 0.14564086]
 step 0 loss 9.693205
-step 50 loss 0.0032300856
-...
-step 500 loss 0.0000000000561049
-param @LinearReg.w: Tensor<f32, [4, 1]> = [-0.9486646, -0.25639856, 0.4230444, 1.059935]
+step 50 loss 0.003230087
+step 100 loss 0.00024210943
+step 150 loss 0.000032833173
+step 200 loss 0.000004870945
+step 250 loss 0.00000072922063
+step 300 loss 0.00000010928702
+step 350 loss 0.000000016363904
+step 400 loss 0.0000000024583522
+step 450 loss 0.00000000036786574
+step 500 loss 0.00000000005571943
+param @LinearReg.w: Tensor<f32, [4, 1]> = [-0.9486646, -0.25639862, 0.42304444, 1.0599351]
 ```
 
 The same seed prints the same bytes on every run. [Linear regression](./examples/linear-regression.md)

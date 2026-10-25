@@ -10,15 +10,13 @@ types:
   - name: modelspec.training.OptimizerKind
     kind: enum
     naming:
-      summary: SGD from M0; AdamW with weight decay joins at M3 (DESIGN.md § 1, § 11 iteration 4; epic:bert-from-scratch). The CLI accepts only `sgd` until then.
+      summary: SGD from M0; AdamW with decoupled weight decay and a warmup schedule from M3, written `adamw(lr = F, weight_decay = F, beta1 = F, beta2 = F, eps = F, warmup_steps = N)` (DESIGN.md § 1, § 2.1, § 11 iteration 4; epic:bert-from-scratch).
     variants: [Sgd, AdamW]
 
   - name: modelspec.training.LearningRateSchedule
     kind: struct
     naming:
-      summary: How the learning rate varies over steps; a linear warmup over the first warmup_steps steps up to OptimizerConfig.learning_rate (epic:bert-from-scratch, AdamW with warmup).
-    # UNMAPPED: the epic names warmup only; the rate after warmup (constant, linear decay to zero,
-    # another shape) and whether warmup starts at zero are not settled. Open question.
+      summary: How the learning rate varies over steps, settled by coordinator decision D50 of 2026-10-25 under the operator's grant of 2026-10-24, after Devlin et al. 2019. With t counting steps from 1 and steps the run's total, the rate is lr*t/warmup_steps for t <= warmup_steps and lr*(steps-t)/(steps-warmup_steps) after, lr being OptimizerConfig.learning_rate; it starts above zero, peaks at lr at step warmup_steps and reaches zero at the last step. warmup_steps = 0 means no warmup; warmup_steps >= steps is refused (E-TYPE-024, or a run error when --steps shortens the run). The host computes each step's rate in Binary64 and rounds it once to Binary32 (DESIGN.md § 2.1, § 6).
     fields:
       - name: warmup_steps
         type: Integer
@@ -49,9 +47,7 @@ types:
         summary: AdamW denominator term.
       - name: schedule
         type: Optional<modelspec.training.LearningRateSchedule>
-        summary: Absent means a constant learning rate, as M0 SGD has.
-        # UNMAPPED: whether a schedule applies to SGD too or only to AdamW is not settled; it is
-        # admitted for both. Open question.
+        summary: Present exactly when kind is AdamW, settled by coordinator decision D50 of 2026-10-25; SGD keeps its constant learning rate, as M0 has.
     invariants:
       - any:
           - all:
@@ -60,12 +56,14 @@ types:
               - not defined(beta1)
               - not defined(beta2)
               - not defined(epsilon)
+              - not defined(schedule)
           - all:
               - kind == AdamW
               - defined(weight_decay)
               - defined(beta1)
               - defined(beta2)
               - defined(epsilon)
+              - defined(schedule)
 
   - name: modelspec.training.RngAlgorithm
     kind: enum

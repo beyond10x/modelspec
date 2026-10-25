@@ -76,6 +76,7 @@ use crate::ir::kernel::{
 };
 use crate::ir::tensor::{DType, Dim, ParamId, TensorNode, TensorOp, TensorType, ValueId};
 use crate::ir::training::{TrainConfig, TrainingStep};
+use crate::ops;
 
 /// The most workgroups in one dimension of a dispatch on every Vulkan device.
 pub const MAX_WORKGROUPS_PER_DIMENSION: u32 = 65_535;
@@ -102,7 +103,8 @@ pub enum ScheduleError {
     /// The op has no Vulkan kernel yet (`E-TARGET-011`): `Embedding`, `EmbeddingGrad`, `AddRows`,
     /// `SumRows`, `Gelu`, `GeluGrad`, `LayerNorm`, `LayerNormGradX`, `LayerNormGradGamma`,
     /// `Softmax`, `SoftmaxGrad`, `Attention`, `AttentionGradQ`, `AttentionGradK`,
-    /// `AttentionGradV`, `CrossEntropy` and `CrossEntropyGrad` run on the CPU interpreter only.
+    /// `AttentionGradV`, `CrossEntropy`, `CrossEntropyGrad`, `Dropout` and `DropoutGrad` run on
+    /// the CPU interpreter only.
     #[error("{value} is {op}, which has no Vulkan kernel")]
     NoKernel { value: ValueId, op: &'static str },
 }
@@ -581,6 +583,12 @@ fn schedule_with(
         &step.optimizer.updates,
         [step.training.loss, prediction],
     );
+    let tokens: BTreeSet<ValueId> = program
+        .nodes
+        .iter()
+        .filter_map(|n| ops::token_operand(&n.op).and_then(|i| n.operands.get(i).copied()))
+        .chain(step.optimizer.host_inputs())
+        .collect();
     let mut places: BTreeMap<ValueId, Place> = BTreeMap::new();
     let mut works: Vec<Work> = Vec::new();
     let mut prediction_view = None;
@@ -630,6 +638,13 @@ fn schedule_with(
             });
         }
         match &node.op {
+            TensorOp::Input { .. } if tokens.contains(&node.id) => {
+                // The RNG token of a dropout site and the AdamW scalars and moments, supplied by
+                // the host each step, are no data of the train block: each takes its own buffer.
+                let view = allocate(&mut buffers, &node.ty).ok_or_else(shape_error)?;
+                places.insert(node.id, Place::View(view));
+                continue;
+            }
             TensorOp::Input { .. } | TensorOp::ParamRead { .. } => {
                 let view = bound_view(&data, &parameters, node)?;
                 places.insert(node.id, Place::View(view));
@@ -844,7 +859,11 @@ fn schedule_with(
             | TensorOp::AttentionGradK { .. }
             | TensorOp::AttentionGradV { .. }
             | TensorOp::CrossEntropy
-            | TensorOp::CrossEntropyGrad => match built {
+            | TensorOp::CrossEntropyGrad
+            | TensorOp::Dropout { .. }
+            | TensorOp::DropoutGrad { .. }
+            | TensorOp::Sqrt
+            | TensorOp::Div => match built {
                 Kernels::None => continue,
                 Kernels::Vulkan => {
                     return Err(ScheduleError::NoKernel {

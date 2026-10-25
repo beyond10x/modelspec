@@ -34,6 +34,16 @@
 //! [`RuntimeError::LabelOutOfRange`], a negative or non-finite weight
 //! [`RuntimeError::LossWeight`].
 //!
+//! `dropout` and its gradient op read the `i32[2]` RNG token of their site and the run's seed
+//! ([`Prepared::set_seed`], [`evaluate_seeded`]): element `i` in row-major order is kept when
+//! [`crate::train::init::dropout_keeps`] of the seed, the token's draw id, `i` and `p` holds,
+//! Philox stream tag 4. A kept element is `x * scale` (`g * scale` for the gradient) with
+//! `scale = 1.0f32 / (1.0f32 - p)` computed once per op in `f32` and converted to the element
+//! type; a dropped one is `+0`. Both ops build the mask through one function, so the gradient
+//! recomputes the forward's mask and no mask is stored (DESIGN.md § 2.3, § 4, coordinator
+//! decision D47). A program with a dropout run without a seed is [`RuntimeError::NoSeed`]
+//! before any node runs.
+//!
 //! Every value is allocated through one checked path; a value the host cannot hold is a
 //! [`RuntimeError::Allocation`].
 //!
@@ -52,6 +62,7 @@ use thiserror::Error;
 
 use super::matmul::{self, Kernel, Lhs};
 use super::tensor::{Element, HostTensor};
+use crate::train::init::{dropout_keeps, token_id};
 
 /// Why the interpreter refused a program or its inputs (DESIGN.md § 8.1, runtime class).
 #[derive(Clone, Debug, PartialEq, Eq, Error)]
@@ -130,6 +141,14 @@ pub enum RuntimeError {
     /// not negative (DESIGN.md § 4, coordinator decision D43).
     #[error("the weight of row {row} of {value} is negative or not finite")]
     LossWeight { value: ValueId, row: usize },
+    /// A `Dropout` or `DropoutGrad` in a run without a seed: its mask has no key (DESIGN.md
+    /// § 2.3).
+    #[error("{value} is a dropout, and the run has no seed to key its mask")]
+    NoSeed { value: ValueId },
+    /// A `Dropout` or `DropoutGrad` over more than `2^32` elements: the last ones have no Philox
+    /// counter (DESIGN.md § 2.3).
+    #[error("{value} is a dropout over {count} elements; a draw addresses at most 2^32")]
+    DropoutElements { value: ValueId, count: u64 },
 }
 
 /// No ids, for the programs that read none.
@@ -195,6 +214,20 @@ pub fn evaluate_with_ids<T: Element>(
     Prepared::new(program)?.run_with_ids(inputs, ids, params)
 }
 
+/// [`evaluate_with_ids`] under the run's `seed`, the key of every dropout mask: `ids` holds the
+/// RNG token of each dropout site beside any row ids or labels.
+pub fn evaluate_seeded<T: Element>(
+    program: &TensorProgram,
+    inputs: &BTreeMap<String, HostTensor<T>>,
+    ids: &BTreeMap<String, HostTensor<i32>>,
+    params: &BTreeMap<ParamId, HostTensor<T>>,
+    seed: u64,
+) -> Result<Vec<HostTensor<T>>, RuntimeError> {
+    let mut prepared = Prepared::new(program)?;
+    prepared.set_seed(seed);
+    prepared.run_with_ids(inputs, ids, params)
+}
+
 /// [`evaluate`], also returning every intermediate value.
 pub fn evaluate_all<T: Element>(
     program: &TensorProgram,
@@ -212,7 +245,7 @@ pub fn evaluate_all_with_ids<T: Element>(
     params: &BTreeMap<ParamId, HostTensor<T>>,
 ) -> Result<Evaluation<T>, RuntimeError> {
     verify(program)?;
-    let mut prepared = Prepared::planned(program, Keep::Every);
+    let mut prepared = Prepared::planned(program, Keep::Every, &[]);
     prepared.execute(inputs, ids, params)?;
     let mut outputs = Vec::new();
     prepared.outputs_into(inputs, params, &mut outputs)?;
@@ -258,8 +291,9 @@ enum Hold {
     InPlace(usize),
     /// Computed into this storage slot.
     Stored(usize),
-    /// The supplied ids of an `i32` input, read only by `Embedding` and `EmbeddingGrad`, under
-    /// either [`Keep`].
+    /// The supplied ids of an `i32` input, read only by `Embedding` and `EmbeddingGrad`, as the
+    /// labels of `CrossEntropy` and `CrossEntropyGrad` and as the RNG token of `Dropout` and
+    /// `DropoutGrad`, under either [`Keep`].
     Ids,
 }
 
@@ -282,16 +316,22 @@ struct Plan {
     /// Each read of ids, in node order: the `i32` input node and the rows of the table it
     /// indexes.
     id_reads: Vec<(usize, u64)>,
+    /// Each `Dropout` and `DropoutGrad` node, in node order.
+    dropouts: Vec<usize>,
+    /// The nodes whose value a run holds in its own storage when it ends, beside the outputs,
+    /// for [`Prepared::kept`]: never supplied, read in place, freed or moved out.
+    kept: Vec<usize>,
 }
 
 impl Plan {
-    fn new(program: &TensorProgram, keep: Keep) -> Self {
+    fn new(program: &TensorProgram, keep: Keep, kept: &[ValueId]) -> Self {
         let index: BTreeMap<ValueId, usize> = program
             .nodes
             .iter()
             .enumerate()
             .map(|(i, node)| (node.id, i))
             .collect();
+        let kept: Vec<usize> = kept.iter().filter_map(|v| index.get(v).copied()).collect();
         let shapes: Vec<Vec<u64>> = program
             .nodes
             .iter()
@@ -307,10 +347,14 @@ impl Plan {
         let mut hold = vec![Hold::Stored(0); program.nodes.len()];
         if keep == Keep::Outputs {
             for (&transpose, &source) in &in_place_transposes(program) {
-                hold[index[&transpose]] = Hold::InPlace(index[&source]);
+                if !kept.contains(&index[&transpose]) {
+                    hold[index[&transpose]] = Hold::InPlace(index[&source]);
+                }
             }
-            for (node, hold) in program.nodes.iter().zip(&mut hold) {
-                if matches!(node.op, TensorOp::Input { .. } | TensorOp::ParamRead { .. }) {
+            for (i, (node, hold)) in program.nodes.iter().zip(&mut hold).enumerate() {
+                if matches!(node.op, TensorOp::Input { .. } | TensorOp::ParamRead { .. })
+                    && !kept.contains(&i)
+                {
                     *hold = Hold::Supplied;
                 }
             }
@@ -330,6 +374,13 @@ impl Plan {
                 _ => None,
             })
             .collect();
+        let dropouts = program
+            .nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, node)| node.op.dropout_rate().is_some())
+            .map(|(i, _)| i)
+            .collect();
 
         // The last consumer of each value; a `matmul` reading an in-place transpose consumes
         // the transposed value. A value nothing reads is freed after its own node.
@@ -348,8 +399,8 @@ impl Plan {
         }
         let mut frees = vec![Vec::new(); program.nodes.len()];
         for (i, (&held, &last)) in hold.iter().zip(&last).enumerate() {
-            let kept = keep == Keep::Every || outputs.contains(&i);
-            if !matches!(held, Hold::InPlace(_)) && !kept {
+            let held_to_end = keep == Keep::Every || outputs.contains(&i) || kept.contains(&i);
+            if !matches!(held, Hold::InPlace(_)) && !held_to_end {
                 frees[last].push(i);
             }
         }
@@ -384,6 +435,7 @@ impl Plan {
                 keep == Keep::Outputs
                     && matches!(hold[*node], Hold::Stored(_))
                     && !outputs[p + 1..].contains(node)
+                    && !kept.contains(node)
             })
             .collect();
         Self {
@@ -395,6 +447,8 @@ impl Plan {
             moves,
             slots,
             id_reads,
+            dropouts,
+            kept,
         }
     }
 }
@@ -414,6 +468,8 @@ pub struct Prepared<'p, T> {
     /// One tensor per storage slot, refilled in place by each value the slot holds: `None` until
     /// first used, and after its value was moved out and not given back.
     storage: Vec<Option<HostTensor<T>>>,
+    /// The run's seed, the key of every dropout mask; `None` until [`Prepared::set_seed`].
+    seed: Option<u64>,
 }
 
 /// A value an operation reads: a supplied tensor or a stored one.
@@ -444,22 +500,58 @@ impl<'p, T: Element> Prepared<'p, T> {
     /// Verifies `program` and plans its runs.
     pub fn new(program: &'p TensorProgram) -> Result<Self, RuntimeError> {
         verify(program)?;
-        Ok(Self::planned(program, Keep::Outputs))
+        Ok(Self::planned(program, Keep::Outputs, &[]))
     }
 
     /// Plans the runs of `program`, which the caller has verified.
     pub(crate) fn verified(program: &'p TensorProgram) -> Self {
-        Self::planned(program, Keep::Outputs)
+        Self::planned(program, Keep::Outputs, &[])
     }
 
-    fn planned(program: &'p TensorProgram, keep: Keep) -> Self {
-        let plan = Plan::new(program, keep);
+    /// Verifies `program` and plans its runs as [`Prepared::new`] does, except that each value
+    /// of `kept` is computed into the plan's own storage and held there after a run, until the
+    /// next run refills it, for [`Prepared::kept`]. Every other intermediate is still freed after
+    /// its last consumer.
+    pub(crate) fn keeping(
+        program: &'p TensorProgram,
+        kept: &[ValueId],
+    ) -> Result<Self, RuntimeError> {
+        verify(program)?;
+        Ok(Self::planned(program, Keep::Outputs, kept))
+    }
+
+    /// The value of `value` in the last run that finished, if the plan keeps it
+    /// ([`Prepared::keeping`]); `None` before the first run and for a value it does not keep.
+    pub(crate) fn kept(&self, value: ValueId) -> Option<&HostTensor<T>> {
+        let node = self.program.nodes.iter().position(|n| n.id == value)?;
+        if !self.plan.kept.contains(&node) {
+            return None;
+        }
+        match self.plan.hold[node] {
+            Hold::Stored(slot) => self.storage[slot].as_ref(),
+            _ => None,
+        }
+    }
+
+    /// The program this plan runs.
+    pub(crate) fn program(&self) -> &'p TensorProgram {
+        self.program
+    }
+
+    fn planned(program: &'p TensorProgram, keep: Keep, kept: &[ValueId]) -> Self {
+        let plan = Plan::new(program, keep, kept);
         let storage = (0..plan.slots).map(|_| None).collect();
         Self {
             program,
             plan,
             storage,
+            seed: None,
         }
+    }
+
+    /// Sets the seed every later run keys its dropout masks with, the `train` block's seed.
+    pub fn set_seed(&mut self, seed: u64) {
+        self.seed = Some(seed);
     }
 
     /// Runs the program and returns its outputs, in the order of [`TensorProgram::outputs`].
@@ -488,14 +580,15 @@ impl<'p, T: Element> Prepared<'p, T> {
         Ok(outputs)
     }
 
-    /// [`Prepared::run`], replacing the contents of `outputs` with the outputs.
+    /// [`Prepared::run_with_ids`], replacing the contents of `outputs` with the outputs.
     pub(crate) fn run_into(
         &mut self,
         inputs: &BTreeMap<String, HostTensor<T>>,
+        ids: &BTreeMap<String, HostTensor<i32>>,
         params: &BTreeMap<ParamId, HostTensor<T>>,
         outputs: &mut Vec<HostTensor<T>>,
     ) -> Result<(), RuntimeError> {
-        self.execute(inputs, &NO_IDS, params)?;
+        self.execute(inputs, ids, params)?;
         self.outputs_into(inputs, params, outputs)
     }
 
@@ -553,6 +646,16 @@ impl<'p, T: Element> Prepared<'p, T> {
     ) -> Result<(), RuntimeError> {
         check_inputs(self.program, inputs, ids)?;
         check_params(self.program, params)?;
+        for &node in &self.plan.dropouts {
+            let value = self.program.nodes[node].id;
+            if self.seed.is_none() {
+                return Err(RuntimeError::NoSeed { value });
+            }
+            let count = self.count(node);
+            if count > 1 << 32 {
+                return Err(RuntimeError::DropoutElements { value, count });
+            }
+        }
         for &(node, rows) in &self.plan.id_reads {
             let name = input_name(self.program, node);
             let outside = ids[name]
@@ -673,6 +776,32 @@ impl<'p, T: Element> Prepared<'p, T> {
     /// The ids of the `i32` input node `i`.
     fn ids<'v>(&self, i: usize, ids: &'v BTreeMap<String, HostTensor<i32>>) -> &'v [i32] {
         ids[input_name(self.program, i)].data()
+    }
+
+    /// `values` under the dropout mask of the token node `token` at drop probability `p`, into
+    /// `data`: each kept element times `1.0f32 / (1.0f32 - p)`, each dropped one `+0`. The one
+    /// mask path of `Dropout` and `DropoutGrad`.
+    fn masked(
+        &self,
+        data: &mut Vec<T>,
+        values: &[T],
+        token: usize,
+        p: f32,
+        ids: &BTreeMap<String, HostTensor<i32>>,
+    ) {
+        let seed = self
+            .seed
+            .expect("the run checked that a dropout has a seed");
+        let token = self.ids(token, ids);
+        let id = token_id([token[0], token[1]]);
+        let scale = T::from_f32(1.0f32 / (1.0f32 - p));
+        data.extend(values.iter().enumerate().map(|(i, &v)| {
+            if dropout_keeps(seed, id, i as u32, p) {
+                v * scale
+            } else {
+                T::ZERO
+            }
+        }));
     }
 
     /// Evaluates node `i` into `data`, which it empties first and which has room for the value's
@@ -936,6 +1065,10 @@ impl<'p, T: Element> Prepared<'p, T> {
                 let labels = self.ids(operands[1], ids);
                 cross_entropy_grad(data, arg(0), labels, arg(2).data, arg(3).data[0]);
             }
+            TensorOp::Dropout { p } => self.masked(data, arg(0).data, operands[1], *p, ids),
+            TensorOp::DropoutGrad { p } => self.masked(data, arg(1).data, operands[0], *p, ids),
+            TensorOp::Sqrt => data.extend(arg(0).data.iter().map(|&x| x.sqrt())),
+            TensorOp::Div => elementwise(data, arg(0), arg(1), |a, b| a / b),
         }
     }
 }
@@ -1438,8 +1571,8 @@ fn relu_where<T: Element>(a: T, g: T) -> T {
     if a > T::ZERO { g } else { T::ZERO }
 }
 
-/// `Add`, `Sub`, `Mul`: same shapes element by element, or one rank-0 operand against every
-/// element of the other, operand order kept.
+/// `Add`, `Sub`, `Mul`, `Div`: same shapes element by element, or one rank-0 operand against
+/// every element of the other, operand order kept.
 fn elementwise<T: Element>(
     data: &mut Vec<T>,
     a: View<'_, T>,

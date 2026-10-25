@@ -326,6 +326,7 @@ fn accuracy_events() -> Vec<RunEvent> {
     let mut bodies = vec![RunEventBody::RunStarted(RunStarted {
         steps: STEPS,
         start_step: 0,
+        data_binding_id: None,
     })];
     for step in 0..STEPS {
         let k = step as f64;
