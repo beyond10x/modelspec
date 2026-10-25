@@ -1,0 +1,38 @@
+{
+  "tasks": [
+    {
+      "id": "last-loss",
+      "ask": "What is the loss at the last completed step?",
+      "role": "figure",
+      "name": "^loss step \\d+: ",
+      "read": "^loss step (?<step>\\d+): (?<value>\\S+)$",
+      "answer": { "value": "last_loss" },
+      "live": true
+    },
+    {
+      "id": "last-step",
+      "ask": "Which step completed last?",
+      "role": "figure",
+      "name": "^loss step \\d+: ",
+      "read": "^loss step (?<step>\\d+): ",
+      "answer": { "step": "last_step" },
+      "live": true
+    },
+    {
+      "id": "first-parameter-gradient",
+      "ask": "What is the gradient norm of LinearReg.w at the last statistics step that has a gradient, and which step is it?",
+      "role": "figure",
+      "name": "^LinearReg\\.w gradient norm step \\d+: ",
+      "read": "step (?<step>\\d+): (?<value>\\S+)$",
+      "answer": { "step": "first_parameter_gradient.step", "value": "first_parameter_gradient.norm" }
+    },
+    {
+      "id": "end-state",
+      "ask": "How did the run end?",
+      "role": "paragraph",
+      "text": "^(connecting|streaming|finished|failed)\\b",
+      "read": "^(?<state>connecting|streaming|finished|failed)\\b",
+      "answer": { "state": "run_state" }
+    }
+  ]
+}

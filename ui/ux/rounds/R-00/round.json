@@ -1,0 +1,198 @@
+{
+  "round": "R-00",
+  "date": "2026-10-25",
+  "commit": "2d83128",
+  "scenarios": {
+    "linear-regression": {
+      "card": "anchor",
+      "metrics": {
+        "layout_shift.per_minute": 0.005405,
+        "reading_load.max": 31,
+        "reading_load.median": 30,
+        "actions_per_fix.max": 1,
+        "actions_per_fix.median": 0,
+        "glance_cost.median": 2,
+        "glance_cost.p95": 3,
+        "screen_only.actions": 1,
+        "screen_only.looks": 5,
+        "screen_only.steers": 0,
+        "screen_only.time_to_act_steps.max": 0
+      }
+    },
+    "two-layer-relu": {
+      "card": "anchor",
+      "metrics": {
+        "layout_shift.per_minute": 0.013839,
+        "reading_load.max": 31,
+        "reading_load.median": 30,
+        "actions_per_fix.max": 1,
+        "actions_per_fix.median": 0,
+        "glance_cost.median": 2,
+        "glance_cost.p95": 3,
+        "screen_only.actions": 1,
+        "screen_only.looks": 5,
+        "screen_only.steers": 0,
+        "screen_only.time_to_act_steps.max": 0
+      }
+    },
+    "accuracy": {
+      "card": "rotating",
+      "metrics": {
+        "layout_shift.per_minute": 0.13157,
+        "reading_load.max": 25,
+        "reading_load.median": 25,
+        "actions_per_fix.max": 0,
+        "actions_per_fix.median": 0,
+        "glance_cost.median": 2,
+        "glance_cost.p95": 2,
+        "screen_only.actions": 0,
+        "screen_only.looks": 4,
+        "screen_only.steers": 0,
+        "screen_only.time_to_act_steps.max": 0
+      }
+    }
+  },
+  "gates": {
+    "replays": 12,
+    "violations": 0,
+    "completion_miss": 0,
+    "false_complete": 0,
+    "axe_serious": 0,
+    "screen_only_wrong": 0
+  },
+  "measured_only": [
+    {
+      "scenario": "accuracy",
+      "viewport": "1440x900",
+      "theme": "dark",
+      "violations": [],
+      "reading_load": 25
+    },
+    {
+      "scenario": "accuracy",
+      "viewport": "1440x900",
+      "theme": "light",
+      "violations": [],
+      "reading_load": 25
+    },
+    {
+      "scenario": "accuracy",
+      "viewport": "1920x1080",
+      "theme": "dark",
+      "violations": [],
+      "reading_load": 25
+    },
+    {
+      "scenario": "accuracy",
+      "viewport": "1920x1080",
+      "theme": "light",
+      "violations": [],
+      "reading_load": 25
+    },
+    {
+      "scenario": "accuracy",
+      "viewport": "390x844",
+      "theme": "dark",
+      "violations": [],
+      "reading_load": 25
+    },
+    {
+      "scenario": "accuracy",
+      "viewport": "390x844",
+      "theme": "light",
+      "violations": [],
+      "reading_load": 25
+    },
+    {
+      "scenario": "linear-regression",
+      "viewport": "1440x900",
+      "theme": "dark",
+      "violations": [],
+      "reading_load": 40
+    },
+    {
+      "scenario": "linear-regression",
+      "viewport": "1440x900",
+      "theme": "light",
+      "violations": [],
+      "reading_load": 40
+    },
+    {
+      "scenario": "linear-regression",
+      "viewport": "1920x1080",
+      "theme": "dark",
+      "violations": [],
+      "reading_load": 43
+    },
+    {
+      "scenario": "linear-regression",
+      "viewport": "1920x1080",
+      "theme": "light",
+      "violations": [],
+      "reading_load": 43
+    },
+    {
+      "scenario": "linear-regression",
+      "viewport": "390x844",
+      "theme": "dark",
+      "violations": [],
+      "reading_load": 49
+    },
+    {
+      "scenario": "linear-regression",
+      "viewport": "390x844",
+      "theme": "light",
+      "violations": [],
+      "reading_load": 49
+    },
+    {
+      "scenario": "two-layer-relu",
+      "viewport": "1440x900",
+      "theme": "dark",
+      "violations": [],
+      "reading_load": 40
+    },
+    {
+      "scenario": "two-layer-relu",
+      "viewport": "1440x900",
+      "theme": "light",
+      "violations": [],
+      "reading_load": 40
+    },
+    {
+      "scenario": "two-layer-relu",
+      "viewport": "1920x1080",
+      "theme": "dark",
+      "violations": [],
+      "reading_load": 43
+    },
+    {
+      "scenario": "two-layer-relu",
+      "viewport": "1920x1080",
+      "theme": "light",
+      "violations": [],
+      "reading_load": 43
+    },
+    {
+      "scenario": "two-layer-relu",
+      "viewport": "390x844",
+      "theme": "dark",
+      "violations": [],
+      "reading_load": 49
+    },
+    {
+      "scenario": "two-layer-relu",
+      "viewport": "390x844",
+      "theme": "light",
+      "violations": [],
+      "reading_load": 49
+    }
+  ],
+  "ratchet": [],
+  "not_run": [
+    "L0 engine scenarios and gate 6: the app has no guidance cue",
+    "L4 keyed replay, L5 discoverability probe: paid, operator-only",
+    "L6 recorded live rounds, L8 real-user sessions: no people in R-00",
+    "L7 heuristic and report review agents: started by the coordinator after this round command"
+  ]
+}

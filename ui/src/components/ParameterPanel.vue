@@ -19,7 +19,7 @@ const gradient = computed(() => entry('Gradient'));
 </script>
 
 <template>
-  <section class="parameter" :data-parameter="series.path">
+  <section class="parameter" :data-parameter="series.path" data-ux-region="parameter-panel">
     <h2>{{ series.path }}</h2>
     <MetricChart
       :series="series.value"

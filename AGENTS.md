@@ -92,7 +92,7 @@ Entry points are the `Taskfile.yml` tasks (go-task):
   Never edit `ui/src/generated/` by hand. The test `observatory_ui_types_in_sync` (in `task test`)
   makes the same comparison.
 - `task ui`: in `ui/`, `pnpm install --frozen-lockfile`, `pnpm typecheck`, `pnpm test` (the
-  `node --test` cases of `src/lib/`) and `pnpm build` into `ui/dist/` (Node 22.18 or later, pnpm
+  `node --test` cases of `src/lib/` and `ux/`) and `pnpm build` into `ui/dist/` (Node 22.18 or later, pnpm
   11; `ui/node_modules/` and `ui/dist/` are never committed).
 - `task ui-browser`: `task ui`, then the `#[ignore]`d browser tests of
   `crates/modelspec-cli/tests/observatory_ui.rs` and `observatory_ui_adversary.rs` with
@@ -100,6 +100,8 @@ Entry points are the `Taskfile.yml` tasks (go-task):
   named by `CHROME`, else the first of
   `google-chrome-stable`, `chromium`, `chromium-browser`, `chrome`, ... on `PATH`; `check.yml` sets
   `CHROME`.
+- `task ui-ux`: `task ui`, `cargo build -p modelspec-cli`, then `pnpm ux` in `ui/` with the
+  browser named by `CHROME` ("Observatory UI loop" below).
 - `task ci`: all of the above; the gate. `task ci` needs Node and pnpm for
   `task ui` and a Chrome for `task ui-browser`; `task build` and `task test` need neither, and
   `sh ui/scripts/build-without-node.sh` checks that with a `PATH` that holds no `node` or `pnpm`
@@ -123,6 +125,29 @@ Two build decisions of story:observatory-ui-live-loss-chart:
   (`spec/domains/observatory.yaml`, `UiDirectory`). Nothing embeds the app in the binary, so no
   `build.rs` or cargo step calls Node or pnpm, and `task build` and `task test` keep working on a
   machine without them. Without `--ui` only `/events` is served.
+
+Observatory UI loop (story:observatory-ui-iteration-loop, the `ui-iteration-loop` skill):
+`task ui-ux`, the last step of `task ci`, builds the app and `modelspec`, then runs `pnpm ux` in
+`ui/`, the Playwright specs of `ui/ux/` against
+`modelspec observe <fixture> --serve 127.0.0.1:0 --ui ui/dist` with the browser from `CHROME`
+(unset is exit 2; nothing is downloaded). A pacing proxy
+replays each fixture of `ui/ux/scenarios/` one event at a time. `layout.spec.ts` (L2) checks 3
+scenarios at 1366x768 and 1280x720 in light and dark after every event: gate 1 no scrollable
+element and no horizontal page scroll, gate 2 the always-visible elements of `ui/ux/adapter.ts`
+wholly in view, gate 3 `completion_miss` and `false_complete` 0 (also on a run ending in
+`RunFailed`), gate 5 axe-core without serious or critical violations at every key moment, every
+focusable reached by Tab. `screen-only.spec.ts` (L3, gate 4) reads each scenario's `tasks.json`
+through the accessibility tree only and must match `truth.json` in at most 2 key presses a task.
+`ratchet.spec.ts` then fails on any metric worse than `ui/ux/baseline.json` beyond its tolerance,
+an improvement not taken into it, a missing value, or a baseline made worse than
+`origin/main`'s without a `decision` id. Run one level alone with `pnpm --dir ui ux --project
+gates -g "L2 layout"` (or `-g "L3"`); `UX_UPDATE=1 pnpm ux` takes improvements into the baseline,
+`UX_DECISION=<id>` also a worse value, and `pnpm ux --project ratchet --no-deps` reruns the
+ratchet on the last run. A run writes only to `ui/node_modules/.cache/ux/`; `UX_ROUND=R-nn pnpm
+ux` also writes the round's `ui/ux/rounds/R-nn/` (`report.md`, `round.json`, `shots/`) and its
+row in `rounds/trend.md`. Findings are `ui/ux/findings/UXF-nnn.md`, and `pnpm test` fails on a
+closed S1 or S2 finding without a regression asset. `ui/src/**` carries `data-ux-region` marks
+for the loop; keep them when a component changes.
 
 ## Releases
 
