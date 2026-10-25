@@ -56,7 +56,8 @@ Every argument is required and has no default.
 Compile a `.mspec` file into an artifact directory: artifact.json and, for Vulkan, its SPIR-V kernel modules
 
 ```text
-Usage: modelspec compile [OPTIONS] --backend <BACKEND> --output <DIR> <PATH>
+Usage: modelspec compile [OPTIONS] --backend <BACKEND>
+       --output <DIR> <PATH>
 ```
 
 | Argument | Required | Default | Meaning |
@@ -95,7 +96,8 @@ Every argument is required and has no default.
 Train the WordPiece tokenizer on the Train split of a prepared dataset to an exact vocabulary size and write its record
 
 ```text
-Usage: modelspec data tokenizer --dataset <DIR> --vocab-size <N> --out <FILE>
+Usage: modelspec data tokenizer --dataset <DIR> --vocab-size <N>
+       --out <FILE>
 ```
 
 Every argument is required and has no default.
@@ -111,7 +113,8 @@ Every argument is required and has no default.
 Encode both splits of a prepared dataset with a tokenizer into sequences of an exact length and write them, their binding and their record with the held-out unigram baseline. The record's packed_id is the version-8 UUID of the blake3 hash over the Train and the HeldOut content hashes and the sequence length as 8 little-endian bytes, in that order.
 
 ```text
-Usage: modelspec data pack --dataset <DIR> --tokenizer <FILE> --seq-len <S> --out <DIR>
+Usage: modelspec data pack --dataset <DIR> --tokenizer <FILE>
+       --seq-len <S> --out <DIR>
 ```
 
 Every argument is required and has no default.
@@ -128,7 +131,8 @@ Every argument is required and has no default.
 Run the forward program of a `.mspec` model with the parameters of a checkpoint
 
 ```text
-Usage: modelspec infer [OPTIONS] --backend <BACKEND> --checkpoint <PATH> <PATH>
+Usage: modelspec infer [OPTIONS] --backend <BACKEND>
+       --checkpoint <PATH> <PATH>
 ```
 
 | Argument | Required | Default | Meaning |
@@ -179,7 +183,7 @@ Usage: modelspec observe [OPTIONS] <PATH>
 |---|---|---|---|
 | `<PATH>` | yes | none | The recorded run file to replay, as `modelspec train --record` writes it. |
 | `--serve <ADDR>` | no | `127.0.0.1:0` | Serve the replay as text/event-stream at path /events of ADDR, a loopback address such as 127.0.0.1:8080 or localhost:8080 (port 0 picks a free one); the process serves until SIGINT, SIGTERM or SIGHUP, then exits 0. |
-| `--ui <DIR>` | no | none | Also serve the built observatory UI in DIR (ui/dist after `task ui`) at http://ADDR/; the directory is read whole before ADDR is bound. |
+| `--ui <DIR>` | no | none | Also serve the built observatory UI in DIR (ui/dist after `task ui`) at path / of ADDR; the directory is read whole before ADDR is bound. |
 
 ## `modelspec train`
 
@@ -195,10 +199,11 @@ Usage: modelspec train [OPTIONS] --backend <BACKEND> <PATH>
 | `--backend <BACKEND>` | yes | none | The backend that runs the training step. One of:<br/>`cpu`: The CPU interpreter<br/>`vulkan`: Vulkan compute on one device, in a build with the vulkan feature |
 | `--serve <ADDR>` | no | none | Stream the run's events as text/event-stream at path /events of ADDR, a loopback address such as 127.0.0.1:8080 or localhost:8080 (port 0 picks a free one); the process keeps serving after the run until SIGINT, SIGTERM or SIGHUP, then exits with the run's status. |
 | `--record <PATH>` | no | none | Record the run's events to the file PATH, one JSON RunEvent per line in sequence order, the events --serve streams; `modelspec observe PATH` replays it. |
-| `--ui <DIR>` | no | none | With --serve, also serve the built observatory UI in DIR (ui/dist after `task ui`) at http://ADDR/; the directory is read whole before ADDR is bound. |
+| `--ui <DIR>` | no | none | With --serve, also serve the built observatory UI in DIR (ui/dist after `task ui`) at path / of ADDR; the directory is read whole before ADDR is bound. |
 | `--data <DIR>` | no | none | Train on the data of DIR instead of synthetic data. A DIR that holds binding.json is a packed directory of `modelspec data pack`: each input and target declaration names a tensor of the masked-language-model batch (ids, positions, key_mask, labels, weights), declared [B, S] or [B*S], and step K feeds the Train batch of step K. Any other DIR holds dense f32 files: NAME.f32 for the input and the target declaration NAME, row-major little-endian, and an optional order.u32 of sample indices. |
 | `--init <DIR>` | no | none | Start each parameter that has a file DIR/P.f32, P its path without the model name, from that file instead of its initializer. |
 | `--eval <DIR>` | no | none | After the last step, run the forward program over every sample of DIR, dense f32 files laid out as for a dense --data, and print `eval loss=<mean loss> accuracy=<fraction>`; beside a packed --data directory it is a usage error. |
+| `--eval-every <N>` | no | none | With a packed --data directory, run the forward program without dropout over every full batch of the HeldOut split and print `eval <k> loss <v> accuracy <a>` after the `step <k>` line; the step's StepCompleted carries them as the metric samples heldout_mlm_loss and heldout_mlm_accuracy. Evaluation happens at every multiple of N among the run's steps and at the run's last step, so a resumed run evaluates no step 0 of its own and starts at the first multiple of N at or after the step it resumes at. The last (count mod B) HeldOut sequences are never evaluated, count the split's sequences and B the batch. CPU only. |
 | `--steps <N>` | no | none | Run N steps instead of the steps of the file's train block; a resumed run ends at its checkpoint's step plus N. |
 | `--checkpoint <PATH>` | no | none | After the last step, write the parameters, step and optimizer to the .msckpt file PATH. |
 | `--checkpoint-every <N>` | no | none | Also write STEM-K.msckpt beside the --checkpoint file at every step K after the start that is a multiple of N and before the end. |

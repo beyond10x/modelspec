@@ -1,0 +1,13 @@
+{
+  "at": "2026-10-25T12:36:05Z",
+  "actor": "human:timo",
+  "artifact": "story:crates-page-names-current-release",
+  "kind": "story",
+  "revision": 2,
+  "change": {
+    "change": "evidence",
+    "kind": "test_result",
+    "source": "cargo test -p modelspec-docs crates::tests::the_committed_page_names_the_current_workspace_version",
+    "reference": "a216b9a8a624cc6e0c156ab766a123c110547701"
+  }
+}

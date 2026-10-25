@@ -1,0 +1,214 @@
+{
+  "round": "R-00",
+  "date": "2026-10-25",
+  "commit": {
+    "head": "c1b949ba5aa7853c961501cc6c0df84c30459b9f",
+    "dirty": true,
+    "ui_dist_sha256": "3ad02510cfb02f1ef6163967c929b18733c9ff3dc3649269506565d995734589"
+  },
+  "scenarios": {
+    "linear-regression": {
+      "card": "anchor",
+      "metrics": {
+        "layout_shift.per_100_events": 0.000778,
+        "reading_load.max": 33,
+        "reading_load.median": 30,
+        "actions_per_fix.max": 1,
+        "actions_per_fix.median": 0,
+        "glance_cost.median": 1,
+        "glance_cost.p95": 3,
+        "screen_only.actions": 1,
+        "screen_only.looks": 5,
+        "screen_only.steers": 0,
+        "screen_only.time_to_act_steps.max": 0
+      }
+    },
+    "two-layer-relu": {
+      "card": "anchor",
+      "metrics": {
+        "layout_shift.per_100_events": 0.002008,
+        "reading_load.max": 33,
+        "reading_load.median": 30,
+        "actions_per_fix.max": 1,
+        "actions_per_fix.median": 0,
+        "glance_cost.median": 1,
+        "glance_cost.p95": 3,
+        "screen_only.actions": 1,
+        "screen_only.looks": 5,
+        "screen_only.steers": 0,
+        "screen_only.time_to_act_steps.max": 0
+      }
+    },
+    "accuracy": {
+      "card": "rotating",
+      "metrics": {
+        "layout_shift.per_100_events": 0.019456,
+        "reading_load.max": 25,
+        "reading_load.median": 25,
+        "actions_per_fix.max": 0,
+        "actions_per_fix.median": 0,
+        "glance_cost.median": 1,
+        "glance_cost.p95": 2,
+        "screen_only.actions": 0,
+        "screen_only.looks": 4,
+        "screen_only.steers": 0,
+        "screen_only.time_to_act_steps.max": 0
+      }
+    }
+  },
+  "gates": {
+    "replays": 12,
+    "violations": 0,
+    "completion_miss": 0,
+    "false_complete": 0,
+    "axe_serious": 0,
+    "screen_only_wrong": 0
+  },
+  "failed_end": {
+    "scenarios": [
+      "accuracy-failed"
+    ],
+    "gates": {
+      "replays": 2,
+      "violations": 0,
+      "completion_miss": 0,
+      "false_complete": 0,
+      "axe_serious": 0
+    }
+  },
+  "measured_only": [
+    {
+      "scenario": "accuracy",
+      "viewport": "1440x900",
+      "theme": "dark",
+      "violations": [],
+      "reading_load": 25
+    },
+    {
+      "scenario": "accuracy",
+      "viewport": "1440x900",
+      "theme": "light",
+      "violations": [],
+      "reading_load": 25
+    },
+    {
+      "scenario": "accuracy",
+      "viewport": "1920x1080",
+      "theme": "dark",
+      "violations": [],
+      "reading_load": 25
+    },
+    {
+      "scenario": "accuracy",
+      "viewport": "1920x1080",
+      "theme": "light",
+      "violations": [],
+      "reading_load": 25
+    },
+    {
+      "scenario": "accuracy",
+      "viewport": "390x844",
+      "theme": "dark",
+      "violations": [],
+      "reading_load": 25
+    },
+    {
+      "scenario": "accuracy",
+      "viewport": "390x844",
+      "theme": "light",
+      "violations": [],
+      "reading_load": 25
+    },
+    {
+      "scenario": "linear-regression",
+      "viewport": "1440x900",
+      "theme": "dark",
+      "violations": [],
+      "reading_load": 40
+    },
+    {
+      "scenario": "linear-regression",
+      "viewport": "1440x900",
+      "theme": "light",
+      "violations": [],
+      "reading_load": 40
+    },
+    {
+      "scenario": "linear-regression",
+      "viewport": "1920x1080",
+      "theme": "dark",
+      "violations": [],
+      "reading_load": 43
+    },
+    {
+      "scenario": "linear-regression",
+      "viewport": "1920x1080",
+      "theme": "light",
+      "violations": [],
+      "reading_load": 43
+    },
+    {
+      "scenario": "linear-regression",
+      "viewport": "390x844",
+      "theme": "dark",
+      "violations": [],
+      "reading_load": 49
+    },
+    {
+      "scenario": "linear-regression",
+      "viewport": "390x844",
+      "theme": "light",
+      "violations": [],
+      "reading_load": 49
+    },
+    {
+      "scenario": "two-layer-relu",
+      "viewport": "1440x900",
+      "theme": "dark",
+      "violations": [],
+      "reading_load": 40
+    },
+    {
+      "scenario": "two-layer-relu",
+      "viewport": "1440x900",
+      "theme": "light",
+      "violations": [],
+      "reading_load": 40
+    },
+    {
+      "scenario": "two-layer-relu",
+      "viewport": "1920x1080",
+      "theme": "dark",
+      "violations": [],
+      "reading_load": 43
+    },
+    {
+      "scenario": "two-layer-relu",
+      "viewport": "1920x1080",
+      "theme": "light",
+      "violations": [],
+      "reading_load": 43
+    },
+    {
+      "scenario": "two-layer-relu",
+      "viewport": "390x844",
+      "theme": "dark",
+      "violations": [],
+      "reading_load": 49
+    },
+    {
+      "scenario": "two-layer-relu",
+      "viewport": "390x844",
+      "theme": "light",
+      "violations": [],
+      "reading_load": 49
+    }
+  ],
+  "ratchet": [],
+  "not_run": [
+    "L0 engine scenarios and gate 6: the app has no guidance cue",
+    "L4 keyed replay, L5 discoverability probe: paid, operator-only",
+    "L6 recorded live rounds, L8 real-user sessions, the questionnaire: no people in this round",
+    "L7 heuristic and report review agents: started by the coordinator after this round command"
+  ]
+}

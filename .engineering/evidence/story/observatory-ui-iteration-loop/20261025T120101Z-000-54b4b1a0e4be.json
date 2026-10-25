@@ -1,0 +1,13 @@
+{
+  "at": "2026-10-25T12:01:01Z",
+  "actor": "human:timo",
+  "artifact": "story:observatory-ui-iteration-loop",
+  "kind": "story",
+  "revision": 10,
+  "change": {
+    "change": "evidence",
+    "kind": "test_result",
+    "source": "task ci",
+    "reference": "59fc5dd69694e98f81ac758b53601197c0e82c22"
+  }
+}

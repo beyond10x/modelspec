@@ -29,7 +29,9 @@
 //!
 //! [`run_with`] and [`run_from`] show each step to their observer as an [`Observed`]: its loss,
 //! the parameter values that loss is of and, for a step that makes an update, the gradients the
-//! update applies (story:observatory-parameter-statistics).
+//! update applies (story:observatory-parameter-statistics). [`run_checked`] is [`run_on`] with
+//! an observer that can stop the run, as the held-out evaluation of `--eval-every` does when the
+//! forward program fails on its batches ([`super::eval`]; story:bert-heldout-evaluation).
 
 use std::collections::BTreeMap;
 
@@ -43,6 +45,7 @@ use super::checkpoint::CheckpointError;
 use super::data::{
     DataError, DenseBatch, DenseData, PackedBatch, PackedData, SyntheticData, synthetic,
 };
+use super::eval::EvalError;
 use super::init::{InitError, Stream, dropout_token, initialize};
 use super::optimizer::{ParamState, PreparedStep, StepError};
 use crate::cpu::{HostTensor, RuntimeError, evaluate_all, evaluate_with_ids};
@@ -99,9 +102,18 @@ pub enum RunError {
          learning rate would have no steps to decay over"
     )]
     Schedule { warmup_steps: u64, steps: u64 },
+    /// The held-out split cannot be evaluated ([`super::eval`]).
+    #[error(transparent)]
+    Eval(Box<EvalError>),
     /// The loss or a parameter stopped being finite ([`E_TRAIN_001`]).
     #[error("{}", .0.diagnostic)]
     NonFinite(Box<Diverged>),
+}
+
+impl From<EvalError> for RunError {
+    fn from(error: EvalError) -> Self {
+        RunError::Eval(Box::new(error))
+    }
 }
 
 /// A run stopped by [`E_TRAIN_001`]: its diagnostic, and the run up to the step that failed.
@@ -239,6 +251,30 @@ pub fn run_on(
     init: &BTreeMap<ParamId, HostTensor<f32>>,
     start: u64,
     mut observe: impl FnMut(&Observed<'_>),
+    after: impl FnMut(u64, &ParamState) -> Result<(), CheckpointError>,
+) -> Result<Run, RunError> {
+    run_checked(
+        compiled,
+        data,
+        init,
+        start,
+        |o| {
+            observe(o);
+            Ok(())
+        },
+        after,
+    )
+}
+
+/// Runs as [`run_on`] does with an observer that can stop the run: an error from `observe`
+/// stops it at that step, before the step's update, and is the run's error. The error is boxed,
+/// so that the observer's own `Result` stays small.
+pub fn run_checked(
+    compiled: &CompiledTraining,
+    data: Option<Data<'_>>,
+    init: &BTreeMap<ParamId, HostTensor<f32>>,
+    start: u64,
+    mut observe: impl FnMut(&Observed<'_>) -> Result<(), Box<RunError>>,
     mut after: impl FnMut(u64, &ParamState) -> Result<(), CheckpointError>,
 ) -> Result<Run, RunError> {
     let config = &compiled.config;
@@ -302,7 +338,8 @@ pub fn run_on(
                 values: &state.values,
                 gradients: Some(evaluated.gradients()),
                 learning_rate: Some(learning_rate),
-            });
+            })
+            .map_err(|error| *error)?;
             evaluated.apply(&mut state)
         } else {
             let (inputs, ids) = feed.inputs(end)?;
@@ -313,7 +350,8 @@ pub fn run_on(
                 values: &state.values,
                 gradients: None,
                 learning_rate: None,
-            });
+            })
+            .map_err(|error| *error)?;
             loss
         };
         losses.push(loss);
@@ -427,8 +465,9 @@ pub fn evaluate_dense(
     })
 }
 
-/// The index of the first maximum of `row`, or `None` when `row` holds a NaN.
-fn argmax(row: &[f32]) -> Option<usize> {
+/// The index of the first maximum of `row`, the lowest index among ties, or `None` when `row`
+/// holds a NaN.
+pub(crate) fn argmax(row: &[f32]) -> Option<usize> {
     if row.iter().any(|v| v.is_nan()) {
         return None;
     }

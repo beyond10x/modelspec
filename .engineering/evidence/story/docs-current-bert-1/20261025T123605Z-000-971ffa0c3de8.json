@@ -1,0 +1,13 @@
+{
+  "at": "2026-10-25T12:36:05Z",
+  "actor": "human:timo",
+  "artifact": "story:docs-current-bert-1",
+  "kind": "story",
+  "revision": 4,
+  "change": {
+    "change": "evidence",
+    "kind": "test_result",
+    "source": "task ci",
+    "reference": "a216b9a8a624cc6e0c156ab766a123c110547701"
+  }
+}

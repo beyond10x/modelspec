@@ -24,7 +24,7 @@ const title = computed(() => (props.subject === 'Value' ? 'values' : 'gradient')
 </script>
 
 <template>
-  <figure class="chart histogram">
+  <figure class="chart histogram" data-ux-region="histogram">
     <figcaption>
       <span class="name">{{ path }} {{ title }}</span>
       <span class="last">step {{ step }}<template v-if="outside">, {{ outside }} outside the bins</template></span>

@@ -38,7 +38,7 @@ pub struct Args {
         value_parser = modelspec_observatory::parse_serve_address
     )]
     pub serve: SocketAddr,
-    /// Also serve the built observatory UI in DIR (ui/dist after `task ui`) at http://ADDR/; the
+    /// Also serve the built observatory UI in DIR (ui/dist after `task ui`) at path / of ADDR; the
     /// directory is read whole before ADDR is bound.
     #[arg(long, value_name = "DIR")]
     pub ui: Option<PathBuf>,

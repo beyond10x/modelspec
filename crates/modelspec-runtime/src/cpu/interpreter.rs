@@ -245,7 +245,7 @@ pub fn evaluate_all_with_ids<T: Element>(
     params: &BTreeMap<ParamId, HostTensor<T>>,
 ) -> Result<Evaluation<T>, RuntimeError> {
     verify(program)?;
-    let mut prepared = Prepared::planned(program, Keep::Every);
+    let mut prepared = Prepared::planned(program, Keep::Every, &[]);
     prepared.execute(inputs, ids, params)?;
     let mut outputs = Vec::new();
     prepared.outputs_into(inputs, params, &mut outputs)?;
@@ -318,16 +318,20 @@ struct Plan {
     id_reads: Vec<(usize, u64)>,
     /// Each `Dropout` and `DropoutGrad` node, in node order.
     dropouts: Vec<usize>,
+    /// The nodes whose value a run holds in its own storage when it ends, beside the outputs,
+    /// for [`Prepared::kept`]: never supplied, read in place, freed or moved out.
+    kept: Vec<usize>,
 }
 
 impl Plan {
-    fn new(program: &TensorProgram, keep: Keep) -> Self {
+    fn new(program: &TensorProgram, keep: Keep, kept: &[ValueId]) -> Self {
         let index: BTreeMap<ValueId, usize> = program
             .nodes
             .iter()
             .enumerate()
             .map(|(i, node)| (node.id, i))
             .collect();
+        let kept: Vec<usize> = kept.iter().filter_map(|v| index.get(v).copied()).collect();
         let shapes: Vec<Vec<u64>> = program
             .nodes
             .iter()
@@ -343,10 +347,14 @@ impl Plan {
         let mut hold = vec![Hold::Stored(0); program.nodes.len()];
         if keep == Keep::Outputs {
             for (&transpose, &source) in &in_place_transposes(program) {
-                hold[index[&transpose]] = Hold::InPlace(index[&source]);
+                if !kept.contains(&index[&transpose]) {
+                    hold[index[&transpose]] = Hold::InPlace(index[&source]);
+                }
             }
-            for (node, hold) in program.nodes.iter().zip(&mut hold) {
-                if matches!(node.op, TensorOp::Input { .. } | TensorOp::ParamRead { .. }) {
+            for (i, (node, hold)) in program.nodes.iter().zip(&mut hold).enumerate() {
+                if matches!(node.op, TensorOp::Input { .. } | TensorOp::ParamRead { .. })
+                    && !kept.contains(&i)
+                {
                     *hold = Hold::Supplied;
                 }
             }
@@ -391,8 +399,8 @@ impl Plan {
         }
         let mut frees = vec![Vec::new(); program.nodes.len()];
         for (i, (&held, &last)) in hold.iter().zip(&last).enumerate() {
-            let kept = keep == Keep::Every || outputs.contains(&i);
-            if !matches!(held, Hold::InPlace(_)) && !kept {
+            let held_to_end = keep == Keep::Every || outputs.contains(&i) || kept.contains(&i);
+            if !matches!(held, Hold::InPlace(_)) && !held_to_end {
                 frees[last].push(i);
             }
         }
@@ -427,6 +435,7 @@ impl Plan {
                 keep == Keep::Outputs
                     && matches!(hold[*node], Hold::Stored(_))
                     && !outputs[p + 1..].contains(node)
+                    && !kept.contains(node)
             })
             .collect();
         Self {
@@ -439,6 +448,7 @@ impl Plan {
             slots,
             id_reads,
             dropouts,
+            kept,
         }
     }
 }
@@ -490,16 +500,46 @@ impl<'p, T: Element> Prepared<'p, T> {
     /// Verifies `program` and plans its runs.
     pub fn new(program: &'p TensorProgram) -> Result<Self, RuntimeError> {
         verify(program)?;
-        Ok(Self::planned(program, Keep::Outputs))
+        Ok(Self::planned(program, Keep::Outputs, &[]))
     }
 
     /// Plans the runs of `program`, which the caller has verified.
     pub(crate) fn verified(program: &'p TensorProgram) -> Self {
-        Self::planned(program, Keep::Outputs)
+        Self::planned(program, Keep::Outputs, &[])
     }
 
-    fn planned(program: &'p TensorProgram, keep: Keep) -> Self {
-        let plan = Plan::new(program, keep);
+    /// Verifies `program` and plans its runs as [`Prepared::new`] does, except that each value
+    /// of `kept` is computed into the plan's own storage and held there after a run, until the
+    /// next run refills it, for [`Prepared::kept`]. Every other intermediate is still freed after
+    /// its last consumer.
+    pub(crate) fn keeping(
+        program: &'p TensorProgram,
+        kept: &[ValueId],
+    ) -> Result<Self, RuntimeError> {
+        verify(program)?;
+        Ok(Self::planned(program, Keep::Outputs, kept))
+    }
+
+    /// The value of `value` in the last run that finished, if the plan keeps it
+    /// ([`Prepared::keeping`]); `None` before the first run and for a value it does not keep.
+    pub(crate) fn kept(&self, value: ValueId) -> Option<&HostTensor<T>> {
+        let node = self.program.nodes.iter().position(|n| n.id == value)?;
+        if !self.plan.kept.contains(&node) {
+            return None;
+        }
+        match self.plan.hold[node] {
+            Hold::Stored(slot) => self.storage[slot].as_ref(),
+            _ => None,
+        }
+    }
+
+    /// The program this plan runs.
+    pub(crate) fn program(&self) -> &'p TensorProgram {
+        self.program
+    }
+
+    fn planned(program: &'p TensorProgram, keep: Keep, kept: &[ValueId]) -> Self {
+        let plan = Plan::new(program, keep, kept);
         let storage = (0..plan.slots).map(|_| None).collect();
         Self {
             program,

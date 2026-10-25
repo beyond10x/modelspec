@@ -12,7 +12,12 @@ A Rust compiler and runtime for `.mspec` tensor-program specifications. Humans s
 ## State
 
 Milestone M0 implemented (DESIGN.md revision 0.6, § 1 and § 11, iteration 1; wave `m0` closed);
-M1 (`epic:m1-vulkan-execution`) is in progress, latest release 0.10.0. A Cargo workspace of five crates: `modelspec-core`
+M1 (`epic:m1-vulkan-execution`) is in progress, latest release 0.11.0. The active milestone is
+`epic:bert-from-scratch`, M3's BERT proof model: the operators `embedding` (with `i32` row ids),
+`add_rows`, `gelu`, `layer_norm`, `softmax` and `attention` (0.10.0), `cross_entropy` and
+`dropout` (0.11.0) run on the CPU interpreter only, as do packed `--data` training and
+`--eval-every` held-out evaluation (0.11.0); every command that needs a Vulkan kernel for one
+answers E-TARGET-011 at its call, and their kernels and AdamW are draft stories. A Cargo workspace of five crates: `modelspec-core`
 (parser, checker, Tensor IR, autodiff, lowering, DCE; no Vulkan), `modelspec-runtime` (CPU oracle,
 SGD training and the corpus preparation, WordPiece tokenizer and MLM batch packing `dataset`; the `vulkan` feature holds Vulkan device discovery, negotiation, SPIR-V
 emission and the training runner `vulkan::runner` through `ash` and `rspirv`; the JSON Schema of
@@ -49,6 +54,14 @@ D26); `dataset::mlm::mlm_batch` draws the 80/10/10 batch of a step from them, ma
 stream tag 3 and the epoch order on tag 5 (DESIGN.md § 2.3). Its tests are
 `cargo test -p modelspec-runtime --test mlm` and `cargo test -p modelspec-cli --test data_pack`,
 on the `corpus-tokenizer` fixture.
+`train <file> --backend cpu --data <dir>` on a packed directory (one holding `binding.json`) feeds
+step `k` the `Train` batch of step `k`, each `input` and `target` naming a batch tensor (`ids`,
+`positions`, `key_mask`, `labels`, `weights`), and prints a `data` line first (DESIGN.md 0.46);
+any other `--data` directory holds dense `f32` files. `--data`, `--init` and `--eval` are CPU only.
+Its tests are `cargo test -p modelspec-cli --test train_data`.
+The documentation site's guide `website/docs/guides/prepare-training-data.md` and concept page
+`website/docs/concepts/bert-operators.md` paste output from these commands; rerun them when the
+output changes.
 CI: `check.yml` runs `task ci`; `shared-gates.yml` runs the
 common source gates; `pages.yml` and `b10x-docs-site.yml` build and publish the documentation site.
 
@@ -92,7 +105,7 @@ Entry points are the `Taskfile.yml` tasks (go-task):
   Never edit `ui/src/generated/` by hand. The test `observatory_ui_types_in_sync` (in `task test`)
   makes the same comparison.
 - `task ui`: in `ui/`, `pnpm install --frozen-lockfile`, `pnpm typecheck`, `pnpm test` (the
-  `node --test` cases of `src/lib/`) and `pnpm build` into `ui/dist/` (Node 22.18 or later, pnpm
+  `node --test` cases of `src/lib/` and `ux/`) and `pnpm build` into `ui/dist/` (Node 22.18 or later, pnpm
   11; `ui/node_modules/` and `ui/dist/` are never committed).
 - `task ui-browser`: `task ui`, then the `#[ignore]`d browser tests of
   `crates/modelspec-cli/tests/observatory_ui.rs` and `observatory_ui_adversary.rs` with
@@ -100,6 +113,8 @@ Entry points are the `Taskfile.yml` tasks (go-task):
   named by `CHROME`, else the first of
   `google-chrome-stable`, `chromium`, `chromium-browser`, `chrome`, ... on `PATH`; `check.yml` sets
   `CHROME`.
+- `task ui-ux`: `task ui`, `cargo build -p modelspec-cli`, then `pnpm ux` in `ui/` with the
+  browser named by `CHROME` ("Observatory UI loop" below).
 - `task ci`: all of the above; the gate. `task ci` needs Node and pnpm for
   `task ui` and a Chrome for `task ui-browser`; `task build` and `task test` need neither, and
   `sh ui/scripts/build-without-node.sh` checks that with a `PATH` that holds no `node` or `pnpm`
@@ -123,6 +138,47 @@ Two build decisions of story:observatory-ui-live-loss-chart:
   (`spec/domains/observatory.yaml`, `UiDirectory`). Nothing embeds the app in the binary, so no
   `build.rs` or cargo step calls Node or pnpm, and `task build` and `task test` keep working on a
   machine without them. Without `--ui` only `/events` is served.
+
+Observatory UI loop (story:observatory-ui-iteration-loop, the `ui-iteration-loop` skill):
+`task ui-ux`, the last step of `task ci`, builds the app and `modelspec`, then runs `pnpm ux` in
+`ui/`, the Playwright specs of `ui/ux/` against
+`modelspec observe <fixture> --serve 127.0.0.1:0 --ui ui/dist` with the browser from `CHROME`;
+nothing is downloaded. `CHROME` unset: `task ui-ux` refuses before it builds, with one line, and
+exits 201, go-task's code for a failed command (`task -x ui-ux` passes the command's 2 through);
+`pnpm ux` exits 2. Every page runs under one injected font stack, `DejaVu Sans` for text and
+`DejaVu Sans Mono` for code (`FONTS` in `ui/ux/adapter.ts`), so this machine and the CI runner
+measure the same words; `pnpm ux` exits 2 with one line when `fc-list` lacks either, and a gate
+fails when the browser draws with another font. A pacing proxy replays each fixture of
+`ui/ux/scenarios/`. `layout.spec.ts` (L2, through `contract.ts`) sends one event at a time and
+checks 3 scenarios at 1366x768 and 1280x720 in light and dark after every event: gate 1 no
+scrollable element and no horizontal page scroll, gate 2 the always-visible elements of
+`ui/ux/adapter.ts` wholly in view, gate 3 `completion_miss` and `false_complete` 0 (also on the
+rotating card ending in `RunFailed`, recorded under `failed_end` in `round.json` and never
+ratcheted), gate 5 axe-core without serious or critical violations at every key moment, no
+animation under reduced motion after any event, every focusable reached by Tab with a focus
+indicator. `screen-only.spec.ts` (L3, gate 4) reads each scenario's `tasks.json` through the
+accessibility tree, a value only when its own text is in view, uncovered and not transparent, and
+must match `truth.json` in at most 2 key presses a task; the end-state task is answerable only once
+the state reads `finished` or `failed`. A second, live replay sends one event every `CADENCE_MS`
+(40 ms) without waiting for the screen, and `time_to_act` is the steps sent at least
+`RENDER_BUDGET_MS` (250 ms) before a reading minus the steps up to the one the screen shows.
+`ratchet.spec.ts` then fails on any metric worse than `ui/ux/baseline.json` beyond its tolerance,
+an improvement not taken into it, a missing value, a tolerance in the file that disagrees with
+`TOLERANCES` or `KEYS` (the band comes only from the code), or a baseline made worse than
+`origin/main`'s without a `decision` id; `origin/main` missing is an error naming the ref, so
+`check.yml` fetches `main` before `task ci`. `layout_shift.per_100_events` is a replay's shift sum
+per 100 events. The `self-test` project (`self-test.spec.ts`) plants one defect per gate into the
+served page and fails when the gate's own code misses it. Run one level alone with `pnpm --dir ui
+ux --project gates -g "L2 layout"` (or `-g "L3"`, or `--project self-test`); `UX_UPDATE=1 pnpm
+ux` takes improvements into the baseline, `UX_DECISION=<id>` (not empty) also a worse value, and
+`pnpm ux --project ratchet --no-deps` reruns the ratchet on the last run. A run writes only to
+`ui/node_modules/.cache/ux/`; `UX_ROUND=R-nn pnpm ux` also writes the round's `ui/ux/rounds/R-nn/`
+(`report.md` with its caveats first, `round.json` with the measured HEAD, a dirty flag and the
+`ui/dist` hash, and `shots/`, replacing only the shots it generates and never `review-*`) and its
+row in `rounds/trend.md`, whose columns are named per scenario. Findings are
+`ui/ux/findings/UXF-nnn.md`, and `pnpm test` fails on a closed S1 or S2 finding without a
+regression asset. `ui/src/**` carries `data-ux-region` marks for the loop; keep them when a
+component changes.
 
 ## Releases
 

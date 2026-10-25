@@ -40,9 +40,10 @@ pub mod codes {
     /// checks; reduce the shape.
     pub const TOO_LARGE_FOR_TARGET: Code = Code::new("E-TARGET-010");
 
-    /// An operator of the training step has no Vulkan kernel yet: `embedding`, whose lookup and
-    /// gradient run on the CPU interpreter only, or the optimizer `adamw`, whose step runs there
-    /// too and is reported at the `train` block (DESIGN.md § 8.1). The file checks; use
+    /// An operator of the training step has no Vulkan kernel yet: `embedding`, `add_rows`,
+    /// `gelu`, `layer_norm`, `softmax`, `attention`, `cross_entropy` or `dropout`, which with
+    /// their gradients run on the CPU interpreter only, or the optimizer `adamw`, whose step
+    /// runs there too and is reported at the `train` block (DESIGN.md § 8.1). The file checks; use
     /// `--backend cpu`.
     pub const NO_KERNEL: Code = Code::new("E-TARGET-011");
 }

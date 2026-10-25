@@ -252,7 +252,7 @@ pub fn page(root: &Path) -> Result<String> {
     let mut out = front_matter(
         "Operators",
         "Operators",
-        "The tensor operators a model may call in M0, their shape rules, and their gradients, from the operator registry.",
+        "The tensor operators a model may call, their shape rules, and their gradients, from the operator registry.",
         3,
     );
     let named: Vec<String> = OPERATORS
@@ -261,7 +261,7 @@ pub fn page(root: &Path) -> Result<String> {
         .map(|(name, op)| format!("`{name}` takes {}", named_arguments(op).join(", ")))
         .collect();
     out.push_str(&format!(
-        "M0 has {} operators. A model calls them by name with positional arguments; there are no \
+        "The language has {} operators. A model calls them by name with positional arguments; there are no \
          infix operators yet, so `a + b` is written `add(a, b)`. Every operand is `f32` except \
          the ids of `embedding` and the labels of `cross_entropy`, each its second operand, \
          which are `i32`. The Tensor IR op of `dropout` also reads the RNG token of its call \
@@ -387,6 +387,16 @@ mod tests {
              `rhs Tensor<f32, [3, 1]>`, `expected rhs dimension[0] = 4; got 3` |"
         ));
         assert!(page.contains("| `MatMul` | `G @ transpose(B)` | `transpose(A) @ G` |"));
+    }
+
+    /// The BERT operators are not part of milestone M0, so the page counts the language's
+    /// operators without naming a milestone.
+    #[test]
+    fn the_operator_count_names_no_milestone() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let page = page(&root).unwrap();
+        assert!(!page.contains("M0"), "the operators page names M0");
+        assert!(page.contains(&format!("The language has {} operators.", OPERATORS.len())));
     }
 
     /// `embedding` takes `i32` ids: its examples are typed with the dtype the registry gives each

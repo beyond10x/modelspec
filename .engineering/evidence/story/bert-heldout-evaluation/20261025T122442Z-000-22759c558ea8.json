@@ -1,0 +1,13 @@
+{
+  "at": "2026-10-25T12:24:42Z",
+  "actor": "human:timo",
+  "artifact": "story:bert-heldout-evaluation",
+  "kind": "story",
+  "revision": 5,
+  "change": {
+    "change": "evidence",
+    "kind": "test_result",
+    "source": "task ci",
+    "reference": "1d058aeb19f7c42c118085a19fa6847a9514686e"
+  }
+}

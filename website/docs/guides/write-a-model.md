@@ -1,6 +1,9 @@
 ---
 title: Write a model
 description: Build a two-layer model with a relu in the M0 subset, step by step, checking it after each step and training it on the CPU reference.
+sidebar_position: 1
+lede: "A two-layer model with a relu is written in the M0 subset in three steps, then checked, printed as IR and trained on the CPU reference."
+source: "DESIGN.md § 2; crates/modelspec-docs/models/two_layer_relu.mspec, the finished file; the tests check.rs and ir_tensor.rs of crates/modelspec-cli; every output pasted from a run of the commands it shows."
 ---
 
 # Write a model
@@ -114,7 +117,7 @@ it with `E-TARGET-001` ([Roadmap](../roadmap.md)).
 
 ## Where to go from here
 
-- [Operators](../reference/operators.md): the nine operators and the shapes each accepts.
+- [Operators](../reference/operators.md): every operator and the shapes each accepts.
 - [Diagnostics](../reference/diagnostics.md): every code the checker can print.
 - [Syntax beyond M0](../examples/beyond-m0.md): modules, layers and generic dimensions, which M0
   refuses.
