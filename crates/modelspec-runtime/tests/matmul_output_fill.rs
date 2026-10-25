@@ -76,6 +76,10 @@ impl Element for Counted {
     fn exp(self) -> Self {
         Counted(self.0.exp())
     }
+
+    fn sqrt(self) -> Self {
+        Counted(self.0.sqrt())
+    }
 }
 
 /// The clones `f` makes on this thread, and its result.

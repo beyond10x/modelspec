@@ -86,6 +86,16 @@ const EXAMPLES: &[Examples] = &[
         accepted: &[&[&[8, 4]], &[&[]]],
         refused: &[],
     },
+    Examples {
+        operator: "layer_norm",
+        accepted: &[&[&[8, 4], &[4], &[4]]],
+        refused: &[&[&[8, 4], &[5], &[4]], &[&[4], &[4], &[4]]],
+    },
+    Examples {
+        operator: "softmax",
+        accepted: &[&[&[8, 4]]],
+        refused: &[&[&[4]]],
+    },
 ];
 
 /// `name(Tensor<...>, ...)`, as a call in source would read with typed operands.
@@ -236,7 +246,7 @@ pub fn page(root: &Path) -> Result<String> {
     out.push_str(&details);
     let source = fs::read_to_string(root.join(OPS)).map_err(io(OPS))?;
     out.push_str(
-        "\n## Gradients\n\nThe reverse-mode rule of each op, for `Y = op(A, B)` and `G = dL/dY`, \
+        "\n## Gradients\n\nThe reverse-mode rule of each op, for `Y = op(A, B, C)` and `G = dL/dY`, \
          from the doc comment of `ops::gradient`. `modelspec-runtime`'s gradient tests check every \
          rule against central finite differences.\n\n",
     );
@@ -296,6 +306,38 @@ mod tests {
         assert!(page.contains("| `gelu(Tensor<f32, [8, 4]>)` | `Tensor<f32, [8, 4]>` |"));
         assert!(page.contains("| `AddRows` | `G` | `sum_rows(G)`"));
         assert!(page.contains("| `Gelu` | `gelu_grad(A, G)`"));
+    }
+
+    /// `layer_norm` and `softmax` are on the page with an accepted and a refused call each, and
+    /// the gradient rows of `LayerNorm` and `Softmax` are in the table, `LayerNorm`'s with its
+    /// third operand.
+    #[test]
+    fn layer_norm_and_softmax_are_on_the_page_with_their_gradients() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let page = page(&root).unwrap();
+        assert!(page.contains("\n## `layer_norm`\n"));
+        assert!(page.contains(
+            "| `layer_norm(Tensor<f32, [8, 4]>, Tensor<f32, [4]>, Tensor<f32, [4]>)` | \
+             `Tensor<f32, [8, 4]>` |"
+        ));
+        assert!(page.contains(
+            "| `layer_norm(Tensor<f32, [8, 4]>, Tensor<f32, [5]>, Tensor<f32, [4]>)` | refused: "
+        ));
+        assert!(page.contains("\n## `softmax`\n"));
+        assert!(page.contains("| `softmax(Tensor<f32, [8, 4]>)` | `Tensor<f32, [8, 4]>` |"));
+        assert!(page.contains("| `softmax(Tensor<f32, [4]>)` | refused: "));
+        let row = page
+            .lines()
+            .find(|l| l.starts_with("| `LayerNorm` | `layer_norm_grad_x(A, B, G)` ("))
+            .expect("the LayerNorm gradient row");
+        let cells: Vec<&str> = row.split(" | ").collect();
+        assert_eq!(cells.len(), 4, "op, dA, dB and dC: {row}");
+        assert!(
+            cells[2].starts_with("`layer_norm_grad_gamma(A, G)` ("),
+            "{row}"
+        );
+        assert_eq!(cells[3], "`sum_rows(G)` |", "{row}");
+        assert!(page.contains("| `Softmax` | `softmax_grad(Y, G)`"));
     }
 
     #[test]

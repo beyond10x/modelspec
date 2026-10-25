@@ -2192,6 +2192,44 @@ mod tests {
         );
     }
 
+    /// `softmax(layer_norm(x, gamma, beta))` and the three internal gradient ops verify; a
+    /// `LayerNorm` whose `gamma` is not the width of `x` is refused by the registry rule.
+    #[test]
+    fn the_norm_and_softmax_ops_verify_and_a_gamma_of_another_width_is_refused() {
+        let mut b = crate::ir::tensor::TensorProgramBuilder::new();
+        let x = b.input("x", TensorType::f32(&[4, 5])).unwrap();
+        let gamma = b.input("gamma", TensorType::f32(&[5])).unwrap();
+        let beta = b.input("beta", TensorType::f32(&[5])).unwrap();
+        let z = b.layer_norm(x, gamma, beta).unwrap();
+        let y = b.softmax(z).unwrap();
+        let dz = b.softmax_grad(y, z).unwrap();
+        let dx = b.layer_norm_grad_x(x, gamma, dz).unwrap();
+        let dgamma = b.layer_norm_grad_gamma(x, dz).unwrap();
+        b.output(y).unwrap();
+        b.output(dx).unwrap();
+        b.output(dgamma).unwrap();
+        let mut program = b.finish();
+        assert_eq!(verify(&program), Ok(()));
+
+        let wide = program.inputs[1];
+        let at = program.nodes.iter().position(|n| n.id == wide).unwrap();
+        program.nodes[at].ty = TensorType::f32(&[6]);
+        assert!(
+            matches!(
+                verify(&program),
+                Err(VerifyError::Op {
+                    source: OpError::ShapeMismatch {
+                        op: "LayerNorm",
+                        ..
+                    },
+                    ..
+                })
+            ),
+            "{:?}",
+            verify(&program)
+        );
+    }
+
     /// Outputs are `f32`: an `i32` input is read only as ids.
     #[test]
     fn an_i32_output_is_refused() {

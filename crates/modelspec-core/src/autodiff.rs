@@ -140,7 +140,7 @@ fn reverse_walk(
             continue;
         }
         let wanted: Vec<bool> = node.operands.iter().map(|o| reaches[position[o]]).collect();
-        let per_operand = ops::gradient(sink, &node.op, &node.operands, g, &wanted)
+        let per_operand = ops::gradient(sink, &node.op, &node.operands, node.id, g, &wanted)
             .map_err(rule_error(node.id))?
             .ok_or(AutodiffError::NoGradientRule {
                 node: node.id,
@@ -633,5 +633,63 @@ mod tests {
         let dw = program.node(training.gradients[&ParamId(0)]).unwrap();
         assert_eq!(dw.op, TensorOp::MatMul);
         assert_eq!(dw.operands[1], dz.id, "dW = transpose(x) @ dZ");
+    }
+
+    /// `mse(softmax(layer_norm(matmul(x, w), gamma, beta)), t)` with `w`, `gamma` and `beta`
+    /// parameters.
+    fn norm_softmax() -> (TensorProgram, ValueId) {
+        let mut b = TensorProgramBuilder::new();
+        let w = b
+            .declare_param("w", TensorType::f32(&[3, 5]), Initializer::XavierUniform)
+            .unwrap();
+        let gamma = b
+            .declare_param("gamma", TensorType::f32(&[5]), Initializer::Ones)
+            .unwrap();
+        let beta = b
+            .declare_param("beta", TensorType::f32(&[5]), Initializer::Zeros)
+            .unwrap();
+        let x = b.input("x", TensorType::f32(&[4, 3])).unwrap();
+        let w = b.param_read(w).unwrap();
+        let gamma = b.param_read(gamma).unwrap();
+        let beta = b.param_read(beta).unwrap();
+        let xw = b.matmul(x, w).unwrap();
+        let z = b.layer_norm(xw, gamma, beta).unwrap();
+        let y = b.softmax(z).unwrap();
+        let t = b.input("t", TensorType::f32(&[4, 5])).unwrap();
+        let loss = b.mse(y, t).unwrap();
+        b.output(loss).unwrap();
+        (b.finish(), loss)
+    }
+
+    /// The adjoint of the `layer_norm` result is a `SoftmaxGrad` of the `softmax` result; the
+    /// gradient of `gamma` is a `LayerNormGradGamma` and of `beta` a `SumRows` of that adjoint,
+    /// and the adjoint of `x W` a `LayerNormGradX` reading `x W`, `gamma` and it.
+    #[test]
+    fn the_norm_gradients_are_their_internal_ops_over_a_softmax_grad() {
+        let (forward, loss) = norm_softmax();
+        let training = differentiate(&forward, loss).unwrap();
+        let program = &training.program;
+        let find = |op: TensorOp| forward.nodes.iter().find(|n| n.op == op).unwrap().id;
+        let (xw, z, y) = (
+            find(TensorOp::MatMul),
+            find(TensorOp::LayerNorm),
+            find(TensorOp::Softmax),
+        );
+        let dgamma = program.node(training.gradients[&ParamId(1)]).unwrap();
+        assert_eq!(dgamma.op, TensorOp::LayerNormGradGamma);
+        assert_eq!(dgamma.ty, TensorType::f32(&[5]));
+        let dz = program.node(dgamma.operands[1]).unwrap();
+        assert_eq!(dz.op, TensorOp::SoftmaxGrad);
+        assert_eq!(dz.operands[0], y, "SoftmaxGrad reads the softmax result");
+        assert_eq!(dgamma.operands[0], xw, "LayerNormGradGamma reads x W");
+        let dbeta = program.node(training.gradients[&ParamId(2)]).unwrap();
+        assert_eq!(dbeta.op, TensorOp::SumRows);
+        assert_eq!(dbeta.operands, vec![dz.id]);
+        let dw = program.node(training.gradients[&ParamId(0)]).unwrap();
+        let dxw = program.node(dw.operands[1]).unwrap();
+        assert_eq!(dxw.op, TensorOp::LayerNormGradX);
+        let gamma_read =
+            forward.nodes[forward.nodes.iter().position(|n| n.id == z).unwrap()].operands[1];
+        assert_eq!(dxw.operands, vec![xw, gamma_read, dz.id]);
     }
 }

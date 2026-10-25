@@ -176,6 +176,22 @@ pub enum TensorOp {
     /// Internal gradient op over operands `A, G` of one shape: the derivative of [`Self::Gelu`]
     /// at `A` times `G`, element by element (DESIGN.md § 4).
     GeluGrad,
+    /// `x: f32[N, H]`, `gamma: f32[H]`, `beta: f32[H] -> f32[N, H]`: each row of `x` less its mean,
+    /// divided by `sqrt(var + 1e-12)` with `var` its biased variance, times `gamma` plus `beta`
+    /// (DESIGN.md § 4).
+    LayerNorm,
+    /// Internal gradient op over operands `x: f32[N, H]`, `gamma: f32[H]`, `G: f32[N, H]`: the
+    /// gradient of [`Self::LayerNorm`] with respect to `x` (DESIGN.md § 4).
+    LayerNormGradX,
+    /// Internal gradient op over operands `x: f32[N, H]`, `G: f32[N, H]` `-> f32[H]`: the gradient
+    /// of [`Self::LayerNorm`] with respect to `gamma`, the rows of `G` times the normalized rows
+    /// of `x` summed in ascending order (DESIGN.md § 4).
+    LayerNormGradGamma,
+    /// `x: f32[N, K] -> f32[N, K]`: per row `exp(x - max) / sum(exp(x - max))` (DESIGN.md § 4).
+    Softmax,
+    /// Internal gradient op over operands `y`, `G` of one `[N, K]` shape, `y` the result of
+    /// [`Self::Softmax`]: `y * (G - rowsum(G * y))` (DESIGN.md § 4).
+    SoftmaxGrad,
 }
 
 impl TensorOp {
@@ -202,6 +218,11 @@ impl TensorOp {
             TensorOp::SumRows => "SumRows",
             TensorOp::Gelu => "Gelu",
             TensorOp::GeluGrad => "GeluGrad",
+            TensorOp::LayerNorm => "LayerNorm",
+            TensorOp::LayerNormGradX => "LayerNormGradX",
+            TensorOp::LayerNormGradGamma => "LayerNormGradGamma",
+            TensorOp::Softmax => "Softmax",
+            TensorOp::SoftmaxGrad => "SoftmaxGrad",
         }
     }
 }
@@ -447,6 +468,41 @@ impl TensorProgramBuilder {
         self.push(TensorOp::GeluGrad, &[a, g])
     }
 
+    /// Each row of the `[N, H]` `x` normalized, times the `[H]` `gamma` plus the `[H]` `beta`.
+    pub fn layer_norm(
+        &mut self,
+        x: ValueId,
+        gamma: ValueId,
+        beta: ValueId,
+    ) -> Result<ValueId, BuildError> {
+        self.push(TensorOp::LayerNorm, &[x, gamma, beta])
+    }
+
+    /// The gradient of `layer_norm(x, gamma, _)` with respect to `x`, from the result's `g`.
+    pub fn layer_norm_grad_x(
+        &mut self,
+        x: ValueId,
+        gamma: ValueId,
+        g: ValueId,
+    ) -> Result<ValueId, BuildError> {
+        self.push(TensorOp::LayerNormGradX, &[x, gamma, g])
+    }
+
+    /// The gradient of `layer_norm(x, _, _)` with respect to `gamma`, from the result's `g`.
+    pub fn layer_norm_grad_gamma(&mut self, x: ValueId, g: ValueId) -> Result<ValueId, BuildError> {
+        self.push(TensorOp::LayerNormGradGamma, &[x, g])
+    }
+
+    /// The softmax of each row of the `[N, K]` `x`.
+    pub fn softmax(&mut self, x: ValueId) -> Result<ValueId, BuildError> {
+        self.push(TensorOp::Softmax, &[x])
+    }
+
+    /// The gradient of a softmax whose result is `y`, from the result's `g`.
+    pub fn softmax_grad(&mut self, y: ValueId, g: ValueId) -> Result<ValueId, BuildError> {
+        self.push(TensorOp::SoftmaxGrad, &[y, g])
+    }
+
     /// Adds any op except `Input`, typed by the registry.
     pub fn push(&mut self, op: TensorOp, operands: &[ValueId]) -> Result<ValueId, BuildError> {
         self.push_at(op, operands, None)
@@ -547,6 +603,11 @@ mod tests {
             TensorOp::SumRows,
             TensorOp::Gelu,
             TensorOp::GeluGrad,
+            TensorOp::LayerNorm,
+            TensorOp::LayerNormGradX,
+            TensorOp::LayerNormGradGamma,
+            TensorOp::Softmax,
+            TensorOp::SoftmaxGrad,
         ];
         for op in &ops {
             match op {
@@ -569,7 +630,12 @@ mod tests {
                 | TensorOp::AddRows
                 | TensorOp::SumRows
                 | TensorOp::Gelu
-                | TensorOp::GeluGrad => {}
+                | TensorOp::GeluGrad
+                | TensorOp::LayerNorm
+                | TensorOp::LayerNormGradX
+                | TensorOp::LayerNormGradGamma
+                | TensorOp::Softmax
+                | TensorOp::SoftmaxGrad => {}
             }
         }
         ops

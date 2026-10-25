@@ -50,12 +50,14 @@ pub mod codes {
         ARGUMENT_COUNT = "E-TYPE-001";
         /// A named argument (`a = x`) to an operator or a model function.
         NAMED_ARGUMENT = "E-TYPE-002";
-        /// `add`, `sub`, `mul` or `mse` operands of different shapes, neither of them rank 0, or
-        /// an `add_rows(x, b)` whose `b` is not as long as a row of `x`.
+        /// `add`, `sub`, `mul` or `mse` operands of different shapes, neither of them rank 0, an
+        /// `add_rows(x, b)` whose `b` is not as long as a row of `x`, or a
+        /// `layer_norm(x, gamma, beta)` whose `gamma` or `beta` is not as long as a row of `x`.
         SHAPE_MISMATCH = "E-TYPE-003";
-        /// A `matmul` or `transpose` operand that is not rank 2, an `embedding` whose table is
-        /// not rank 2 or whose ids are not rank 1, or an `add_rows(x, b)` whose `x` is not rank 2
-        /// or whose `b` is not rank 1.
+        /// A `matmul`, `transpose` or `softmax` operand that is not rank 2, an `embedding` whose
+        /// table is not rank 2 or whose ids are not rank 1, an `add_rows(x, b)` whose `x` is not
+        /// rank 2 or whose `b` is not rank 1, or a `layer_norm(x, gamma, beta)` whose `x` is not
+        /// rank 2 or whose `gamma` or `beta` is not rank 1.
         RANK = "E-TYPE-004";
         /// An integer literal where a tensor is expected.
         INTEGER_LITERAL = "E-TYPE-005";
@@ -750,6 +752,9 @@ fn op_diagnostic(name: OpName<'_>, error: OpError, span: &SourceSpan) -> Diagnos
                 "`mse` needs operands of identical shape"
             } else if name == "add_rows" {
                 "`add_rows(x, b)` needs `b` of shape [H] for `x` of shape [N, H]"
+            } else if name == "layer_norm" {
+                "`layer_norm(x, gamma, beta)` needs `gamma` and `beta` of shape [H] for `x` of \
+                 shape [N, H]"
             } else {
                 "operands need the same shape, or one of them rank 0; M0 has no broadcasting"
             };
@@ -768,6 +773,16 @@ fn op_diagnostic(name: OpName<'_>, error: OpError, span: &SourceSpan) -> Diagnos
                 _ => None,
             };
             let wrong = operands.and_then(|ops| ops.into_iter().find(|&(_, r)| r == expected));
+            if name == "layer_norm" {
+                return Diagnostic::new(
+                    codes::RANK,
+                    format!(
+                        "`layer_norm` needs `x` of rank 2 and `gamma` and `beta` of rank 1; \
+                         got {got}"
+                    ),
+                )
+                .at(span.clone());
+            }
             match (operands, wrong) {
                 (Some([(first, r1), (second, r2)]), Some((operand, _))) => Diagnostic::new(
                     codes::RANK,
@@ -897,9 +912,49 @@ mod tests {
                 "mse",
                 "embedding",
                 "add_rows",
-                "gelu"
+                "gelu",
+                "layer_norm",
+                "softmax"
             ]
         );
+    }
+
+    /// `layer_norm` takes `x` of rank 2 and two rows of rank 1: its E-TYPE-004 message states
+    /// each rank, and its E-TYPE-003 note states its rule, not `add`'s.
+    #[test]
+    fn layer_norm_rank_and_shape_errors_state_its_rule() {
+        let error = OpError::Rank {
+            op: "LayerNorm",
+            expected: 1,
+            got: TensorType::f32(&[1, 5]),
+        };
+        let diagnostic = op_diagnostic("layer_norm", error, &span());
+        assert_eq!(diagnostic.code, codes::RANK);
+        assert_eq!(
+            diagnostic.message,
+            "`layer_norm` needs `x` of rank 2 and `gamma` and `beta` of rank 1; \
+             got Tensor<f32, [1, 5]>"
+        );
+        let error = OpError::ShapeMismatch {
+            op: "LayerNorm",
+            lhs: TensorType::f32(&[4, 5]),
+            rhs: TensorType::f32(&[6]),
+        };
+        let diagnostic = op_diagnostic("layer_norm", error, &span());
+        assert_eq!(diagnostic.code, codes::SHAPE_MISMATCH);
+        let notes = format!("{diagnostic:?}");
+        assert!(
+            notes.contains("`layer_norm(x, gamma, beta)` needs `gamma` and `beta` of shape [H]"),
+            "{notes}"
+        );
+        let error = OpError::Rank {
+            op: "Softmax",
+            expected: 2,
+            got: TensorType::f32(&[3]),
+        };
+        let diagnostic = op_diagnostic("softmax", error, &span());
+        assert_eq!(diagnostic.code, codes::RANK);
+        assert_eq!(diagnostic.message, "`softmax` needs rank-2 operands");
     }
 
     #[test]
