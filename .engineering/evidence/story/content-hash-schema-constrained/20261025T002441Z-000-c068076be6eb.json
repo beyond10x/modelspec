@@ -1,0 +1,13 @@
+{
+  "at": "2026-10-25T00:24:41Z",
+  "actor": "human:timo",
+  "artifact": "story:content-hash-schema-constrained",
+  "kind": "story",
+  "revision": 4,
+  "change": {
+    "change": "evidence",
+    "kind": "test_result",
+    "source": "task ci",
+    "reference": "efebd3bf16a0ce82bec4582819ad8c459ce20d79"
+  }
+}

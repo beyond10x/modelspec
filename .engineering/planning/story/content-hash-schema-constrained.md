@@ -2,15 +2,16 @@
 format: aep.planning-md/3
 id: story:content-hash-schema-constrained
 kind: story
-status: active
+status: implemented
 title: The content-hash type and the distinct-roles rule are checked by the schema
 relations:
 - serves: vision:modelspec
 - depends_on: story:bert-corpus-splits
-revision: 4
+revision: 5
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-24T23:39:34Z", actor: "human:timo", revision: 2}
 - {from: "proposed", to: "active", at: "2026-10-24T23:39:34Z", actor: "human:timo", revision: 3}
+- {from: "active", to: "implemented", at: "2026-10-25T00:24:41Z", actor: "human:timo", revision: 5, decided_on: {"recorded":{"test_result":1,"review_outcome":1}}}
 ---
 # The content-hash type and the distinct-roles rule are checked by the schema
 
