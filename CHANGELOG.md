@@ -9,6 +9,10 @@ history.
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-10-25
+
+A faster Vulkan training step with the same bits: a `relu_grad` whose gradient operand is a matmul output nothing else reads is now an epilogue of that matmul (`epilogue ReluGrad`), so the MNIST step plan has 9 dispatches, 6 barriers and 12 buffers instead of 10, 7 and 13, and the `mse` loss sum is recorded beside the largest matmul it can share a barrier interval with instead of in an interval of its own. Every bit of the losses, parameters, checkpoints and predictions is unchanged, and at `mlp_sweep` b8192 h4096 on the RTX 3090 the step takes 6,858.9 µs against 6,568.5 µs for PyTorch eager, a ratio of 1.044 (was 1.111).
+
 ### Changed
 
 - The Vulkan step plan records the `mse` loss sum right after the largest matmul it can share a barrier interval with, the weight gradient of the first layer in the MLPs, instead of in an interval of its own, and the final loss of `train --backend vulkan` and `infer --backend vulkan` record only the steps the loss is computed from (`ExecutionPlan::loss_steps`, new); every bit of the losses, parameters, checkpoints and predictions is unchanged; at `mlp_sweep` b8192 h4096 on the RTX 3090 the step went from 7,293.8 to 7,050.5 µs in the probe session; DESIGN.md revision 0.45 (story:step-sites-beat-pytorch).
@@ -241,7 +245,8 @@ with `E-TARGET-001`.
 - `examples/linear_regression.mspec` checks and trains; `task check-examples` runs `modelspec check` on it
 - ESS contracts for the compiled artifact, checkpoint, device profile and training run in `spec/`
 
-[Unreleased]: https://github.com/beyond10x/modelspec/compare/0.12.0...HEAD
+[Unreleased]: https://github.com/beyond10x/modelspec/compare/0.13.0...HEAD
+[0.13.0]: https://github.com/beyond10x/modelspec/compare/0.12.0...0.13.0
 [0.12.0]: https://github.com/beyond10x/modelspec/compare/0.11.0...0.12.0
 [0.11.0]: https://github.com/beyond10x/modelspec/compare/0.10.0...0.11.0
 [0.10.0]: https://github.com/beyond10x/modelspec/compare/0.9.0...0.10.0
