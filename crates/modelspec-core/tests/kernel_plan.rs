@@ -108,6 +108,10 @@ enum Cover {
     /// A `transpose` that only matmuls read, each of whose Dispatches reads its operand in place,
     /// flagged in [`Kernel::transposed`] (DESIGN.md § 3.1).
     Transposed,
+    /// An elementwise op inside a fused chain: its only reader, read once, is the next op of the
+    /// chain, and the Dispatch of the chain's last op runs a kernel whose op names the chain
+    /// (story:fuse-elementwise-chains-and-gradient-sums).
+    Chained,
 }
 
 fn node_of(training: &CompiledTraining, value: ValueId) -> &TensorNode {
@@ -204,6 +208,29 @@ fn coverage(plan: &ExecutionPlan, training: &CompiledTraining, node: &TensorNode
         let kernel = kernel_of(plan, &plan.step[at]);
         if kernel.kind == KernelKind::SgdUpdate && kernel.operands.len() == 3 {
             covers.push(Cover::Scaled);
+        }
+    }
+    let elementwise = |op: &TensorOp| {
+        matches!(
+            op,
+            TensorOp::Add | TensorOp::Sub | TensorOp::Mul | TensorOp::Relu | TensorOp::ReluGrad
+        )
+    };
+    let mut at = node;
+    while elementwise(&at.op)
+        && let [reader] = readers(training, at.id)[..]
+        && elementwise(&reader.op)
+        && reader.ty == at.ty
+    {
+        match dispatches_of(&plan.step, reader.id)[..] {
+            [] => at = reader,
+            [step] => {
+                if kernel_of(plan, &plan.step[step]).op.contains('>') {
+                    covers.push(Cover::Chained);
+                }
+                break;
+            }
+            _ => break,
         }
     }
     if let Some(value) = constant(training, node.id).filter(|_| node.ty.rank() == 0) {
@@ -790,13 +817,15 @@ fn first<'a>(training: &'a CompiledTraining, op: &TensorOp) -> &'a TensorNode {
         .expect("the step has the op")
 }
 
+/// 11 dispatches and 8 barriers before the loss gradient `(y - t) * c` became one fused
+/// elementwise chain (story:fuse-elementwise-chains-and-gradient-sums).
 #[test]
-fn the_mnist_step_plan_is_11_dispatches_in_8_barrier_groups() {
+fn the_mnist_step_plan_is_10_dispatches_in_7_barrier_groups() {
     let plan = artifact(&source(MNIST), Backend::Vulkan).execution;
     verify_plan(&plan).expect("the plan verifies");
     let count = |op: PlanOp| plan.step.iter().filter(|s| s.op == op).count();
-    assert_eq!(count(PlanOp::Dispatch), 11, "{}", print_kernel(&plan));
-    assert_eq!(count(PlanOp::Barrier), 8, "{}", print_kernel(&plan));
+    assert_eq!(count(PlanOp::Dispatch), 10, "{}", print_kernel(&plan));
+    assert_eq!(count(PlanOp::Barrier), 7, "{}", print_kernel(&plan));
 }
 
 #[test]

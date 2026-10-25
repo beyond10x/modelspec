@@ -11,8 +11,9 @@
 //!   module's, `OpDecorate` less exactly the deterministic module's `NoContraction` count;
 //! - in the deterministic module every `NoContraction` names an `OpFAdd`, `OpFSub`, `OpFMul` or
 //!   `GLSL.std.450 Fma` (DESIGN.md § 12 ADR-009), every float add, subtract, multiply and fused
-//!   multiply-add of a non-elementwise module and of a three-operand SGD update carries one, and
-//!   an elementwise module other than that SGD update carries none (the default the base emitted);
+//!   multiply-add of a non-elementwise module, of a three-operand SGD update and of a fused
+//!   elementwise chain carries one, and any other elementwise module carries none (the default
+//!   the base emitted);
 //! - the two cache keys are equal but for `fast_math`, and the module ids equal.
 #![cfg(feature = "vulkan")]
 
@@ -135,6 +136,12 @@ fn float_arithmetic(module: &[u32]) -> BTreeSet<u32> {
         .collect()
 }
 
+/// A fused elementwise chain (story:fuse-elementwise-chains-and-gradient-sums), whose every
+/// add, subtract and multiply carries `NoContraction`.
+fn is_chain(kernel: &Kernel) -> bool {
+    kernel.kind == KernelKind::Elementwise && kernel.op.contains('>')
+}
+
 fn is_scaled_sub(kernel: &Kernel) -> bool {
     kernel.kind == KernelKind::SgdUpdate && kernel.operands.len() == 3
 }
@@ -222,7 +229,9 @@ fn every_kernel_kind_of_a_fast_math_artifact_is_its_deterministic_module_less_no
                     "{what}: same float arithmetic"
                 );
                 match kernel.kind {
-                    KernelKind::Elementwise | KernelKind::SgdUpdate if !is_scaled_sub(kernel) => {
+                    KernelKind::Elementwise | KernelKind::SgdUpdate
+                        if !is_scaled_sub(kernel) && !is_chain(kernel) =>
+                    {
                         assert!(targets.is_empty(), "{what}: elementwise decorated")
                     }
                     _ => assert_eq!(targets, arithmetic, "{what}: a float op left undecorated"),
@@ -240,6 +249,9 @@ fn every_kernel_kind_of_a_fast_math_artifact_is_its_deterministic_module_less_no
                 }
                 if is_scaled_sub(kernel) {
                     *seen.entry("SgdUpdate scaled".into()).or_default() += 1;
+                }
+                if is_chain(kernel) {
+                    *seen.entry("Elementwise chain".into()).or_default() += 1;
                 }
                 if kernel.transposed.contains(&true) {
                     *seen.entry("MatMul transposed".into()).or_default() += 1;
@@ -260,6 +272,7 @@ fn every_kernel_kind_of_a_fast_math_artifact_is_its_deterministic_module_less_no
         "MatMul+epilogue",
         "MatMul register-blocked",
         "SgdUpdate scaled",
+        "Elementwise chain",
         "MatMul transposed",
     ] {
         assert!(

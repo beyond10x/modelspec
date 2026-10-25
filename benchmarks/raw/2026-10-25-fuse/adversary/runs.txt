@@ -1,0 +1,88 @@
+# adversary adv-fuse-1, story:fuse-elementwise-chains-and-gradient-sums, 2026-10-25
+# base binary: <scratch>/base/target/release/modelspec, built from 238240f
+# fused binary: <worktree>/target/release/modelspec, built from fca5377 (both --release --features vulkan)
+# every device command ran with MODELSPEC_VK_VALIDATION=1; gpu-idle-check is the output of
+#   nvidia-smi --query-compute-apps=pid,process_name --format=csv,noheader taken just before
+# sha columns: the first 16 hex digits of sha256; no timing is claimed anywhere in this file
+
+## attack 1 and 2: fixtures (fixtures/*.mspec), 200 steps each
+# command: <bin> train --backend vulkan fixtures/<f>.mspec --checkpoint <scratch>/runs/<f>.<bin>.msckpt
+fixture           gpu-idle-check  base-exit  fused-exit  stdout-sha base / fused        msckpt-sha base / fused          verdict
+adj4              []              0          0           3a7ab2ea2dd50d5e / same          9f13c22d0a1d682d / same           SAME
+adj5              []              0          0           77ac9bda84bb06d0 / same          d60473e151098e37 / same           SAME
+adj7              []              0          0           271cc7c07c17d536 / same          8a14e0852fc79543 / same           SAME
+epilogue_chain    []              0          0           8fe830b8abe8abda / same          c869ad6b85765584 / same           SAME
+loss_rank0        []              0          0           26602aa4ac480362 / same          e786559bed78919a / same           SAME
+param_leaf        []              0          0           7b1a996289c32235 / same          e2461437e1dbc609 / same           SAME
+pred_chain        []              0          0           74b3f8edcd46a7a9 / same          907cf52e900bd36d / same           SAME
+reduction         []              0          0           dd0216d7805e0626 / same          0926d31a0f3e70fc / same           SAME
+transposed_chain  []              0          0           3624d874dcfd1871 / same          ecb8fc712a340930 / same           SAME
+read_twice        []              0          0           685d5f9396c232cd / same          2540cceb1e565e95 / same           SAME
+# read_twice first ran at sgd(lr = 0.05): both binaries exit 1 with E-TRAIN-001 at step 7 (loss inf),
+# stdout sha 326b452d46a72950 on both; the fixture kept here is the rerun at lr = 0.002
+
+## attack 4: --record stream, examples/mnist_mlp.mspec --steps 20
+# command: <bin> train --backend vulkan examples/mnist_mlp.mspec --steps 20 --record <scratch>/runs/record/<bin>.jsonl
+gpu-idle-check: []
+base exit=0 lines 23
+fused exit=0 lines 23
+the two streams are byte-equal once every "*_id":"<uuid>" field is removed
+
+## attack 5: cross-binary resume, examples/mnist_mlp.mspec
+# commands: <bin> train --backend vulkan examples/mnist_mlp.mspec --steps 200|100 --checkpoint <x>.msckpt
+#           <bin2> train --backend vulkan examples/mnist_mlp.mspec --resume <x>100.msckpt --steps 100 --checkpoint <x>_<bin2>100.msckpt
+gpu-idle-check: [] (before the straight runs) and [] (before the resumed runs)
+all seven runs exit=0
+8e241b7c026331536fe2b9ad989be307e682466f6bdfc5cdc3b986d36aed50af base200.msckpt
+8e241b7c026331536fe2b9ad989be307e682466f6bdfc5cdc3b986d36aed50af fuse200.msckpt
+c77b87f6b5eb8726fc54e61cf99e760f1dfe653508ed2bf1b5f116ad977db224 base100.msckpt
+c77b87f6b5eb8726fc54e61cf99e760f1dfe653508ed2bf1b5f116ad977db224 fuse100.msckpt
+8e241b7c026331536fe2b9ad989be307e682466f6bdfc5cdc3b986d36aed50af base100_base100.msckpt
+8e241b7c026331536fe2b9ad989be307e682466f6bdfc5cdc3b986d36aed50af base100_fuse100.msckpt
+8e241b7c026331536fe2b9ad989be307e682466f6bdfc5cdc3b986d36aed50af fuse100_base100.msckpt
+base100.out vs fuse100.out: same; base200.out vs fuse200.out: same
+resumed stdout sha: a108a821f40b2b2f a108a821f40b2b2f a108a821f40b2b2f
+
+## infer on the fused binary's checkpoints (the step plan up to the loss, runner.rs loss cut)
+# command: <bin> infer --backend vulkan|cpu --checkpoint <scratch>/runs/<f>.fuse.msckpt fixtures/<f>.mspec
+fixture         gpu-idle-check  vulkan base / fused (exit, stdout-sha)            cpu (exit, stdout-sha)
+loss_rank0      [] []           0 42e00a845285d1e0 / 0 42e00a845285d1e0  SAME     0 42e00a845285d1e0
+pred_chain      [] []           0 e5bf1eab65894ec1 / 0 e5bf1eab65894ec1  SAME     0 1b7bad9c20308cc5
+param_leaf      [] []           0 3dde170beff7f0b7 / 0 3dde170beff7f0b7  SAME     0 3dde170beff7f0b7
+read_twice      [] []           0 2a8dcb4a9ccc6fe5 / 0 2a8dcb4a9ccc6fe5  SAME     0 2a8dcb4a9ccc6fe5
+epilogue_chain  [] []           0 d00a8bad1108f33e / 0 d00a8bad1108f33e  SAME     0 d00a8bad1108f33e
+adj4            [] []           0 8eab6b8a0794f5cb / 0 8eab6b8a0794f5cb  SAME     0 8eab6b8a0794f5cb
+# pred_chain cpu vs vulkan: prediction lines equal, "loss 0.23392996" (cpu) vs "loss 0.23392995" (vulkan),
+# the same on the base binary, within the § 9 gate 5 tolerance DESIGN § 8 grants infer
+
+## attack 6: profile counters, fixtures/param_leaf.mspec on the fused binary (timings removed)
+# command: modelspec train --backend vulkan fixtures/param_leaf.mspec --steps 40 --stats --profile
+gpu-idle-check: []
+exit=0
+steps: 40
+host waits: 1
+submits: 1
+dispatches: 363
+dispatches per step: 9
+barriers per step: 8
+bytes uploaded: 1632
+bytes downloaded: 956
+device allocations: 14
+peak device bytes: 6704
+numerics class: tolerance
+profile dispatch step 0 e34be7e4-be5b-8a95-8b52-7d89e03c381c main calls 40 flop 2160 bytes 1272
+profile dispatch step 2 a5e0082b-7627-8821-8a91-7cd3fc96b935 main calls 40 flop 270 bytes 1440
+profile dispatch step 4 16a581fc-e078-82c4-be41-da829052bb71 main calls 40 flop 180 bytes 724
+profile dispatch step 5 ffc3fd43-e6de-8d72-8956-403a04e5d11f main calls 40 flop 180 bytes 1080
+profile dispatch step 7 c2cf9c1c-6ea6-8564-ac9c-759585283d3e main calls 40 flop 90 bytes 720
+profile dispatch step 9 e764774d-6bea-8257-b567-95d78eb1bfa7 main calls 40 flop 2160 bytes 1272
+profile dispatch step 10 ec7c9be6-356e-8827-8917-7e48759494c7 main calls 40 flop 180 bytes 1080
+profile dispatch step 12 e322ba9a-9e3f-87e2-9aa4-8bcb1677fa93 main calls 40 flop 216 bytes 1296
+profile dispatch step 13 5da75b75-cbc5-84b4-8ab4-f9c36869b360 main calls 40 flop 180 bytes 1080
+profile dispatch final 0 e34be7e4-be5b-8a95-8b52-7d89e03c381c main calls 1 flop 2160 bytes 1272
+profile dispatch final 2 a5e0082b-7627-8821-8a91-7cd3fc96b935 main calls 1 flop 270 bytes 1440
+profile dispatch final 4 16a581fc-e078-82c4-be41-da829052bb71 main calls 1 flop 180 bytes 724
+profile step_total flop 5616 bytes 9964 uncounted_sites 0
+# step 2 is kernel k1, the chain Sub>Mul@0>Add@0 over [10, 9] (reads matmul output, s, s; writes one):
+# 3 ops x 90 = 270 FLOP; bytes 1440 = 4 views x 360, s bound twice and counted twice;
+# unfused Sub 1080 + Mul@0 720 + Add 1080 = 2880, minus the two intermediates each written and read (4 x 360) = 1440

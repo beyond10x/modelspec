@@ -1,0 +1,27 @@
+# adversary adv-fuse-1, attack 8: mutants of fca5377 on a scratch copy (<scratch>/mut), never in <worktree>
+# each mutant was one edit of crates/modelspec-core/src/schedule.rs or crates/modelspec-runtime/src/spirv/emit.rs,
+# restored from <scratch>/orig before the next; the copy carried the two adversary_fuse1_* test files
+# killed-by lists the tests that failed under the mutant (cargo test, plus the device tests where named)
+
+M1  fusions(): readers_of(operand) == [node] relaxed to readers.iter().any(|r| r == node)
+    killed by: fuse_chains (3 tests), adversary_fuse (3), adversary2_kplan, adversary_dispatch_count,
+               adversary_transposed_fold, adversary_fuse1_plan_semantics
+M2  fusions(): an Add extending a chain prepends its other operand instead of appending it (reorders the adjoint sum)
+    killed by: fuse_chains three- and five-contribution tests, adversary_fuse1_plan_semantics
+               every_fused_plan_computes_the_terms_of_its_training_ir
+M4  fusions(): leaves + new reads <= MAX_CHAIN_READS changed to <
+    killed by: fuse_chains (4), adversary_fuse, adversary_fuse1_plan_semantics (coverage assertion on Add>ReluGrad@1)
+M5  MAX_CHAIN_READS = 3 changed to 8
+    killed by: fuse_chains (3), adversary_fuse
+    survives: adversary_fuse1_plan_semantics (expected: longer chains compute the same terms; the bound is a binding limit)
+M3  emit.rs: NoContraction dropped on the last op of a chain only
+    killed by: elementwise_chain_spirv (2), adversary_fastmath_emission
+    survives: vulkan_elementwise_chain_same_bits, adversary_fuse1_chain_device (both); the driver contracted only
+              when the Mul itself was undecorated on this device (an observation, not a defect)
+M3b emit.rs: every NoContraction of a chain dropped
+    killed by: elementwise_chain_spirv, adversary_fastmath_emission; on device vulkan_elementwise_chain_same_bits
+               reports 32,987 of 661,520 elements differing, the figure DESIGN § 5.4 gives
+    gpu-idle-check before the device runs: []
+
+survivors of the unit's own suite (fuse_chains, elementwise_chain_spirv, vulkan_elementwise_chain_same_bits,
+adversary_fuse, adversary_fastmath_emission): none

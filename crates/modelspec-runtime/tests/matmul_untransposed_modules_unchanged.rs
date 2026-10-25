@@ -2,7 +2,8 @@
 //! does not fold into: every kernel of the step and forward plans of the MNIST and linear
 //! regression examples and of the `mlp_sweep` sources at b1000 h1024, b8192 h1024 and b8192
 //! h4096 whose signature the plan before the change also had emits the SPIR-V words it emitted
-//! then. So each matmul that reads no operand transposed runs the module it ran before.
+//! then. So each matmul that reads no operand transposed runs the module it ran before, and so
+//! does every elementwise kernel that fuses no chain (story:fuse-elementwise-chains-and-gradient-sums).
 //!
 //! `tests/fixtures/untransposed_modules.txt` holds one line per kernel signature of those plans
 //! at the base commit, with the blake3 of the words `emit` gives, recorded with
@@ -114,6 +115,15 @@ fn every_kernel_signature_of_the_plan_before_the_change_emits_the_words_it_emitt
             (signature, hash)
         })
         .collect();
+    // A fused elementwise chain (story:fuse-elementwise-chains-and-gradient-sums) is the other
+    // kind of kernel new to the plans: its op names the chain, `Sub>Mul@0`.
+    let new_kind = |signature: &str| {
+        signature.contains(" transposed")
+            || signature
+                .strip_prefix("elementwise ")
+                .and_then(|rest| rest.split(' ').next())
+                .is_some_and(|op| op.contains('>'))
+    };
     let mut wrong = Vec::new();
     let mut kept = BTreeSet::new();
     for (signature, hash) in &now {
@@ -124,13 +134,14 @@ fn every_kernel_signature_of_the_plan_before_the_change_emits_the_words_it_emitt
             Some(was) => wrong.push(format!("{signature}: words {hash}, before {was}")),
             None => {
                 assert!(
-                    signature.contains(" transposed"),
-                    "a kernel new to the plans reads an operand transposed: {signature}"
+                    new_kind(signature),
+                    "a kernel new to the plans reads an operand transposed or fuses an \
+                     elementwise chain: {signature}"
                 );
             }
         }
     }
-    let untransposed = now.keys().filter(|s| !s.contains(" transposed")).count();
+    let untransposed = now.keys().filter(|s| !new_kind(s)).count();
     assert_eq!(
         kept.len(),
         untransposed,

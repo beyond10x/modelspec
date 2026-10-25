@@ -58,7 +58,7 @@ fn runs_on_one_thread_count_only_their_own_buffers_and_barriers() {
             "the {name} run"
         );
     }
-    assert_eq!((first.barriers_per_step, first.device_allocations), (7, 11));
+    assert_eq!((first.barriers_per_step, first.device_allocations), (6, 10));
 }
 
 /// The peak of a span is the largest sum of live allocations, not their total: a real buffer

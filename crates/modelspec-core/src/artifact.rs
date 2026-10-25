@@ -46,8 +46,8 @@ use uuid::Uuid;
 use crate::device::DeviceProfile;
 use crate::diag::{Code, Diagnostic};
 use crate::ir::kernel::{
-    BufferView, Epilogue, ExecutionPlan, Kernel, KernelKind, KernelModuleId, LimitsBelowMinimum,
-    MatMulLimits, Operand, PlanOp, PlanStep,
+    BufferView, ElementwiseChain, Epilogue, ExecutionPlan, Kernel, KernelKind, KernelModuleId,
+    LimitsBelowMinimum, MatMulLimits, Operand, PlanOp, PlanStep,
 };
 use crate::ir::print::print_step;
 use crate::ir::tensor::{DType, Dim, ParamDecl, ParamId, TensorType, ValueId};
@@ -1332,12 +1332,21 @@ impl WireKernel {
         })
     }
 
-    /// The Kernel IR of the entry, or the invariant it breaks.
+    /// The Kernel IR of the entry, or the invariant it breaks. An `elementwise` entry may name a
+    /// fused chain of ops in the canonical form of [`ElementwiseChain::name`].
     fn kernel(&self) -> Result<Kernel, String> {
         let id = self.kernel_module_id;
-        let op = OPS
+        let chain = || {
+            (self.kind == WireKind::Elementwise)
+                .then(|| ElementwiseChain::parse(&self.op))
+                .flatten()
+                .map(|chain| chain.name())
+        };
+        let op: &'static str = OPS
             .iter()
-            .find(|op| **op == self.op)
+            .copied()
+            .find(|op| *op == self.op)
+            .or_else(chain)
             .ok_or_else(|| format!("kernel {id} names no Tensor IR op (`{}`)", self.op))?;
         let kernel = Kernel {
             id,

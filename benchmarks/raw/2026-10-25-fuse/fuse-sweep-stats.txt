@@ -1,0 +1,15 @@
+# after binary (worktree)
+# command: modelspec train <scratch>/mlp_sweep_b8192_h4096.mspec --backend vulkan --steps 20 --stats --record <scratch>/runs/fuse-sweep.record --checkpoint <scratch>/runs/fuse-sweep.msckpt
+# gpu-apps-before []
+steps: 20
+host waits: 1
+submits: 1
+dispatches: 203
+dispatches per step: 10
+barriers per step: 9
+bytes uploaded: 39026688
+bytes downloaded: 13008980
+device allocations: 16
+peak device bytes: 641597648
+numerics class: tolerance
+us per step: 18812.637

@@ -436,8 +436,10 @@ fn vulkan_dispatch_binds_one_element_only_where_the_kernel_has_a_rank0_operand()
 
 /// Story m1-fuse-elementwise: the MNIST step scales its loss gradient by `1.0 * 0.002`, two
 /// compile-time scalars. Before the fusion a rank-0 `elementwise Mul (1.0, 0.002)` kernel computed
-/// it on the device; the schedule now folds it into its reader's immediate. The folded immediate
-/// must be the bits that kernel leaves on this device.
+/// it on the device; the schedule now folds it into its reader's immediate, the `Mul` of the
+/// `Sub>Mul@0` chain that computes the loss gradient
+/// (story:fuse-elementwise-chains-and-gradient-sums). The folded immediate must be the bits that
+/// kernel leaves on this device.
 #[test]
 #[ignore = "needs a Vulkan device"]
 fn vulkan_the_folded_scalar_is_the_product_the_device_computed() {
@@ -481,7 +483,7 @@ fn vulkan_the_folded_scalar_is_the_product_the_device_computed() {
         .execution
         .kernels
         .iter()
-        .filter(|k| k.op == "Mul")
+        .filter(|k| k.op == "Mul" || k.op == "Sub>Mul@0")
         .flat_map(|k| k.operands.iter())
         .filter_map(|o| match o {
             Operand::Immediate(v) => Some(v.to_bits()),

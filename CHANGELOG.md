@@ -23,6 +23,7 @@ history.
 ### Changed
 
 - The generated JSON Schemas refuse more records the writers refuse: `ContentHash` admits only lowercase hexadecimal digits (`pattern`), and `seq_len` of `TrainingDataBinding` and `PackedDataset` and `PackedDataset.vocabulary_size` carry `minimum` 1 and 6 through the newtypes `modelspec.data.SequenceLength` and `modelspec.data.VocabularySize`; the 64-digit length of a `ContentHash`, distinct split roles and the `Binary64` bounds are still checked by the writers only, because ESS 0.68.0 does not project them (story:content-hash-schema-constrained).
+- A chain of elementwise ops whose every value but the last is read once and by the next op alone runs as one dispatch, in the IR's left-to-right order with `NoContraction` on every op (dropped under `--fast-math`) and at most 3 buffers read: the loss gradient `(p - y) * c` is one kernel, and so is an adjoint's chain of `Add`s, with the `ReluGrad` after it when its reads fit in the 3. `examples/mnist_mlp.mspec` and `mlp_sweep` b8192 h4096 go from 11 to 10 dispatches per step, 10 to 9 barriers per step and 17 to 16 device allocations with the same loss and parameter bits, and `examples/linear_regression.mspec` from 6 to 5 dispatches and 7 to 6 barriers (DESIGN.md 0.42, story:fuse-elementwise-chains-and-gradient-sums).
 
 ## [0.9.0] - 2026-10-24
 
