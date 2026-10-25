@@ -179,6 +179,28 @@ pub enum AttachError {
     Training(#[from] TrainingVerifyError),
 }
 
+/// The dropout sites of `program`: the name of each `Input` a `Dropout` or `DropoutGrad` reads
+/// as its RNG token ([`ops::token_operand`]), once each, in input order. The training host
+/// supplies each site's token at every step (DESIGN.md § 2.3, coordinator decision D47); a
+/// program without dropout has none.
+pub fn dropout_sites(program: &TensorProgram) -> Vec<String> {
+    let mut tokens = std::collections::BTreeSet::new();
+    for node in &program.nodes {
+        if let Some(&token) = ops::token_operand(&node.op).and_then(|i| node.operands.get(i)) {
+            tokens.insert(token);
+        }
+    }
+    program
+        .inputs
+        .iter()
+        .filter(|value| tokens.contains(value))
+        .filter_map(|&value| match &program.node(value)?.op {
+            TensorOp::Input { name } => Some(name.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
 /// Attaches the SGD step `p_next = p - lr * grad` to `training`, one update per parameter with a
 /// gradient, in `ParamId` order.
 ///
@@ -335,5 +357,32 @@ impl TrainConfig {
             targets: decls(&mut train.targets()),
             span: train.span.clone(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ir::tensor::TensorProgramBuilder;
+
+    /// The sites are the token inputs a `Dropout` or `DropoutGrad` reads, once each, in input
+    /// order; an `i32` input read as ids is none.
+    #[test]
+    fn dropout_sites_are_the_token_inputs_in_input_order() {
+        let mut b = TensorProgramBuilder::new();
+        let x = b.input("x", TensorType::f32(&[3])).unwrap();
+        let ids = b.input("ids", TensorType::i32(&[3])).unwrap();
+        let second = b.input("M.f.dropout#1", TensorType::i32(&[2])).unwrap();
+        let first = b.input("M.f.dropout#0", TensorType::i32(&[2])).unwrap();
+        let a = b.dropout(x, first, 0.5).unwrap();
+        let c = b.dropout(a, second, 0.5).unwrap();
+        let g = b.dropout_grad(second, c, 0.5).unwrap();
+        let _ = (ids, g);
+        let program = b.finish();
+        assert_eq!(dropout_sites(&program), ["M.f.dropout#1", "M.f.dropout#0"]);
+
+        let mut b = TensorProgramBuilder::new();
+        b.input("x", TensorType::f32(&[3])).unwrap();
+        assert!(dropout_sites(&b.finish()).is_empty());
     }
 }

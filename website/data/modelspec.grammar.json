@@ -16,6 +16,7 @@
     "softmax",
     "attention",
     "cross_entropy",
+    "dropout",
     "xavier_uniform",
     "zeros",
     "ones",

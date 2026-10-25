@@ -252,7 +252,8 @@ impl<'s> PreparedStep<'s> {
 
     /// [`Self::evaluate`] with `ids`, a tensor for exactly the program's `i32` inputs, by name, as
     /// [`crate::cpu::evaluate_with_ids`] takes them: the row ids and labels of a
-    /// masked-language-model batch (story:bert-train-data-binding).
+    /// masked-language-model batch (story:bert-train-data-binding) and the RNG token of each
+    /// dropout site at this step (DESIGN.md § 2.3).
     pub fn evaluate_with_ids(
         &mut self,
         inputs: &BTreeMap<String, HostTensor<f32>>,
@@ -264,6 +265,11 @@ impl<'s> PreparedStep<'s> {
             prepared: self,
             loss,
         })
+    }
+
+    /// Sets the seed every later step keys its dropout masks with, the `train` block's seed.
+    pub fn set_seed(&mut self, seed: u64) {
+        self.program.set_seed(seed);
     }
 
     /// Evaluates one step and applies it; returns its loss.
@@ -301,12 +307,8 @@ impl<'s> PreparedStep<'s> {
                 return Err(StepError::VersionExhausted { param, current });
             }
         }
-        if ids.is_empty() {
-            self.program
-                .run_into(inputs, &state.values, &mut self.outputs)?;
-        } else {
-            self.outputs = self.program.run_with_ids(inputs, ids, &state.values)?;
-        }
+        self.program
+            .run_into(inputs, ids, &state.values, &mut self.outputs)?;
         let mut loss = f32::NAN;
         for (position, output) in self.outputs.drain(..).enumerate() {
             match self.roles[position] {

@@ -64,6 +64,17 @@ pub enum OpError {
         heads: u64,
         width: Dim,
     },
+    /// `p` of `Dropout` or `DropoutGrad` outside `[0, 1)`, held as its `f32` bits so the error
+    /// stays `Eq`.
+    #[error("{op} needs p in [0, 1); got p = {:?}", f32::from_bits(*bits))]
+    DropoutRate { op: &'static str, bits: u32 },
+    /// The RNG token operand of `Dropout` or `DropoutGrad` that is not `i32[2]`.
+    #[error("{op} operand {index} must be the RNG token i32[2]; got {got}")]
+    Token {
+        op: &'static str,
+        index: usize,
+        got: TensorType,
+    },
 }
 
 /// The kind of value a named compile-time operator argument takes (DESIGN.md § 2.1).
@@ -71,6 +82,8 @@ pub enum OpError {
 pub enum NamedKind {
     /// An integer literal of at least 1.
     PositiveInteger,
+    /// A float literal whose `f32` rounding lies in `[0, 1)`.
+    Probability,
 }
 
 /// A named compile-time argument an operator takes after its operands, such as `heads = 2`.
@@ -81,15 +94,17 @@ pub struct NamedParameter {
 }
 
 /// The value of a named compile-time argument: a literal of its parameter's kind.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum NamedValue {
     Integer(u64),
+    Float(f32),
 }
 
 impl std::fmt::Display for NamedValue {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             NamedValue::Integer(n) => write!(f, "{n}"),
+            NamedValue::Float(x) => write!(f, "{x:?}"),
         }
     }
 }
@@ -99,6 +114,7 @@ impl NamedKind {
     pub const fn describe(self) -> &'static str {
         match self {
             NamedKind::PositiveInteger => "an integer literal of at least 1",
+            NamedKind::Probability => "a float literal in [0, 1)",
         }
     }
 
@@ -106,8 +122,27 @@ impl NamedKind {
     pub fn integer(self, literal: u64) -> Option<NamedValue> {
         match self {
             NamedKind::PositiveInteger => (literal >= 1).then_some(NamedValue::Integer(literal)),
+            NamedKind::Probability => None,
         }
     }
+
+    /// The value of the float literal `literal` if this kind admits it: for a probability, its
+    /// `f32` rounding when that lies in `[0, 1)`.
+    pub fn float(self, literal: f64) -> Option<NamedValue> {
+        match self {
+            NamedKind::PositiveInteger => None,
+            NamedKind::Probability => {
+                let p = literal as f32;
+                is_dropout_rate(p).then_some(NamedValue::Float(p))
+            }
+        }
+    }
+}
+
+/// Whether `p` is a drop probability `dropout` takes: in `[0, 1)`, so `1 / (1 - p)` is finite.
+/// `NaN` is not.
+pub fn is_dropout_rate(p: f32) -> bool {
+    (0.0..1.0).contains(&p)
 }
 
 /// `heads = <integer>` of `attention`.
@@ -116,11 +151,18 @@ const HEADS: NamedParameter = NamedParameter {
     kind: NamedKind::PositiveInteger,
 };
 
+/// `p = <float>` of `dropout`, the probability that an element is dropped.
+const P: NamedParameter = NamedParameter {
+    name: "p",
+    kind: NamedKind::Probability,
+};
+
 /// The named compile-time arguments the source operator `op` takes, every one of them required,
 /// in the order [`with_named`] takes their values; empty for an operator that takes none.
 pub fn named_parameters(op: &TensorOp) -> &'static [NamedParameter] {
     match op {
         TensorOp::Attention { .. } => &[HEADS],
+        TensorOp::Dropout { .. } => &[P],
         _ => &[],
     }
 }
@@ -132,8 +174,32 @@ pub fn with_named(op: &TensorOp, values: &[NamedValue]) -> TensorOp {
         (TensorOp::Attention { .. }, [NamedValue::Integer(heads)]) => {
             TensorOp::Attention { heads: *heads }
         }
+        (TensorOp::Dropout { .. }, [NamedValue::Float(p)]) => TensorOp::Dropout { p: *p },
         _ => op.clone(),
     }
+}
+
+/// The index of the RNG token operand of `op`, which no source value supplies: operand 1 of
+/// `Dropout`, operand 0 of `DropoutGrad`; `None` for every other op. The lowering gives each
+/// dropout site its own token input, `i32[2]` (DESIGN.md § 2.3), the third use of `i32` beside
+/// row ids and class labels. A token takes no gradient.
+pub fn token_operand(op: &TensorOp) -> Option<usize> {
+    match op {
+        TensorOp::Dropout { .. } => Some(1),
+        TensorOp::DropoutGrad { .. } => Some(0),
+        _ => None,
+    }
+}
+
+/// The type of an RNG token: `i32[2]`, the draw id's low and high 32 bits.
+pub fn token_type() -> TensorType {
+    TensorType::i32(&[2])
+}
+
+/// The number of operands a source call of `op` passes: [`arity`] less the RNG token, which the
+/// lowering supplies.
+pub fn source_arity(op: &TensorOp) -> usize {
+    arity(op) - usize::from(token_operand(op).is_some())
 }
 
 /// The operands of the source operator `op` that take no gradient, by index and source name:
@@ -171,7 +237,9 @@ pub fn arity(op: &TensorOp) -> usize {
         | TensorOp::AddRows
         | TensorOp::GeluGrad
         | TensorOp::LayerNormGradGamma
-        | TensorOp::SoftmaxGrad => 2,
+        | TensorOp::SoftmaxGrad
+        | TensorOp::Dropout { .. }
+        | TensorOp::DropoutGrad { .. } => 2,
         TensorOp::LayerNorm | TensorOp::LayerNormGradX | TensorOp::CrossEntropy => 3,
         TensorOp::Attention { .. } | TensorOp::CrossEntropyGrad => 4,
         TensorOp::AttentionGradQ { .. }
@@ -181,13 +249,15 @@ pub fn arity(op: &TensorOp) -> usize {
 }
 
 /// The element type operand `index` of `op` must have: `i32` for the ids of `Embedding` and
-/// `EmbeddingGrad` and the labels of `CrossEntropy` and `CrossEntropyGrad`, `f32` for every other
-/// operand (DESIGN.md § 2.2).
+/// `EmbeddingGrad`, the labels of `CrossEntropy` and `CrossEntropyGrad` and the RNG token of
+/// `Dropout` and `DropoutGrad`, `f32` for every other operand (DESIGN.md § 2.2).
 pub fn operand_dtype(op: &TensorOp, index: usize) -> DType {
     match (op, index) {
         (TensorOp::Embedding, 1)
         | (TensorOp::EmbeddingGrad { .. }, 0)
-        | (TensorOp::CrossEntropy | TensorOp::CrossEntropyGrad, 1) => DType::I32,
+        | (TensorOp::CrossEntropy | TensorOp::CrossEntropyGrad, 1)
+        | (TensorOp::Dropout { .. }, 1)
+        | (TensorOp::DropoutGrad { .. }, 0) => DType::I32,
         _ => DType::F32,
     }
 }
@@ -386,6 +456,24 @@ pub fn infer(
             rank(name, operands[3], 0)?;
             Ok(operands[0].clone())
         }
+        TensorOp::Dropout { p } | TensorOp::DropoutGrad { p } => {
+            if !is_dropout_rate(*p) {
+                return Err(OpError::DropoutRate {
+                    op: name,
+                    bits: p.to_bits(),
+                });
+            }
+            let index = token_operand(op).unwrap_or(0);
+            let token = operands[index];
+            if *token != token_type() {
+                return Err(OpError::Token {
+                    op: name,
+                    index,
+                    got: token.clone(),
+                });
+            }
+            Ok(operands[1 - index].clone())
+        }
     }
 }
 
@@ -486,7 +574,7 @@ pub trait GradientSink {
 /// op receives the sum of its broadcast contribution. Returns `Ok(None)` for the internal
 /// gradient ops `ReluGrad`, `BroadcastScalar`, `EmbeddingGrad`, `SumRows`, `GeluGrad`,
 /// `LayerNormGradX`, `LayerNormGradGamma`, `SoftmaxGrad`, `AttentionGradQ`, `AttentionGradK`,
-/// `AttentionGradV` and `CrossEntropyGrad`, which have no rule.
+/// `AttentionGradV`, `CrossEntropyGrad` and `DropoutGrad`, which have no rule.
 ///
 /// The rules, for `Y = op(A, B, C)` and `G = dL/dY`:
 ///
@@ -508,6 +596,7 @@ pub trait GradientSink {
 /// | `Softmax` | `softmax_grad(Y, G)` (`SoftmaxGrad`: `Y * (G - rowsum(G * Y))`) | | |
 /// | `Attention` | `attention_grad_q(A, B, C, D, G)` (`AttentionGradQ`: `scale * dS K` per sequence and head) | `attention_grad_k(A, B, C, D, G)` (`AttentionGradK`: `scale * dS^T Q`, 0 at a masked key) | `attention_grad_v(A, B, C, D, G)` (`AttentionGradV`: `P^T G`, 0 at a masked key) |
 /// | `CrossEntropy` | `cross_entropy_grad(A, B, C, G)` (`CrossEntropyGrad`: `G * C[n] / sum(C) * (P[n, v] - [v = B[n]])`) | none: `B` is `i32` labels | none: `C` is constant weights |
+/// | `Dropout` | `dropout_grad(B, G)` (`DropoutGrad`: `G * (1 / (1 - p))` where the mask of token `B` keeps the element, 0 elsewhere) | none: `B` is the `i32` RNG token | |
 ///
 /// The constants `1 / numel` and `2 / numel` are `f32` scalars. `Mse`'s `B` is a target in a
 /// training program, an input that receives no gradient; a trainable `B` receives `-dA`.
@@ -521,7 +610,9 @@ pub trait GradientSink {
 /// `dS = P * (dP - rowsum(P * dP))`; `scale = 1 / sqrt(H / heads)`. `CrossEntropy`'s operands
 /// `B` (labels) and `C` (weights) receive no gradient; `CrossEntropyGrad` recomputes the row
 /// softmax `P` of `A` through the loss's own code path, and gives zero everywhere when
-/// `sum(C) = 0`.
+/// `sum(C) = 0`. `Dropout`'s operand `B` is the site's RNG token, which takes no gradient;
+/// `DropoutGrad` recomputes the mask from the same token through the code path of `Dropout`, so
+/// no mask is stored, and multiplies by the same `f32` scale `1 / (1 - p)`.
 pub fn gradient<S: GradientSink + ?Sized>(
     sink: &mut S,
     op: &TensorOp,
@@ -668,6 +759,11 @@ pub fn gradient<S: GradientSink + ?Sized>(
                 out[0] = Some(sink.emit(TensorOp::CrossEntropyGrad, &reads)?);
             }
         }
+        TensorOp::Dropout { p } => {
+            if want(0) {
+                out[0] = Some(sink.emit(TensorOp::DropoutGrad { p: *p }, &[operands[1], g])?);
+            }
+        }
         TensorOp::ReluGrad
         | TensorOp::BroadcastScalar { .. }
         | TensorOp::EmbeddingGrad { .. }
@@ -679,7 +775,8 @@ pub fn gradient<S: GradientSink + ?Sized>(
         | TensorOp::AttentionGradQ { .. }
         | TensorOp::AttentionGradK { .. }
         | TensorOp::AttentionGradV { .. }
-        | TensorOp::CrossEntropyGrad => {
+        | TensorOp::CrossEntropyGrad
+        | TensorOp::DropoutGrad { .. } => {
             return Ok(None);
         }
     }
@@ -1262,6 +1359,150 @@ mod tests {
         assert_eq!(
             NamedKind::PositiveInteger.integer(2),
             Some(NamedValue::Integer(2))
+        );
+    }
+
+    /// `dropout` takes `p` by name and an `i32[2]` token the source does not pass; its result and
+    /// its gradient op's have the type of the tensor operand, at any rank.
+    #[test]
+    fn dropout_takes_p_by_name_and_reads_an_i32_token() {
+        let op = TensorOp::Dropout { p: 0.0 };
+        assert_eq!(named_parameters(&op), &[P]);
+        assert_eq!(
+            with_named(&op, &[NamedValue::Float(0.25)]),
+            TensorOp::Dropout { p: 0.25 }
+        );
+        assert!(constant_operands(&op).is_empty());
+        assert_eq!(token_operand(&op), Some(1));
+        assert_eq!(token_operand(&TensorOp::DropoutGrad { p: 0.5 }), Some(0));
+        assert_eq!(token_operand(&TensorOp::Embedding), None);
+        assert_eq!((arity(&op), source_arity(&op)), (2, 1));
+        assert_eq!(source_arity(&TensorOp::MatMul), 2);
+        let token = i32(&[2]);
+        for x in [f32(&[]), f32(&[5]), f32(&[3, 4]), f32(&[2, 3, 4])] {
+            let op = TensorOp::Dropout { p: 0.3 };
+            assert_eq!(infer(&op, &[&x, &token], None), Ok(x.clone()));
+            let grad = TensorOp::DropoutGrad { p: 0.3 };
+            assert_eq!(infer(&grad, &[&token, &x], None), Ok(x.clone()));
+        }
+    }
+
+    /// `p` outside `[0, 1)` and a token that is not `i32[2]` are refused; `f32` tokens and `i32`
+    /// tensors are dtype errors.
+    #[test]
+    fn dropout_refuses_rates_outside_0_1_and_tokens_other_than_i32_2() {
+        let (x, token) = (f32(&[3, 4]), i32(&[2]));
+        for p in [1.0f32, -0.1, f32::NAN, 1.5] {
+            assert_eq!(
+                infer(&TensorOp::Dropout { p }, &[&x, &token], None),
+                Err(OpError::DropoutRate {
+                    op: "Dropout",
+                    bits: p.to_bits()
+                })
+            );
+        }
+        assert!(infer(&TensorOp::Dropout { p: -0.0 }, &[&x, &token], None).is_ok());
+        assert_eq!(
+            infer(&TensorOp::Dropout { p: 0.5 }, &[&x, &i32(&[3])], None),
+            Err(OpError::Token {
+                op: "Dropout",
+                index: 1,
+                got: i32(&[3])
+            })
+        );
+        assert_eq!(
+            infer(&TensorOp::DropoutGrad { p: 0.5 }, &[&f32(&[2]), &x], None),
+            Err(OpError::OperandDType {
+                op: "DropoutGrad",
+                index: 0,
+                expected: DType::I32,
+                got: f32(&[2])
+            })
+        );
+        assert_eq!(
+            infer(
+                &TensorOp::Dropout { p: 0.5 },
+                &[&i32(&[3, 4]), &token],
+                None
+            ),
+            Err(OpError::OperandDType {
+                op: "Dropout",
+                index: 0,
+                expected: DType::F32,
+                got: i32(&[3, 4])
+            })
+        );
+        assert_eq!(
+            OpError::DropoutRate {
+                op: "Dropout",
+                bits: 1.0f32.to_bits()
+            }
+            .to_string(),
+            "Dropout needs p in [0, 1); got p = 1.0"
+        );
+    }
+
+    /// A probability is a float literal whose `f32` rounding is in `[0, 1)`; an integer literal is
+    /// not one, and a positive integer kind takes no float.
+    #[test]
+    fn a_probability_is_a_float_literal_in_0_1() {
+        let kind = NamedKind::Probability;
+        assert_eq!(kind.float(0.0), Some(NamedValue::Float(0.0)));
+        assert_eq!(kind.float(0.3), Some(NamedValue::Float(0.3)));
+        assert_eq!(kind.float(1.0), None);
+        assert_eq!(kind.float(-0.1), None);
+        assert_eq!(kind.float(0.999_999_999), None, "rounds to 1.0f32");
+        assert_eq!(kind.integer(0), None);
+        assert_eq!(NamedKind::PositiveInteger.float(2.0), None);
+        assert_eq!(NamedValue::Float(0.3).to_string(), "0.3");
+        assert_eq!(NamedValue::Float(0.0).to_string(), "0.0");
+    }
+
+    /// A sink that types each emitted node through [`infer`] and records it.
+    struct Recorder {
+        types: Vec<TensorType>,
+        emitted: Vec<(TensorOp, Vec<ValueId>)>,
+    }
+
+    impl GradientSink for Recorder {
+        type Error = OpError;
+
+        fn emit(&mut self, op: TensorOp, operands: &[ValueId]) -> Result<ValueId, OpError> {
+            let types: Vec<&TensorType> =
+                operands.iter().map(|o| &self.types[o.0 as usize]).collect();
+            let ty = infer(&op, &types, None)?;
+            self.types.push(ty);
+            self.emitted.push((op, operands.to_vec()));
+            Ok(ValueId(self.types.len() as u32 - 1))
+        }
+
+        fn type_of(&self, value: ValueId) -> &TensorType {
+            &self.types[value.0 as usize]
+        }
+    }
+
+    /// The gradient of `Dropout` is `DropoutGrad` over the token and `G`; the token takes none,
+    /// and `DropoutGrad` has no rule.
+    #[test]
+    fn dropout_gradient_reads_the_token_and_g() {
+        let (x, token, y, g) = (ValueId(0), ValueId(1), ValueId(2), ValueId(3));
+        let mut sink = Recorder {
+            types: vec![f32(&[3, 4]), i32(&[2]), f32(&[3, 4]), f32(&[3, 4])],
+            emitted: Vec::new(),
+        };
+        let op = TensorOp::Dropout { p: 0.25 };
+        let out = gradient(&mut sink, &op, &[x, token], y, g, &[true, true])
+            .unwrap()
+            .unwrap();
+        assert_eq!(out, vec![Some(ValueId(4)), None]);
+        assert_eq!(
+            sink.emitted,
+            vec![(TensorOp::DropoutGrad { p: 0.25 }, vec![token, g])]
+        );
+        let grad = TensorOp::DropoutGrad { p: 0.25 };
+        assert_eq!(
+            gradient(&mut sink, &grad, &[token, g], ValueId(4), g, &[false, true]),
+            Ok(None)
         );
     }
 

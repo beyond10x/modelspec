@@ -8,7 +8,11 @@
 //! - counter `[index, stream, id as u32, (id >> 32) as u32]`: the element index in row-major
 //!   order, the [`Stream`] tag, and the 64-bit id of what is drawn — for a parameter its
 //!   canonical parameter id ([`canonical_id`] of its canonical path), for a data input the
-//!   [`canonical_id`] of its name.
+//!   [`canonical_id`] of its name, for a dropout site at a step the [`dropout_id`] of its site
+//!   name and the step.
+//!
+//! Stream tags: 0 initial values, 1 teacher, 2 synthetic data, 3 masking, 4 dropout, 5 epoch
+//! order. A dropout element is kept when its uniform draw `u >= p` ([`dropout_keeps`]).
 //!
 //! Element `i` takes block `philox4x32_10(counter(i), key)`. A uniform draw uses word 0 as
 //! `u = (w + 0.5) / 2^32`, in `(0, 1)`; a standard normal draw is Box-Muller over words 0 and 1,
@@ -41,8 +45,11 @@ pub enum Stream {
     Data,
     /// Masked-language-model masking, drawn per step (`dataset::mlm`; coordinator decision D26).
     Masking,
-    /// The epoch order of packed `Train` sequences (`dataset::mlm`; coordinator decision D26).
-    /// Tag 4, between this and [`Stream::Masking`], is reserved for dropout.
+    /// The dropout masks of the training step, one draw per site and step ([`dropout_id`];
+    /// coordinator decisions D30 and D47).
+    Dropout,
+    /// The epoch order of packed `Train` sequences (`dataset::mlm`; coordinator decision D26),
+    /// tag 5, after [`Stream::Dropout`].
     DataOrder,
 }
 
@@ -54,6 +61,7 @@ impl Stream {
             Stream::Teacher => 1,
             Stream::Data => 2,
             Stream::Masking => 3,
+            Stream::Dropout => 4,
             Stream::DataOrder => 5,
         }
     }
@@ -113,6 +121,38 @@ pub fn block(seed: u64, stream: Stream, id: u64, index: u32) -> [u32; 4] {
 /// A word as a uniform draw in `(0, 1)`.
 fn uniform(word: u32) -> f64 {
     (f64::from(word) + 0.5) / 4_294_967_296.0
+}
+
+/// The draw id of the dropout site `site` at step `step`: the first 8 bytes of
+/// `blake3(site bytes, then step as 8 little-endian bytes)`, little-endian (DESIGN.md § 2.3,
+/// coordinator decision D47).
+pub fn dropout_id(site: &str, step: u64) -> u64 {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(site.as_bytes());
+    hasher.update(&step.to_le_bytes());
+    let mut first = [0u8; 8];
+    first.copy_from_slice(&hasher.finalize().as_bytes()[..8]);
+    u64::from_le_bytes(first)
+}
+
+/// The RNG token of the dropout site `site` at step `step`, the `i32[2]` program input its
+/// `Dropout` and `DropoutGrad` read: `[id low, id high]` of [`dropout_id`] as bit patterns.
+pub fn dropout_token(site: &str, step: u64) -> HostTensor<i32> {
+    let id = dropout_id(site, step);
+    HostTensor::new(vec![2], vec![id as u32 as i32, (id >> 32) as u32 as i32])
+        .expect("two values fill shape [2]")
+}
+
+/// The draw id a token holds: its low word, then its high word, as bit patterns.
+pub fn token_id(token: [i32; 2]) -> u64 {
+    u64::from(token[0] as u32) | (u64::from(token[1] as u32) << 32)
+}
+
+/// Whether element `index` of the dropout draw `id` under `seed` is kept at drop probability
+/// `p`: word 0 of [`block`] on [`Stream::Dropout`] as `u = (w + 0.5) / 2^32`, kept when
+/// `u >= p` (compared in `f64`).
+pub fn dropout_keeps(seed: u64, id: u64, index: u32, p: f32) -> bool {
+    uniform(block(seed, Stream::Dropout, id, index)[0]) >= f64::from(p)
 }
 
 /// The static dimensions of `ty` and its element count, refused past `2^32` elements.
@@ -332,6 +372,36 @@ mod tests {
         );
         assert_eq!(Stream::Init.tag(), 0);
         assert_eq!(Stream::Teacher.tag(), 1);
+    }
+
+    /// Dropout is tag 4, between masking (3) and the epoch order, which stays 5 (coordinator
+    /// decisions D30 and D47).
+    #[test]
+    fn dropout_is_stream_tag_4_and_data_order_stays_5() {
+        assert_eq!(Stream::Masking.tag(), 3);
+        assert_eq!(Stream::Dropout.tag(), 4);
+        assert_eq!(Stream::DataOrder.tag(), 5);
+    }
+
+    /// The draw id of a site at a step is the first 8 bytes of `blake3(site, step as 8
+    /// little-endian bytes)`, little-endian; the token holds its low then its high 32 bits.
+    #[test]
+    fn a_dropout_token_is_the_draw_id_of_its_site_and_step() {
+        let mut bytes = b"M.forward.dropout#0".to_vec();
+        bytes.extend_from_slice(&5u64.to_le_bytes());
+        let hash = blake3::hash(&bytes);
+        let mut first = [0u8; 8];
+        first.copy_from_slice(&hash.as_bytes()[..8]);
+        let id = u64::from_le_bytes(first);
+        assert_eq!(dropout_id("M.forward.dropout#0", 5), id);
+        assert_eq!(
+            dropout_token("M.forward.dropout#0", 5).data(),
+            &[id as u32 as i32, (id >> 32) as u32 as i32]
+        );
+        assert_ne!(
+            dropout_id("M.forward.dropout#0", 5),
+            dropout_id("M.forward.dropout#0", 6)
+        );
     }
 
     fn w() -> TensorType {
