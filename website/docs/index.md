@@ -68,10 +68,13 @@ a packed directory, which trains a masked-language model on the sequences `data 
 ([Prepare training data](./guides/prepare-training-data.md)).
 
 On the MNIST benchmark example, `train --backend vulkan` measured 27.14 µs per step on an RTX
-3090 in 0.6.0 (median of 5 timed runs of 144,000 steps); no new timed step time was measured for
-any later release, and ADR-007's accuracy and final-weight conditions were not measured. Since 0.7.1,
-`--profile` prints each dispatch's FLOP, bytes, GFLOP/s and GB/s; on the same example it reached
-447.8 GFLOP/s and 56.6 GB/s over 45.925 µs per profiled step. [Benchmarks](/docs/benchmarks) charts every run, and [Status](/docs/status) lists every shipped
+3090 in 0.6.0 (median of 5 timed runs of 144,000 steps), and ADR-007's accuracy and final-weight
+conditions were not measured. Since 0.7.1, `--profile` prints each dispatch's FLOP, bytes,
+GFLOP/s and GB/s; on the same example it reached 447.8 GFLOP/s and 56.6 GB/s over 45.925 µs per
+profiled step. Those are the last timings through `train`. The sweep harness `mlp_sweep` (since
+0.7.1) trains the same shapes, 784 → 64 → 10 at batch 100, on the same GPU: 33.044 µs per step
+in 0.9.0 and 30.726 µs in 0.10.0, each the median of 3 timed runs (`benchmarks/runs.yaml`).
+[Benchmarks](/docs/benchmarks) charts every run, [Status](/docs/status) lists every shipped
 capability with the test that holds it, and [Roadmap](./roadmap.md) says what M1 to M4 add.
 
 ## What it is for

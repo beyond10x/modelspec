@@ -305,7 +305,7 @@
     },
     {
       "area": "BERT operators",
-      "detail": "Every command that needs a Vulkan kernel for one of them answers E-TARGET-011 at the operator's call, before a device is opened; they train with --backend cpu. Held by test every_command_that_needs_a_vulkan_kernel_answers_e_target_011_at_the_call in crates/modelspec-cli/tests/embedding_no_kernel.rs.",
+      "detail": "Since 0.10.0: every command that needs a Vulkan kernel for one of them answers E-TARGET-011 at the operator's call, before a device is opened; they train with --backend cpu. Held by test every_command_that_needs_a_vulkan_kernel_answers_e_target_011_at_the_call in crates/modelspec-cli/tests/embedding_no_kernel.rs.",
       "href": "/docs/reference/diagnostics",
       "label": "No Vulkan kernel yet for the BERT operators",
       "status": "shipped"
@@ -333,7 +333,7 @@
     },
     {
       "area": "Data",
-      "detail": "15% of the tokens are selected from the seed, and of those 80% are masked, 10% replaced by a random token and 10% kept. Held by test proportions in crates/modelspec-runtime/tests/mlm.rs.",
+      "detail": "Since 0.10.0: 15% of the tokens are selected from the seed, and of those 80% are masked, 10% replaced by a random token and 10% kept. Held by test proportions in crates/modelspec-runtime/tests/mlm.rs.",
       "href": "/docs/guides/prepare-training-data",
       "label": "Masked-language-model batches",
       "status": "shipped"

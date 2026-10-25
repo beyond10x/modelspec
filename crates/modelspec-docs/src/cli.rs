@@ -206,16 +206,45 @@ pub fn page() -> String {
 mod tests {
     use super::*;
 
+    /// The first argument of a usage continuation line: a flag with its `<VALUE>`, or one word.
+    fn first_argument(line: &str) -> String {
+        let mut words = line.split_whitespace();
+        let first = words.next().unwrap_or_default();
+        match words.next() {
+            Some(value) if first.starts_with("--") && value.starts_with('<') => {
+                format!("{first} {value}")
+            }
+            _ => first.to_owned(),
+        }
+    }
+
     #[test]
     fn usage_lines_fit_a_code_box_and_wrap_between_arguments() {
+        assert_eq!(USAGE_WIDTH, 64);
         let page = page();
         let mut usages = 0;
+        let mut wrapped = 0;
         for block in page.split("```text\n").skip(1) {
             let (block, _) = block.split_once("\n```").unwrap();
             usages += 1;
-            for line in block.lines() {
+            let lines: Vec<&str> = block.lines().collect();
+            for pair in lines.windows(2) {
+                wrapped += 1;
+                let next = first_argument(pair[1]);
                 assert!(
-                    line.chars().count() <= USAGE_WIDTH,
+                    pair[1].starts_with("       --") || pair[1].starts_with("       <"),
+                    "a continuation line that does not start at an argument: {}",
+                    pair[1]
+                );
+                assert!(
+                    pair[0].chars().count() + 1 + next.chars().count() > 64,
+                    "`{next}` fits on the line before it: {}",
+                    pair[0]
+                );
+            }
+            for line in lines {
+                assert!(
+                    line.chars().count() <= 64,
                     "usage line of {} characters: {line}",
                     line.chars().count()
                 );
@@ -227,6 +256,7 @@ mod tests {
             }
         }
         assert!(usages > 10);
+        assert!(wrapped > 1, "only {wrapped} wrapped usage lines");
         assert!(page.contains(
             "Usage: modelspec data pack --dataset <DIR> --tokenizer <FILE>\n       --seq-len <S> --out <DIR>"
         ));

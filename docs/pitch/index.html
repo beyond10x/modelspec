@@ -227,7 +227,7 @@ body.all .hud, body.all .narrow { display: none; }
       <span class="chip">no Python · PyTorch · CUDA</span>
     </div>
   </div>
-  <aside class="notes">Vision objective; DESIGN.md header principle and section 0. Date and version: the 0.10.0 release, 2026-10-25 (CHANGELOG.md:12).</aside>
+  <aside class="notes">Vision objective; DESIGN.md header principle and section 0. Date and version: the 0.10.0 release, 2026-10-25 (CHANGELOG.md § 0.10.0).</aside>
 </section>
 
 <!-- 2 -->
@@ -349,7 +349,7 @@ body.all .hud, body.all .narrow { display: none; }
       <text x="354" y="554">M1 · native Vulkan execution · training since 0.4.0</text>
     </g>
   </svg>
-  <aside class="notes">DESIGN.md section 3 and 3.1. Parse and name resolution happen before the checked HIR. The driver translates SPIR-V into native GPU code; ModelSpec does not emit SASS (section 0, 5.1). Legend: M0 released as 0.1.0 (CHANGELOG.md:131-135); train --backend vulkan first released in 0.4.0 (CHANGELOG.md:70, :81).</aside>
+  <aside class="notes">DESIGN.md section 3 and 3.1. Parse and name resolution happen before the checked HIR. The driver translates SPIR-V into native GPU code; ModelSpec does not emit SASS (section 0, 5.1). Legend: M0 released as 0.1.0 (CHANGELOG.md § 0.1.0); train --backend vulkan first released in 0.4.0 (CHANGELOG.md § 0.4.0).</aside>
 </section>
 
 <!-- 5 -->
@@ -544,7 +544,7 @@ body.all .hud, body.all .narrow { display: none; }
       <div class="st" style="color:var(--mut)">not built</div></div>
   </div>
   <p class="mut" style="font-size:26px;margin-top:34px">End-to-end f32 training on the RTX 3090 shipped in 0.4.0. M1 stays open: its epic is a draft and the 9 acceptance boxes in DESIGN.md § 9 are not ticked.</p>
-  <aside class="notes">README milestones; DESIGN.md section 1. M0: CHANGELOG.md:131-135. M1: train --backend vulkan in CHANGELOG.md:81 under [0.4.0]; website/docs/status.mdx milestone table "in progress"; epic:m1-vulkan-execution status draft (aep plan artifact list); DESIGN.md:551-559 nine unticked boxes. M2 items done in M1: elementwise fusion CHANGELOG.md:87 [0.4.0], tiled matmul CHANGELOG.md:66 [0.5.0] and DESIGN.md:273 ("The M2 tiling below, done in M1"), --profile CHANGELOG.md:82 [0.4.0]. M3: embedding, add_rows, gelu, layer_norm, softmax and attention in CHANGELOG.md [0.10.0], cross_entropy and dropout under [Unreleased]; their Vulkan kernels are draft stories; DESIGN.md revision 0.7 adds the BERT-like proof model to M3. M4: no stories in the store. 2026-10-25.</aside>
+  <aside class="notes">README milestones; DESIGN.md section 1. M0: CHANGELOG.md § 0.1.0. M1: train --backend vulkan in CHANGELOG.md § 0.4.0; the milestone table of website/docs/status.mdx says "in progress"; DESIGN.md:551-559 nine unticked boxes. M2 items done in M1: elementwise fusion and --profile in CHANGELOG.md § 0.4.0, the tiled matmul in CHANGELOG.md § 0.5.0 and DESIGN.md:273 ("The M2 tiling below, done in M1"). M3: embedding, add_rows, gelu, layer_norm, softmax and attention in CHANGELOG.md § 0.10.0, cross_entropy and dropout in CHANGELOG.md § Unreleased; their Vulkan kernels are planned rows of website/data/status.json; DESIGN.md revision 0.7 adds the BERT-like proof model to M3. M4: designed in DESIGN.md section 1, not built (website/docs/status.mdx). 2026-10-25.</aside>
 </section>
 
 <!-- 13 -->
@@ -571,7 +571,7 @@ body.all .hud, body.all .narrow { display: none; }
       <p style="font-size:21px">Vulkan kernels for the BERT operators · AdamW · held-out evaluation · M4: the Tensor Core path</p>
     </div>
   </div>
-  <aside class="notes">Releases: git tag lists 12 tags, 0.1.0 to 0.10.0; 0.10.0 dated 2026-10-25 (CHANGELOG.md [0.10.0]); binary per CHANGELOG.md:5-6. 50 shipped, 5 planned: website/data/status.json (asOf 2026-10-25). 62 implemented, 1 active story: the status lines of .engineering/planning/story/*.md, 2026-10-25. 2440 / 0 / 235: the sum of the 350 cargo "test result" lines of task ci on 08639c3 with this change, 2026-10-25, CHROME set to a local Chromium; the ignored tests include the device tests and the browser tests that task ui-browser then runs (AGENTS.md "Commands"); the 27 node --test cases of pnpm test are not counted. Released column: CHANGELOG.md:68-87 [0.4.0], :66 [0.5.0], :41-58 [0.6.0], :103 [0.2.0]. Released in 0.7.0: CHANGELOG.md:25-39 [0.7.0]. Not built: story:observatory-architecture-graph and story:observatory-saliency-gradient-x-input are draft; DESIGN.md section 1 M3 and M4 rows; no M3 or M4 story implemented. Left out: the M0 loss figure 9.69 to 5.6e-11 (still true per website/docs/getting-started.md:48 and :58, moved off to make room).</aside>
+  <aside class="notes">Releases: git tag lists 12 tags, 0.1.0 to 0.10.0; 0.10.0 dated 2026-10-25 (CHANGELOG.md § 0.10.0); the Linux x86_64 binary: the opening paragraph of CHANGELOG.md and .github/workflows/release.yml. 50 shipped, 5 planned: website/data/status.json (asOf 2026-10-25). 62 implemented, 1 in progress: the stories of the repository's planning store, 2026-10-25. 2440 / 0 / 235: the sum of the cargo "test result" lines of task ci, 2026-10-25, with a local Chromium as CHROME; the ignored tests include the device tests and the browser tests that task ui-browser then runs (AGENTS.md "Commands"); the node --test cases of pnpm test are not counted. Released, 0.2.0 to 0.7.1: --serve in CHANGELOG.md § 0.2.0; train --backend vulkan with one host wait and --profile in CHANGELOG.md § 0.4.0; the tiled GPU matmul in CHANGELOG.md § 0.5.0; checkpoints, resume, infer, compile, --record and observe in CHANGELOG.md § 0.6.0; the observatory UI in CHANGELOG.md § 0.7.0. Released, 0.8.0 to 0.10.0: CHANGELOG.md § 0.9.0 and § 0.10.0; data prepare, tokenizer and pack are in the 0.10.0 tag without a CHANGELOG.md entry (website/docs/guides/prepare-training-data.md). Not built: the planned rows of website/data/status.json; DESIGN.md section 1 M3 and M4 rows.</aside>
 </section>
 
 <!-- 14 -->
@@ -611,10 +611,10 @@ body.all .hud, body.all .narrow { display: none; }
       <p style="font-size:22px"><b style="color:#e6e8eb">ADR-007 (proposed):</b> gate 51.9 µs per step, 10× the PyTorch eager CUDA baseline; working target 31.4 µs, 10× the CPU figure.</p>
     </div>
     <div class="card" style="padding:20px 26px">
-      <p style="font-size:22px">0.6.0 is under both times; no new timed MNIST step time was measured for a later release. The gate's accuracy and final-weight conditions were not measured.</p>
+      <p style="font-size:22px">0.6.0 is under both times; the sweep harness timed the same shapes at 33.044 µs in 0.9.0 and 30.726 µs in 0.10.0 (not MNIST <code>train</code> runs). The gate's accuracy and final-weight conditions were not measured.</p>
     </div>
   </div>
-  <aside class="notes">Workload: CHANGELOG.md:74 and DESIGN.md:612. PyTorch eager CUDA 519 µs and torch.compile 933 µs: DESIGN.md:613 (PyTorch 2.14.1+cu130, measured 2026-10-21, verification-report:mnist-benchmark-cuda-baseline); torch.compile is reported there, not gated. PyTorch eager CPU 8 threads 314 µs: DESIGN.md:615, measured under load, an upper bound. Gate 51.9 µs and ADR-007 status proposed: DESIGN.md:612-613. Working target 31.4 µs: DESIGN.md:615. ModelSpec 0.4.0 40.225 µs: CHANGELOG.md:70; 0.6.0 27.14 µs: CHANGELOG.md:43 (median of 5 timed runs of 144,000 steps, down from 27.282 µs in 0.5.0, CHANGELOG.md:62); "accuracy and final-weight conditions were not measured": CHANGELOG.md:43. The 0.5.0 bar was replaced by 0.6.0; both are about 25 px long. The per-kernel times in DESIGN.md:273 are left out: kernel timings differ between CHANGELOG.md and DESIGN.md. CHANGELOG.md [0.7.0] (lines 25-39) has no new MNIST step time: "No new device benchmark was measured for this release" (CHANGELOG.md:27); nor has [0.7.1] (lines 12-23): "No new timed MNIST step time was measured for this release" (CHANGELOG.md:14). Bar lengths are proportional to the values (860 px for 933 µs). No ModelSpec images/s figure is in the repository, so none is shown.</aside>
+  <aside class="notes">Workload: CHANGELOG.md § 0.4.0 and DESIGN.md:612. PyTorch eager CUDA 519 µs and torch.compile 933 µs: DESIGN.md:613 (PyTorch 2.14.1+cu130, measured 2026-10-21; the runs mnist-2026-10-21-pytorch-cuda-eager and mnist-2026-10-21-pytorch-cuda-compile of benchmarks/runs.yaml); torch.compile is reported there, not gated. PyTorch eager CPU 8 threads 314 µs: DESIGN.md:615, measured under load, an upper bound. Gate 51.9 µs and ADR-007 status proposed: DESIGN.md:612-613. Working target 31.4 µs: DESIGN.md:615. ModelSpec 0.4.0 40.225 µs: CHANGELOG.md § 0.4.0; 0.6.0 27.14 µs: CHANGELOG.md § 0.6.0 (median of 5 timed runs of 144,000 steps, down from 27.282 µs in 0.5.0, CHANGELOG.md § 0.5.0); "accuracy and final-weight conditions were not measured": CHANGELOG.md § 0.6.0. The per-kernel times in DESIGN.md:273 are not shown: kernel timings differ between CHANGELOG.md and DESIGN.md. CHANGELOG.md § 0.7.0 has no new MNIST step time: "No new device benchmark was measured for this release"; nor has CHANGELOG.md § 0.7.1: "No new timed MNIST step time was measured for this release". The sweep harness mlp_sweep timed the same shapes on synthetic data at 33.044 µs per step in 0.9.0 and 30.726 µs in 0.10.0 (benchmarks/runs.yaml); those are not MNIST runs through train, so they are not bars here. Bar lengths are proportional to the values (860 px for 933 µs). No ModelSpec images/s figure is in the repository, so none is shown.</aside>
 </section>
 
 <!-- 15 -->
@@ -642,7 +642,7 @@ body.all .hud, body.all .narrow { display: none; }
       <p style="font-size:22px">Architecture graph from the IR · activation statistics · gradient × input saliency</p>
     </div>
   </div>
-  <aside class="notes">--serve: CHANGELOG.md:103 [0.2.0] and website/docs/reference/cli.md (train --serve, loopback address). Input adjoint: CHANGELOG.md:104 [0.2.0]. --record and observe: CHANGELOG.md:49 [0.6.0] and website/docs/reference/cli.md. --ui: CHANGELOG.md:31 [0.7.0] and website/docs/reference/cli.md:121, :137. Schema: AGENTS.md "State" (modelspec-observatory's JSON Schema under schema/ is ess generate output). Released in 0.7.0: story:observatory-ui-live-loss-chart (merge c7daf8b) and story:observatory-parameter-statistics (merge 06dacc6, CHANGELOG.md:32: L2 norm and a 32-bin histogram per parameter, every --statistics-every N steps, default 100), both implemented in wave m1-h (.engineering/waves/m1-h.md). Drafted: story:observatory-architecture-graph, story:observatory-activation-statistics, story:observatory-saliency-gradient-x-input, status draft (aep plan artifact list). Epic intent: epic:training-observatory (draft).</aside>
+  <aside class="notes">--serve: CHANGELOG.md § 0.2.0 and website/docs/reference/cli.md (train --serve, loopback address). Input adjoint: CHANGELOG.md § 0.2.0. --record and observe: CHANGELOG.md § 0.6.0 and website/docs/reference/cli.md. --ui: CHANGELOG.md § 0.7.0 and the train and observe sections of website/docs/reference/cli.md. Schema: AGENTS.md "State" (modelspec-observatory's JSON Schema under schema/ is ess generate output). Released in 0.7.0: the observatory UI and per-parameter statistics, an L2 norm and a 32-bin histogram per parameter every --statistics-every N steps, default 100 (CHANGELOG.md § 0.7.0). Drafted: the architecture graph, activation statistics and gradient-times-input saliency are draft work in the repository's planning store, not built.</aside>
 </section>
 
 <!-- 16 -->
@@ -666,7 +666,7 @@ body.all .hud, body.all .narrow { display: none; }
     <div class="step"><b>Commit</b><span>through a bot identity</span></div>
   </div>
   <p style="font-size:26px;margin-top:34px">The same process is what would govern the self-improvement loop.</p>
-  <aside class="notes">AGENTS.md "Planning and specification"; spec/domains/ holds artifact, checkpoint, data, device, observatory and training .yaml; vision direction item 5. Waves: .engineering/waves/ pages and the merge commits in git log. Delivered: m0 (8 stories, commit 7877c6c), observatory-1 (2: observatory-input-adjoint, observatory-live-event-stream), cpu-perf-1 (1), cpu-perf-2 (1), m1-a (4), m1-b (1), m1-c (2), m1-d (1), m1-e (3), m1-f (1), m1-g (5, units 1 to 5 merged, last at 03e46dc), m1-h (5, units 1 to 5 merged, last at 06dacc6; unit 3 re-scoped from story:m1-f-weight-grad-matmul-columns, now archived, to story:kernel-signature-covers-matmul-tile); 34 in total, equal to the implemented stories in aep plan artifact list --kind story, 2026-10-23.</aside>
+  <aside class="notes">AGENTS.md "Planning and specification"; spec/domains/ holds artifact, checkpoint, data, device, observatory and training .yaml; vision direction item 5. Waves and stories: the closed wave records of the repository's planning store and their merge commits in git log, 2026-10-25.</aside>
 </section>
 
 <!-- 17 -->
@@ -701,7 +701,7 @@ body.all .hud, body.all .narrow { display: none; }
       </ul>
     </div>
   </div>
-  <aside class="notes">Done: CHANGELOG.md:131 (0.1.0, 2026-10-21), :68-70 and :81 (0.4.0, 2026-10-22, train --backend vulkan), :60-62 (0.5.0, 2026-10-23, 27.282 µs from 40.225 µs), :41-48 (0.6.0, 2026-10-23, Vulkan checkpoints, infer --backend vulkan, compile). Released: CHANGELOG.md [0.7.0], [0.8.0], [0.9.0] and [0.10.0]. Open: DESIGN.md:551-559 nine unticked boxes and epic:m1-vulkan-execution in draft; CHANGELOG.md:43 "ADR-007's accuracy and final-weight conditions were not measured for this release". BERT: website/data/status.json planned rows, asOf 2026-10-25. The M0 first-run loss (website/docs/getting-started.md:48-51) moved off this slide.</aside>
+  <aside class="notes">Done: CHANGELOG.md § 0.1.0 (2026-10-21), CHANGELOG.md § 0.4.0 (2026-10-22, train --backend vulkan), CHANGELOG.md § 0.5.0 (2026-10-23, 27.282 µs from 40.225 µs), CHANGELOG.md § 0.6.0 (2026-10-23, Vulkan checkpoints, infer --backend vulkan, compile). Released: CHANGELOG.md § 0.7.0, § 0.8.0, § 0.9.0 and § 0.10.0. Open: DESIGN.md:551-559 nine unticked boxes; CHANGELOG.md § 0.6.0 "ADR-007's accuracy and final-weight conditions were not measured for this release". BERT: website/data/status.json planned rows, asOf 2026-10-25.</aside>
 </section>
 
 <div class="narrow">The slides are 16:9: turn the device sideways to read them. Tap the right or left half, or swipe, to change slides.</div>

@@ -1,6 +1,9 @@
 ---
 title: Write a model
 description: Build a two-layer model with a relu in the M0 subset, step by step, checking it after each step and training it on the CPU reference.
+sidebar_position: 1
+lede: "A two-layer model with a relu is written in the M0 subset in three steps, then checked, printed as IR and trained on the CPU reference."
+source: "DESIGN.md § 2; crates/modelspec-docs/models/two_layer_relu.mspec, the finished file; the tests check.rs and ir_tensor.rs of crates/modelspec-cli; every output pasted from a run of the commands it shows."
 ---
 
 # Write a model

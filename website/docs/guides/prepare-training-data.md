@@ -1,6 +1,9 @@
 ---
 title: Prepare training data
 description: Turn a WikiText-103 raw release into packed token sequences with modelspec data prepare, data tokenizer and data pack, and train a masked-language model on them.
+sidebar_position: 4
+lede: "Three data commands turn a corpus into packed token sequences, each record carrying the id of the one before it, so a training run names exactly which text, tokenizer and sequence length it saw."
+source: "crates/modelspec-cli/src/data.rs, crates/modelspec-runtime/src/dataset and spec/domains/data.yaml; the tests data_prepare.rs, data_tokenizer.rs, data_pack.rs and train_data.rs of crates/modelspec-cli and mlm.rs of crates/modelspec-runtime; every output pasted from a run of the commands on crates/modelspec-runtime/tests/fixtures/corpus-tokenizer."
 ---
 
 # Prepare training data

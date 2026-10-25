@@ -1,6 +1,9 @@
 ---
 title: Inspect a run
 description: Print the IR, the kernels and plans of a training step, the compiled artifact and its SPIR-V, and the time of every GPU dispatch of a run, on the MNIST example.
+sidebar_position: 3
+lede: "Five steps follow the MNIST example from its Tensor IR through its kernels, its compiled artifact and SPIR-V to the time every GPU dispatch of a run takes."
+source: "crates/modelspec-cli/src/ir.rs, compile.rs and train.rs; the tests ir_kernel.rs, compile.rs and adversary_guide_kernel_lines.rs of crates/modelspec-cli and vulkan_profile.rs of crates/modelspec-runtime; the outputs pasted from runs on examples/mnist_mlp.mspec and the device profile crates/modelspec-runtime/tests/fixtures/rtx3090.device.json."
 ---
 
 # Inspect a run

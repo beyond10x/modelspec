@@ -461,7 +461,7 @@ pub const CAPABILITIES: &[Capability] = &[
     shipped(
         "BERT operators",
         "No Vulkan kernel yet for the BERT operators",
-        "Every command that needs a Vulkan kernel for one of them answers E-TARGET-011 at the operator's call, before a device is opened; they train with --backend cpu.",
+        "Since 0.10.0: every command that needs a Vulkan kernel for one of them answers E-TARGET-011 at the operator's call, before a device is opened; they train with --backend cpu.",
         Evidence::Test(
             "crates/modelspec-cli/tests/embedding_no_kernel.rs::every_command_that_needs_a_vulkan_kernel_answers_e_target_011_at_the_call",
         ),
@@ -493,7 +493,7 @@ pub const CAPABILITIES: &[Capability] = &[
     shipped(
         "Data",
         "Masked-language-model batches",
-        "15% of the tokens are selected from the seed, and of those 80% are masked, 10% replaced by a random token and 10% kept.",
+        "Since 0.10.0: 15% of the tokens are selected from the seed, and of those 80% are masked, 10% replaced by a random token and 10% kept.",
         Evidence::Test("crates/modelspec-runtime/tests/mlm.rs::proportions"),
         "/docs/guides/prepare-training-data",
     ),
@@ -793,9 +793,41 @@ mod tests {
             .collect()
     }
 
+    /// The newest release heading of `changelog`, `## [<version>] - <date>`, as (version, date).
+    fn latest_release(changelog: &str) -> (String, String) {
+        changelog
+            .lines()
+            .filter_map(|line| line.strip_prefix("## ["))
+            .filter_map(|rest| rest.split_once("] - "))
+            .map(|(version, date)| (version.to_owned(), date.trim().to_owned()))
+            .next()
+            .expect("CHANGELOG.md has a release")
+    }
+
+    /// The status data the generator writes is as of the newest release of `CHANGELOG.md` or
+    /// later, and the status page names that release as the latest, so a release that lands
+    /// without the list being checked again fails here.
     #[test]
-    fn the_list_was_checked_against_the_0_10_0_release() {
-        assert!(AS_OF >= "2026-10-25", "AS_OF {AS_OF} predates 0.10.0");
+    fn the_status_page_is_as_of_the_latest_release() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let changelog = fs::read_to_string(root.join("CHANGELOG.md")).unwrap();
+        let (version, date) = latest_release(&changelog);
+        assert!(
+            version.split('.').count() == 3 && date.len() == "2026-10-25".len(),
+            "the newest release heading reads [{version}] - {date}"
+        );
+        let (text, _) = document(&root).unwrap();
+        let generated: Value = serde_json::from_str(&text).unwrap();
+        let as_of = generated["asOf"].as_str().unwrap();
+        assert!(
+            as_of >= date.as_str(),
+            "the generated status data is as of {as_of}, before the {version} release of {date}"
+        );
+        let page = fs::read_to_string(root.join("website/docs/status.mdx")).unwrap();
+        assert!(
+            page.contains(&format!("\n{version} is the latest release;")),
+            "the status page does not say {version} is the latest release"
+        );
     }
 
     #[test]

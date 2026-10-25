@@ -1,6 +1,9 @@
 ---
 title: Read a diagnostic
 description: The layout of every diagnostic modelspec prints, line by line, and where to look up a code.
+sidebar_position: 2
+lede: "Every diagnostic is one line with its code and message, then its position when it has one, then one indented line per detail, and its code is what to look up."
+source: "DESIGN.md § 8.1; crates/modelspec-core/src/diag.rs; the tests check.rs and train_linear.rs of crates/modelspec-cli; the outputs pasted from a run of modelspec check on crates/modelspec-docs/models/matmul_mismatch.mspec and of modelspec train --backend vulkan in a binary built without the vulkan feature."
 ---
 
 # Read a diagnostic
