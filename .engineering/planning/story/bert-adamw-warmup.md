@@ -56,7 +56,7 @@ scope:
   path: ui/src/generated/
 - confidence: cited
   path: website/docs/reference/
-revision: 5
+revision: 6
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-25T09:51:25Z", actor: "human:timo", revision: 4}
 - {from: "proposed", to: "active", at: "2026-10-25T09:51:25Z", actor: "human:timo", revision: 5}
@@ -155,8 +155,10 @@ Scenarios, each run by `task ci` through the command shown, except scenario 1:
    too"); typed declarations that cite their source stand in their place, and
    `cd spec && ess specify validate --path .` exits 0.
 2. `cargo test -p modelspec-runtime --test adamw one_step`: for a fixture model with two
-   parameters, the parameters after steps 1, 2 and 3 equal those the test computes from the
-   update above in `f64` within `1e-6` relative, with `m` and `v` starting at 0.
+   parameters, the parameters after steps 1, 2 and 3 are bit-equal to those the test computes from the
+   update above in `f32`, every operation rounded in the written order, with `m` and `v`
+   starting at 0 (coordinator decision D64: an `f64` reference with a `1e-6` relative bound
+   cannot be met under cancellation; the `f32` reference in the written order is the measure).
 3. `cargo test -p modelspec-runtime --test adamw schedule`: the `lr_t` the runner passes at every
    step from 0 to `warmup_steps + 2` equals the settled schedule evaluated in `f64`.
 4. `cargo test -p modelspec-runtime --test adamw decoupled_decay`: for a parameter whose gradient is
