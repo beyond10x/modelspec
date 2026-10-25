@@ -25,7 +25,7 @@ and of 2026-10-25, "use UI improvement skills".
 
 | # | unit | branch | tree | build dir | scratch | adversary | status |
 |---|---|---|---|---|---|---|---|
-| 1 | observatory-ui-iteration-loop R-00 (decision D57) | impl/observatory-ui-iteration-loop | wt-3b4d4a17493e | `target/` in the tree | `~/.cache/modelspec-wave-ui-1/ui-loop/scratch/` | | unit c1b949b; adversary pass 1: 10 findings (0 blocker, 7 warnings, 3 notes), L7 review: heuristics 5 pass, 10 partial, 0 fail, UXF-006 to UXF-011 filed; report review: numbers reproduce, T1 to T9 tool defects; fix pass 1 under D59 done (D62): pnpm ux 39 passed, pnpm test 66 passed, R-00 re-measured |
+| 1 | observatory-ui-iteration-loop R-00 (decision D57) | impl/observatory-ui-iteration-loop | wt-3b4d4a17493e | `target/` in the tree | `~/.cache/modelspec-wave-ui-1/ui-loop/scratch/` | | unit c1b949b; adversary pass 1: 10 findings (0 blocker, 7 warnings, 3 notes), L7 review: heuristics 5 pass, 10 partial, 0 fail, UXF-006 to UXF-011 filed; report review: numbers reproduce, T1 to T9 tool defects; fix pass 1 under D59 done (D62): pnpm ux 39 passed, pnpm test 66 passed, R-00 re-measured; task ci exit 0 (2428 passed, 0 failed, 235 ignored) |
 
 ## Decisions
 

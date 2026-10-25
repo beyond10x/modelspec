@@ -2,7 +2,7 @@
 format: aep.planning-md/3
 id: story:observatory-ui-iteration-loop
 kind: story
-status: active
+status: implemented
 title: 'Observatory UI iteration loop: hermetic layout, accessibility and screen-only gates with a ratchet'
 relations:
 - decomposes: epic:training-observatory
@@ -22,10 +22,11 @@ scope:
   path: ui/src/
 - confidence: cited
   path: ui/ux/
-revision: 10
+revision: 11
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-25T08:54:32Z", actor: "human:timo", revision: 9}
 - {from: "proposed", to: "active", at: "2026-10-25T08:54:32Z", actor: "human:timo", revision: 10}
+- {from: "active", to: "implemented", at: "2026-10-25T12:01:01Z", actor: "human:timo", revision: 11, decided_on: {"recorded":{"test_result":1,"review_outcome":2}}}
 ---
 # Observatory UI iteration loop: hermetic layout, accessibility and screen-only gates with a ratchet
 
