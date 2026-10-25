@@ -11,7 +11,8 @@
 //!
 //! - a matmul module holds no `OpFAdd`; one `OpFMul` per accumulator, the `k = 0` product that
 //!   starts its sum; and one `Fma` per accumulator and later `k` it emits, whose two factors are
-//!   workgroup-memory loads and whose addend is the accumulator: the `k = 0` product, an earlier
+//!   workgroup-memory loads (for the block, components of `vec4` workgroup-memory loads) and whose
+//!   addend is the accumulator: the `k = 0` product, an earlier
 //!   `Fma` or a load of the accumulator's function variable;
 //! - a loss-sum module holds no `OpFAdd`, one `OpFMul` (the first term), and an `Fma` for every
 //!   later term, each squaring one difference `a - b` that the module stages;
@@ -45,6 +46,7 @@ const OP_EXT_INST_IMPORT: u32 = 11;
 const OP_EXT_INST: u32 = 12;
 const OP_LOAD: u32 = 61;
 const OP_ACCESS_CHAIN: u32 = 65;
+const OP_COMPOSITE_EXTRACT: u32 = 81;
 const OP_VARIABLE: u32 = 59;
 /// `GLSL.std.450` instruction `Fma`.
 const GLSL_FMA: u32 = 50;
@@ -151,6 +153,8 @@ fn census(module: &[u32]) -> Census {
     let mut variables: BTreeMap<u32, u32> = BTreeMap::new();
     let mut chains: BTreeMap<u32, u32> = BTreeMap::new();
     let mut loads: BTreeMap<u32, u32> = BTreeMap::new();
+    // A component of a vector to the vector: the block reads its factors as `vec4`s.
+    let mut extracts: BTreeMap<u32, u32> = BTreeMap::new();
     let mut f_adds: Vec<[u32; 2]> = Vec::new();
     for (op, w) in &all {
         match *op {
@@ -177,6 +181,10 @@ fn census(module: &[u32]) -> Census {
             }
             OP_LOAD => {
                 loads.insert(w[2], w[3]);
+                defined.insert(w[2], *op);
+            }
+            OP_COMPOSITE_EXTRACT => {
+                extracts.insert(w[2], w[3]);
                 defined.insert(w[2], *op);
             }
             OP_EXT_INST if glsl.contains(&w[3]) && w[4] == GLSL_FMA => {
@@ -211,8 +219,10 @@ fn census(module: &[u32]) -> Census {
         .iter()
         .filter(|(id, _)| !decorated.contains(id))
         .count();
-    // Where a load reads: a function variable or workgroup memory.
+    // Where a load reads, or the load a vector component comes from: a function variable or
+    // workgroup memory.
     let storage_of = |load: u32| -> Option<u32> {
+        let load = extracts.get(&load).copied().unwrap_or(load);
         let pointer = *loads.get(&load)?;
         let base = chains.get(&pointer).copied().unwrap_or(pointer);
         variables.get(&base).copied()

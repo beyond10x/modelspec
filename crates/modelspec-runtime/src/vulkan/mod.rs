@@ -326,6 +326,63 @@ impl Vulkan {
             .collect()
     }
 
+    /// Whether physical device `index` lists
+    /// [`PIPELINE_EXECUTABLE_PROPERTIES`](negotiate::PIPELINE_EXECUTABLE_PROPERTIES) and reports
+    /// its `pipelineExecutableInfo` feature, so a device created with
+    /// [`Negotiated::with_pipeline_statistics`] reads the statistics of its pipelines. `false`
+    /// for a device below Vulkan 1.1, which has no feature chain to report it in.
+    pub fn offers_pipeline_statistics(&self, index: usize) -> Result<bool, Diagnostic> {
+        let listing_failed = |error: vk::Result| {
+            Diagnostic::new(
+                E_TARGET_003,
+                "the Vulkan physical devices could not be listed",
+            )
+            .with("error", error.to_string())
+        };
+        // SAFETY: the instance is alive for the call.
+        let physical = unsafe { self.instance.enumerate_physical_devices() }
+            .map_err(listing_failed)?
+            .get(index)
+            .copied()
+            .ok_or_else(|| {
+                Diagnostic::new(
+                    E_TARGET_003,
+                    format!("there is no Vulkan physical device {index}"),
+                )
+            })?;
+        // SAFETY: `physical` belongs to this instance, which is alive for every call below, and
+        // the chained structure outlives the call that fills it.
+        unsafe {
+            if self
+                .instance
+                .get_physical_device_properties(physical)
+                .api_version
+                & !(0x7 << 29)
+                < vk::API_VERSION_1_1
+            {
+                return Ok(false);
+            }
+            let listed = self
+                .instance
+                .enumerate_device_extension_properties(physical)
+                .map_err(listing_failed)?
+                .iter()
+                .any(|extension| {
+                    extension.extension_name_as_c_str()
+                        == Ok(ash::khr::pipeline_executable_properties::NAME)
+                });
+            if !listed {
+                return Ok(false);
+            }
+            let mut executable =
+                vk::PhysicalDevicePipelineExecutablePropertiesFeaturesKHR::default();
+            let mut features2 = vk::PhysicalDeviceFeatures2::default().push_next(&mut executable);
+            self.instance
+                .get_physical_device_features2(physical, &mut features2);
+            Ok(executable.pipeline_executable_info == vk::TRUE)
+        }
+    }
+
     /// Creates a compute-only logical device on physical device `index` of [`Self::candidates`],
     /// with one queue of its compute queue family and exactly the optional features and
     /// extensions `negotiated` names. A device that negotiation refuses (below
@@ -377,10 +434,20 @@ impl Vulkan {
         let queues = [vk::DeviceQueueCreateInfo::default()
             .queue_family_index(queue_family)
             .queue_priorities(&priorities)];
-        let info = vk::DeviceCreateInfo::default()
+        // The pipeline executable extension is enabled with the feature that its queries need.
+        let statistics = negotiated
+            .extensions
+            .iter()
+            .any(|name| name == negotiate::PIPELINE_EXECUTABLE_PROPERTIES);
+        let mut executable = vk::PhysicalDevicePipelineExecutablePropertiesFeaturesKHR::default()
+            .pipeline_executable_info(true);
+        let mut info = vk::DeviceCreateInfo::default()
             .queue_create_infos(&queues)
             .enabled_extension_names(&extension_pointers)
             .enabled_features(&features);
+        if statistics {
+            info = info.push_next(&mut executable);
+        }
         // SAFETY: `physical` belongs to this instance; `info` and what it points to outlive the
         // call.
         let device =
@@ -410,8 +477,15 @@ impl Vulkan {
         }
         .get(queue_family as usize)
         .map_or(0, |family| family.timestamp_valid_bits);
+        let pipeline_statistics = enabled_extensions
+            .iter()
+            .any(|name| name == negotiate::PIPELINE_EXECUTABLE_PROPERTIES)
+            .then(|| {
+                ash::khr::pipeline_executable_properties::Device::new(&self.instance, &device)
+            });
         Ok(Device {
             device,
+            pipeline_statistics,
             queue_family: queues[0].queue_family_index,
             timestamp_valid_bits,
             api_version: self.api_version,
@@ -453,6 +527,8 @@ pub struct Device<'a> {
     api_version: u32,
     enabled_extensions: Vec<String>,
     enabled_features: Vec<String>,
+    /// The queries of `VK_KHR_pipeline_executable_properties`, when the device was created with it.
+    pipeline_statistics: Option<ash::khr::pipeline_executable_properties::Device>,
     memory: vk::PhysicalDeviceMemoryProperties,
     limits: vk::PhysicalDeviceLimits,
     host_waits: Cell<u64>,
@@ -498,6 +574,13 @@ impl Device<'_> {
     /// The optional `VkPhysicalDeviceFeatures` bits passed to `vkCreateDevice`, by member name.
     pub fn enabled_features(&self) -> &[String] {
         &self.enabled_features
+    }
+
+    /// Whether the device was created with
+    /// [`PIPELINE_EXECUTABLE_PROPERTIES`](negotiate::PIPELINE_EXECUTABLE_PROPERTIES), so each
+    /// pipeline it creates captures its statistics ([`pipeline::Pipeline::statistics`]).
+    pub fn pipeline_statistics_enabled(&self) -> bool {
+        self.pipeline_statistics.is_some()
     }
 
     /// The API version passed to `vkCreateInstance`, which the device was created under.

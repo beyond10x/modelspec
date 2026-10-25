@@ -1,0 +1,13 @@
+b10x-build-slot: slot 2 of 3, 111G free
+   Compiling modelspec-runtime v0.9.0 (<worktree>/crates/modelspec-runtime)
+    Finished `release` profile [optimized] target(s) in 0.74s
+     Running tests/adversary_blockperf_device.rs (target/release/deps/adversary_blockperf_device-084d27627900e1c9)
+
+running 1 test
+special: validation true; block against the oracle: same bits; against the oracle on flushed inputs: same bits; subnormal outputs 0, -0.0 outputs 0; denorm preserve reported Some(false)
+tiny: validation true; block against the oracle: 531533 of 2214913 differ, first [1, 3] -0.0 (0x80000000) against 8.3672e-41 (0x0000e93e); against the oracle on flushed inputs: 354048 of 2214913 differ, first [1, 3] -0.0 (0x80000000) against -1e-40 (0x800116c2); subnormal outputs 0, -0.0 outputs 177024; denorm preserve reported Some(false)
+35438608 elements block against tile
+test signed_zeros_subnormals_and_cancellation_give_the_block_the_bits_of_the_tile_of_128 ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 16.43s
+

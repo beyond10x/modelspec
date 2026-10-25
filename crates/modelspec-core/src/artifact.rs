@@ -24,10 +24,13 @@
 //! module file is a regular file no longer than its entry says and `kernels/` holds no other
 //! entry ([`E_ARTIFACT_004`]); each module's hash and then `artifact_hash` and `artifact_id`
 //! ([`E_ARTIFACT_002`]); then every byte size computed from a shape or element count fits in 64
-//! bits, the invariants of `spec/domains/artifact.yaml`, every kernel cache key has the
+//! bits, the invariants of `spec/domains/artifact.yaml` (`matmul_limits` among them,
+//! [`MatMulLimits::checked`]), every kernel cache key has the
 //! manifest's `fast_math`, every Dispatch names a module the
-//! artifact owns, every module is SPIR-V, and the plan verifier ([`verify_plan`])
-//! ([`E_ARTIFACT_003`]).
+//! artifact owns, every module is SPIR-V, and the plan verifier within the manifest's
+//! `matmul_limits` ([`verify_plan_within`]) ([`E_ARTIFACT_003`]). [`read_for_device`] then
+//! refuses a device that reports fewer workgroup invocations or less workgroup memory than those
+//! limits ([`E_ARTIFACT_005`]).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -40,15 +43,16 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
+use crate::device::DeviceProfile;
 use crate::diag::{Code, Diagnostic};
 use crate::ir::kernel::{
-    BufferView, Epilogue, ExecutionPlan, Kernel, KernelKind, KernelModuleId, Operand, PlanOp,
-    PlanStep,
+    BufferView, Epilogue, ExecutionPlan, Kernel, KernelKind, KernelModuleId, LimitsBelowMinimum,
+    MatMulLimits, Operand, PlanOp, PlanStep,
 };
 use crate::ir::print::print_step;
 use crate::ir::tensor::{DType, Dim, ParamDecl, ParamId, TensorType, ValueId};
 use crate::ir::training::TrainingStep;
-use crate::ir::verify::verify_plan;
+use crate::ir::verify::{verify_device_limits, verify_plan_within};
 use crate::schedule::MAX_BUFFER_BYTES;
 
 /// The backend an artifact is compiled for.
@@ -127,6 +131,11 @@ pub struct CompiledArtifact {
     /// [`CompiledArtifact::new`]; set by `compile --fast-math` and `train --fast-math`. It is
     /// recorded in the manifest, in every kernel cache key and in the artifact hash.
     pub fast_math: bool,
+    /// The device limits the plan was scheduled for ([`crate::compile::compile_artifact_for`]):
+    /// `None` from [`CompiledArtifact::new`], a plan scheduled for every Vulkan device. Recorded
+    /// in the manifest, and so in the artifact hash, only when present; a device that reports
+    /// less is refused before any dispatch ([`check_device`], [`E_ARTIFACT_005`]).
+    pub matmul_limits: Option<MatMulLimits>,
 }
 
 impl CompiledArtifact {
@@ -153,6 +162,7 @@ impl CompiledArtifact {
             schema_hash: schema_hash(&step.training.program.params),
             execution,
             fast_math: false,
+            matmul_limits: None,
         }
     }
 }
@@ -216,6 +226,38 @@ pub const E_ARTIFACT_003: Code = Code::new("E-ARTIFACT-003");
 /// holds an entry no kernel of the manifest names; every file is checked before any module is
 /// hashed, and no read goes past the entry's byte length.
 pub const E_ARTIFACT_004: Code = Code::new("E-ARTIFACT-004");
+
+/// The device reports fewer invocations per workgroup or fewer bytes of workgroup memory than
+/// the `matmul_limits` the artifact's plan was scheduled for ([`check_device`]): the plan's tiles
+/// may not fit it, so it is refused before any module is built or dispatched. The diagnostic
+/// names the recorded and the reported value of both limits. A device profile given to a compile
+/// (`compile --device-profile`, `train --backend vulkan`) that reports fewer than 128
+/// invocations or 16384 bytes of workgroup memory, the Vulkan minimum the smallest matmul tile
+/// needs (`MatMulLimits::checked`), is refused with this code before a plan is scheduled, naming
+/// the field, its bound and the reported value.
+pub const E_ARTIFACT_005: Code = Code::new("E-ARTIFACT-005");
+
+/// Whether `artifact` runs on the device `profile` describes: [`verify_device_limits`] of its
+/// [`CompiledArtifact::matmul_limits`], else [`E_ARTIFACT_005`] with the recorded and reported
+/// invocations and workgroup memory bytes. An artifact without limits runs on every device.
+pub fn check_device(
+    artifact: &CompiledArtifact,
+    profile: &DeviceProfile,
+) -> Result<(), Diagnostic> {
+    verify_device_limits(artifact.matmul_limits, profile).map_err(|error| {
+        let reported = MatMulLimits::of(profile);
+        let recorded = artifact.matmul_limits.unwrap_or(reported);
+        Diagnostic::new(
+            E_ARTIFACT_005,
+            "the device reports less than the limits the artifact's plan was scheduled for",
+        )
+        .with("recorded_invocations", recorded.invocations.to_string())
+        .with("reported_invocations", reported.invocations.to_string())
+        .with("recorded_shared_bytes", recorded.shared_bytes.to_string())
+        .with("reported_shared_bytes", reported.shared_bytes.to_string())
+        .with("error", error.to_string())
+    })
+}
 
 /// The manifest format this build writes and reads.
 pub const FORMAT_VERSION: u64 = 1;
@@ -370,6 +412,15 @@ pub fn module_path(dir: &Path, id: KernelModuleId) -> PathBuf {
     dir.join(KERNELS_DIR).join(format!("{id}.spv"))
 }
 
+/// [`read`], then [`check_device`] for the device `profile` describes: the artifact a runner on
+/// that device may load, refused with [`E_ARTIFACT_005`] when the device reports less than the
+/// limits its plan was scheduled for.
+pub fn read_for_device(dir: &Path, profile: &DeviceProfile) -> Result<LoadedArtifact, Diagnostic> {
+    let loaded = read(dir)?;
+    check_device(&loaded.artifact, profile)?;
+    Ok(loaded)
+}
+
 /// Reads and validates the artifact directory `dir` in the order of the module documentation,
 /// and returns the artifact or the diagnostic of the first check it fails.
 pub fn read(dir: &Path) -> Result<LoadedArtifact, Diagnostic> {
@@ -439,7 +490,8 @@ pub fn read(dir: &Path) -> Result<LoadedArtifact, Diagnostic> {
             )));
         }
     }
-    verify_plan(&artifact.execution).map_err(|e| invalid(e.to_string()))?;
+    verify_plan_within(&artifact.execution, artifact.matmul_limits)
+        .map_err(|e| invalid(e.to_string()))?;
     let modules = manifest
         .kernels
         .iter()
@@ -1119,6 +1171,27 @@ fn neither_transposed(transposed: &[bool; 2]) -> bool {
     *transposed == [false, false]
 }
 
+/// The manifest's `matmul_limits`: the invocations of one workgroup and the bytes of workgroup
+/// memory the plan was scheduled for ([`MatMulLimits`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WireLimits {
+    invocations: u32,
+    shared_bytes: u32,
+}
+
+impl WireLimits {
+    /// The limits, if they hold the invariants of `spec/domains/artifact.yaml` `MatMulLimits`
+    /// ([`MatMulLimits::checked`]).
+    fn limits(self) -> Result<MatMulLimits, LimitsBelowMinimum> {
+        MatMulLimits {
+            invocations: self.invocations,
+            shared_bytes: self.shared_bytes,
+        }
+        .checked()
+    }
+}
+
 /// `artifact.json`: `modelspec.artifact.CompiledArtifact` and its kernel modules' entries.
 /// [`read`] parses its plans as [`BoundedPlan`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1132,6 +1205,9 @@ struct Manifest<P = Vec<WireStep>> {
     ir_hash: String,
     fast_math: bool,
     deterministic: bool,
+    /// Absent for a plan scheduled for every Vulkan device, so such a manifest is unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    matmul_limits: Option<WireLimits>,
     compiler_version: String,
     schema_hash: String,
     parameters: Vec<WireParameter>,
@@ -1159,6 +1235,7 @@ impl Manifest<BoundedPlan> {
             ir_hash: self.ir_hash,
             fast_math: self.fast_math,
             deterministic: self.deterministic,
+            matmul_limits: self.matmul_limits,
             compiler_version: self.compiler_version,
             schema_hash: self.schema_hash,
             parameters: self.parameters,
@@ -1353,6 +1430,10 @@ impl Manifest {
             ir_hash: artifact.ir_hash.0.clone(),
             fast_math: artifact.fast_math,
             deterministic: true,
+            matmul_limits: artifact.matmul_limits.map(|limits| WireLimits {
+                invocations: limits.invocations,
+                shared_bytes: limits.shared_bytes,
+            }),
             compiler_version: env!("CARGO_PKG_VERSION").to_owned(),
             schema_hash: artifact.schema_hash.0.clone(),
             parameters: execution
@@ -1433,6 +1514,11 @@ impl Manifest {
     fn check(&self) -> Result<CompiledArtifact, String> {
         self.check_byte_sizes()?;
         self.check_invariants()?;
+        let matmul_limits = self
+            .matmul_limits
+            .map(WireLimits::limits)
+            .transpose()
+            .map_err(|below| below.to_string())?;
         if let Some(kernel) = self
             .kernels
             .iter()
@@ -1512,6 +1598,7 @@ impl Manifest {
                 prediction_view: BufferView::from(&self.prediction_view),
             },
             fast_math: self.fast_math,
+            matmul_limits,
         })
     }
 

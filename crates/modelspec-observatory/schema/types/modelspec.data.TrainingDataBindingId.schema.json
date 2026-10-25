@@ -4,8 +4,8 @@
   "x-ess-provenance": {
     "system": "modelspec",
     "specification_version": "v1",
-    "source_digest": "1d7075c2a7cef8344f25043d7b7ba25e04c2e737a3ee1d2bd25ce7a506a63d56",
-    "contract_digest": "slice-sha256/2:5a2f3bab9cb7870d8c1f4181c79a01922d0992048945befe1973d7962c999952",
+    "source_digest": "a40602a5065178fdd515929eb64df185e906f8c9235757ab5222244114c76a6c",
+    "contract_digest": "slice-sha256/2:3c4a5b66984a253b811f1b2d26eff9bcb6a6725c18ce35107f0810af75857f27",
     "regenerate": "ess generate"
   },
   "$defs": {

@@ -185,8 +185,11 @@ pub struct MatMulBlock {
 /// The block register-blocked tile: 256 invocations of 8 rows by 8 columns, a block of 128 rows
 /// by 128 columns, tiles of 8 values of `k`. Each staged value of `a` serves 128 columns, as in
 /// [`MATMUL_WIDE_BLOCK`], and each staged value of `b` 128 rows instead of 64, so a workgroup
-/// reads half the operand values per product the wide tile reads. Only a device profile that
-/// allows 256 invocations takes it ([`MatMulTile::for_profile`]); `from_k` is the wide tile's.
+/// reads half the operand values per product the wide tile reads. It reads workgroup memory in
+/// vectors ([`MatMulTile::vector_reads`]): on the RTX 3090 it takes `[8192, 784] x [784, 4096]`
+/// from 2,853.5 µs on the wide tile to 2,600.0 µs and `[784, 8192]ᵀ x [8192, 4096]` from 3,573.6
+/// to 2,766.6 µs (DESIGN.md § 3.1, § 5.2). Only a device profile that allows 256 invocations
+/// takes it ([`MatMulTile::for_profile`]); `from_k` and `from_workgroups` are the wide tile's.
 pub const MATMUL_LARGE_BLOCK: MatMulBlock = MatMulBlock {
     workgroup_size: 256,
     cols: 128,
@@ -235,7 +238,9 @@ pub const MATMUL_SQUARE_BLOCK: MatMulBlock = MatMulBlock {
 /// column lanes. Invocation `t` computes the columns `t % lanes + c * lanes` for `c` in
 /// `0..cols_per_invocation` of the rows `t / lanes + q * (workgroup_size / lanes)` for `q` in
 /// `0..rows`, `rows · cols_per_invocation` output elements, each with its own accumulator over
-/// ascending `k` from the `k = 0` product. The contracting index is walked in tiles of `depth`
+/// ascending `k` from the `k = 0` product. A tile with [`MatMulTile::vector_reads`] assigns adjacent
+/// columns and rows instead, as that method states; each output element still has one
+/// invocation and one accumulator. The contracting index is walked in tiles of `depth`
 /// values: a tile is read into registers `ahead` tiles before its products, then staged in one
 /// of `buffers` workgroup memory buffers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -368,9 +373,14 @@ impl MatMulTile {
     /// values of `k`, `k`-major: with a depth of 2 or more that divides 32, its stride is
     /// `cols + 32 / depth`. A transposed `b` of a one-column tile already has the padded
     /// stride of [`MatMulTile::b_pad`].
+    ///
+    /// A tile with [`MatMulTile::vector_reads`] takes [`MatMulTile::vector_layout`] instead.
     pub fn layout(&self, transposed: [bool; 2]) -> MatMulLayout {
         let [a_transposed, b_transposed] = transposed;
         let depth = self.depth;
+        if self.vector_reads() {
+            return self.vector_layout(transposed);
+        }
         let a_stride = if a_transposed && depth >= 4 && depth.is_multiple_of(4) {
             depth + (12 - depth % 8) % 8
         } else {
@@ -396,6 +406,45 @@ impl MatMulTile {
             b_stride,
             b_offset,
             buffer_values: b_offset + lines * b_stride,
+            buffers: self.buffers,
+        }
+    }
+
+    /// Whether each invocation reads its values of `a` and `b` of one `k` from workgroup memory
+    /// as vectors of 4 `f32` ([`MatMulTile::vector_layout`]): the tiles of more than
+    /// [`MAX_WORKGROUP_INVOCATIONS`] invocations, [`MATMUL_LARGE_BLOCK`], whose rows and columns
+    /// per invocation are multiples of 4. Invocation `t` then computes 4 adjacent columns from
+    /// `4 · (t % lanes)` in each group of `4 · lanes` columns, and 4 adjacent rows from
+    /// `4 · (t / lanes)` in each group of `4 · workgroup_size / lanes` rows.
+    pub fn vector_reads(&self) -> bool {
+        self.workgroup_size > MAX_WORKGROUP_INVOCATIONS
+            && self.rows.is_multiple_of(4)
+            && self.cols_per_invocation.is_multiple_of(4)
+    }
+
+    /// The layout of a tile with [`MatMulTile::vector_reads`]: both blocks `k`-major, so the 4
+    /// adjacent rows or columns an invocation reads at one `k` are one aligned vector. The `a`
+    /// block holds one line of the block's rows per value of `k`, at a stride of the rows plus
+    /// 4 when `a` is read as is and plus 8 when it is transposed, so the 32 stores of a subgroup
+    /// (8 values of `k` by 4 rows as is, 4 values of `k` by 8 rows transposed) fall into 32
+    /// different banks; the `b` block follows, `k`-major at
+    /// [`MatMulTile::b_stride`], padded by `32 / depth` when it is transposed and its depth of 2
+    /// to 8 divides 32. Every stride and offset is a multiple of 4 values.
+    pub fn vector_layout(&self, transposed: [bool; 2]) -> MatMulLayout {
+        let [a_transposed, b_transposed] = transposed;
+        let depth = self.depth;
+        let a_stride = self.rows_per_workgroup() + if a_transposed { 8 } else { 4 };
+        let b_stride = if b_transposed && (2..=8).contains(&depth) && 32u32.is_multiple_of(depth) {
+            self.b_stride() + 32 / depth
+        } else {
+            self.b_stride()
+        };
+        let b_offset = depth * a_stride;
+        MatMulLayout {
+            a_stride,
+            b_stride,
+            b_offset,
+            buffer_values: b_offset + depth * b_stride,
             buffers: self.buffers,
         }
     }
@@ -495,7 +544,61 @@ impl MatMulLimits {
             shared_bytes: profile.max_shared_memory_bytes,
         }
     }
+
+    /// The least invocations of one workgroup every Vulkan device provides, which the smallest
+    /// tile needs: the invariant `invocations >= 128` of `spec/domains/artifact.yaml`
+    /// `MatMulLimits`.
+    pub const MIN_INVOCATIONS: u32 = MAX_WORKGROUP_INVOCATIONS;
+
+    /// The least workgroup memory every Vulkan device provides, which every tile of
+    /// [`Self::MIN_INVOCATIONS`] stages within: the invariant `shared_bytes >= 16384` of
+    /// `spec/domains/artifact.yaml` `MatMulLimits`.
+    pub const MIN_SHARED_BYTES: u32 = MIN_SHARED_MEMORY_BYTES;
+
+    /// The limits, if they hold both invariants of `spec/domains/artifact.yaml` `MatMulLimits`
+    /// ([`Self::MIN_INVOCATIONS`], [`Self::MIN_SHARED_BYTES`]); else the first field below its
+    /// bound. Every recorded limit passes here: the compile's, from a device profile
+    /// ([`crate::compile::compile_artifact_for`]), and the reader's, from a manifest
+    /// ([`crate::artifact::read`]).
+    pub fn checked(self) -> Result<Self, LimitsBelowMinimum> {
+        for (field, bound, value) in [
+            ("invocations", Self::MIN_INVOCATIONS, self.invocations),
+            ("shared_bytes", Self::MIN_SHARED_BYTES, self.shared_bytes),
+        ] {
+            if value < bound {
+                return Err(LimitsBelowMinimum {
+                    field,
+                    bound,
+                    value,
+                });
+            }
+        }
+        Ok(self)
+    }
 }
+
+/// A [`MatMulLimits`] field below the bound of its invariant ([`MatMulLimits::checked`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LimitsBelowMinimum {
+    /// `invocations` or `shared_bytes`.
+    pub field: &'static str,
+    /// The least value the field may hold.
+    pub bound: u32,
+    /// The value it holds.
+    pub value: u32,
+}
+
+impl fmt::Display for LimitsBelowMinimum {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "matmul_limits.{} >= {} ({} is {})",
+            self.field, self.bound, self.field, self.value
+        )
+    }
+}
+
+impl std::error::Error for LimitsBelowMinimum {}
 
 /// The workgroup memory of a [`MatMulTile`] for a matmul with given `transposed` flags
 /// ([`MatMulTile::layout`]), in `f32` values: what the emitter stages and where.

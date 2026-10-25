@@ -263,13 +263,17 @@ fn adv_training_run_data_binding_id_is_optional() {
     assert!(!required.contains(&"data_binding_id"), "{required:?}");
 }
 
-/// Attack 8: the entity invariants of `spec/domains/data.yaml` (`seq_len > 0` on both records,
-/// `vocabulary_size > 5` and `heldout_unigram_baseline_nats > 0` on `PackedDataset`) are in the
-/// generated schemas, so a record that breaks one does not validate.
-#[test]
-#[ignore = "ADV-MLM-3: the entity schemas project none of the entity invariants"]
-fn adv_records_breaking_the_spec_invariants_do_not_validate() {
-    let case = scratch("invariants");
+/// Which record of `data pack` a broken copy is made from.
+#[derive(Clone, Copy, Debug)]
+enum Record {
+    Packed,
+    Binding,
+}
+
+/// Packs the fixture at S = 16, checks both records validate, then sets each JSON pointer of
+/// `breaks` to its value in a copy of its record and returns the copies the schema still accepts.
+fn accepted_breaks(name: &str, breaks: &[(Record, &str, Value)]) -> Vec<String> {
+    let case = scratch(name);
     let (dataset, tokenizer) = inputs(&case);
     let out = case.join("out");
     assert_exit(&pack(&dataset, &tokenizer, "16", &out), 0);
@@ -280,22 +284,106 @@ fn adv_records_breaking_the_spec_invariants_do_not_validate() {
     assert!(packed_validator.is_valid(&packed));
     assert!(binding_validator.is_valid(&binding));
     let mut accepted = Vec::new();
-    for (field, value) in [
-        ("seq_len", serde_json::json!(0)),
-        ("vocabulary_size", serde_json::json!(5)),
-        ("heldout_unigram_baseline_nats", serde_json::json!(-1.0)),
-    ] {
-        let mut broken = packed.clone();
-        broken[field] = value.clone();
-        if packed_validator.is_valid(&broken) {
-            accepted.push(format!("PackedDataset {field} {value}"));
+    for (record, pointer, value) in breaks {
+        let (original, validator) = match record {
+            Record::Packed => (&packed, &packed_validator),
+            Record::Binding => (&binding, &binding_validator),
+        };
+        let mut broken = original.clone();
+        *broken
+            .pointer_mut(pointer)
+            .unwrap_or_else(|| panic!("{record:?} has {pointer}")) = value.clone();
+        if validator.is_valid(&broken) {
+            accepted.push(format!("{record:?} {pointer} {value}"));
         }
     }
-    let mut broken = binding.clone();
-    broken["seq_len"] = serde_json::json!(0);
-    if binding_validator.is_valid(&broken) {
-        accepted.push("TrainingDataBinding seq_len 0".into());
-    }
+    accepted
+}
+
+/// Attack 8: the integer invariants of `spec/domains/data.yaml` on the two records `data pack`
+/// writes (`seq_len > 0` on both, `vocabulary_size > 5` on `PackedDataset`, `sequence_count > 0`
+/// on `PackedSplit`) and the content-hash form of `PackedSplit.content_hash` are in the generated
+/// schemas, so a record that breaks one does not validate (story:content-hash-schema-constrained,
+/// coordinator decision D34).
+#[test]
+fn adv_records_breaking_the_spec_invariants_do_not_validate() {
+    let accepted = accepted_breaks(
+        "invariants",
+        &[
+            (Record::Packed, "/seq_len", serde_json::json!(0)),
+            (Record::Packed, "/vocabulary_size", serde_json::json!(5)),
+            (
+                Record::Packed,
+                "/splits/0/sequence_count",
+                serde_json::json!(0),
+            ),
+            (
+                Record::Packed,
+                "/splits/0/content_hash",
+                serde_json::json!("not a digest"),
+            ),
+            (
+                Record::Packed,
+                "/splits/1/content_hash",
+                serde_json::json!(
+                    "B175C1CCE8DBD537B453B815C9E324FB2596856A93834C20B692AE92CD43CC3B"
+                ),
+            ),
+            (Record::Binding, "/seq_len", serde_json::json!(0)),
+        ],
+    );
+    assert!(
+        accepted.is_empty(),
+        "validate against the schema: {accepted:?}"
+    );
+}
+
+/// Attack 8: the `Binary64` invariants of the two records `data pack` writes
+/// (`heldout_unigram_baseline_nats > 0` on `PackedDataset`; `selection_rate` in (0, 1] and the
+/// three fractions `>= 0` of the binding's `MaskingPolicy`) are in the generated schemas.
+#[test]
+#[ignore = "ess-limit: binary64-bounds-not-projected, https://github.com/beyond10x/ess/issues/687 (ess 0.68.0 projects no bound of a Binary64 value as minimum, exclusiveMinimum or maximum)"]
+fn adv_records_breaking_the_binary64_invariants_do_not_validate() {
+    let accepted = accepted_breaks(
+        "invariants_binary64",
+        &[
+            (
+                Record::Packed,
+                "/heldout_unigram_baseline_nats",
+                serde_json::json!(-1.0),
+            ),
+            (
+                Record::Packed,
+                "/heldout_unigram_baseline_nats",
+                serde_json::json!(0.0),
+            ),
+            (
+                Record::Binding,
+                "/masking_policy/selection_rate",
+                serde_json::json!(0.0),
+            ),
+            (
+                Record::Binding,
+                "/masking_policy/selection_rate",
+                serde_json::json!(1.5),
+            ),
+            (
+                Record::Binding,
+                "/masking_policy/mask_fraction",
+                serde_json::json!(-0.1),
+            ),
+            (
+                Record::Binding,
+                "/masking_policy/random_fraction",
+                serde_json::json!(-0.1),
+            ),
+            (
+                Record::Binding,
+                "/masking_policy/keep_fraction",
+                serde_json::json!(-0.1),
+            ),
+        ],
+    );
     assert!(
         accepted.is_empty(),
         "validate against the schema: {accepted:?}"

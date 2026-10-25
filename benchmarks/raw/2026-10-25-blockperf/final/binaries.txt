@@ -1,0 +1,4 @@
+base <scratch>/modelspec-base, the CLI of the base 92ba28b44357e81000c14bc462db386aa369d90e (it prints no profile pipeline statistic lines)
+final <scratch>/modelspec-final, built in <worktree> from the final uncommitted tree (no probe code)
+command modelspec train mlp_sweep_b8192_h4096.mspec --backend vulkan --profile [--fast-math]
+order per round: base, final, base --fast-math, final --fast-math; 3 rounds

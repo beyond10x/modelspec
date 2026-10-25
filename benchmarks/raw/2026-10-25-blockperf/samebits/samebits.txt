@@ -1,0 +1,11 @@
+# gpu-apps-before [] 2026-10-24T23:24:28Z
+# base: <scratch>/modelspec-base (92ba28b); final: <scratch>/modelspec-final (worktree)
+mnist_mlp deterministic base exit 0 sha256 0d16ed3e7690c2583f19ba0deabe0fc457d3581314ab4ae91041c7d5a67f1d9f final exit 0 sha256 0d16ed3e7690c2583f19ba0deabe0fc457d3581314ab4ae91041c7d5a67f1d9f equal
+mnist_mlp --fast-math base exit 0 sha256 1f0fc6887fe021147acb0ff8716f2b91e4cb2c3aa5e0faadfdbcb10886efb8ca final exit 0 sha256 1f0fc6887fe021147acb0ff8716f2b91e4cb2c3aa5e0faadfdbcb10886efb8ca equal
+mlp_sweep_b1000_h1024 deterministic base exit 0 sha256 c708fa0becb32128eabf87608bec75fdde08b93d81e666c182e9363d1384655d final exit 0 sha256 c708fa0becb32128eabf87608bec75fdde08b93d81e666c182e9363d1384655d equal
+mlp_sweep_b1000_h1024 --fast-math base exit 0 sha256 539d7e14334e6cf8e5ba6f292748bd017a6334389eaa00907efb8d68ac8ae36e final exit 0 sha256 539d7e14334e6cf8e5ba6f292748bd017a6334389eaa00907efb8d68ac8ae36e equal
+mlp_sweep_b8192_h1024 deterministic base exit 0 sha256 f2b4b11a9acb18a6c3422a17f85da4a355a8849768c52431087cb365abc92246 final exit 0 sha256 f2b4b11a9acb18a6c3422a17f85da4a355a8849768c52431087cb365abc92246 equal
+mlp_sweep_b8192_h1024 --fast-math base exit 0 sha256 cb61da2de92d67486ebe9f6291a12f8e4627fa520401f37ec78d68a0566ad0e5 final exit 0 sha256 cb61da2de92d67486ebe9f6291a12f8e4627fa520401f37ec78d68a0566ad0e5 equal
+mlp_sweep_b8192_h4096 deterministic base exit 0 sha256 ffc7cfdd7121c72b145b032e48e8cc1d59512ded77cc5a0367ffc895a8b4b19f final exit 0 sha256 ffc7cfdd7121c72b145b032e48e8cc1d59512ded77cc5a0367ffc895a8b4b19f equal
+mlp_sweep_b8192_h4096 --fast-math base exit 0 sha256 d96bed2453a2deb56b7f00395cada792012563578506562d1c04ded3437f6a98 final exit 0 sha256 d96bed2453a2deb56b7f00395cada792012563578506562d1c04ded3437f6a98 equal
+# gpu-apps-after [] 2026-10-24T23:25:13Z

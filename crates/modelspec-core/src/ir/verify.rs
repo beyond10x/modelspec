@@ -872,6 +872,18 @@ pub enum PlanVerifyError {
         size: u32,
         max: u32,
     },
+    #[error(
+        "the plan was scheduled for {} invocations and {} bytes of workgroup memory per \
+         workgroup, the device reports {} invocations and {} bytes",
+        recorded.invocations,
+        recorded.shared_bytes,
+        reported.invocations,
+        reported.shared_bytes
+    )]
+    DeviceBelowLimits {
+        recorded: MatMulLimits,
+        reported: MatMulLimits,
+    },
     #[error("{plan} step {step} depends on step {on}, which is not before it")]
     DependencyNotEarlier {
         plan: PlanName,
@@ -1001,6 +1013,37 @@ pub fn verify_plan_for(
     profile: Option<&DeviceProfile>,
 ) -> Result<(), PlanVerifyError> {
     verify_execution(plan, false, max_workgroup_invocations(profile))
+}
+
+/// [`verify_plan`] for a plan scheduled within `limits` ([`crate::schedule::schedule_for`]):
+/// every kernel has from 1 to `limits.invocations` invocations per workgroup, from 1 to
+/// [`MAX_WORKGROUP_INVOCATIONS`] without limits, as [`verify_plan_for`] the profile of the
+/// limits.
+pub fn verify_plan_within(
+    plan: &ExecutionPlan,
+    limits: Option<MatMulLimits>,
+) -> Result<(), PlanVerifyError> {
+    let max = limits.map_or(MAX_WORKGROUP_INVOCATIONS, |limits| limits.invocations);
+    verify_execution(plan, false, max)
+}
+
+/// Whether the device `profile` describes runs a plan scheduled within `recorded`: it reports
+/// at least the recorded invocations of one workgroup and bytes of workgroup memory
+/// ([`MatMulLimits::of`]), else [`PlanVerifyError::DeviceBelowLimits`] naming both. A plan
+/// scheduled without limits runs on every device.
+pub fn verify_device_limits(
+    recorded: Option<MatMulLimits>,
+    profile: &DeviceProfile,
+) -> Result<(), PlanVerifyError> {
+    let Some(recorded) = recorded else {
+        return Ok(());
+    };
+    let reported = MatMulLimits::of(profile);
+    if reported.invocations < recorded.invocations || reported.shared_bytes < recorded.shared_bytes
+    {
+        return Err(PlanVerifyError::DeviceBelowLimits { recorded, reported });
+    }
+    Ok(())
 }
 
 /// The most invocations of one workgroup of a plan for `profile`: the smaller of its

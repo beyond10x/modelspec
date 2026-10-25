@@ -1,0 +1,10 @@
+mlp_sweep_b8192_h4096 base exit 0
+mlp_sweep_b8192_h4096 head exit 0
+mlp_sweep_b8192_h4096: byte-identical (11 modules)
+mnist_mlp base exit 0
+mnist_mlp head exit 0
+mnist_mlp: byte-identical (11 modules)
+linear_regression base exit 0
+linear_regression head exit 0
+linear_regression: byte-identical (6 modules)
+EXIT=0

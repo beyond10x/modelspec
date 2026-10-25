@@ -32,8 +32,8 @@
       }
     },
     "seq_len": {
-      "description": "The number of tokens of every sequence, S (coordinator decision D26, 2026-10-24, `.engineering/waves/bert-1.md`).",
-      "type": "integer"
+      "$ref": "#/$defs/modelspec.data.SequenceLength",
+      "description": "The number of tokens of every sequence, S (coordinator decision D26, 2026-10-24, `.engineering/waves/bert-1.md`)."
     },
     "masking_policy": {
       "$ref": "#/$defs/modelspec.data.MaskingPolicy"
@@ -54,8 +54,8 @@
   "x-ess-provenance": {
     "system": "modelspec",
     "specification_version": "v1",
-    "source_digest": "1d7075c2a7cef8344f25043d7b7ba25e04c2e737a3ee1d2bd25ce7a506a63d56",
-    "contract_digest": "slice-sha256/2:cbaadf280ae4c0c2c7606090db902f48767bb6999474eb354e3efc6493c5e885",
+    "source_digest": "a40602a5065178fdd515929eb64df185e906f8c9235757ab5222244114c76a6c",
+    "contract_digest": "slice-sha256/2:beb91053698be79c446aca9cdfb246d2c9a0c303a4b3f4ad73536b5a62519d01",
     "regenerate": "ess generate"
   },
   "$defs": {
@@ -100,6 +100,17 @@
         "mask_fraction >= 0",
         "random_fraction >= 0",
         "keep_fraction >= 0"
+      ]
+    },
+    "modelspec.data.SequenceLength": {
+      "title": "SequenceLength",
+      "description": "The number of tokens of every packed sequence, S, at least 1; the type of seq_len on TrainingDataBinding and PackedDataset, so the generated JSON Schema carries the bound as `minimum` 1 (story:content-hash-schema-constrained; coordinator decision D34, 2026-10-25, `.engineering/waves/bert-1.md`).",
+      "x-ess-name": "modelspec.data.SequenceLength",
+      "x-ess-kind": "newtype",
+      "type": "integer",
+      "minimum": 1,
+      "x-ess-invariants": [
+        "value > 0"
       ]
     },
     "modelspec.data.TokenizerId": {

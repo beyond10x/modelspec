@@ -1,0 +1,13 @@
+{
+  "at": "2026-10-25T02:05:19Z",
+  "actor": "human:timo",
+  "artifact": "story:matmul-block-kernel-throughput",
+  "kind": "story",
+  "revision": 3,
+  "change": {
+    "change": "evidence",
+    "kind": "test_result",
+    "source": "task ci",
+    "reference": "b999009"
+  }
+}

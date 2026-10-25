@@ -1,7 +1,9 @@
 //! Feature negotiation, in one place (DESIGN.md § 6 "Device").
 //!
 //! The runtime requires Vulkan API version 1.2, where float controls and SPIR-V 1.5 are core,
-//! and enables no optional feature bit and no device extension in M1. f16, cooperative matrix
+//! and enables no optional feature bit and no device extension in M1, except that a profiled run
+//! adds [`PIPELINE_EXECUTABLE_PROPERTIES`] where the device offers it
+//! ([`Negotiated::with_pipeline_statistics`]). f16, cooperative matrix
 //! and the three float-control values are recorded in the profile, not required: a device that
 //! lacks a float-control value runs in the tolerance class of DESIGN.md § 5.4. The compute queue
 //! family, which a profile does not carry, is checked by [`super::select::select_device`].
@@ -47,6 +49,28 @@ pub struct Negotiated {
     /// Device extensions by Vulkan name; empty in M1.
     pub extensions: Vec<String>,
     pub numerics: NumericsClass,
+}
+
+/// The device extension a profiled run enables, when the device offers it with its
+/// `pipelineExecutableInfo` feature, to read the statistics of each pipeline executable
+/// (DESIGN.md § 6 "Device", § 8 `--profile`).
+pub const PIPELINE_EXECUTABLE_PROPERTIES: &str = "VK_KHR_pipeline_executable_properties";
+
+impl Negotiated {
+    /// The same set plus [`PIPELINE_EXECUTABLE_PROPERTIES`], which
+    /// [`super::Vulkan::create_device`] enables with its `pipelineExecutableInfo` feature. Only
+    /// for a device that offers both ([`super::Vulkan::offers_pipeline_statistics`]).
+    pub fn with_pipeline_statistics(mut self) -> Self {
+        if !self
+            .extensions
+            .iter()
+            .any(|name| name == PIPELINE_EXECUTABLE_PROPERTIES)
+        {
+            self.extensions
+                .push(PIPELINE_EXECUTABLE_PROPERTIES.to_owned());
+        }
+        self
+    }
 }
 
 /// `major.minor.patch` of a packed Vulkan version.
