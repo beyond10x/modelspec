@@ -1,0 +1,15 @@
+{
+  "at": "2026-10-25T19:08:07Z",
+  "actor": "human:timo",
+  "artifact": "story:muon-optimizer",
+  "kind": "story",
+  "revision": 4,
+  "change": {
+    "change": "evidence",
+    "kind": "review_outcome",
+    "source": "fix pass 1, D69",
+    "reference": "afa53019a10affefcf11bae094e018a9a818aca7",
+    "review": "review-result:adversary-muon-pass-1",
+    "outcome": "fixed"
+  }
+}
