@@ -27,7 +27,8 @@ pub const WARMUP_STEPS: u64 = 20;
 pub enum PlanName {
     /// The step plan, recorded once per training step.
     Step,
-    /// The final loss evaluation after the last step: the step plan up to the loss.
+    /// The final loss evaluation after the last step: the steps of the step plan the loss is
+    /// computed from ([`modelspec_core::ir::kernel::ExecutionPlan::loss_steps`]).
     Final,
 }
 

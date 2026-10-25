@@ -1,0 +1,9 @@
+<home>/.cache/scratch/4b0bae89-d71f-4b67-8baf-88ffffe24648/venv/lib/python3.14/site-packages/torch/_subclasses/functional_tensor.py:368: UserWarning: Failed to initialize NumPy: No module named 'numpy' (Triggered internally at /__w/pytorch/pytorch/torch/csrc/utils/tensor_numpy.cpp:84.)
+  cpu = _conversion_method_template(device=torch.device("cpu"))
+mlp_sweep: warning: not a clean checkout: {'commit': '2d83128a8261500919bc8cf0e4a062a4d652f17f', 'dirty': True}
+mlp_sweep: pytorch-eager batch 8192 hidden 4096
+mlp_sweep:   calibration: 622 steps in 4.133 s
+mlp_sweep:   calibration: 904 steps in 6.007 s
+mlp_sweep:   timed: 904 steps in 5.981 s, 6616.535 us per step
+mlp_sweep:   timed: 904 steps in 5.933 s, 6562.718 us per step
+mlp_sweep:   timed: 904 steps in 5.935 s, 6564.989 us per step

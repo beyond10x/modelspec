@@ -1,0 +1,154 @@
+{
+  "about": "The ratchet of the observatory UI loop (story:observatory-ui-iteration-loop): every key is lower-is-better; pnpm ux fails on a value worse than here beyond its tolerance, an improvement not taken in, a missing value, a tolerance that disagrees with the code, or a value made worse than main has without a decision id.",
+  "scenarios": {
+    "linear-regression": {
+      "actions_per_fix.max": {
+        "value": 1,
+        "tolerance": "counts"
+      },
+      "actions_per_fix.median": {
+        "value": 0,
+        "tolerance": "counts"
+      },
+      "glance_cost.median": {
+        "value": 1,
+        "tolerance": "counts"
+      },
+      "glance_cost.p95": {
+        "value": 3,
+        "tolerance": "counts"
+      },
+      "layout_shift.per_100_events": {
+        "value": 0.000778,
+        "tolerance": "layout_shift"
+      },
+      "reading_load.max": {
+        "value": 33,
+        "tolerance": "counts"
+      },
+      "reading_load.median": {
+        "value": 30,
+        "tolerance": "counts"
+      },
+      "screen_only.actions": {
+        "value": 1,
+        "tolerance": "counts"
+      },
+      "screen_only.looks": {
+        "value": 5,
+        "tolerance": "counts"
+      },
+      "screen_only.steers": {
+        "value": 0,
+        "tolerance": "counts"
+      },
+      "screen_only.time_to_act_steps.max": {
+        "value": 0,
+        "tolerance": "steps"
+      }
+    },
+    "two-layer-relu": {
+      "actions_per_fix.max": {
+        "value": 1,
+        "tolerance": "counts"
+      },
+      "actions_per_fix.median": {
+        "value": 0,
+        "tolerance": "counts"
+      },
+      "glance_cost.median": {
+        "value": 1,
+        "tolerance": "counts"
+      },
+      "glance_cost.p95": {
+        "value": 3,
+        "tolerance": "counts"
+      },
+      "layout_shift.per_100_events": {
+        "value": 0.002008,
+        "tolerance": "layout_shift"
+      },
+      "reading_load.max": {
+        "value": 33,
+        "tolerance": "counts"
+      },
+      "reading_load.median": {
+        "value": 30,
+        "tolerance": "counts"
+      },
+      "screen_only.actions": {
+        "value": 1,
+        "tolerance": "counts"
+      },
+      "screen_only.looks": {
+        "value": 5,
+        "tolerance": "counts"
+      },
+      "screen_only.steers": {
+        "value": 0,
+        "tolerance": "counts"
+      },
+      "screen_only.time_to_act_steps.max": {
+        "value": 0,
+        "tolerance": "steps"
+      }
+    },
+    "accuracy": {
+      "actions_per_fix.max": {
+        "value": 0,
+        "tolerance": "counts"
+      },
+      "actions_per_fix.median": {
+        "value": 0,
+        "tolerance": "counts"
+      },
+      "glance_cost.median": {
+        "value": 1,
+        "tolerance": "counts"
+      },
+      "glance_cost.p95": {
+        "value": 2,
+        "tolerance": "counts"
+      },
+      "layout_shift.per_100_events": {
+        "value": 0.019456,
+        "tolerance": "layout_shift"
+      },
+      "reading_load.max": {
+        "value": 25,
+        "tolerance": "counts"
+      },
+      "reading_load.median": {
+        "value": 25,
+        "tolerance": "counts"
+      },
+      "screen_only.actions": {
+        "value": 0,
+        "tolerance": "counts"
+      },
+      "screen_only.looks": {
+        "value": 4,
+        "tolerance": "counts"
+      },
+      "screen_only.steers": {
+        "value": 0,
+        "tolerance": "counts"
+      },
+      "screen_only.time_to_act_steps.max": {
+        "value": 0,
+        "tolerance": "steps"
+      }
+    }
+  },
+  "tolerances": {
+    "counts": {
+      "absolute": 0
+    },
+    "steps": {
+      "relative": 0.05
+    },
+    "layout_shift": {
+      "absolute": 0.01
+    }
+  }
+}

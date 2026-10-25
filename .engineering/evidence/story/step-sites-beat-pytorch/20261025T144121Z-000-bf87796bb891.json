@@ -1,0 +1,15 @@
+{
+  "at": "2026-10-25T14:41:21Z",
+  "actor": "human:timo",
+  "artifact": "story:step-sites-beat-pytorch",
+  "kind": "story",
+  "revision": 3,
+  "change": {
+    "change": "evidence",
+    "kind": "review_outcome",
+    "source": "fix pass 1, D65",
+    "reference": "28b1e8fed98a6a3e6eef9f3ccf03d208882cbaf1",
+    "review": "review-result:adversary-step-sites-pass-1",
+    "outcome": "fixed"
+  }
+}

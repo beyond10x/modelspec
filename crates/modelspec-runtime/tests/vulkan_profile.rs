@@ -428,7 +428,8 @@ fn mnist_mlp_profile_times_every_dispatch_site_without_changing_the_run() {
     eprintln!("{MNIST_MLP}: wall {wall:?}\n{stats}{report}");
 
     // Acceptance 1: one site per Dispatch step of the step plan, called once per step, then one
-    // per Dispatch step the final loss evaluation records (the step plan up to the loss).
+    // per Dispatch step the final loss evaluation records (the steps the loss is computed from,
+    // `ExecutionPlan::loss_steps`).
     let dispatch_positions: Vec<usize> = plan
         .step
         .iter()
@@ -436,20 +437,12 @@ fn mnist_mlp_profile_times_every_dispatch_site_without_changing_the_run() {
         .filter(|(_, step)| step.op == PlanOp::Dispatch)
         .map(|(at, _)| at)
         .collect();
-    let loss_at = plan
-        .step
-        .iter()
-        .rposition(|step| {
-            step.writes
-                .iter()
-                .any(|view| view.buffer == plan.loss_view.buffer)
-        })
-        .expect("a step writes the loss");
-    let final_positions: Vec<usize> = dispatch_positions
-        .iter()
-        .copied()
-        .filter(|&at| at <= loss_at)
+    let final_positions: Vec<usize> = plan
+        .loss_steps()
+        .into_iter()
+        .filter(|&at| plan.step[at].op == PlanOp::Dispatch)
         .collect();
+    assert!(!final_positions.is_empty(), "a step writes the loss");
     let timed = profile.timings.as_ref().expect("the device has timestamps");
     let expected: Vec<(PlanName, usize, KernelModuleId, u64)> = dispatch_positions
         .iter()

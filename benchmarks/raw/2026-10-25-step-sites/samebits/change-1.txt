@@ -1,0 +1,11 @@
+# change 1 (loss sum beside the w1-gradient matmul, loss evaluation of the loss's steps only) against base 2d83128
+# per arm and source: modelspec train --backend vulkan <src> --checkpoint <arm>-<name>.msckpt > stdout; modelspec infer --backend vulkan --checkpoint <arm>-<name>.msckpt <src> > infer.stdout
+# sources: examples/mnist_mlp.mspec; the mlp_sweep b8192 h4096 source, benches/mlp_sweep Point::source(220)
+apps-check base mnist_mlp: ''
+base mnist_mlp train-stdout-sha256 0d16ed3e7690c2583f19ba0deabe0fc457d3581314ab4ae91041c7d5a67f1d9f checkpoint-sha256 32f6858e978111eddfc04bf4ab3eb8ca8897456db604cf67a9e412424373e608 infer-stdout-sha256 33bdce548c27805484c571c6682f48c73183844f0d2332517425265c964f3f89
+apps-check base mlp_sweep_b8192_h4096: ''
+base mlp_sweep_b8192_h4096 train-stdout-sha256 ffc7cfdd7121c72b145b032e48e8cc1d59512ded77cc5a0367ffc895a8b4b19f checkpoint-sha256 a9f8a0020e55b18248da36dc2a950d9215908b1fa9c71394e8a1ac70801ace0d infer-stdout-sha256 505d104d6c8bb8d6bd880ef71546e17a79b1ad3adbc1241e189c6871a2e34f72
+apps-check change1 mnist_mlp: ''
+change1 mnist_mlp train-stdout-sha256 0d16ed3e7690c2583f19ba0deabe0fc457d3581314ab4ae91041c7d5a67f1d9f checkpoint-sha256 32f6858e978111eddfc04bf4ab3eb8ca8897456db604cf67a9e412424373e608 infer-stdout-sha256 33bdce548c27805484c571c6682f48c73183844f0d2332517425265c964f3f89
+apps-check change1 mlp_sweep_b8192_h4096: ''
+change1 mlp_sweep_b8192_h4096 train-stdout-sha256 ffc7cfdd7121c72b145b032e48e8cc1d59512ded77cc5a0367ffc895a8b4b19f checkpoint-sha256 a9f8a0020e55b18248da36dc2a950d9215908b1fa9c71394e8a1ac70801ace0d infer-stdout-sha256 505d104d6c8bb8d6bd880ef71546e17a79b1ad3adbc1241e189c6871a2e34f72

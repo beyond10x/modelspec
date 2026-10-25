@@ -11,6 +11,7 @@
 //! is its [`MatMulTile`]'s: a function of its shape and of the invocation limit of the device
 //! profile its plan is scheduled for, 128 without one (DESIGN.md § 3.1, § 5.2).
 
+use std::collections::BTreeSet;
 use std::fmt;
 
 use crate::artifact::{DataSpec, ParameterSpec};
@@ -705,6 +706,20 @@ pub enum Epilogue {
     /// sum before it, for a reader other than the `relu`; then the sum's binding comes before the
     /// activation's.
     Relu { writes_pre_activation: bool },
+    /// `ReluGrad(x, sum)`, the gradient of a `relu` whose adjoint the matmul computes: the
+    /// kernel reads the pre-activation `x` as a third buffer operand, of the result's type, and
+    /// writes `x > 0 ? sum : 0.0`, a compare and a select; the sum itself is not written.
+    ReluGrad,
+}
+
+impl Epilogue {
+    /// The buffer operands of a matmul kernel with this epilogue: 3 for `ReluGrad`, else 2.
+    pub fn matmul_operands(epilogue: Option<Epilogue>) -> usize {
+        match epilogue {
+            Some(Epilogue::ReluGrad) => 3,
+            _ => 2,
+        }
+    }
 }
 
 impl fmt::Display for Epilogue {
@@ -716,6 +731,7 @@ impl fmt::Display for Epilogue {
             Epilogue::Relu {
                 writes_pre_activation: true,
             } => f.write_str("epilogue Relu writes pre-activation"),
+            Epilogue::ReluGrad => f.write_str("epilogue ReluGrad"),
         }
     }
 }
@@ -813,7 +829,6 @@ fn static_op(op: &str) -> Option<&'static str> {
 /// The one `'static` copy of `name`. A program has few distinct chains, and each is leaked once
 /// for the life of the process.
 fn intern(name: String) -> &'static str {
-    use std::collections::BTreeSet;
     use std::sync::{Mutex, OnceLock};
     static NAMES: OnceLock<Mutex<BTreeSet<&'static str>>> = OnceLock::new();
     let mut names = NAMES
@@ -869,7 +884,8 @@ impl Kernel {
         }
     }
 
-    /// `(m, k, n)` of a kernel whose operands are two static buffers `[m, k]` and `[k, n]`.
+    /// `(m, k, n)` of a kernel whose operands are two static buffers `[m, k]` and `[k, n]`, and
+    /// for a [`Epilogue::ReluGrad`] a third, the pre-activation, `[m, n]`.
     pub fn matmul_shape(operands: &[Operand]) -> Option<(u64, u64, u64)> {
         let dims = |operand: &Operand| match operand {
             Operand::Buffer(ty) => match ty.shape[..] {
@@ -878,11 +894,14 @@ impl Kernel {
             },
             Operand::Immediate(_) => None,
         };
-        let [a, b] = operands else {
-            return None;
+        let (a, b, x) = match operands {
+            [a, b] => (a, b, None),
+            [a, b, x] => (a, b, Some(x)),
+            _ => return None,
         };
         let ((m, k), (k2, n)) = (dims(a)?, dims(b)?);
-        (k == k2).then_some((m, k, n))
+        let x_fits = x.is_none_or(|x| dims(x) == Some((m, n)));
+        (k == k2 && x_fits).then_some((m, k, n))
     }
 
     /// The floating-point operations of one dispatch of the kernel under the counting rule of
@@ -1071,6 +1090,49 @@ impl fmt::Display for DispatchCount {
 }
 
 impl ExecutionPlan {
+    /// The positions, in plan order, of the step plan's steps a loss evaluation records (the
+    /// final loss of a run, `infer`): the last step that writes the loss view, every earlier
+    /// Dispatch or Copy that writes the prediction's buffer or a buffer a chosen step reads, and
+    /// each Barrier with a chosen step since the previous chosen Barrier and one after it, so any
+    /// two chosen steps the plan orders with a barrier stay ordered by one. No `Allocate` is
+    /// chosen; empty when no step writes the loss view (DESIGN.md § 3.1).
+    pub fn loss_steps(&self) -> Vec<usize> {
+        let Some(last) = self.step.iter().rposition(|step| {
+            step.writes
+                .iter()
+                .any(|view| view.buffer == self.loss_view.buffer)
+        }) else {
+            return Vec::new();
+        };
+        let mut chosen = vec![false; last + 1];
+        chosen[last] = true;
+        let mut needed: BTreeSet<u32> = self.step[last].reads.iter().map(|v| v.buffer).collect();
+        needed.insert(self.prediction_view.buffer);
+        for at in (0..last).rev() {
+            let step = &self.step[at];
+            if matches!(step.op, PlanOp::Dispatch | PlanOp::Copy)
+                && step.writes.iter().any(|v| needed.contains(&v.buffer))
+            {
+                chosen[at] = true;
+                needed.extend(step.reads.iter().map(|v| v.buffer));
+            }
+        }
+        let mut steps = Vec::new();
+        let mut since_barrier = false;
+        for (at, &is_chosen) in chosen.iter().enumerate() {
+            if self.step[at].op == PlanOp::Barrier {
+                if since_barrier && chosen[at..].contains(&true) {
+                    steps.push(at);
+                    since_barrier = false;
+                }
+            } else if is_chosen {
+                steps.push(at);
+                since_barrier = true;
+            }
+        }
+        steps
+    }
+
     /// The kernel with module id `id`.
     pub fn kernel(&self, id: KernelModuleId) -> Option<&Kernel> {
         self.kernels.iter().find(|k| k.id == id)

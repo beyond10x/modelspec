@@ -2,7 +2,7 @@
 //! loss telemetry.
 //!
 //! [`run`] draws the initial parameters on [`Stream::Init`] and the synthetic data of
-//! [`super::data`], then runs `config.steps` SGD steps of the compiled training step. The loss of
+//! [`super::data`], then runs `config.steps` optimizer steps of the compiled training step. The loss of
 //! step `k` is the loss of the parameters after `k` updates: step `k < steps` reports the loss its
 //! own evaluation computes before its update, and step `steps` is the forward program evaluated on
 //! the final parameters. A run therefore records `steps + 1` losses.
@@ -13,32 +13,51 @@
 //! dropout. The final loss, evaluation and inference run the forward program, in which every
 //! dropout is the identity (coordinator decision D47, 2026-10-25).
 //!
+//! Under AdamW the host computes the learning rate of step `k` by the warmup schedule at
+//! `t = k + 1` of a run that ends at step `start + steps`, and the two bias corrections, and
+//! hands them to the step ([`PreparedStep::schedule`], story:bert-adamw-warmup); a warmup not
+//! shorter than that is refused before the first step ([`RunError::Schedule`]). The moments are
+//! not checkpointed yet, so an AdamW run from a step above 0 is refused before its first step
+//! ([`RunError::MomentsNotCheckpointed`]). A moment that is NaN or ±inf after an update stops the
+//! run with [`E_TRAIN_001`], as a non-finite loss or parameter does.
+//!
 //! [`run_with`] trains on dense data read from files instead, optionally from parameter values read
 //! from files, and [`evaluate_dense`] measures the trained parameters on an eval directory.
 //! [`run_from`] resumes at a checkpoint's step and reports the state after each update, for
-//! `--checkpoint-every`. A run depends on nothing but the compiled program, its seed, its start
-//! step, and the files of `--data`, `--init` and `--resume`.
+//! `--checkpoint-every`. [`run_on`] is [`run_from`] on either kind of `--data`, dense files or a
+//! packed masked-language-model directory ([`Data`]), whose step `k` feeds the batch of step `k`
+//! in `f32` and `i32` tensors (story:bert-train-data-binding). A run depends on nothing but the
+//! compiled program, its seed, its start step, and the files of `--data`, `--init` and
+//! `--resume`.
 //!
 //! [`run_with`] and [`run_from`] show each step to their observer as an [`Observed`]: its loss,
 //! the parameter values that loss is of and, for a step that makes an update, the gradients the
-//! update applies (story:observatory-parameter-statistics).
+//! update applies (story:observatory-parameter-statistics). [`run_checked`] is [`run_on`] with
+//! an observer that can stop the run, as the held-out evaluation of `--eval-every` does when the
+//! forward program fails on its batches ([`super::eval`]; story:bert-heldout-evaluation).
 
 use std::collections::BTreeMap;
 
 use modelspec_core::compile::CompiledTraining;
 use modelspec_core::diag::{Code, Diagnostic};
 use modelspec_core::ir::tensor::ParamId;
-use modelspec_core::ir::training::dropout_sites;
+use modelspec_core::ir::training::{Moment, OptimizerRule, dropout_sites};
 use thiserror::Error;
 
 use super::checkpoint::CheckpointError;
-use super::data::{DataError, DenseBatch, DenseData, SyntheticData, synthetic};
+use super::data::{
+    DataError, DenseBatch, DenseData, PackedBatch, PackedData, SyntheticData, synthetic,
+};
+use super::eval::EvalError;
 use super::init::{InitError, Stream, dropout_token, initialize};
 use super::optimizer::{ParamState, PreparedStep, StepError};
-use crate::cpu::{HostTensor, RuntimeError, evaluate, evaluate_all};
+use crate::cpu::{HostTensor, RuntimeError, evaluate_all, evaluate_with_ids};
 
-/// The loss of a training step, or a parameter after the update of a step, is NaN or ±inf: the
-/// run stops at the first such step and prints no final parameters.
+/// No `i32` tensors, the step inputs of synthetic and dense data.
+static NO_IDS: BTreeMap<String, HostTensor<i32>> = BTreeMap::new();
+
+/// The loss of a training step, or a parameter or an AdamW moment after the update of a step, is
+/// NaN or ±inf: the run stops at the first such step and prints no final parameters.
 pub const E_TRAIN_001: Code = Code::new("E-TRAIN-001");
 
 /// A finished run.
@@ -79,9 +98,33 @@ pub enum RunError {
         u64::MAX
     )]
     StepCount { start: u64, steps: u64 },
-    /// The loss or a parameter stopped being finite ([`E_TRAIN_001`]).
+    /// The AdamW warmup is not shorter than the run, so the learning rate has no steps to decay
+    /// over: `--steps` made the run shorter than its `train` block was checked against.
+    #[error(
+        "the warmup of {warmup_steps} steps is not shorter than the run of {steps} steps; the \
+         learning rate would have no steps to decay over"
+    )]
+    Schedule { warmup_steps: u64, steps: u64 },
+    /// An AdamW run from a step above 0: the moments are not checkpointed yet, and moments
+    /// restarted at 0 would take the bias corrections of step `start + 1`.
+    #[error(
+        "an AdamW run cannot resume at step {start}: its moments are not checkpointed yet, and \
+         moments restarted at 0 would take the bias corrections of step {}",
+        start.saturating_add(1)
+    )]
+    MomentsNotCheckpointed { start: u64 },
+    /// The held-out split cannot be evaluated ([`super::eval`]).
+    #[error(transparent)]
+    Eval(Box<EvalError>),
+    /// The loss, a parameter or an AdamW moment stopped being finite ([`E_TRAIN_001`]).
     #[error("{}", .0.diagnostic)]
     NonFinite(Box<Diverged>),
+}
+
+impl From<EvalError> for RunError {
+    fn from(error: EvalError) -> Self {
+        RunError::Eval(Box::new(error))
+    }
 }
 
 /// A run stopped by [`E_TRAIN_001`]: its diagnostic, and the run up to the step that failed.
@@ -93,15 +136,18 @@ pub struct Diverged {
     pub run: Run,
 }
 
-/// The [`E_TRAIN_001`] diagnostic for step `step` with loss `loss` and the parameter values
-/// `values`, or `None` when the loss and every parameter are finite. A non-finite loss is named
-/// before a parameter; parameters are named by canonical path, in path order. The Vulkan runner
-/// calls it on what it reads back ([`crate::vulkan::runner`]).
+/// The [`E_TRAIN_001`] diagnostic for step `step` with loss `loss`, the parameter values `values`
+/// and the AdamW moments `moments`, or `None` when the loss, every parameter and every moment are
+/// finite. A non-finite loss is named before a parameter and a parameter before a moment;
+/// parameters are named by canonical path, in path order, and moments as `m @<path>` or
+/// `v @<path>`, in path order, `m` before `v`. The Vulkan runner calls it on what it reads back
+/// ([`crate::vulkan::runner`]), with no moments: it runs no AdamW step.
 pub(crate) fn non_finite(
     compiled: &CompiledTraining,
     step: u64,
     loss: f32,
     values: &BTreeMap<ParamId, HostTensor<f32>>,
+    moments: &BTreeMap<(ParamId, Moment), HostTensor<f32>>,
 ) -> Option<Diagnostic> {
     if !loss.is_finite() {
         return Some(
@@ -113,29 +159,58 @@ pub(crate) fn non_finite(
             .with("loss", loss.to_string()),
         );
     }
+    let path = |id: &ParamId| {
+        compiled
+            .forward
+            .program
+            .params
+            .get(id)
+            .map(|decl| decl.path.as_str())
+    };
+    let not_finite = |value: &HostTensor<f32>| value.data().iter().any(|v| !v.is_finite());
     let mut paths: Vec<&str> = values
         .iter()
-        .filter(|(_, value)| value.data().iter().any(|v| !v.is_finite()))
-        .filter_map(|(id, _)| compiled.forward.program.params.get(id))
-        .map(|decl| decl.path.as_str())
+        .filter(|(_, value)| not_finite(value))
+        .filter_map(|(id, _)| path(id))
         .collect();
-    if paths.is_empty() {
+    if !paths.is_empty() {
+        paths.sort_unstable();
+        let named: Vec<String> = paths.iter().map(|path| format!("@{path}")).collect();
+        return Some(
+            Diagnostic::new(
+                E_TRAIN_001,
+                format!("the update of step {step} leaves a parameter not finite"),
+            )
+            .with("step", step.to_string())
+            .with("loss", loss.to_string())
+            .with("parameter", named.join(", ")),
+        );
+    }
+    let mut moments: Vec<(&str, Moment)> = moments
+        .iter()
+        .filter(|(_, value)| not_finite(value))
+        .filter_map(|((id, moment), _)| Some((path(id)?, *moment)))
+        .collect();
+    if moments.is_empty() {
         return None;
     }
-    paths.sort_unstable();
-    let named: Vec<String> = paths.iter().map(|path| format!("@{path}")).collect();
+    moments.sort_unstable();
+    let named: Vec<String> = moments
+        .iter()
+        .map(|(path, moment)| format!("{moment} @{path}"))
+        .collect();
     Some(
         Diagnostic::new(
             E_TRAIN_001,
-            format!("the update of step {step} leaves a parameter not finite"),
+            format!("the update of step {step} leaves an optimizer moment not finite"),
         )
         .with("step", step.to_string())
         .with("loss", loss.to_string())
-        .with("parameter", named.join(", ")),
+        .with("moment", named.join(", ")),
     )
 }
 
-/// Runs `compiled.config.steps` SGD steps of `compiled.training` on synthetic data from
+/// Runs `compiled.config.steps` optimizer steps of `compiled.training` on synthetic data from
 /// `compiled.config.seed`.
 pub fn run(compiled: &CompiledTraining) -> Result<Run, RunError> {
     run_observed(compiled, |_, _| {})
@@ -166,6 +241,9 @@ pub struct Observed<'a> {
     /// The gradient of the loss at [`Self::values`] for each parameter the loss reads, the one
     /// this step's update applies; `None` for the last step, which makes no update.
     pub gradients: Option<&'a BTreeMap<ParamId, HostTensor<f32>>>,
+    /// The learning rate this step's update applies: the constant rate of `sgd`, the scheduled
+    /// rate of `adamw`; `None` for the last step, which makes no update.
+    pub learning_rate: Option<f32>,
 }
 
 /// Runs as [`run_observed`] does, on `data` when it is given instead of synthetic data, and with
@@ -193,7 +271,53 @@ pub fn run_from(
     data: Option<&DenseData>,
     init: &BTreeMap<ParamId, HostTensor<f32>>,
     start: u64,
+    observe: impl FnMut(&Observed<'_>),
+    after: impl FnMut(u64, &ParamState) -> Result<(), CheckpointError>,
+) -> Result<Run, RunError> {
+    run_on(compiled, data.map(Data::Dense), init, start, observe, after)
+}
+
+/// The data of `--data`: dense files, or a packed masked-language-model directory.
+#[derive(Clone, Copy)]
+pub enum Data<'a> {
+    Dense(&'a DenseData),
+    Packed(&'a PackedData),
+}
+
+/// Runs as [`run_from`] does, on `data` of either kind. With packed data step `k` feeds
+/// [`PackedData::step`]`(k)`, the batch of step `k` of the run that started at 0, so a resumed run
+/// feeds the batches of the run that never stopped; the loss after the last update is the
+/// forward program on the batch of step `start + steps`. A packed run has no teacher.
+pub fn run_on(
+    compiled: &CompiledTraining,
+    data: Option<Data<'_>>,
+    init: &BTreeMap<ParamId, HostTensor<f32>>,
+    start: u64,
     mut observe: impl FnMut(&Observed<'_>),
+    after: impl FnMut(u64, &ParamState) -> Result<(), CheckpointError>,
+) -> Result<Run, RunError> {
+    run_checked(
+        compiled,
+        data,
+        init,
+        start,
+        |o| {
+            observe(o);
+            Ok(())
+        },
+        after,
+    )
+}
+
+/// Runs as [`run_on`] does with an observer that can stop the run: an error from `observe`
+/// stops it at that step, before the step's update, and is the run's error. The error is boxed,
+/// so that the observer's own `Result` stays small.
+pub fn run_checked(
+    compiled: &CompiledTraining,
+    data: Option<Data<'_>>,
+    init: &BTreeMap<ParamId, HostTensor<f32>>,
+    start: u64,
+    mut observe: impl FnMut(&Observed<'_>) -> Result<(), Box<RunError>>,
     mut after: impl FnMut(u64, &ParamState) -> Result<(), CheckpointError>,
 ) -> Result<Run, RunError> {
     let config = &compiled.config;
@@ -201,11 +325,23 @@ pub fn run_from(
         start,
         steps: config.steps,
     })?;
+    if let OptimizerRule::AdamW(adamw) = compiled.training.optimizer.rule {
+        if start > 0 {
+            return Err(RunError::MomentsNotCheckpointed { start });
+        }
+        if config.steps > 0 && adamw.warmup_steps >= end {
+            return Err(RunError::Schedule {
+                warmup_steps: adamw.warmup_steps,
+                steps: end,
+            });
+        }
+    }
     let forward = &compiled.forward.program;
     let mut initial = initialize(forward, config.seed, Stream::Init)?;
     initial.extend(init.iter().map(|(&p, v)| (p, v.clone())));
     let mut feed = match data {
-        Some(dense) => Feed::Dense(dense, DenseBatch::default()),
+        Some(Data::Dense(dense)) => Feed::Dense(dense, DenseBatch::default()),
+        Some(Data::Packed(packed)) => Feed::Packed(packed, PackedBatch::default()),
         None => Feed::Synthetic(synthetic(config, &compiled.forward)?),
     };
     let mut state = ParamState::new(&compiled.training, initial.clone());
@@ -228,32 +364,43 @@ pub fn run_from(
                 prepared = Some(ready);
             }
             let prepared = prepared.as_mut().expect("prepared above");
-            let tokens: BTreeMap<String, HostTensor<i32>> = sites
-                .iter()
-                .map(|site| (site.clone(), dropout_token(site, step)))
-                .collect();
+            let learning_rate = prepared.schedule(step + 1, end);
+            let (inputs, ids) = feed.inputs(step)?;
+            // The `i32` inputs of the step: the batch's ids (packed data) and the RNG token of
+            // every dropout site at this step (DESIGN.md § 2.3), by name.
+            let mut tokens: BTreeMap<String, HostTensor<i32>> = ids.clone();
+            tokens.extend(
+                sites
+                    .iter()
+                    .map(|site| (site.clone(), dropout_token(site, step))),
+            );
             let evaluated = prepared
-                .evaluate_with_ids(feed.inputs(step), &tokens, &state)
+                .evaluate_with_ids(inputs, &tokens, &state)
                 .map_err(|source| RunError::Step { step, source })?;
             observe(&Observed {
                 step,
                 loss: evaluated.loss(),
                 values: &state.values,
                 gradients: Some(evaluated.gradients()),
-            });
+                learning_rate: Some(learning_rate),
+            })
+            .map_err(|error| *error)?;
             evaluated.apply(&mut state)
         } else {
-            let loss = evaluate(forward, feed.inputs(end), &state.values)?[0].data()[0];
+            let (inputs, ids) = feed.inputs(end)?;
+            let loss = evaluate_with_ids(forward, inputs, ids, &state.values)?[0].data()[0];
             observe(&Observed {
                 step,
                 loss,
                 values: &state.values,
                 gradients: None,
-            });
+                learning_rate: None,
+            })
+            .map_err(|error| *error)?;
             loss
         };
         losses.push(loss);
-        if let Some(diagnostic) = non_finite(compiled, step, loss, &state.values) {
+        if let Some(diagnostic) = non_finite(compiled, step, loss, &state.values, &state.moments) {
             return Err(RunError::NonFinite(Box::new(Diverged {
                 diagnostic,
                 run: Run {
@@ -278,30 +425,41 @@ pub fn run_from(
     })
 }
 
-/// Where the inputs of a step come from: synthetic data, the same every step, or dense data and
-/// the one batch every step of the run is filled into.
+/// The `f32` and the `i32` inputs of one step, by name.
+type StepInputs<'f> = (
+    &'f BTreeMap<String, HostTensor<f32>>,
+    &'f BTreeMap<String, HostTensor<i32>>,
+);
+
+/// Where the inputs of a step come from: synthetic data, the same every step, or dense or packed
+/// data and the one batch every step of the run is filled into.
 enum Feed<'a> {
     Synthetic(SyntheticData),
     Dense(&'a DenseData, DenseBatch),
+    Packed(&'a PackedData, PackedBatch),
 }
 
 impl Feed<'_> {
-    /// The inputs of step `step`.
-    fn inputs(&mut self, step: u64) -> &BTreeMap<String, HostTensor<f32>> {
+    /// The inputs of step `step`: `f32` tensors, and the `i32` tensors only packed data has.
+    fn inputs(&mut self, step: u64) -> Result<StepInputs<'_>, DataError> {
         match self {
-            Feed::Synthetic(s) => &s.inputs,
+            Feed::Synthetic(s) => Ok((&s.inputs, &NO_IDS)),
             Feed::Dense(data, batch) => {
                 data.fill_step(step, batch);
-                batch.inputs()
+                Ok((batch.inputs(), &NO_IDS))
+            }
+            Feed::Packed(data, batch) => {
+                data.fill_step(step, batch)?;
+                Ok((batch.inputs(), batch.ids()))
             }
         }
     }
 
-    /// The teacher parameters of synthetic data; dense data has none.
+    /// The teacher parameters of synthetic data; dense and packed data have none.
     fn teacher(self) -> BTreeMap<ParamId, HostTensor<f32>> {
         match self {
             Feed::Synthetic(s) => s.teacher,
-            Feed::Dense(..) => BTreeMap::new(),
+            Feed::Dense(..) | Feed::Packed(..) => BTreeMap::new(),
         }
     }
 }
@@ -352,8 +510,9 @@ pub fn evaluate_dense(
     })
 }
 
-/// The index of the first maximum of `row`, or `None` when `row` holds a NaN.
-fn argmax(row: &[f32]) -> Option<usize> {
+/// The index of the first maximum of `row`, the lowest index among ties, or `None` when `row`
+/// holds a NaN.
+pub(crate) fn argmax(row: &[f32]) -> Option<usize> {
     if row.iter().any(|v| v.is_nan()) {
         return None;
     }
@@ -366,6 +525,7 @@ mod tests {
     use modelspec_core::compile::compile_training;
     use modelspec_core::ir::training::StateVersion;
 
+    use crate::cpu::evaluate;
     use crate::train::data::E_DATA_003;
 
     const EXAMPLE: &str = include_str!("../../../../examples/linear_regression.mspec");

@@ -166,7 +166,10 @@ fn page(example: &Example, position: u32, source: &str, runs: &[Recorded]) -> St
         example.intro,
         file = example.file,
     ));
-    out.push_str(&fenced("modelspec", without_leading_comments(source)));
+    out.push_str(&fenced(
+        &format!("modelspec title=\"{}\"", example.file),
+        without_leading_comments(source),
+    ));
     out.push_str("\n## Runs\n");
     for run in runs {
         out.push_str(&run_section(run));
@@ -263,6 +266,21 @@ mod tests {
             "model M {\n// kept\n}\n"
         );
         assert_eq!(without_leading_comments("model M {}\n"), "model M {}\n");
+    }
+
+    /// The site heads a fence with its `title`, or with the generic label `Code` when it has none,
+    /// so the model's fence carries the file name the page names above it.
+    #[test]
+    fn the_model_fence_is_titled_with_its_file() {
+        let example = &EXAMPLES[0];
+        let out = page(example, 1, "model M {}\n", &[]);
+        assert!(
+            out.contains(&format!(
+                "```modelspec title=\"{}\"\nmodel M {{}}\n```",
+                example.file
+            )),
+            "{out}"
+        );
     }
 
     #[test]

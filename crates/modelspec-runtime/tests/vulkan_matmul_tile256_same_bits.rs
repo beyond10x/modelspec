@@ -7,7 +7,10 @@
 //! The sites, their operands and the digests are those of `vulkan_matmul_plan_sites_same_bits.rs`,
 //! and the digests are compared against its fixture,
 //! `tests/fixtures/matmul_plan_sites_same_bits.txt`, recorded before any matmul read an operand
-//! transposed or ran a block of 256 invocations. This test never writes it.
+//! transposed or ran a block of 256 invocations. This test never writes it. A site whose matmul
+//! carries the `ReluGrad` epilogue (story:step-sites-beat-pytorch) is compared as the same matmul
+//! without it, the site before the epilogue, and its own view against `x > 0 ? sum : 0.0` of that
+//! matmul's bits over a drawn pre-activation `x`.
 //!
 //! Ignored by default: it creates a Vulkan instance, which `task ci` never does. Run it with
 //! `MODELSPEC_VK_VALIDATION=1 cargo test --release -p modelspec-runtime --features vulkan --test vulkan_matmul_tile256_same_bits -- --ignored`.
@@ -186,7 +189,7 @@ fn run(
     device: &Device<'_>,
     kernel: &Kernel,
     spirv: &[u32],
-    inputs: [&[f32]; 2],
+    inputs: &[&[f32]],
     count: usize,
 ) -> Vec<Vec<f32>> {
     let uploads: Vec<Vec<f32>> = inputs
@@ -225,7 +228,7 @@ fn run(
         .dispatch_kernel(&pipeline, kernel, &bound)
         .expect("the dispatch is recorded");
     recording.barrier(Barrier::ComputeToTransfer);
-    for at in 2..buffers.len() {
+    for at in inputs.len()..buffers.len() {
         recording
             .copy(&buffers[at], &staging[at])
             .expect("the download is recorded");
@@ -237,10 +240,61 @@ fn run(
         .expect("submitted")
         .wait()
         .expect("the device finishes");
-    staging[2..]
+    staging[inputs.len()..]
         .iter_mut()
         .map(|buffer| buffer.read_f32().expect("the output reads"))
         .collect()
+}
+
+/// `kernel`, or for a matmul with the `ReluGrad` epilogue (story:step-sites-beat-pytorch) the
+/// same matmul without it: its first two operands, no epilogue, and the id of that content. The
+/// fixture holds the digest of that matmul, the site as it was before the epilogue.
+fn without_relu_grad(kernel: &Kernel) -> Kernel {
+    let mut plain = kernel.clone();
+    if plain.epilogue == Some(Epilogue::ReluGrad) {
+        plain.epilogue = None;
+        plain.operands.truncate(2);
+        plain.id = Kernel::module_id(&plain.signature());
+    }
+    plain
+}
+
+/// What is wrong with `fused`, the views a `ReluGrad` epilogue site wrote over the
+/// pre-activation `x`: anything but one view, a changed guard word, or an element other than
+/// `x > 0 ? sum : 0.0` bit for bit, `sum` the view of the same matmul without the epilogue.
+fn relu_grad_wrong(
+    case: &str,
+    sum: &[f32],
+    x: &[f32],
+    fused: &[Vec<f32>],
+    count: usize,
+) -> Vec<String> {
+    let [view] = fused else {
+        return vec![format!("{case} relu-grad: {} views", fused.len())];
+    };
+    let mut wrong = Vec::new();
+    let changed = (0..GUARD_WORDS)
+        .filter(|&i| view[count + i].to_bits() != guard(i))
+        .count();
+    if changed > 0 {
+        wrong.push(format!("{case} relu-grad: {changed} guard words changed"));
+    }
+    let differ: Vec<usize> = (0..count)
+        .filter(|&i| {
+            let want = if x[i] > 0.0 { sum[i] } else { 0.0 };
+            view[i].to_bits() != want.to_bits()
+        })
+        .collect();
+    if let Some(&i) = differ.first() {
+        wrong.push(format!(
+            "{case} relu-grad: {} of {count} differ, first [{i}] gpu {:?} x {:?} sum {:?}",
+            differ.len(),
+            view[i],
+            x[i],
+            sum[i]
+        ));
+    }
+    wrong
 }
 
 fn device_line(profile: &DeviceProfile) -> String {
@@ -259,6 +313,7 @@ fn epilogue_name(epilogue: Option<Epilogue>) -> &'static str {
         Some(Epilogue::Relu {
             writes_pre_activation: false,
         }) => "relu",
+        Some(Epilogue::ReluGrad) => "relu-grad",
     }
 }
 
@@ -281,6 +336,7 @@ fn every_matmul_site_of_the_profile_plans_writes_the_bits_of_the_plan_before_the
     writeln!(lines, "{}", device_line(&profile)).expect("a string");
     let mut wrong = Vec::new();
     let mut flagged = 0;
+    let mut relu_grad_sites = 0;
     let mut blocks = Vec::new();
     for (name, plan) in plans(&profile) {
         for (site, kernel) in matmul_sites(&plan).into_iter().enumerate() {
@@ -302,13 +358,22 @@ fn every_matmul_site_of_the_profile_plans_writes_the_bits_of_the_plan_before_the
             } else {
                 b
             };
-            let module = emit_module(kernel, &profile).expect("the kernel emits");
+            let plain = without_relu_grad(kernel);
+            let module = emit_module(&plain, &profile).expect("the kernel emits");
             let count = (m * n) as usize;
-            let views = run(&device, kernel, &module.spirv, [&a_bound, &b_bound], count);
+            let views = run(&device, &plain, &module.spirv, &[&a_bound, &b_bound], count);
             let case = format!(
                 "{name} matmul {site} {m} {k} {n} {}",
-                epilogue_name(kernel.epilogue)
+                epilogue_name(plain.epilogue)
             );
+            if kernel.epilogue == Some(Epilogue::ReluGrad) {
+                relu_grad_sites += 1;
+                let x = values(seed_of(&name, site, 3), m * n);
+                let module = emit_module(kernel, &profile).expect("the kernel emits");
+                let inputs: [&[f32]; 3] = [&a_bound, &b_bound, &x];
+                let fused = run(&device, kernel, &module.spirv, &inputs, count);
+                wrong.extend(relu_grad_wrong(&case, &views[0], &x, &fused, count));
+            }
             for (at, view) in views.iter().enumerate() {
                 let changed = (0..GUARD_WORDS)
                     .filter(|&i| view[count + i].to_bits() != guard(i))
@@ -324,6 +389,7 @@ fn every_matmul_site_of_the_profile_plans_writes_the_bits_of_the_plan_before_the
             }
         }
     }
+    assert_eq!(relu_grad_sites, 4, "one ReluGrad epilogue site per plan");
     let recorded = std::fs::read_to_string(fixture_path()).expect("the fixture reads");
     let mut recorded_lines = recorded.lines();
     let header = recorded_lines.next().unwrap_or_default();

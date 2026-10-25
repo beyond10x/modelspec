@@ -30,7 +30,7 @@ mod ui;
 pub use event::{
     EventSequence, Histogram, MetricSample, ParameterStatistics, RunEvent, RunEventBody,
     RunEventId, RunEventState, RunFailed, RunStarted, StatisticsSubject, StepCompleted,
-    TrainingRunId,
+    TrainingDataBindingId, TrainingRunId,
 };
 pub use record::{Recorder, RecordingError, line, parse_recording, read_recording};
 pub use server::{EVENTS_PATH, Server, frame, parse_serve_address};

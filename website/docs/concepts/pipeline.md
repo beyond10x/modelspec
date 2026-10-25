@@ -1,29 +1,33 @@
 ---
 title: The pipeline
 description: From a .mspec file to a verified training step, stage by stage, with the Tensor IR and Training IR of the linear regression example read line by line.
+sidebar_position: 2
+lede: "The compiler turns a source file into a chain of immutable values, the Tensor IR, the Training IR and the Kernel IR, each verified before the next stage reads it."
+source: "DESIGN.md § 3; crates/modelspec-core/src/lower.rs, autodiff.rs, ir and schedule.rs; the tests ir_tensor.rs, train_linear.rs and ir_kernel.rs of crates/modelspec-cli and their golden files; the IR listings pasted from runs of modelspec ir on examples/linear_regression.mspec."
 ---
 
 # The pipeline
 
 The compiler turns a source file into a chain of immutable values, each verified before the next
-stage reads it. DESIGN.md § 3 draws the whole chain; 0.1.0 builds it as far as the Training IR and
-runs that on the CPU interpreter.
+stage reads it. DESIGN.md § 3 draws the whole chain, and 0.12.0 builds every stage of it.
 
 ```text
 .mspec source
-  -> lexer, parser                 Source AST         built
-  -> name resolution               names bound        built
-  -> type, shape and train checks  Typed HIR          built
-  -> lowering                      Tensor IR          built
-  -> autodiff + optimizer step     Training IR        built
-  -> CPU interpreter               a trained model    built
-  -> fuse, schedule, tile          Kernel IR          M1, M2
-  -> SPIR-V + Vulkan pipelines     GPU execution      M1
+  -> lexer, parser                 Source AST
+  -> name resolution               names bound
+  -> type, shape and train checks  Typed HIR
+  -> lowering                      Tensor IR
+  -> autodiff + optimizer step     Training IR
+  -> CPU interpreter               a trained model, --backend cpu
+  -> fuse, schedule, tile          Kernel IR
+  -> SPIR-V + Vulkan pipelines     a trained model, --backend vulkan
 ```
 
 Both IR levels are verified when they are built, and dead code is removed from the Tensor IR.
-`modelspec train --backend cpu` runs the CPU interpreter. Kernel IR and GPU execution are not
-built.
+`modelspec train --backend cpu` runs the Training IR on the CPU interpreter; `--backend vulkan`
+lowers it to Kernel IR and runs that on one Vulkan device. The operators added for BERT have no
+Vulkan kernel yet: a program that uses one runs on the CPU interpreter only, and the Kernel IR
+stage refuses it with `E-TARGET-011` ([BERT operators](./bert-operators.md)).
 
 `modelspec check` runs the first three stages. `modelspec ir --stage tensor` and `--stage
 training` print the two IR levels, and the tests compare both byte for byte with their golden
@@ -99,7 +103,8 @@ Read from the loss backwards:
 
 The first word of each line is its subgraph: `forward`, `loss`, `gradient` or `optimizer`. The
 subgraphs are there for analysis and verification. They are not execution boundaries, which is what
-lets a later milestone fuse across them.
+lets the Kernel IR fuse across them: its `k2` below computes the forward `%6` and the gradient `%9`
+in one dispatch.
 
 The parameter has versions. The forward read takes `v0` (`{!0 read @LinearReg.w v0}`) and the
 update writes `v1` (`{!1 write @LinearReg.w v1}`). These numbered effects order every read and
@@ -107,9 +112,23 @@ write of state, so no rewrite can overwrite a value that the backward pass still
 gradient rules themselves are one table in the operator registry
 ([Operators § Gradients](../reference/operators.md#gradients)).
 
-## What comes after M0
+## Kernel IR
 
-Kernel IR, the execution DAG, SPIR-V generation and Vulkan pipeline creation are the M1 and M2
-stages of DESIGN.md § 3.1 and are not built. The GPU backend will consume the same verified
-Training IR the CPU interpreter runs today, which is the first invariant of the design: one
-semantic core for every backend ([Roadmap](../roadmap.md)).
+The Vulkan backend consumes the same verified Training IR the CPU interpreter runs, which is the
+first invariant of the design: one semantic core for every backend. `modelspec ir
+examples/linear_regression.mspec --stage kernel` prints the buffers, one `kernel` line per SPIR-V
+module and two plans, `plan step` and `plan forward`. For the Training IR above it prints five
+kernels:
+
+| Kernel | Kind | What it computes |
+|---|---|---|
+| `k0` | `matmul MatMul` | the prediction `%3` |
+| `k1` | `loss_sum Mse` | the loss `%4` |
+| `k2` | `elementwise Sub>Mul@0` | the loss gradient `%9`: `%6` and `%9` fused into one dispatch, with no buffer for the difference |
+| `k3` | `matmul MatMul` | `dL/dw` `%11`, reading `x` in place as `Tensor<f32, [4, 8]> transposed`, so the transpose `%10` has no dispatch |
+| `k4` | `sgd_update Sub` | the update `%14`, written back into the parameter's buffer |
+
+`plan step` orders the dispatches with barriers; `k1` and `k2` read the same two buffers and run
+between the same two barriers. [Inspect a run](../guides/inspect-a-run.md) reads the kernels and
+plans of the MNIST example, the compiled artifact and the time of every dispatch. The
+[Roadmap](../roadmap.md) says what the later milestones add.

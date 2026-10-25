@@ -15,7 +15,7 @@ The output below was recorded by `modelspec-docs` running the `modelspec` comman
 
 [`examples/linear_regression.mspec`](https://github.com/beyond10x/modelspec/blob/main/examples/linear_regression.mspec):
 
-```modelspec
+```modelspec title="examples/linear_regression.mspec"
 model LinearReg {
     param w: Tensor<f32, [4, 1]> = xavier_uniform();
 

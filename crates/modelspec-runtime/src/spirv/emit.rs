@@ -22,7 +22,10 @@
 //! [`emit_loss_sum_undivided`] build the deterministic module.
 //!
 //! A matmul with a `relu` epilogue applies the compare and select of the `relu` kernel to its
-//! rounded sum and writes that; when it keeps the pre-activation, it writes the sum first.
+//! rounded sum and writes that; when it keeps the pre-activation, it writes the sum first. A
+//! matmul with a `ReluGrad` epilogue reads the pre-activation `x` of its output element from its
+//! third operand and writes `x > 0 ? sum : 0.0`, the compare and select of the `ReluGrad` kernel
+//! (story:step-sites-beat-pytorch).
 //!
 //! Bindings, all in descriptor set 0: each buffer operand of the kernel in order (read, decorated
 //! `NonWritable`), then what it writes: the pre-activation of an epilogue that keeps it, then the
@@ -450,14 +453,20 @@ fn body_of(kernel: &Kernel, variant: Variant, shared_bytes: u32) -> Result<Body,
             }
         }
         (KernelKind::MatMul, "MatMul") => {
-            let shapes = buffer_shapes(kernel, 2)?;
+            let shapes = buffer_shapes(kernel, Epilogue::matmul_operands(kernel.epilogue))?;
             let result = static_shape(kernel, &kernel.result)?;
             match (
                 shapes[0].as_slice(),
                 shapes[1].as_slice(),
                 result.as_slice(),
             ) {
-                ([m, k], [k2, n], [rm, rn]) if k == k2 && m == rm && n == rn && *k > 0 => {
+                ([m, k], [k2, n], [rm, rn])
+                    if k == k2
+                        && m == rm
+                        && n == rn
+                        && *k > 0
+                        && shapes.get(2).is_none_or(|x| *x == result) =>
+                {
                     let tile = MatMulTile::of_invocations(*m, *k, *n, kernel.workgroup_size);
                     let covered = kernel
                         .workgroups
@@ -499,7 +508,7 @@ fn body_of(kernel: &Kernel, variant: Variant, shared_bytes: u32) -> Result<Body,
                 _ => {
                     return Err(operands_error(
                         kernel,
-                        "matmul reads [m, k] and [k, n], k > 0, into [m, n]",
+                        "matmul reads [m, k] and [k, n], k > 0, and with a ReluGrad epilogue [m, n], into [m, n]",
                     ));
                 }
             }
@@ -1343,6 +1352,13 @@ impl Shell {
         Ok(self.b.select(self.f32_ty, None, positive, x, f_zero)?)
     }
 
+    /// `ReluGrad(x, g)`: `g` where `x > 0`, else `0.0`, a compare and a select.
+    fn relu_grad(&mut self, x: Word, g: Word) -> Result<Word, EmitError> {
+        let f_zero = self.float(0.0);
+        let positive = self.b.f_ord_greater_than(self.bool_ty, None, x, f_zero)?;
+        Ok(self.b.select(self.f32_ty, None, positive, g, f_zero)?)
+    }
+
     fn shared_at(&mut self, at: Word) -> Result<Word, EmitError> {
         let shared = self.shared.expect("a module with workgroup memory");
         if self.shared_vectors.is_some() {
@@ -1816,9 +1832,10 @@ impl Shell {
     /// staged but never enter a written output, and the last tile has its own trip count, so no
     /// padding term is added: every output element is `a[i, 0] * b[0, j]`, then
     /// `fma(a[i, p], b[p, j], acc)` for each next `p` in ascending order, as the CPU computes it
-    /// with `mul_add` (DESIGN.md § 12 ADR-009). With an [`Epilogue`] the rounded
+    /// with `mul_add` (DESIGN.md § 12 ADR-009). With a `relu` [`Epilogue`] the rounded
     /// sum is written to the pre-activation binding when the kernel keeps it, and its `relu` to
-    /// the result.
+    /// the result; with a `ReluGrad` epilogue the result is the sum where the third operand, the
+    /// pre-activation, is above 0, and 0 elsewhere.
     ///
     /// An operand bound transposed (`transposed`, [`Kernel::transposed`]) is read in place from
     /// its row-major transpose, `[k, m]` for `a` and `[n, k]` for `b`, in the [`Staging`] order
@@ -2305,6 +2322,11 @@ impl Shell {
                             }
                             let activation = s.relu(sum)?;
                             s.write(at, activation)
+                        }
+                        Some(Epilogue::ReluGrad) => {
+                            let pre_activation = s.read(2, at)?;
+                            let gradient = s.relu_grad(pre_activation, sum)?;
+                            s.write(at, gradient)
                         }
                     }
                 })?;

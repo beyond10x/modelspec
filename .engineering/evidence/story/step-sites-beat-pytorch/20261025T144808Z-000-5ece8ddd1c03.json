@@ -1,0 +1,13 @@
+{
+  "at": "2026-10-25T14:48:08Z",
+  "actor": "human:timo",
+  "artifact": "story:step-sites-beat-pytorch",
+  "kind": "story",
+  "revision": 3,
+  "change": {
+    "change": "evidence",
+    "kind": "test_result",
+    "source": "task ci",
+    "reference": "28b1e8fed98a6a3e6eef9f3ccf03d208882cbaf1"
+  }
+}

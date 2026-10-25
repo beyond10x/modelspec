@@ -191,6 +191,12 @@ fn dispatch_terms(terms: &mut Terms, kernel: &Kernel, read: &[u32]) -> Vec<u32> 
                         vec![relu]
                     }
                 }
+                Some(Epilogue::ReluGrad) => {
+                    let [_, _, pre_activation] = operands[..] else {
+                        panic!("{}", kernel.signature());
+                    };
+                    vec![terms.op("ReluGrad", vec![pre_activation, product])]
+                }
             }
         }
         KernelKind::PerElement | KernelKind::PerRow | KernelKind::PerColumn => {

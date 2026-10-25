@@ -4,7 +4,8 @@
 //! The golden `tests/golden/linear_regression.kernel.ir` is what `print_kernel` prints for the
 //! example's Vulkan artifact; the cases below check it against the plan the compiler builds, so a
 //! golden regenerated from a wrong plan does not pass. `tests/golden/mnist_mlp.kernel.ir` is the
-//! MNIST example's, with the fusions of DESIGN.md § 3.1 (story m1-fuse-elementwise).
+//! MNIST example's, with the fusions of DESIGN.md § 3.1 (story m1-fuse-elementwise), the `mse` loss
+//! sum beside the `w1` gradient and the relu gradient a matmul epilogue (story:step-sites-beat-pytorch).
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -118,7 +119,15 @@ fn ir_stage_kernel_of_mnist_shows_the_fused_step_plan() {
     let barriers = step.iter().filter(|l| l.contains(": barrier")).count();
     // The `(y - t) * c` of the loss gradient is one fused elementwise chain since
     // story:fuse-elementwise-chains-and-gradient-sums: 11 dispatches and 8 barriers before it.
-    assert_eq!((dispatches, barriers), (10, 7), "{printed}");
+    // The relu gradient is the epilogue of the matmul that produces its adjoint since
+    // story:step-sites-beat-pytorch: 10 dispatches and 7 barriers before that.
+    assert_eq!((dispatches, barriers), (9, 6), "{printed}");
+    let relu_grad = kernel_line(&printed, 3);
+    assert!(
+        relu_grad.contains(" matmul MatMul ") && relu_grad.contains(" epilogue ReluGrad "),
+        "{relu_grad}"
+    );
+    assert!(!printed.contains(" elementwise ReluGrad "), "{printed}");
     let chains: Vec<&str> = printed
         .lines()
         .filter(|l| l.starts_with("kernel ") && l.contains(" elementwise "))

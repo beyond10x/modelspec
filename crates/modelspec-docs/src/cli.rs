@@ -4,6 +4,41 @@ use clap::CommandFactory;
 
 use crate::{SOURCE, cell, front_matter};
 
+/// The longest usage line the page prints. The site's code box holds about 80 characters at a
+/// 1280 px viewport; a longer usage is wrapped between arguments.
+const USAGE_WIDTH: usize = 64;
+
+/// `usage` wrapped at [`USAGE_WIDTH`]: breaks fall between arguments only, a flag stays with its
+/// `<VALUE>`, and a continuation line is indented to follow `Usage: `.
+fn wrap_usage(usage: &str) -> String {
+    const INDENT: &str = "       ";
+    let mut arguments: Vec<String> = Vec::new();
+    for word in usage.split_whitespace() {
+        match arguments.last_mut() {
+            Some(last)
+                if word.starts_with('<') && last.starts_with("--") && !last.contains('<') =>
+            {
+                last.push(' ');
+                last.push_str(word);
+            }
+            _ => arguments.push(word.to_owned()),
+        }
+    }
+    let mut lines = vec![String::new()];
+    for argument in arguments {
+        let line = lines.last_mut().expect("one line at least");
+        if line.trim().is_empty() {
+            line.push_str(&argument);
+        } else if line.chars().count() + 1 + argument.chars().count() <= USAGE_WIDTH {
+            line.push(' ');
+            line.push_str(&argument);
+        } else {
+            lines.push(format!("{INDENT}{argument}"));
+        }
+    }
+    lines.join("\n")
+}
+
 /// Every subcommand below `command`, depth first, without clap's `help`.
 fn commands(command: &clap::Command, out: &mut Vec<clap::Command>) {
     for sub in command.get_subcommands() {
@@ -138,7 +173,7 @@ pub fn page_for(mut root: clap::Command) -> String {
         out.push_str(&format!(
             "\n## `{written}`\n\n{}\n\n```text\n{}\n```\n",
             cell(&text(command.get_long_about().or(command.get_about()))),
-            command.render_usage().to_string().trim_end()
+            wrap_usage(command.render_usage().to_string().trim_end())
         ));
         let rows = arguments(command);
         if rows.is_empty() {
@@ -171,6 +206,84 @@ pub fn page() -> String {
 mod tests {
     use super::*;
 
+    /// The first argument of a usage continuation line: a flag with its `<VALUE>`, or one word.
+    fn first_argument(line: &str) -> String {
+        let mut words = line.split_whitespace();
+        let first = words.next().unwrap_or_default();
+        match words.next() {
+            Some(value) if first.starts_with("--") && value.starts_with('<') => {
+                format!("{first} {value}")
+            }
+            _ => first.to_owned(),
+        }
+    }
+
+    #[test]
+    fn usage_lines_fit_a_code_box_and_wrap_between_arguments() {
+        assert_eq!(USAGE_WIDTH, 64);
+        let page = page();
+        let mut usages = 0;
+        let mut wrapped = 0;
+        for block in page.split("```text\n").skip(1) {
+            let (block, _) = block.split_once("\n```").unwrap();
+            usages += 1;
+            let lines: Vec<&str> = block.lines().collect();
+            for pair in lines.windows(2) {
+                wrapped += 1;
+                let next = first_argument(pair[1]);
+                assert!(
+                    pair[1].starts_with("       --") || pair[1].starts_with("       <"),
+                    "a continuation line that does not start at an argument: {}",
+                    pair[1]
+                );
+                assert!(
+                    pair[0].chars().count() + 1 + next.chars().count() > 64,
+                    "`{next}` fits on the line before it: {}",
+                    pair[0]
+                );
+            }
+            for line in lines {
+                assert!(
+                    line.chars().count() <= 64,
+                    "usage line of {} characters: {line}",
+                    line.chars().count()
+                );
+                assert!(!line.ends_with("--"), "a flag split from its name: {line}");
+                assert!(
+                    line.matches('<').count() == line.matches('>').count(),
+                    "a value split from its flag: {line}"
+                );
+            }
+        }
+        assert!(usages > 10);
+        assert!(wrapped > 1, "only {wrapped} wrapped usage lines");
+        assert!(page.contains(
+            "Usage: modelspec data pack --dataset <DIR> --tokenizer <FILE>\n       --seq-len <S> --out <DIR>"
+        ));
+    }
+
+    #[test]
+    fn no_url_outside_code_is_left_for_the_site_to_autolink() {
+        let page = page();
+        for (n, line) in page.lines().enumerate() {
+            if line.starts_with("Usage:") || line.starts_with("       ") {
+                continue;
+            }
+            let outside_code: String = line
+                .split('`')
+                .enumerate()
+                .filter(|(i, _)| i % 2 == 0)
+                .map(|(_, part)| part)
+                .collect();
+            let bare = outside_code.replace("](http", "").replace("](https", "");
+            assert!(
+                !bare.contains("http://") && !bare.contains("https://"),
+                "line {}: a URL outside code, which the site turns into a link: {line}",
+                n + 1
+            );
+        }
+    }
+
     #[test]
     fn every_command_option_and_possible_value_is_listed() {
         let page = page();
@@ -182,7 +295,7 @@ mod tests {
         assert!(page.contains("| [`modelspec compile`](#modelspec-compile) |"));
         assert!(page.contains("| `--device-profile <PATH>` | no | none |"));
         assert!(page.contains(
-            "Usage: modelspec infer [OPTIONS] --backend <BACKEND> --checkpoint <PATH> <PATH>"
+            "Usage: modelspec infer [OPTIONS] --backend <BACKEND>\n       --checkpoint <PATH> <PATH>"
         ));
         assert!(page.contains("| `--resume <PATH>` | no | none |"));
         assert!(page.contains("Usage: modelspec train [OPTIONS] --backend <BACKEND> <PATH>"));

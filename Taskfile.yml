@@ -78,6 +78,14 @@ tasks:
       - task: ui
       - cargo test -p modelspec-cli --test observatory_ui --test observatory_ui_adversary -- --ignored
 
+  ui-ux:
+    cmds:
+      - cmd: 'test -n "$CHROME" || { echo "task ui-ux: set CHROME to a Chrome or Chromium executable, as task ui-browser takes it" >&2; exit 2; }'
+        silent: true
+      - task: ui
+      - cargo build -q -p modelspec-cli
+      - pnpm --dir ui ux
+
   website:
     dir: website
     cmds:
@@ -121,3 +129,4 @@ tasks:
       - task: schema-check
       - task: ui-types-check
       - task: ui-browser
+      - task: ui-ux

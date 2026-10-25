@@ -79,7 +79,7 @@ Latest median µs per step per side, runs of 2026-10-25 unless the cell says oth
 | 64 | 1,675,624,448 | 588.884 | 424.157 | 520.577 |
 | 256 | 6,702,497,792 | 1,243.127 | 530.894 | 527.436 |
 | 1024 | 26,809,991,168 | 2,385.658 | 1,773.976 | 1,828.654 |
-| 4096 | 107,239,964,672 | 7,229.009 | 6,840.956 | 6,782.021 |
+| 4096 | 107,239,964,672 | 6,858.914 | 6,568.501 | 6,782.021 |
 
 ## Every run
 
@@ -184,3 +184,5 @@ Latest median µs per step per side, runs of 2026-10-25 unless the cell says oth
 | `sweep-b8192-h256-pytorch-cuda-compile-0.10.0` | 2026-10-25 | `mlp-784-H-10` | PyTorch CUDA torch.compile |  | Timed | 8192 | 256 | torch 2.14.1+cu130, CUDA 13.0 | 527.436 | 3 | `verification-report:mlp-size-sweep-2026-10-25, raw records benchmarks/raw/2026-10-25-sweep-0.10.0/pytorch.jsonl` |
 | `sweep-b8192-h1024-pytorch-cuda-compile-0.10.0` | 2026-10-25 | `mlp-784-H-10` | PyTorch CUDA torch.compile |  | Timed | 8192 | 1024 | torch 2.14.1+cu130, CUDA 13.0 | 1,828.654 | 3 | `verification-report:mlp-size-sweep-2026-10-25, raw records benchmarks/raw/2026-10-25-sweep-0.10.0/pytorch.jsonl` |
 | `sweep-b8192-h4096-pytorch-cuda-compile-0.10.0` | 2026-10-25 | `mlp-784-H-10` | PyTorch CUDA torch.compile |  | Timed | 8192 | 4096 | torch 2.14.1+cu130, CUDA 13.0 | 6,782.021 | 3 | `verification-report:mlp-size-sweep-2026-10-25, raw records benchmarks/raw/2026-10-25-sweep-0.10.0/pytorch.jsonl` |
+| `sweep-b8192-h4096-modelspec-vulkan-step-sites` | 2026-10-25 | `mlp-784-H-10` | ModelSpec Vulkan |  | Timed | 8192 | 4096 | 0.10.0 (`3ef38aa`) | 6,858.914 | 3 | `story:step-sites-beat-pytorch judgement session, the median of 3 back-to-back runs on the uncommitted tree over 3ef38aa, raw records benchmarks/raw/2026-10-25-step-sites/judgement/r2-modelspec.jsonl` |
+| `sweep-b8192-h4096-pytorch-cuda-eager-step-sites` | 2026-10-25 | `mlp-784-H-10` | PyTorch CUDA eager |  | Timed | 8192 | 4096 | torch 2.14.1+cu130, CUDA 13.0 | 6,568.501 | 3 | `story:step-sites-beat-pytorch judgement session, the median of 3 back-to-back runs, raw records benchmarks/raw/2026-10-25-step-sites/judgement/r3-pytorch-eager.jsonl` |

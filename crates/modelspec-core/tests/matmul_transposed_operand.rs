@@ -10,7 +10,9 @@ use std::path::{Path, PathBuf};
 
 use modelspec_core::artifact::Backend;
 use modelspec_core::compile::compile_artifact;
-use modelspec_core::ir::kernel::{BufferView, ExecutionPlan, Kernel, KernelKind, PlanOp, PlanStep};
+use modelspec_core::ir::kernel::{
+    BufferView, Epilogue, ExecutionPlan, Kernel, KernelKind, PlanOp, PlanStep,
+};
 use modelspec_core::ir::tensor::{Dim, TensorType};
 
 fn repo_root() -> PathBuf {
@@ -189,7 +191,10 @@ fn each_matmul_reads_the_untransposed_view_in_place() {
     ] {
         let plan = plan(&name, &source);
         let (forward, _) = dispatches(&plan, KernelKind::MatMul)
-            .find(|(_, k)| dims(&k.result) == [batch, hidden] && k.epilogue.is_some())
+            .find(|(_, k)| {
+                dims(&k.result) == [batch, hidden]
+                    && matches!(k.epilogue, Some(Epilogue::Relu { .. }))
+            })
             .expect("the forward matmul with its relu epilogue");
         let activation = *forward.writes.last().expect("the forward matmul writes");
         let w1_gradient = matmul_of(&plan, &[784, hidden]);
@@ -203,8 +208,12 @@ fn each_matmul_reads_the_untransposed_view_in_place() {
             w2_gradient.reads[0], activation,
             "{name}: the w2 gradient reads the activation"
         );
+        // The hidden gradient matmul gates its sum with the relu gradient, its `ReluGrad` epilogue
+        // (story:step-sites-beat-pytorch).
         let hidden_gradient = dispatches(&plan, KernelKind::MatMul)
-            .find(|(_, k)| dims(&k.result) == [batch, hidden] && k.epilogue.is_none())
+            .find(|(_, k)| {
+                dims(&k.result) == [batch, hidden] && k.epilogue == Some(Epilogue::ReluGrad)
+            })
             .map(|(s, _)| s)
             .expect("the hidden gradient matmul");
         assert_eq!(

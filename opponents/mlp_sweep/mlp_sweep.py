@@ -23,6 +23,7 @@ ModelSpec never runs this file (AGENTS.md, Rules: Python is for opponents only).
 """
 
 import argparse
+import contextlib
 import json
 import math
 import os
@@ -124,7 +125,7 @@ def run(step, steps, device):
     return seconds, [start_ms, end_ms]
 
 
-def measure(batch, hidden, mode, compile_mode, device, min_seconds):
+def measure(batch, hidden, mode, compile_mode, device, min_seconds, profile=False):
     torch.manual_seed(SEED)
     model = Mlp(hidden).to(device)
     loss_fn = Loss(model)
@@ -150,17 +151,54 @@ def measure(batch, hidden, mode, compile_mode, device, min_seconds):
             break
         steps = max(steps_for(seconds, steps, target), steps + 1)
     runs = []
-    for _ in range(RUNS):
-        seconds, span = run(step, steps, device)
-        us = seconds * 1e6 / steps
+    with kernel_profiler(profile) as profiler:
+        for _ in range(RUNS):
+            seconds, span = run(step, steps, device)
+            us = seconds * 1e6 / steps
+            print(
+                f"mlp_sweep:   timed: {steps} steps in {seconds:.3f} s, {us:.3f} us per step",
+                file=sys.stderr,
+            )
+            if seconds < min_seconds:
+                print(f"mlp_sweep:   warning: the run was shorter than {min_seconds} s",
+                      file=sys.stderr)
+            runs.append({"us_per_step": us, "seconds": seconds, "span_unix_ms": span})
+    if profiler is not None:
+        print_kernels(profiler, steps * RUNS)
+    return steps, runs
+
+
+@contextlib.contextmanager
+def kernel_profiler(enabled):
+    """torch.profiler over the timed runs, CUDA activity only, when `enabled`; else nothing."""
+    if not enabled:
+        yield None
+        return
+    with torch.profiler.profile(activities=[torch.profiler.ProfilerActivity.CUDA]) as profiler:
+        yield profiler
+
+
+def print_kernels(profiler, steps):
+    """One stderr line per CUDA kernel, memset or copy of the timed runs, the most device time
+    first: calls, total device us, mean us per call and us per timed step; then their sum."""
+    rows = []
+    for event in profiler.key_averages():
+        total = event.self_device_time_total
+        if total <= 0:
+            continue
+        rows.append((total, event.count, event.key))
+    rows.sort(key=lambda row: -row[0])
+    for total, count, key in rows:
         print(
-            f"mlp_sweep:   timed: {steps} steps in {seconds:.3f} s, {us:.3f} us per step",
+            f"mlp_sweep:   profile kernel calls {count} total_us {total:.3f} "
+            f"mean_us {total / count:.3f} us_per_step {total / steps:.3f} name {key}",
             file=sys.stderr,
         )
-        if seconds < min_seconds:
-            print(f"mlp_sweep:   warning: the run was shorter than {min_seconds} s", file=sys.stderr)
-        runs.append({"us_per_step": us, "seconds": seconds, "span_unix_ms": span})
-    return steps, runs
+    summed = sum(row[0] for row in rows)
+    print(
+        f"mlp_sweep:   profile steps {steps} device_us_per_step {summed / steps:.3f}",
+        file=sys.stderr,
+    )
 
 
 def parse_point(text):
@@ -179,6 +217,10 @@ def main():
                         help="comma-separated: eager, compile (default both)")
     parser.add_argument("--compile-mode", default="default",
                         help="the torch.compile mode (default 'default')")
+    parser.add_argument("--profile", action="store_true",
+                        help="run the timed runs under torch.profiler and print the CUDA time of "
+                             "each kernel over them to stderr; the timed figures then carry the "
+                             "profiler's cost and are not the sweep's")
     args = parser.parse_args()
 
     torch.backends.cuda.matmul.allow_tf32 = False
@@ -212,7 +254,7 @@ def main():
                 if mode not in ("eager", "compile"):
                     raise ValueError(f"unknown mode {mode!r}")
                 steps, runs = measure(batch, hidden, mode, args.compile_mode, device,
-                                      args.min_seconds)
+                                      args.min_seconds, args.profile)
                 median = statistics.median(r["us_per_step"] for r in runs)
                 line.update({
                     "status": "measured",

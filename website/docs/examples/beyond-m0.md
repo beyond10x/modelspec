@@ -15,7 +15,7 @@ The output below was recorded by `modelspec-docs` running the `modelspec` comman
 
 [`examples/tiny_mlp.mspec`](https://github.com/beyond10x/modelspec/blob/main/examples/tiny_mlp.mspec):
 
-```modelspec
+```modelspec title="examples/tiny_mlp.mspec"
 module Linear<In: dim, Out: dim> {
     param weight: Tensor<f32, [In, Out]> = xavier_uniform();
 

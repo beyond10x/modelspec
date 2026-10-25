@@ -72,7 +72,10 @@ fn spirv_val_accepts_every_elementwise_broadcast_and_sgd_module_of_the_examples(
             assert_valid(kernel);
             kinds.push(kernel.kind);
             match kernel.epilogue {
-                Some(_) => ops.push("Relu"),
+                Some(Epilogue::Relu { .. }) => ops.push("Relu"),
+                // The relu gradient as the epilogue of the matmul that produces its adjoint
+                // (story:step-sites-beat-pytorch).
+                Some(Epilogue::ReluGrad) => ops.push("ReluGrad"),
                 // A fused elementwise chain (story:fuse-elementwise-chains-and-gradient-sums)
                 // counts as each of its ops.
                 None => ops.extend(
@@ -672,8 +675,8 @@ fn collapsed(trace: &str) -> String {
     out
 }
 
-/// The three epilogues a matmul kernel has.
-const EPILOGUES: [Option<Epilogue>; 3] = [
+/// The four epilogues a matmul kernel has, `ReluGrad` since story:step-sites-beat-pytorch.
+const EPILOGUES: [Option<Epilogue>; 4] = [
     None,
     Some(Epilogue::Relu {
         writes_pre_activation: false,
@@ -681,6 +684,7 @@ const EPILOGUES: [Option<Epilogue>; 3] = [
     Some(Epilogue::Relu {
         writes_pre_activation: true,
     }),
+    Some(Epilogue::ReluGrad),
 ];
 
 #[test]

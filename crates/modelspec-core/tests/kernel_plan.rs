@@ -175,6 +175,16 @@ fn coverage(plan: &ExecutionPlan, training: &CompiledTraining, node: &TensorNode
             covers.push(Cover::Epilogue);
         }
     }
+    // story:step-sites-beat-pytorch: a `ReluGrad` whose adjoint is a matmul output is that
+    // matmul's epilogue.
+    if let (TensorOp::ReluGrad, [_, matmul]) = (&node.op, &node.operands[..])
+        && let [at] = dispatches_of(&plan.step, *matmul)[..]
+    {
+        let kernel = kernel_of(plan, &plan.step[at]);
+        if kernel.kind == KernelKind::MatMul && kernel.epilogue == Some(Epilogue::ReluGrad) {
+            covers.push(Cover::Epilogue);
+        }
+    }
     let matmul_readers = readers(training, node.id);
     if node.op == TensorOp::Transpose
         && !matmul_readers.is_empty()
@@ -818,14 +828,16 @@ fn first<'a>(training: &'a CompiledTraining, op: &TensorOp) -> &'a TensorNode {
 }
 
 /// 11 dispatches and 8 barriers before the loss gradient `(y - t) * c` became one fused
-/// elementwise chain (story:fuse-elementwise-chains-and-gradient-sums).
+/// elementwise chain (story:fuse-elementwise-chains-and-gradient-sums), and 10 and 7 before the
+/// `ReluGrad` became the epilogue of the matmul that produces its adjoint
+/// (story:step-sites-beat-pytorch).
 #[test]
-fn the_mnist_step_plan_is_10_dispatches_in_7_barrier_groups() {
+fn the_mnist_step_plan_is_9_dispatches_in_6_barrier_groups() {
     let plan = artifact(&source(MNIST), Backend::Vulkan).execution;
     verify_plan(&plan).expect("the plan verifies");
     let count = |op: PlanOp| plan.step.iter().filter(|s| s.op == op).count();
-    assert_eq!(count(PlanOp::Dispatch), 10, "{}", print_kernel(&plan));
-    assert_eq!(count(PlanOp::Barrier), 7, "{}", print_kernel(&plan));
+    assert_eq!(count(PlanOp::Dispatch), 9, "{}", print_kernel(&plan));
+    assert_eq!(count(PlanOp::Barrier), 6, "{}", print_kernel(&plan));
 }
 
 #[test]
@@ -874,12 +886,15 @@ fn a_relu_whose_matmul_has_a_second_reader_is_an_epilogue_writing_both() {
     assert_ne!(pre_activation.buffer, activation.buffer);
     assert!(dispatches_of(&plan.step, relu.id).is_empty());
 
+    // story:step-sites-beat-pytorch: the `ReluGrad` is the epilogue of the matmul that produces
+    // its adjoint, which reads the pre-activation as its third operand.
     let relu_grad = first(&training, &TensorOp::ReluGrad);
     assert_eq!(relu_grad.operands[0], matmul);
+    assert!(dispatches_of(&plan.step, relu_grad.id).is_empty());
     assert_eq!(
-        only_dispatch(&plan, relu_grad.id).reads[0],
+        only_dispatch(&plan, relu_grad.operands[1]).reads[2],
         pre_activation,
-        "ReluGrad reads the pre-activation"
+        "the ReluGrad epilogue reads the pre-activation"
     );
     for reader in readers(&training, relu.id) {
         assert!(

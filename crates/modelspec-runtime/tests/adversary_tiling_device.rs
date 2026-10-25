@@ -276,6 +276,7 @@ fn epilogue_name(epilogue: Option<Epilogue>) -> &'static str {
         Some(Epilogue::Relu {
             writes_pre_activation: false,
         }) => "relu",
+        Some(Epilogue::ReluGrad) => "relu-grad",
     }
 }
 
@@ -337,6 +338,9 @@ fn edge_matmuls_give_the_cpu_bits() {
                     Some(Epilogue::Relu {
                         writes_pre_activation: true,
                     }) => vec![&sum, &activation],
+                    Some(Epilogue::ReluGrad) => {
+                        unreachable!("no case here has a ReluGrad epilogue")
+                    }
                 };
                 assert_eq!(views.len(), expected.len(), "{case}: one view per write");
                 for (at, (got, want)) in views.iter().zip(&expected).enumerate() {

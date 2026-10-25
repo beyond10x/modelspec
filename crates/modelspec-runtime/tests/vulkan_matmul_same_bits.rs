@@ -256,6 +256,7 @@ fn case_line(m: u64, k: u64, n: u64, epilogue: Option<Epilogue>, subnormal: bool
         Some(Epilogue::Relu {
             writes_pre_activation: false,
         }) => "relu",
+        Some(Epilogue::ReluGrad) => "relu-grad",
     };
     let family = if subnormal { "subnormal" } else { "normal" };
     format!("{m} {k} {n} {epilogue} {family}")
@@ -351,6 +352,7 @@ fn a_register_blocked_matmul_gives_the_cpu_bits_on_normal_inputs() {
                 Some(Epilogue::Relu {
                     writes_pre_activation: true,
                 }) => vec![&sum, &activation],
+                Some(Epilogue::ReluGrad) => unreachable!("no case here has a ReluGrad epilogue"),
             };
             assert_eq!(views.len(), expected.len(), "{case}: one view per write");
             for (at, (got, want)) in views.iter().zip(&expected).enumerate() {

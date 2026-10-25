@@ -235,6 +235,13 @@ pub enum TensorOp {
     DropoutGrad {
         p: f32,
     },
+    /// Internal optimizer op: the correctly rounded square root of each element, on any `f32`
+    /// shape. Only the `Optimizer` subgraph of an AdamW step has it (DESIGN.md § 2.1, § 8).
+    Sqrt,
+    /// Internal optimizer op `A / B`, one correctly rounded `f32` division per element: same
+    /// shapes, or one rank-0 operand, as `Add`. Only the `Optimizer` subgraph of an AdamW step
+    /// has it (DESIGN.md § 2.1, § 8).
+    Div,
 }
 
 impl TensorOp {
@@ -274,6 +281,8 @@ impl TensorOp {
             TensorOp::CrossEntropyGrad => "CrossEntropyGrad",
             TensorOp::Dropout { .. } => "Dropout",
             TensorOp::DropoutGrad { .. } => "DropoutGrad",
+            TensorOp::Sqrt => "Sqrt",
+            TensorOp::Div => "Div",
         }
     }
 
@@ -724,6 +733,8 @@ mod tests {
             TensorOp::CrossEntropyGrad,
             TensorOp::Dropout { p: 0.5 },
             TensorOp::DropoutGrad { p: 0.5 },
+            TensorOp::Sqrt,
+            TensorOp::Div,
         ];
         for op in &ops {
             match op {
@@ -759,7 +770,9 @@ mod tests {
                 | TensorOp::CrossEntropy
                 | TensorOp::CrossEntropyGrad
                 | TensorOp::Dropout { .. }
-                | TensorOp::DropoutGrad { .. } => {}
+                | TensorOp::DropoutGrad { .. }
+                | TensorOp::Sqrt
+                | TensorOp::Div => {}
             }
         }
         ops

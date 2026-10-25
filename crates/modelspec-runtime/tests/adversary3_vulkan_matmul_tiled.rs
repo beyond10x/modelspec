@@ -181,6 +181,7 @@ fn bits(shapes: &[(u64, u64, u64)], seed: u64) -> (usize, Vec<String>) {
                 Some(Epilogue::Relu {
                     writes_pre_activation: true,
                 }) => vec![&sum, &activation],
+                Some(Epilogue::ReluGrad) => unreachable!("no case here has a ReluGrad epilogue"),
             };
             assert_eq!(got.len(), expected.len(), "[{m}, {k}] x [{k}, {n}] views");
             for (view, (got, want)) in got.iter().zip(&expected).enumerate() {

@@ -1,0 +1,12 @@
+{
+  "recording": "crates/modelspec-cli/tests/fixtures/linear_regression.run.jsonl",
+  "run_state": "finished",
+  "steps": 500,
+  "start_step": 0,
+  "last_step": 500,
+  "last_loss": 5.5719429070677506e-11,
+  "metrics": [],
+  "parameters": ["LinearReg.w"],
+  "last_statistics_step": 500,
+  "first_parameter_gradient": { "path": "LinearReg.w", "step": 400, "norm": 0.000030406313584305475 }
+}

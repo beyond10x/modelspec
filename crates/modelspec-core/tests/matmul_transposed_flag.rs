@@ -51,6 +51,8 @@ fn each_mnist_matmul_states_which_operand_it_reads_transposed() {
     }
 }
 
+/// The `[100, 10] x [10, 64]` matmul reads the pre-activation `[100, 64]` as a third operand,
+/// its `ReluGrad` epilogue (story:step-sites-beat-pytorch); the flag is printed on operand 1.
 #[test]
 fn the_flag_is_printed_on_its_operand_and_changes_the_signature_and_module_id() {
     let plan = mnist_plan();
@@ -64,7 +66,7 @@ fn the_flag_is_printed_on_its_operand_and_changes_the_signature_and_module_id() 
         ),
         (
             read_b,
-            "(Tensor<f32, [100, 10]>, Tensor<f32, [10, 64]> transposed)",
+            "(Tensor<f32, [100, 10]>, Tensor<f32, [10, 64]> transposed, Tensor<f32, [100, 64]>)",
         ),
     ] {
         let signature = kernel.signature();

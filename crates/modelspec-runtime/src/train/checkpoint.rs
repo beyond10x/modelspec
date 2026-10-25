@@ -29,6 +29,7 @@ use modelspec_core::artifact::{ContentHash, schema_hash};
 use modelspec_core::compile::CompiledTraining;
 use modelspec_core::diag::{Code, Diagnostic};
 use modelspec_core::ir::tensor::{DType, Dim, ParamId, TensorType};
+use modelspec_core::ir::training::OptimizerRule;
 use serde::de::{DeserializeSeed, Deserializer, IgnoredAny, SeqAccess, Visitor};
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
@@ -71,7 +72,8 @@ pub enum OptimizerKind {
     AdamW,
 }
 
-/// A learning-rate schedule (`modelspec.training.LearningRateSchedule`); M1 writes none.
+/// A learning-rate schedule (`modelspec.training.LearningRateSchedule`): the linear warmup of an
+/// AdamW file, then a linear decay to 0 at the last step (coordinator decision D50).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LearningRateSchedule {
@@ -97,26 +99,44 @@ pub struct OptimizerConfig {
 }
 
 impl OptimizerConfig {
-    /// SGD at the learning rate of `compiled`, with no schedule.
+    /// The optimizer of `compiled`: SGD at its learning rate with no schedule, or AdamW at its
+    /// peak rate with its weight decay, betas, epsilon and warmup schedule.
     pub fn of(compiled: &CompiledTraining) -> Self {
-        Self {
-            kind: OptimizerKind::Sgd,
-            learning_rate: f64::from(compiled.config.lr),
-            weight_decay: None,
-            beta1: None,
-            beta2: None,
-            epsilon: None,
-            schedule: None,
+        let learning_rate = f64::from(compiled.config.lr);
+        match compiled.training.optimizer.rule {
+            OptimizerRule::Sgd => Self {
+                kind: OptimizerKind::Sgd,
+                learning_rate,
+                weight_decay: None,
+                beta1: None,
+                beta2: None,
+                epsilon: None,
+                schedule: None,
+            },
+            OptimizerRule::AdamW(adamw) => Self {
+                kind: OptimizerKind::AdamW,
+                learning_rate,
+                weight_decay: Some(f64::from(adamw.weight_decay)),
+                beta1: Some(f64::from(adamw.beta1)),
+                beta2: Some(f64::from(adamw.beta2)),
+                epsilon: Some(f64::from(adamw.eps)),
+                schedule: Some(LearningRateSchedule {
+                    warmup_steps: adamw.warmup_steps,
+                }),
+            },
         }
     }
 
-    /// The invariant of `OptimizerConfig`: the AdamW fields are present exactly for AdamW.
+    /// The invariant of `OptimizerConfig`: the AdamW fields and the schedule are present exactly
+    /// for AdamW.
     fn is_valid(&self) -> bool {
         let adamw = [self.weight_decay, self.beta1, self.beta2, self.epsilon];
         self.learning_rate.is_finite()
             && match self.kind {
-                OptimizerKind::Sgd => adamw.iter().all(Option::is_none),
-                OptimizerKind::AdamW => adamw.iter().all(Option::is_some),
+                OptimizerKind::Sgd => adamw.iter().all(Option::is_none) && self.schedule.is_none(),
+                OptimizerKind::AdamW => {
+                    adamw.iter().all(Option::is_some) && self.schedule.is_some()
+                }
             }
     }
 }

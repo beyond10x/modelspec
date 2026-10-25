@@ -89,8 +89,8 @@
   "x-ess-provenance": {
     "system": "modelspec",
     "specification_version": "v1",
-    "source_digest": "07de7b42dde4bd08bc9760a43fd56054085514b5506b9fb891af25d04f973d22",
-    "contract_digest": "slice-sha256/2:0b08fd9cc9a7e1b948997a95aa3e4fd5a17d1c6903487b773aac4821996ebeb9",
+    "source_digest": "80bb780185d18b44ff5815ee205e78dceca36f978b470f1b877d14816ebbf329",
+    "contract_digest": "slice-sha256/2:c623690755306130bd4dd3c4f2e76d0b09c786fa6aa3a6866a8de157d4ef0f19",
     "regenerate": "ess generate"
   },
   "$defs": {
@@ -225,7 +225,7 @@
     },
     "modelspec.training.LearningRateSchedule": {
       "title": "LearningRateSchedule",
-      "description": "How the learning rate varies over steps; a linear warmup over the first warmup_steps steps up to OptimizerConfig.learning_rate (epic:bert-from-scratch, AdamW with warmup).",
+      "description": "How the learning rate varies over steps, settled by coordinator decision D50 of 2026-10-25 under the operator's grant of 2026-10-24, after Devlin et al. 2019. With t counting steps from 1 and steps the run's total, the rate is lr*t/warmup_steps for t <= warmup_steps and lr*(steps-t)/(steps-warmup_steps) after, lr being OptimizerConfig.learning_rate; it starts above zero, peaks at lr at step warmup_steps and reaches zero at the last step. warmup_steps = 0 means no warmup; warmup_steps >= steps is refused (E-TYPE-024, or a run error when --steps shortens the run). The host computes each step's rate in Binary64 and rounds it once to Binary32 (DESIGN.md § 2.1, § 6).",
       "x-ess-name": "modelspec.training.LearningRateSchedule",
       "x-ess-kind": "struct",
       "type": "object",
@@ -275,7 +275,7 @@
         },
         "schedule": {
           "$ref": "#/$defs/modelspec.training.LearningRateSchedule",
-          "description": "Absent means a constant learning rate, as M0 SGD has."
+          "description": "Present exactly when kind is AdamW, settled by coordinator decision D50 of 2026-10-25; SGD keeps its constant learning rate, as M0 has."
         }
       },
       "required": [
@@ -284,12 +284,12 @@
       ],
       "additionalProperties": false,
       "x-ess-invariants": [
-        "((kind == Sgd and not (defined(weight_decay)) and not (defined(beta1)) and not (defined(beta2)) and not (defined(epsilon))) or (kind == AdamW and defined(weight_decay) and defined(beta1) and defined(beta2) and defined(epsilon)))"
+        "((kind == Sgd and not (defined(weight_decay)) and not (defined(beta1)) and not (defined(beta2)) and not (defined(epsilon)) and not (defined(schedule))) or (kind == AdamW and defined(weight_decay) and defined(beta1) and defined(beta2) and defined(epsilon) and defined(schedule)))"
       ]
     },
     "modelspec.training.OptimizerKind": {
       "title": "OptimizerKind",
-      "description": "SGD from M0; AdamW with weight decay joins at M3 (DESIGN.md § 1, § 11 iteration 4; epic:bert-from-scratch). The CLI accepts only `sgd` until then.",
+      "description": "SGD from M0; AdamW with decoupled weight decay and a warmup schedule from M3, written `adamw(lr = F, weight_decay = F, beta1 = F, beta2 = F, eps = F, warmup_steps = N)` (DESIGN.md § 1, § 2.1, § 11 iteration 4; epic:bert-from-scratch).",
       "x-ess-name": "modelspec.training.OptimizerKind",
       "x-ess-kind": "enum",
       "type": "string",

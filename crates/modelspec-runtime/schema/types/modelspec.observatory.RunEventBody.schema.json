@@ -4,8 +4,8 @@
   "x-ess-provenance": {
     "system": "modelspec",
     "specification_version": "v1",
-    "source_digest": "07de7b42dde4bd08bc9760a43fd56054085514b5506b9fb891af25d04f973d22",
-    "contract_digest": "slice-sha256/2:5304b76d5396da9ea8d7c25c7f4715a13018bd10ced06857632bbdf26fd73b8f",
+    "source_digest": "80bb780185d18b44ff5815ee205e78dceca36f978b470f1b877d14816ebbf329",
+    "contract_digest": "slice-sha256/2:b7c434bc315f78824bea67cc8254cc116c711f5bff0473a8f22766ea66673e42",
     "regenerate": "ess generate"
   },
   "$defs": {
@@ -15,6 +15,14 @@
       "x-ess-name": "modelspec.checkpoint.ParameterPath",
       "x-ess-kind": "newtype",
       "type": "string"
+    },
+    "modelspec.data.TrainingDataBindingId": {
+      "title": "TrainingDataBindingId",
+      "x-ess-name": "modelspec.data.TrainingDataBindingId",
+      "x-ess-kind": "newtype",
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
     },
     "modelspec.observatory.Histogram": {
       "title": "Histogram",
@@ -243,7 +251,7 @@
     },
     "modelspec.observatory.RunStarted": {
       "title": "RunStarted",
-      "description": "The event of a run starting, the first of its stream (RunEventBody). It carries the two TrainingRun fields that say which steps follow, start_step through start_step + steps (DESIGN.md § 6); the other record fields are the run's artifact and record, which M0 does not write (story:m0-cpu-sgd-training, Out of scope).",
+      "description": "The event of a run starting, the first of its stream (RunEventBody). It carries the two TrainingRun fields that say which steps follow, start_step through start_step + steps (DESIGN.md § 6), and the TrainingRun field that says what a masked-language-model run trains on, data_binding_id; the other record fields are the run's artifact and record, which M0 does not write (story:m0-cpu-sgd-training, Out of scope).",
       "x-ess-name": "modelspec.observatory.RunStarted",
       "x-ess-kind": "struct",
       "type": "object",
@@ -257,6 +265,10 @@
           "description": "TrainingRun.start_step, the step of the first StepCompleted.",
           "type": "integer",
           "minimum": 0
+        },
+        "data_binding_id": {
+          "$ref": "#/$defs/modelspec.data.TrainingDataBindingId",
+          "description": "TrainingRun.data_binding_id, the binding_id of the `binding.json` of the packed directory `modelspec train --data` trains on; absent for a run on synthetic or dense data (story:bert-train-data-binding, coordinator decision D48, 2026-10-25, `.engineering/waves/bert-1.md`)."
         }
       },
       "required": [

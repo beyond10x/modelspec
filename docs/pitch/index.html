@@ -17,12 +17,14 @@
   --m1: #7aa2f7;
   --hum: #f2b45c;
   --bad: #ef8080;
+  --page: #07090c;
+  --hudc: #8b949e;
   --sans: system-ui, -apple-system, "Segoe UI", "Noto Sans", "DejaVu Sans", Ubuntu, Cantarell, sans-serif;
   --mono: ui-monospace, "SF Mono", "DejaVu Sans Mono", "Liberation Mono", Menlo, Consolas, monospace;
   --s: 1;
 }
 * { box-sizing: border-box; }
-html, body { margin: 0; height: 100%; background: #07090c; overflow: hidden; }
+html, body { margin: 0; height: 100%; background: var(--page); overflow: hidden; }
 body { font-family: var(--sans); color: var(--fg); -webkit-font-smoothing: antialiased; }
 
 .slide {
@@ -137,7 +139,7 @@ svg text { font-family: var(--sans); }
 .humbox li::before { content: ""; position: absolute; left: 0; top: 14px; width: 14px; height: 14px; border-radius: 3px; background: var(--hum); }
 
 .s3 li { font-size: 29px; }
-.hud { position: fixed; right: 14px; bottom: 10px; font: 13px var(--mono); color: #8b949e; z-index: 5; }
+.hud { position: fixed; right: 14px; bottom: 10px; font: 13px var(--mono); color: var(--hudc); z-index: 5; }
 
 .narrow {
   display: none; position: fixed; left: 0; right: 0; top: 0; z-index: 6; padding: 12px 16px;
@@ -157,14 +159,64 @@ body.all .hud, body.all .narrow { display: none; }
   .slide, body.all .slide { display: block; position: relative; left: 0; top: 0; margin: 0; transform: none; zoom: 1; break-after: page; page-break-after: always; }
   .hud, .narrow { display: none; }
 }
+
+/* Light theme: the site's choice (its stored theme), else the system's. The diagrams keep their
+   dark-theme colours in their attributes; these rules map each one to its light counterpart. */
+:root[data-theme="light"] {
+  --bg: #fbfaf6;
+  --panel: #ffffff;
+  --panel2: #f1efe8;
+  --line: #d6d3c9;
+  --fg: #1b2430;
+  --mut: #4b5563;
+  --dim: #6b7280;
+  --m0: #0f766e;
+  --m1: #3256c9;
+  --hum: #a85b00;
+  --bad: #b42318;
+  --page: #f4f2eb;
+  --hudc: #4b5563;
+  color-scheme: light;
+}
+:root[data-theme="light"] .k { color: #3256c9; }
+:root[data-theme="light"] .t { color: #0f766e; }
+:root[data-theme="light"] .n { color: #a85b00; }
+:root[data-theme="light"] .f { color: #1b2430; }
+:root[data-theme="light"] .c { color: #6b7280; }
+:root[data-theme="light"] .d { color: #7c3aed; }
+:root[data-theme="light"] .humbox { background: rgba(168,91,0,.06); }
+:root[data-theme="light"] [fill="#e6e8eb"] { fill: #1b2430; }
+:root[data-theme="light"] [fill="#9aa4ae"] { fill: #4b5563; }
+:root[data-theme="light"] [fill="#6b7581"] { fill: #6b7280; }
+:root[data-theme="light"] [fill="#161b22"] { fill: #ffffff; }
+:root[data-theme="light"] [fill="#58c4b4"] { fill: #0f766e; }
+:root[data-theme="light"] [fill="#f2b45c"] { fill: #a85b00; }
+:root[data-theme="light"] [fill="#0e1116"] { fill: #ffffff; }
+:root[data-theme="light"] [stroke="#9aa4ae"] { stroke: #4b5563; }
+:root[data-theme="light"] [stroke="#58c4b4"] { stroke: #0f766e; }
+:root[data-theme="light"] [stroke="#7aa2f7"] { stroke: #3256c9; }
+:root[data-theme="light"] [stroke="#f2b45c"] { stroke: #a85b00; }
+:root[data-theme="light"] [stroke="#2d353f"] { stroke: #d6d3c9; }
+:root[data-theme="light"] [style*="color:#e6e8eb"] { color: #1b2430 !important; }
+:root[data-theme="light"] [style*="color:#9aa4ae"] { color: #4b5563 !important; }
 </style>
+<script>
+(function () {
+  var theme = null;
+  try { theme = localStorage.getItem('theme'); } catch (e) {}
+  if (theme !== 'light' && theme !== 'dark') {
+    theme = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+  }
+  document.documentElement.setAttribute('data-theme', theme);
+})();
+</script>
 </head>
 <body>
 
 <!-- 1 -->
 <section class="slide" data-n="1">
   <div class="title-wrap">
-    <div class="kicker">Vision · 2026-10-25 · release 0.10.0</div>
+    <div class="kicker">Vision · 2026-10-25 · release 0.12.0</div>
     <h1>ModelSpec</h1>
     <p class="promise">Specify <b>what</b> the model computes.<br>The compiler decides <b>how</b> it runs.</p>
     <p class="sub">A declarative language and a Rust compiler for differentiable tensor programs. One <code>.mspec</code> file is the whole training step.</p>
@@ -175,7 +227,7 @@ body.all .hud, body.all .narrow { display: none; }
       <span class="chip">no Python · PyTorch · CUDA</span>
     </div>
   </div>
-  <aside class="notes">Vision objective; DESIGN.md header principle and section 0. Date and version: the 0.10.0 release, 2026-10-25 (CHANGELOG.md:12).</aside>
+  <aside class="notes">Vision objective; DESIGN.md header principle and section 0. Date and version: the 0.12.0 release, 2026-10-25 (CHANGELOG.md § 0.12.0).</aside>
 </section>
 
 <!-- 2 -->
@@ -297,7 +349,7 @@ body.all .hud, body.all .narrow { display: none; }
       <text x="354" y="554">M1 · native Vulkan execution · training since 0.4.0</text>
     </g>
   </svg>
-  <aside class="notes">DESIGN.md section 3 and 3.1. Parse and name resolution happen before the checked HIR. The driver translates SPIR-V into native GPU code; ModelSpec does not emit SASS (section 0, 5.1). Legend: M0 released as 0.1.0 (CHANGELOG.md:131-135); train --backend vulkan first released in 0.4.0 (CHANGELOG.md:70, :81).</aside>
+  <aside class="notes">DESIGN.md section 3 and 3.1. Parse and name resolution happen before the checked HIR. The driver translates SPIR-V into native GPU code; ModelSpec does not emit SASS (section 0, 5.1). Legend: M0 released as 0.1.0 (CHANGELOG.md § 0.1.0); train --backend vulkan first released in 0.4.0 (CHANGELOG.md § 0.4.0).</aside>
 </section>
 
 <!-- 5 -->
@@ -485,41 +537,41 @@ body.all .hud, body.all .narrow { display: none; }
       <ul><li>Liveness, buffer reuse</li><li>Fusion</li><li>Tiled matmul</li><li>Profiling</li></ul>
       <div class="st" style="color:var(--mut)">fusion, tiled matmul, profiling done early, in M1</div></div>
     <div class="ms"><div class="id">M3</div><div class="nm">Network essentials</div>
-      <ul><li>f16, AdamW</li><li>Softmax, layer norm</li><li>Attention</li><li>Small GPT-like training</li></ul>
-      <div class="st" style="color:var(--mut)">not built · 17 BERT stories drafted</div></div>
+      <ul><li>Embedding, layer norm, softmax</li><li>Attention, GELU, dropout</li><li>f16, AdamW</li><li>Small BERT and GPT-like training</li></ul>
+      <div class="st" style="color:var(--m0)">in progress · BERT operators on the CPU since 0.10.0</div></div>
     <div class="ms"><div class="id">M4</div><div class="nm">Device specialization</div>
       <ul><li>Cooperative-matrix Tensor Core path</li><li>Mixed precision</li><li>Autotuning</li></ul>
       <div class="st" style="color:var(--mut)">not built</div></div>
   </div>
   <p class="mut" style="font-size:26px;margin-top:34px">End-to-end f32 training on the RTX 3090 shipped in 0.4.0. M1 stays open: its epic is a draft and the 9 acceptance boxes in DESIGN.md § 9 are not ticked.</p>
-  <aside class="notes">README milestones; DESIGN.md section 1. M0: CHANGELOG.md:131-135. M1: train --backend vulkan in CHANGELOG.md:81 under [0.4.0]; website/docs/status.mdx milestone table "in progress"; epic:m1-vulkan-execution status draft (aep plan artifact list); DESIGN.md:551-559 nine unticked boxes. M2 items done in M1: elementwise fusion CHANGELOG.md:87 [0.4.0], tiled matmul CHANGELOG.md:66 [0.5.0] and DESIGN.md:273 ("The M2 tiling below, done in M1"), --profile CHANGELOG.md:82 [0.4.0]. M3: 17 story:bert-* artifacts, all draft, under epic:bert-from-scratch (aep plan artifact list --kind story); DESIGN.md revision 0.7 adds the BERT-like proof model to M3. M4: no stories in the store. 2026-10-23.</aside>
+  <aside class="notes">README milestones; DESIGN.md section 1. M0: CHANGELOG.md § 0.1.0. M1: train --backend vulkan in CHANGELOG.md § 0.4.0; the milestone table of website/docs/status.mdx says "in progress"; DESIGN.md:551-559 nine unticked boxes. M2 items done in M1: elementwise fusion and --profile in CHANGELOG.md § 0.4.0, the tiled matmul in CHANGELOG.md § 0.5.0 and DESIGN.md:273 ("The M2 tiling below, done in M1"). M3: embedding, add_rows, gelu, layer_norm, softmax and attention in CHANGELOG.md § 0.10.0, cross_entropy and dropout in CHANGELOG.md § 0.11.0; their Vulkan kernels are planned rows of website/data/status.json; DESIGN.md revision 0.7 adds the BERT-like proof model to M3. M4: designed in DESIGN.md section 1, not built (website/docs/status.mdx). 2026-10-25.</aside>
 </section>
 
 <!-- 13 -->
 <section class="slide" data-n="13">
-  <div class="kicker">Status · 2026-10-23</div>
-  <h2>0.7.1 trains on the RTX 3090 through Vulkan</h2>
+  <div class="kicker">Status · 2026-10-25</div>
+  <h2>0.12.0 trains on the RTX 3090 through Vulkan</h2>
   <div class="stats">
-    <div class="stat"><div class="v">0.10.0</div><div class="l">latest of 12 releases, 2026-10-25, with a Linux x86_64 binary</div></div>
-    <div class="stat"><div class="v">22</div><div class="l">capabilities shipped, each held by a named test or task</div></div>
-    <div class="stat"><div class="v">59</div><div class="l">stories implemented, 1 in progress</div></div>
-    <div class="stat"><div class="v">2279</div><div class="l">tests passed in <code>task ci</code>, 0 failed, 229 ignored</div></div>
+    <div class="stat"><div class="v">0.12.0</div><div class="l">latest of 14 releases, 2026-10-25, with a Linux x86_64 binary</div></div>
+    <div class="stat"><div class="v">52</div><div class="l">capabilities shipped, each held by a named test or task</div></div>
+    <div class="stat"><div class="v">67</div><div class="l">stories implemented</div></div>
+    <div class="stat"><div class="v">2550</div><div class="l">tests passed in <code>task ci</code>, 0 failed, 235 ignored</div></div>
   </div>
   <div class="grid3" style="gap:24px">
     <div class="card" style="padding:22px 26px">
-      <h3 style="font-size:26px">Released, 0.2.0 to 0.6.0</h3>
-      <p style="font-size:21px"><code>train --backend vulkan</code> with one host wait · checkpoints, resume and <code>infer</code> on CPU and Vulkan · <code>compile</code> to a sealed artifact · <code>train --serve</code>, <code>--record</code> and <code>observe</code> · <code>inspect-device</code> · <code>--profile</code> · tiled GPU matmul</p>
+      <h3 style="font-size:26px">Released, 0.2.0 to 0.7.1</h3>
+      <p style="font-size:21px"><code>train --backend vulkan</code> with one host wait · checkpoints, resume and <code>infer</code> on CPU and Vulkan · <code>compile</code> to a sealed artifact · <code>--serve</code>, <code>--record</code>, <code>observe</code> and the observatory UI · <code>--profile</code> · tiled GPU matmul</p>
     </div>
     <div class="card" style="padding:22px 26px">
-      <h3 style="font-size:26px">Released in 0.7.0</h3>
-      <p style="font-size:21px">The observatory UI in Vue: live loss and metric charts (<code>--ui</code>) · parameter and gradient norms and histograms (<code style="white-space:nowrap">--statistics-every</code>) · <code style="white-space:nowrap">E-TRAIN-001</code> on Vulkan · a bounded plan verifier</p>
+      <h3 style="font-size:26px">Released, 0.8.0 to 0.12.0</h3>
+      <p style="font-size:21px">Register-blocked matmul · elementwise chain fusion · deterministic fused multiply-adds · <code>--fast-math</code> · <code>embedding</code>, <code>layer_norm</code>, <code>softmax</code>, <code>attention</code>, <code>cross_entropy</code>, <code>dropout</code> on the CPU · <code>data prepare</code>, <code>tokenizer</code>, <code>pack</code> · <code>train --data</code> with <code>--eval-every</code> · <code>adamw</code> with a warm-up schedule</p>
     </div>
     <div class="card" style="padding:22px 26px">
       <h3 style="font-size:26px">Not built</h3>
-      <p style="font-size:21px">Architecture graph and saliency in the UI · M3: f16, AdamW, attention · M4: the Tensor Core path</p>
+      <p style="font-size:21px">Vulkan kernels for the BERT operators and AdamW · M4: the Tensor Core path</p>
     </div>
   </div>
-  <aside class="notes">Releases: git tag lists 0.1.0, 0.1.1, 0.2.0, 0.3.0, 0.4.0, 0.5.0, 0.6.0, 0.7.0, and 0.7.1 is this release; 0.7.1 dated 2026-10-23 (CHANGELOG.md:12); binary per CHANGELOG.md:5-6. 22 shipped, 0 planned: website/data/status.json (asOf 2026-10-23, 22 items with "status": "shipped"). 37 implemented, 1 active story: aep plan artifact list --kind story. 1494 / 0 / 131: the sum of the 173 cargo "test result" lines of task ci on wave/benchmark at 352cc0e with this change, 2026-10-23, CHROME set to a local Chromium; the ignored tests include the device tests and the browser tests that task ui-browser then runs (AGENTS.md "Commands"); the 27 node --test cases of pnpm test are not counted. Released column: CHANGELOG.md:68-87 [0.4.0], :66 [0.5.0], :41-58 [0.6.0], :103 [0.2.0]. Released in 0.7.0: CHANGELOG.md:25-39 [0.7.0]. Not built: story:observatory-architecture-graph and story:observatory-saliency-gradient-x-input are draft; DESIGN.md section 1 M3 and M4 rows; no M3 or M4 story implemented. Left out: the M0 loss figure 9.69 to 5.6e-11 (still true per website/docs/getting-started.md:48-51, moved off to make room).</aside>
+  <aside class="notes">Releases: 14 tags, 0.1.0 to 0.12.0; 0.12.0 dated 2026-10-25 (CHANGELOG.md § 0.12.0); the Linux x86_64 binary: the opening paragraph of CHANGELOG.md and .github/workflows/release.yml. 52 shipped, 3 planned: website/data/status.json (asOf 2026-10-25). 67 implemented, none in progress: the stories of the repository's planning store, 2026-10-25. 2550 / 0 / 235: the sum of the cargo "test result" lines of the 366 suites of task ci on 8630f16, 2026-10-25, with a local Chromium as CHROME; the ignored tests include the device tests and the browser tests that task ui-browser then runs (AGENTS.md "Commands"); the node --test cases of pnpm test are not counted. Released, 0.2.0 to 0.7.1: --serve in CHANGELOG.md § 0.2.0; train --backend vulkan with one host wait and --profile in CHANGELOG.md § 0.4.0; the tiled GPU matmul in CHANGELOG.md § 0.5.0; checkpoints, resume, infer, compile, --record and observe in CHANGELOG.md § 0.6.0; the observatory UI in CHANGELOG.md § 0.7.0. Released, 0.8.0 to 0.12.0: CHANGELOG.md § 0.9.0, § 0.10.0, § 0.11.0 and § 0.12.0; data prepare, tokenizer and pack are in the 0.10.0 tag without a CHANGELOG.md entry (website/docs/guides/prepare-training-data.md). Not built: the planned rows of website/data/status.json; DESIGN.md section 1 M3 and M4 rows.</aside>
 </section>
 
 <!-- 14 -->
@@ -559,10 +611,10 @@ body.all .hud, body.all .narrow { display: none; }
       <p style="font-size:22px"><b style="color:#e6e8eb">ADR-007 (proposed):</b> gate 51.9 µs per step, 10× the PyTorch eager CUDA baseline; working target 31.4 µs, 10× the CPU figure.</p>
     </div>
     <div class="card" style="padding:20px 26px">
-      <p style="font-size:22px">0.6.0 is under both times; no new timed MNIST step time was measured for 0.7.0 or 0.7.1. The gate's accuracy and final-weight conditions were not measured.</p>
+      <p style="font-size:22px">0.6.0 is under both times; the sweep harness timed the same shapes at 33.044 µs in 0.9.0 and 30.726 µs in 0.10.0 (not MNIST <code>train</code> runs). The gate's accuracy and final-weight conditions were not measured.</p>
     </div>
   </div>
-  <aside class="notes">Workload: CHANGELOG.md:74 and DESIGN.md:612. PyTorch eager CUDA 519 µs and torch.compile 933 µs: DESIGN.md:613 (PyTorch 2.14.1+cu130, measured 2026-10-21, verification-report:mnist-benchmark-cuda-baseline); torch.compile is reported there, not gated. PyTorch eager CPU 8 threads 314 µs: DESIGN.md:615, measured under load, an upper bound. Gate 51.9 µs and ADR-007 status proposed: DESIGN.md:612-613. Working target 31.4 µs: DESIGN.md:615. ModelSpec 0.4.0 40.225 µs: CHANGELOG.md:70; 0.6.0 27.14 µs: CHANGELOG.md:43 (median of 5 timed runs of 144,000 steps, down from 27.282 µs in 0.5.0, CHANGELOG.md:62); "accuracy and final-weight conditions were not measured": CHANGELOG.md:43. The 0.5.0 bar was replaced by 0.6.0; both are about 25 px long. The per-kernel times in DESIGN.md:273 are left out: kernel timings differ between CHANGELOG.md and DESIGN.md. CHANGELOG.md [0.7.0] (lines 25-39) has no new MNIST step time: "No new device benchmark was measured for this release" (CHANGELOG.md:27); nor has [0.7.1] (lines 12-23): "No new timed MNIST step time was measured for this release" (CHANGELOG.md:14). Bar lengths are proportional to the values (860 px for 933 µs). No ModelSpec images/s figure is in the repository, so none is shown.</aside>
+  <aside class="notes">Workload: CHANGELOG.md § 0.4.0 and DESIGN.md:612. PyTorch eager CUDA 519 µs and torch.compile 933 µs: DESIGN.md:613 (PyTorch 2.14.1+cu130, measured 2026-10-21; the runs mnist-2026-10-21-pytorch-cuda-eager and mnist-2026-10-21-pytorch-cuda-compile of benchmarks/runs.yaml); torch.compile is reported there, not gated. PyTorch eager CPU 8 threads 314 µs: DESIGN.md:615, measured under load, an upper bound. Gate 51.9 µs and ADR-007 status proposed: DESIGN.md:612-613. Working target 31.4 µs: DESIGN.md:615. ModelSpec 0.4.0 40.225 µs: CHANGELOG.md § 0.4.0; 0.6.0 27.14 µs: CHANGELOG.md § 0.6.0 (median of 5 timed runs of 144,000 steps, down from 27.282 µs in 0.5.0, CHANGELOG.md § 0.5.0); "accuracy and final-weight conditions were not measured": CHANGELOG.md § 0.6.0. The per-kernel times in DESIGN.md:273 are not shown: kernel timings differ between CHANGELOG.md and DESIGN.md. CHANGELOG.md § 0.7.0 has no new MNIST step time: "No new device benchmark was measured for this release"; nor has CHANGELOG.md § 0.7.1: "No new timed MNIST step time was measured for this release". The sweep harness mlp_sweep timed the same shapes on synthetic data at 33.044 µs per step in 0.9.0 and 30.726 µs in 0.10.0 (benchmarks/runs.yaml); those are not MNIST runs through train, so they are not bars here. Bar lengths are proportional to the values (860 px for 933 µs). No ModelSpec images/s figure is in the repository, so none is shown.</aside>
 </section>
 
 <!-- 15 -->
@@ -590,7 +642,7 @@ body.all .hud, body.all .narrow { display: none; }
       <p style="font-size:22px">Architecture graph from the IR · activation statistics · gradient × input saliency</p>
     </div>
   </div>
-  <aside class="notes">--serve: CHANGELOG.md:103 [0.2.0] and website/docs/reference/cli.md (train --serve, loopback address). Input adjoint: CHANGELOG.md:104 [0.2.0]. --record and observe: CHANGELOG.md:49 [0.6.0] and website/docs/reference/cli.md. --ui: CHANGELOG.md:31 [0.7.0] and website/docs/reference/cli.md:121, :137. Schema: AGENTS.md "State" (modelspec-observatory's JSON Schema under schema/ is ess generate output). Released in 0.7.0: story:observatory-ui-live-loss-chart (merge c7daf8b) and story:observatory-parameter-statistics (merge 06dacc6, CHANGELOG.md:32: L2 norm and a 32-bin histogram per parameter, every --statistics-every N steps, default 100), both implemented in wave m1-h (.engineering/waves/m1-h.md). Drafted: story:observatory-architecture-graph, story:observatory-activation-statistics, story:observatory-saliency-gradient-x-input, status draft (aep plan artifact list). Epic intent: epic:training-observatory (draft).</aside>
+  <aside class="notes">--serve: CHANGELOG.md § 0.2.0 and website/docs/reference/cli.md (train --serve, loopback address). Input adjoint: CHANGELOG.md § 0.2.0. --record and observe: CHANGELOG.md § 0.6.0 and website/docs/reference/cli.md. --ui: CHANGELOG.md § 0.7.0 and the train and observe sections of website/docs/reference/cli.md. Schema: AGENTS.md "State" (modelspec-observatory's JSON Schema under schema/ is ess generate output). Released in 0.7.0: the observatory UI and per-parameter statistics, an L2 norm and a 32-bin histogram per parameter every --statistics-every N steps, default 100 (CHANGELOG.md § 0.7.0). Drafted: the architecture graph, activation statistics and gradient-times-input saliency are draft work in the repository's planning store, not built.</aside>
 </section>
 
 <!-- 16 -->
@@ -614,12 +666,12 @@ body.all .hud, body.all .narrow { display: none; }
     <div class="step"><b>Commit</b><span>through a bot identity</span></div>
   </div>
   <p style="font-size:26px;margin-top:34px">The same process is what would govern the self-improvement loop.</p>
-  <aside class="notes">AGENTS.md "Planning and specification"; spec/domains/ holds artifact, checkpoint, data, device, observatory and training .yaml; vision direction item 5. Waves: .engineering/waves/ pages and the merge commits in git log. Delivered: m0 (8 stories, commit 7877c6c), observatory-1 (2: observatory-input-adjoint, observatory-live-event-stream), cpu-perf-1 (1), cpu-perf-2 (1), m1-a (4), m1-b (1), m1-c (2), m1-d (1), m1-e (3), m1-f (1), m1-g (5, units 1 to 5 merged, last at 03e46dc), m1-h (5, units 1 to 5 merged, last at 06dacc6; unit 3 re-scoped from story:m1-f-weight-grad-matmul-columns, now archived, to story:kernel-signature-covers-matmul-tile); 34 in total, equal to the implemented stories in aep plan artifact list --kind story, 2026-10-23.</aside>
+  <aside class="notes">AGENTS.md "Planning and specification"; spec/domains/ holds artifact, checkpoint, data, device, observatory and training .yaml; vision direction item 5. Waves and stories: the closed wave records of the repository's planning store and their merge commits in git log, 2026-10-25.</aside>
 </section>
 
 <!-- 17 -->
 <section class="slide" data-n="17">
-  <div class="kicker">2026-10-23</div>
+  <div class="kicker">2026-10-25</div>
   <h2>Next steps</h2>
   <div style="display:grid;grid-template-columns:1fr 1.25fr 1fr;gap:40px;align-items:start">
     <div>
@@ -632,13 +684,14 @@ body.all .hud, body.all .narrow { display: none; }
       </ul>
     </div>
     <div>
-      <div class="kicker" style="color:var(--m1)">2 · Released in 0.7.0 · wave m1-h</div>
+      <div class="kicker" style="color:var(--m1)">2 · Released, 0.7.0 to 0.12.0</div>
       <ul class="bul" style="font-size:0">
-        <li style="font-size:24px;margin-bottom:12px"><code>train --backend vulkan</code> refuses a NaN or ±inf loss or parameter</li>
-        <li style="font-size:24px;margin-bottom:12px">The plan verifier stays bounded on an untrusted artifact</li>
-        <li style="font-size:24px;margin-bottom:12px">A matmul kernel's module id covers its tile</li>
-        <li style="font-size:24px;margin-bottom:12px">Observatory UI: live loss and metric charts in Vue</li>
-        <li style="font-size:24px;margin-bottom:12px">Parameter and gradient statistics on sampled steps</li>
+        <li style="font-size:24px;margin-bottom:12px">0.7.0: the observatory UI; Vulkan refuses a NaN or ±inf run</li>
+        <li style="font-size:24px;margin-bottom:12px">0.8.0: a CPU run prepares its step once; per-step device counters</li>
+        <li style="font-size:24px;margin-bottom:12px">0.9.0: register-blocked matmul and <code>--fast-math</code></li>
+        <li style="font-size:24px;margin-bottom:12px">0.10.0: the BERT operators on the CPU; deterministic fused multiply-adds</li>
+        <li style="font-size:24px;margin-bottom:12px">0.11.0: masked-language-model training on the CPU with held-out evaluation</li>
+        <li style="font-size:24px;margin-bottom:12px">0.12.0: AdamW with decoupled weight decay and a linear warm-up schedule</li>
       </ul>
     </div>
     <div>
@@ -646,10 +699,11 @@ body.all .hud, body.all .narrow { display: none; }
       <ul class="bul" style="font-size:0">
         <li style="font-size:24px;margin-bottom:16px">M1 acceptance: the 9 boxes of DESIGN.md § 9 are not ticked</li>
         <li style="font-size:24px;margin-bottom:16px">ADR-007: accuracy and final weights not measured</li>
+        <li style="font-size:24px;margin-bottom:16px">BERT: the Vulkan kernels are planned</li>
       </ul>
     </div>
   </div>
-  <aside class="notes">Done: CHANGELOG.md:131 (0.1.0, 2026-10-21), :68-70 and :81 (0.4.0, 2026-10-22, train --backend vulkan), :60-62 (0.5.0, 2026-10-23, 27.282 µs from 40.225 µs), :41-48 (0.6.0, 2026-10-23, Vulkan checkpoints, infer --backend vulkan, compile). Released in 0.7.0 (CHANGELOG.md:25-39): the five stories of wave m1-h, all implemented and merged (aep plan artifact list; .engineering/waves/m1-h.md; git log --merges bd1c0fd..HEAD): story:train-vulkan-refuses-non-finite-loss, story:plan-verifier-bounded-on-untrusted-artifact, story:kernel-signature-covers-matmul-tile (re-scoped from story:m1-f-weight-grad-matmul-columns, archived), story:observatory-ui-live-loss-chart, story:observatory-parameter-statistics. Open: CHANGELOG.md:10 [Unreleased] is empty; DESIGN.md:551-559 nine unticked boxes and epic:m1-vulkan-execution in draft; CHANGELOG.md:43 "ADR-007's accuracy and final-weight conditions were not measured for this release". The weight-gradient µs threshold now sits in story:weight-grad-matmul-structural (draft) and is left out. The M0 first-run loss (website/docs/getting-started.md:48-51) moved off this slide.</aside>
+  <aside class="notes">Done: CHANGELOG.md § 0.1.0 (2026-10-21), CHANGELOG.md § 0.4.0 (2026-10-22, train --backend vulkan), CHANGELOG.md § 0.5.0 (2026-10-23, 27.282 µs from 40.225 µs), CHANGELOG.md § 0.6.0 (2026-10-23, Vulkan checkpoints, infer --backend vulkan, compile). Released: CHANGELOG.md § 0.7.0, § 0.8.0, § 0.9.0, § 0.10.0, § 0.11.0 and § 0.12.0. Open: DESIGN.md:551-559 nine unticked boxes; CHANGELOG.md § 0.6.0 "ADR-007's accuracy and final-weight conditions were not measured for this release". BERT: website/data/status.json planned rows, asOf 2026-10-25.</aside>
 </section>
 
 <div class="narrow">The slides are 16:9: turn the device sideways to read them. Tap the right or left half, or swipe, to change slides.</div>

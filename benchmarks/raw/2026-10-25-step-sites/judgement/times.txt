@@ -1,0 +1,12 @@
+# r1 modelspec start 2026-10-25T10:29:10.522Z
+# r1 modelspec exit 0 end 2026-10-25T10:30:03.210Z
+# r1 pytorch-eager start 2026-10-25T10:30:03.299Z
+# r1 pytorch-eager exit 0 end 2026-10-25T10:31:59.810Z
+# r2 modelspec start 2026-10-25T10:31:59.868Z
+# r2 modelspec exit 0 end 2026-10-25T10:32:38.884Z
+# r2 pytorch-eager start 2026-10-25T10:32:38.904Z
+# r2 pytorch-eager exit 0 end 2026-10-25T10:33:12.011Z
+# r3 modelspec start 2026-10-25T10:33:12.046Z
+# r3 modelspec exit 0 end 2026-10-25T10:33:43.350Z
+# r3 pytorch-eager start 2026-10-25T10:33:43.374Z
+# r3 pytorch-eager exit 0 end 2026-10-25T10:34:20.922Z

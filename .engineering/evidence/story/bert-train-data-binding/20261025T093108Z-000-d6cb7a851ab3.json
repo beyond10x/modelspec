@@ -1,0 +1,13 @@
+{
+  "at": "2026-10-25T09:31:08Z",
+  "actor": "human:timo",
+  "artifact": "story:bert-train-data-binding",
+  "kind": "story",
+  "revision": 6,
+  "change": {
+    "change": "evidence",
+    "kind": "test_result",
+    "source": "task ci",
+    "reference": "e7e918ca0cc9761239e47a5bd2047136aa60d268"
+  }
+}
