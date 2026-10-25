@@ -96,12 +96,22 @@ it. The final loss line, `--eval` and `modelspec infer` run the forward program 
 
 ## Optimizer
 
-There is one optimizer, `sgd(lr = <float>)`, with a positive learning rate that fits `f32`. The
-update `w - lr * dL/dw` is part of the Training IR, not a step the runtime adds around it.
+There are two optimizers, and each update is part of the Training IR, not a step the runtime adds
+around it.
+
+- `sgd(lr = <float>)`, with a positive learning rate that fits `f32`, updates `w - lr * dL/dw`
+  at a constant rate.
+- Since 0.12.0, `adamw(lr = F, weight_decay = F, beta1 = F, beta2 = F, eps = F, warmup_steps = N)`
+  trains with AdamW and decoupled weight decay on the CPU reference, compiled into the training
+  step's `Optimizer` subgraph. Each parameter's first and second moments start at 0 and are
+  versioned with it, and the learning rate rises linearly from 0 over `warmup_steps` and falls
+  linearly to 0 at the run's last step. `E-TYPE-023` and `E-TYPE-024` refuse out-of-range
+  arguments, `E-TRAIN-001` also stops the run when a moment is not finite, and `train
+  --checkpoint` and `--resume` refuse an AdamW run because a checkpoint does not carry the moments
+  yet.
 
 :::caution[Planned]
 
-AdamW with decoupled weight decay and a learning-rate warm-up is planned, compiled into the
-training step like SGD. It is not built.
+AdamW on a Vulkan device is planned; `--backend vulkan` answers `E-TARGET-011` for it.
 
 :::

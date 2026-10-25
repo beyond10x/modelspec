@@ -42,17 +42,18 @@ train Fit {
 ## What works today
 
 ModelSpec is in milestone M1 (GPU execution), and its current goal is a small BERT pre-trained
-from scratch; the latest release is [0.11.0](https://github.com/beyond10x/modelspec/releases/tag/0.11.0).
+from scratch; the latest release is [0.12.0](https://github.com/beyond10x/modelspec/releases/tag/0.12.0).
 
-| Works in 0.11.0 | Not built yet |
+| Works in 0.12.0 | Not built yet |
 |---|---|
 | `modelspec check`: parse and check names, types and shapes | `bench` |
 | `modelspec ir --stage tensor`, `--stage training` and `--stage kernel`: print the verified IR and the kernel plan | more than one device |
 | `modelspec train --backend cpu`: train on the CPU reference with seeded synthetic data or dense `f32` tensor files (`--data`) | Vulkan kernels for the BERT operators |
-| `modelspec train --backend vulkan [--stats] [--profile]`: train on one Vulkan device with one host wait per run | modules, layers, generics, `f16` and optimizers other than SGD |
+| `modelspec train --backend vulkan [--stats] [--profile]`: train on one Vulkan device with one host wait per run | modules, layers, generics and `f16` |
 | `embedding`, `add_rows`, `gelu`, `layer_norm`, `softmax`, `attention`, `cross_entropy` and `dropout`, with `i32` row ids, on the CPU reference | |
 | `modelspec data prepare`, `data tokenizer` and `data pack`: split a corpus, train a WordPiece tokenizer and pack token sequences | |
 | `modelspec train --backend cpu --data <packed-dir> [--eval-every <n>]`: train a masked-language model on packed sequences and evaluate the held-out split during the run | |
+| `optimizer = adamw(...)`: AdamW with decoupled weight decay and a linear warm-up and decay of the learning rate, on the CPU reference | AdamW on a Vulkan device, and checkpoints of an AdamW run |
 | `modelspec train --checkpoint`, `--resume` and `modelspec infer --backend cpu\|vulkan`: checkpoints and inference on the CPU or one Vulkan device | |
 | `modelspec compile --backend cpu\|vulkan --output <dir>`: a sealed artifact directory | |
 | `modelspec inspect-device --backend vulkan`: each device's profile and negotiation verdict | |
@@ -93,7 +94,7 @@ capability with the test that holds it, and [Roadmap](./roadmap.md) says what M1
 
 ## Where to go next
 
-- [Getting started](./getting-started.md): download the 0.11.0 binary and train the examples on the CPU or a GPU.
+- [Getting started](./getting-started.md): download the 0.12.0 binary and train the examples on the CPU or a GPU.
 - [The language](./concepts/language.md): what a file may contain.
 - [Write a model](./guides/write-a-model.md): build a two-layer model step by step.
 - [Pitch deck](pathname:///modelspec/pitch/): the case for ModelSpec in slides.

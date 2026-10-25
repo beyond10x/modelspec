@@ -6,7 +6,7 @@ description: Milestones M0 to M4 from DESIGN.md § 1. M0 is built; M1, GPU execu
 # Roadmap
 
 The milestones are those of [DESIGN.md § 1](https://github.com/beyond10x/modelspec/blob/main/DESIGN.md#1-scope-and-milestones).
-M0 is built and released as 0.1.0. M1 is in progress; the latest release is 0.11.0. Some M2 items
+M0 is built and released as 0.1.0. M1 is in progress; the latest release is 0.12.0. Some M2 items
 were done early, in M1. The current milestone is a small BERT, pre-trained from scratch, which is
 one of the two proof models of M3: its operators run on the CPU reference interpreter, and their
 Vulkan kernels are planned. M4 is design.
@@ -36,6 +36,7 @@ reference interpreter, and `modelspec check`, `ir` and `train --backend cpu`.
 | 0.9.0 | a register-blocked matmul tile for large outputs; a matmul reads a transposed operand in place; the opt-in `--fast-math` |
 | 0.10.0 | deterministic fused multiply-adds in every reduction, on the CPU and the GPU; scheduling for a device profile; elementwise chains as one dispatch; the driver's pipeline statistics under `--profile` |
 | 0.11.0 | no change to the Vulkan backend; the observatory UI's layout, accessibility and screen-reading gates with a ratchet, in `task ui-ux` on every merge |
+| 0.12.0 | no change to the Vulkan backend; AdamW trains on the CPU reference only |
 
 The 9 acceptance boxes of DESIGN.md § 9 are not ticked.
 
@@ -78,12 +79,14 @@ three commands that prepare a corpus, `modelspec data prepare`, `data tokenizer`
 Released in 0.11.0: `cross_entropy`, `dropout`, `train --data` on a packed directory, and
 held-out evaluation during training with `--eval-every`. Each operator's gradient is checked
 against central finite differences ([BERT operators](./concepts/bert-operators.md)).
+Released in 0.12.0: `optimizer = adamw(...)`, AdamW with decoupled weight decay and a learning
+rate that warms up linearly from 0 and decays linearly to 0 at the last step.
 
 :::
 
 :::caution[Planned]
 
-AdamW with a warm-up schedule, Vulkan kernels for the row-wise BERT operators and then for
+Vulkan kernels for the row-wise BERT operators and then for
 `attention`, `cross_entropy` and AdamW, and BERT-tiny pre-trained on the GPU until its held-out
 loss is below the unigram baseline. `f16`, causal masks
 and the GPT-like model are design.

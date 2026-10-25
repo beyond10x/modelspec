@@ -524,12 +524,12 @@ pub const CAPABILITIES: &[Capability] = &[
         ),
         "/docs/reference/cli",
     ),
-    planned(
+    shipped(
         "Training",
         "AdamW with a warm-up schedule",
-        "AdamW with decoupled weight decay and a learning-rate warm-up, compiled into the training step.",
-        "story:bert-adamw-warmup",
-        "/docs/roadmap",
+        "Since 0.12.0: `optimizer = adamw(...)` trains on the CPU with decoupled weight decay and a learning rate that warms up linearly from 0 and decays linearly to 0 at the last step, compiled into the training step; its first three steps match an `f32` reference bit for bit.",
+        Evidence::Test("crates/modelspec-runtime/tests/adamw.rs::one_step"),
+        "/docs/concepts/language",
     ),
     planned(
         "GPU",

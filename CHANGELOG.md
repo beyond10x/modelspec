@@ -9,6 +9,10 @@ history.
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-10-25
+
+AdamW on the CPU interpreter: `optimizer = adamw(...)` trains with decoupled weight decay, per-parameter moments versioned with the parameters, and a learning rate that warms up linearly from 0 and decays linearly to 0 at the run's last step. E-TYPE-023 and E-TYPE-024 refuse out-of-range arguments, E-TRAIN-001 also stops the run on a non-finite moment, a resumed AdamW run is refused while the moments are not checkpointed, and `sgd(lr = F)` keeps its constant rate.
+
 ### Added
 
 - `optimizer = adamw(lr = F, weight_decay = F, beta1 = F, beta2 = F, eps = F, warmup_steps = N)` trains with AdamW and decoupled weight decay on the CPU, compiled into the training step's `Optimizer` subgraph with the internal ops `Sqrt` and `Div`, per-parameter moments versioned with the parameters, and a learning rate warming up linearly from 0 and decaying linearly to 0 at the last step; E-TYPE-023 and E-TYPE-024 refuse out-of-range arguments, and `sgd(lr = F)` keeps a constant rate (story:bert-adamw-warmup); E-TRAIN-001 also stops the run when a moment is not finite, and a resumed AdamW run is refused because the moments are not checkpointed yet.
@@ -232,7 +236,8 @@ with `E-TARGET-001`.
 - `examples/linear_regression.mspec` checks and trains; `task check-examples` runs `modelspec check` on it
 - ESS contracts for the compiled artifact, checkpoint, device profile and training run in `spec/`
 
-[Unreleased]: https://github.com/beyond10x/modelspec/compare/0.11.0...HEAD
+[Unreleased]: https://github.com/beyond10x/modelspec/compare/0.12.0...HEAD
+[0.12.0]: https://github.com/beyond10x/modelspec/compare/0.11.0...0.12.0
 [0.11.0]: https://github.com/beyond10x/modelspec/compare/0.10.0...0.11.0
 [0.10.0]: https://github.com/beyond10x/modelspec/compare/0.9.0...0.10.0
 [0.9.0]: https://github.com/beyond10x/modelspec/compare/0.8.0...0.9.0
