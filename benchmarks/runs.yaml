@@ -1362,3 +1362,831 @@ runs:
     sm_clock: "SM MHz 780–1815 (median 1702, n=72) in the 3 timed spans"
     source: verification-report:mlp-size-sweep-2026-10-24, raw records benchmarks/raw/2026-10-24-sweep-0.9.0/modelspec.jsonl
     state: Recorded
+  - run_id: sweep-b100-h64-modelspec-vulkan-0.10.0
+    date: "2026-10-25"
+    workload: mlp-784-H-10
+    side: ModelSpecVulkan
+    modelspec_version: "0.10.0"
+    commit: 5b713ce1fc78a0ddae59f7f293244197886d6446
+    mode: Timed
+    batch: 100
+    hidden: 64
+    flop_per_step: 20454400
+    flop_rule: MatmulOnly
+    timed_steps: 152951
+    repeat_count: 3
+    repeats_us_per_step:
+      - 31.947471137815377
+      - 30.651212264058422
+      - 30.725802505377537
+    median_us_per_step: 30.725802505377537
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1290–1500 (median 1432, n=142) in the 3 timed spans"
+    source: verification-report:mlp-size-sweep-2026-10-25, raw records benchmarks/raw/2026-10-25-sweep-0.10.0/modelspec.jsonl
+    state: Recorded
+  - run_id: sweep-b100-h256-modelspec-vulkan-0.10.0
+    date: "2026-10-25"
+    workload: mlp-784-H-10
+    side: ModelSpecVulkan
+    modelspec_version: "0.10.0"
+    commit: 5b713ce1fc78a0ddae59f7f293244197886d6446
+    mode: Timed
+    batch: 100
+    hidden: 256
+    flop_per_step: 81817600
+    flop_rule: MatmulOnly
+    timed_steps: 143604
+    repeat_count: 3
+    repeats_us_per_step:
+      - 40.90137810924487
+      - 40.88729364084566
+      - 40.9054392287123
+    median_us_per_step: 40.90137810924487
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1815–1950 (median 1950, n=176) in the 3 timed spans"
+    source: verification-report:mlp-size-sweep-2026-10-25, raw records benchmarks/raw/2026-10-25-sweep-0.10.0/modelspec.jsonl
+    state: Recorded
+  - run_id: sweep-b100-h1024-modelspec-vulkan-0.10.0
+    date: "2026-10-25"
+    workload: mlp-784-H-10
+    side: ModelSpecVulkan
+    modelspec_version: "0.10.0"
+    commit: 5b713ce1fc78a0ddae59f7f293244197886d6446
+    mode: Timed
+    batch: 100
+    hidden: 1024
+    flop_per_step: 327270400
+    flop_rule: MatmulOnly
+    timed_steps: 71554
+    repeat_count: 3
+    repeats_us_per_step:
+      - 79.06897374011237
+      - 79.32162344523017
+      - 79.58517477709142
+    median_us_per_step: 79.32162344523017
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1755–1935 (median 1905, n=170) in the 3 timed spans"
+    source: verification-report:mlp-size-sweep-2026-10-25, raw records benchmarks/raw/2026-10-25-sweep-0.10.0/modelspec.jsonl
+    state: Recorded
+  - run_id: sweep-b100-h4096-modelspec-vulkan-0.10.0
+    date: "2026-10-25"
+    workload: mlp-784-H-10
+    side: ModelSpecVulkan
+    modelspec_version: "0.10.0"
+    commit: 5b713ce1fc78a0ddae59f7f293244197886d6446
+    mode: Timed
+    batch: 100
+    hidden: 4096
+    flop_per_step: 1309081600
+    flop_rule: MatmulOnly
+    timed_steps: 27025
+    repeat_count: 3
+    repeats_us_per_step:
+      - 213.73333831637373
+      - 214.81174716003702
+      - 214.43023929694724
+    median_us_per_step: 214.43023929694724
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1665–1890 (median 1875, n=174) in the 3 timed spans"
+    source: verification-report:mlp-size-sweep-2026-10-25, raw records benchmarks/raw/2026-10-25-sweep-0.10.0/modelspec.jsonl
+    state: Recorded
+  - run_id: sweep-b1000-h64-modelspec-vulkan-0.10.0
+    date: "2026-10-25"
+    workload: mlp-784-H-10
+    side: ModelSpecVulkan
+    modelspec_version: "0.10.0"
+    commit: 5b713ce1fc78a0ddae59f7f293244197886d6446
+    mode: Timed
+    batch: 1000
+    hidden: 64
+    flop_per_step: 204544000
+    flop_rule: MatmulOnly
+    timed_steps: 60864
+    repeat_count: 3
+    repeats_us_per_step:
+      - 95.25663459516299
+      - 95.25789831427446
+      - 95.28106389655626
+    median_us_per_step: 95.25789831427446
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1905–1920 (median 1920, n=174) in the 3 timed spans"
+    source: verification-report:mlp-size-sweep-2026-10-25, raw records benchmarks/raw/2026-10-25-sweep-0.10.0/modelspec.jsonl
+    state: Recorded
+  - run_id: sweep-b1000-h256-modelspec-vulkan-0.10.0
+    date: "2026-10-25"
+    workload: mlp-784-H-10
+    side: ModelSpecVulkan
+    modelspec_version: "0.10.0"
+    commit: 5b713ce1fc78a0ddae59f7f293244197886d6446
+    mode: Timed
+    batch: 1000
+    hidden: 256
+    flop_per_step: 818176000
+    flop_rule: MatmulOnly
+    timed_steps: 28227
+    repeat_count: 3
+    repeats_us_per_step:
+      - 212.01602001629644
+      - 212.18451599532364
+      - 212.38725248875193
+    median_us_per_step: 212.18451599532364
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1875–1875 (median 1875, n=179) in the 3 timed spans"
+    source: verification-report:mlp-size-sweep-2026-10-25, raw records benchmarks/raw/2026-10-25-sweep-0.10.0/modelspec.jsonl
+    state: Recorded
+  - run_id: sweep-b1000-h1024-modelspec-vulkan-0.10.0
+    date: "2026-10-25"
+    workload: mlp-784-H-10
+    side: ModelSpecVulkan
+    modelspec_version: "0.10.0"
+    commit: 5b713ce1fc78a0ddae59f7f293244197886d6446
+    mode: Timed
+    batch: 1000
+    hidden: 1024
+    flop_per_step: 3272704000
+    flop_rule: MatmulOnly
+    timed_steps: 17762
+    repeat_count: 3
+    repeats_us_per_step:
+      - 336.4033289607026
+      - 336.66370622677624
+      - 336.6620536538678
+    median_us_per_step: 336.6620536538678
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1830–1860 (median 1845, n=179) in the 3 timed spans"
+    source: verification-report:mlp-size-sweep-2026-10-25, raw records benchmarks/raw/2026-10-25-sweep-0.10.0/modelspec.jsonl
+    state: Recorded
+  - run_id: sweep-b1000-h4096-modelspec-vulkan-0.10.0
+    date: "2026-10-25"
+    workload: mlp-784-H-10
+    side: ModelSpecVulkan
+    modelspec_version: "0.10.0"
+    commit: 5b713ce1fc78a0ddae59f7f293244197886d6446
+    mode: Timed
+    batch: 1000
+    hidden: 4096
+    flop_per_step: 13090816000
+    flop_rule: MatmulOnly
+    timed_steps: 5948
+    repeat_count: 3
+    repeats_us_per_step:
+      - 1020.224714525891
+      - 1020.1844808338936
+      - 1035.0895571620713
+    median_us_per_step: 1020.224714525891
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1530–1770 (median 1755, n=183) in the 3 timed spans"
+    source: verification-report:mlp-size-sweep-2026-10-25, raw records benchmarks/raw/2026-10-25-sweep-0.10.0/modelspec.jsonl
+    state: Recorded
+  - run_id: sweep-b8192-h64-modelspec-vulkan-0.10.0
+    date: "2026-10-25"
+    workload: mlp-784-H-10
+    side: ModelSpecVulkan
+    modelspec_version: "0.10.0"
+    commit: 5b713ce1fc78a0ddae59f7f293244197886d6446
+    mode: Timed
+    batch: 8192
+    hidden: 64
+    flop_per_step: 1675624448
+    flop_rule: MatmulOnly
+    timed_steps: 10204
+    repeat_count: 3
+    repeats_us_per_step:
+      - 588.8837254018032
+      - 589.2693830850646
+      - 588.4191430811446
+    median_us_per_step: 588.8837254018032
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1920–1920 (median 1920, n=180) in the 3 timed spans"
+    source: verification-report:mlp-size-sweep-2026-10-25, raw records benchmarks/raw/2026-10-25-sweep-0.10.0/modelspec.jsonl
+    state: Recorded
+  - run_id: sweep-b8192-h256-modelspec-vulkan-0.10.0
+    date: "2026-10-25"
+    workload: mlp-784-H-10
+    side: ModelSpecVulkan
+    modelspec_version: "0.10.0"
+    commit: 5b713ce1fc78a0ddae59f7f293244197886d6446
+    mode: Timed
+    batch: 8192
+    hidden: 256
+    flop_per_step: 6702497792
+    flop_rule: MatmulOnly
+    timed_steps: 4855
+    repeat_count: 3
+    repeats_us_per_step:
+      - 1242.205140061792
+      - 1243.1265217301752
+      - 1244.5910276004117
+    median_us_per_step: 1243.1265217301752
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1830–1875 (median 1860, n=181) in the 3 timed spans"
+    source: verification-report:mlp-size-sweep-2026-10-25, raw records benchmarks/raw/2026-10-25-sweep-0.10.0/modelspec.jsonl
+    state: Recorded
+  - run_id: sweep-b8192-h1024-modelspec-vulkan-0.10.0
+    date: "2026-10-25"
+    workload: mlp-784-H-10
+    side: ModelSpecVulkan
+    modelspec_version: "0.10.0"
+    commit: 5b713ce1fc78a0ddae59f7f293244197886d6446
+    mode: Timed
+    batch: 8192
+    hidden: 1024
+    flop_per_step: 26809991168
+    flop_rule: MatmulOnly
+    timed_steps: 2513
+    repeat_count: 3
+    repeats_us_per_step:
+      - 2386.993276959809
+      - 2385.6581929964186
+      - 2384.653802626343
+    median_us_per_step: 2385.6581929964186
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1770–1845 (median 1785, n=180) in the 3 timed spans"
+    source: verification-report:mlp-size-sweep-2026-10-25, raw records benchmarks/raw/2026-10-25-sweep-0.10.0/modelspec.jsonl
+    state: Recorded
+  - run_id: sweep-b8192-h4096-modelspec-vulkan-0.10.0
+    date: "2026-10-25"
+    workload: mlp-784-H-10
+    side: ModelSpecVulkan
+    modelspec_version: "0.10.0"
+    commit: 5b713ce1fc78a0ddae59f7f293244197886d6446
+    mode: Timed
+    batch: 8192
+    hidden: 4096
+    flop_per_step: 107239964672
+    flop_rule: MatmulOnly
+    timed_steps: 825
+    repeat_count: 3
+    repeats_us_per_step:
+      - 7204.730175757576
+      - 7229.008690909091
+      - 7239.262104242423
+    median_us_per_step: 7229.008690909091
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1560–1710 (median 1695, n=179) in the 3 timed spans"
+    source: verification-report:mlp-size-sweep-2026-10-25, raw records benchmarks/raw/2026-10-25-sweep-0.10.0/modelspec.jsonl
+    state: Recorded
+  - run_id: sweep-b100-h64-pytorch-cuda-eager-0.10.0
+    date: "2026-10-25"
+    workload: mlp-784-H-10
+    side: PyTorchCudaEager
+    commit: 5b713ce1fc78a0ddae59f7f293244197886d6446
+    opponent_version: torch 2.14.1+cu130, CUDA 13.0
+    mode: Timed
+    batch: 100
+    hidden: 64
+    flop_per_step: 20454400
+    flop_rule: MatmulOnly
+    timed_steps: 14856
+    repeat_count: 3
+    repeats_us_per_step:
+      - 403.37632202222846
+      - 393.44089336800613
+      - 387.5876367759154
+    median_us_per_step: 393.44089336800613
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1860–1860 (median 1860, n=176) in the 3 timed spans"
+    source: verification-report:mlp-size-sweep-2026-10-25, raw records benchmarks/raw/2026-10-25-sweep-0.10.0/pytorch.jsonl
+    state: Recorded
+  - run_id: sweep-b100-h256-pytorch-cuda-eager-0.10.0
+    date: "2026-10-25"
+    workload: mlp-784-H-10
+    side: PyTorchCudaEager
+    commit: 5b713ce1fc78a0ddae59f7f293244197886d6446
+    opponent_version: torch 2.14.1+cu130, CUDA 13.0
+    mode: Timed
+    batch: 100
+    hidden: 256
+    flop_per_step: 81817600
+    flop_rule: MatmulOnly
+    timed_steps: 14909
+    repeat_count: 3
+    repeats_us_per_step:
+      - 392.44762222842354
+      - 401.79132562920523
+      - 390.08362594165106
+    median_us_per_step: 392.44762222842354
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1860–1860 (median 1860, n=176) in the 3 timed spans"
+    source: verification-report:mlp-size-sweep-2026-10-25, raw records benchmarks/raw/2026-10-25-sweep-0.10.0/pytorch.jsonl
+    state: Recorded
+  - run_id: sweep-b100-h1024-pytorch-cuda-eager-0.10.0
+    date: "2026-10-25"
+    workload: mlp-784-H-10
+    side: PyTorchCudaEager
+    commit: 5b713ce1fc78a0ddae59f7f293244197886d6446
+    opponent_version: torch 2.14.1+cu130, CUDA 13.0
+    mode: Timed
+    batch: 100
+    hidden: 1024
+    flop_per_step: 327270400
+    flop_rule: MatmulOnly
+    timed_steps: 15495
+    repeat_count: 3
+    repeats_us_per_step:
+      - 418.4753240950745
+      - 392.9626345983068
+      - 402.2192730465871
+    median_us_per_step: 402.2192730465871
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1860–1860 (median 1860, n=188) in the 3 timed spans"
+    source: verification-report:mlp-size-sweep-2026-10-25, raw records benchmarks/raw/2026-10-25-sweep-0.10.0/pytorch.jsonl
+    state: Recorded
+  - run_id: sweep-b100-h4096-pytorch-cuda-eager-0.10.0
+    date: "2026-10-25"
+    workload: mlp-784-H-10
+    side: PyTorchCudaEager
+    commit: 5b713ce1fc78a0ddae59f7f293244197886d6446
+    opponent_version: torch 2.14.1+cu130, CUDA 13.0
+    mode: Timed
+    batch: 100
+    hidden: 4096
+    flop_per_step: 1309081600
+    flop_rule: MatmulOnly
+    timed_steps: 15283
+    repeat_count: 3
+    repeats_us_per_step:
+      - 396.0580872896473
+      - 392.11925708924076
+      - 395.6717619739328
+    median_us_per_step: 395.6717619739328
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1860–1860 (median 1860, n=181) in the 3 timed spans"
+    source: verification-report:mlp-size-sweep-2026-10-25, raw records benchmarks/raw/2026-10-25-sweep-0.10.0/pytorch.jsonl
+    state: Recorded
+  - run_id: sweep-b1000-h64-pytorch-cuda-eager-0.10.0
+    date: "2026-10-25"
+    workload: mlp-784-H-10
+    side: PyTorchCudaEager
+    commit: 5b713ce1fc78a0ddae59f7f293244197886d6446
+    opponent_version: torch 2.14.1+cu130, CUDA 13.0
+    mode: Timed
+    batch: 1000
+    hidden: 64
+    flop_per_step: 204544000
+    flop_rule: MatmulOnly
+    timed_steps: 15031
+    repeat_count: 3
+    repeats_us_per_step:
+      - 399.7166372149614
+      - 516.9401090478387
+      - 405.7989568341065
+    median_us_per_step: 405.7989568341065
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1860–1860 (median 1860, n=199) in the 3 timed spans"
+    source: verification-report:mlp-size-sweep-2026-10-25, raw records benchmarks/raw/2026-10-25-sweep-0.10.0/pytorch.jsonl
+    state: Recorded
+  - run_id: sweep-b1000-h256-pytorch-cuda-eager-0.10.0
+    date: "2026-10-25"
+    workload: mlp-784-H-10
+    side: PyTorchCudaEager
+    commit: 5b713ce1fc78a0ddae59f7f293244197886d6446
+    opponent_version: torch 2.14.1+cu130, CUDA 13.0
+    mode: Timed
+    batch: 1000
+    hidden: 256
+    flop_per_step: 818176000
+    flop_rule: MatmulOnly
+    timed_steps: 11636
+    repeat_count: 3
+    repeats_us_per_step:
+      - 433.51100646465216
+      - 415.6189540867883
+      - 402.88269123617636
+    median_us_per_step: 415.6189540867883
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1860–1860 (median 1860, n=145) in the 3 timed spans"
+    source: verification-report:mlp-size-sweep-2026-10-25, raw records benchmarks/raw/2026-10-25-sweep-0.10.0/pytorch.jsonl
+    state: Recorded
+  - run_id: sweep-b1000-h1024-pytorch-cuda-eager-0.10.0
+    date: "2026-10-25"
+    workload: mlp-784-H-10
+    side: PyTorchCudaEager
+    commit: 5b713ce1fc78a0ddae59f7f293244197886d6446
+    opponent_version: torch 2.14.1+cu130, CUDA 13.0
+    mode: Timed
+    batch: 1000
+    hidden: 1024
+    flop_per_step: 3272704000
+    flop_rule: MatmulOnly
+    timed_steps: 14216
+    repeat_count: 3
+    repeats_us_per_step:
+      - 718.8971247157154
+      - 436.6448510843856
+      - 435.5615242968744
+    median_us_per_step: 436.6448510843856
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1860–1860 (median 1860, n=225) in the 3 timed spans"
+    source: verification-report:mlp-size-sweep-2026-10-25, raw records benchmarks/raw/2026-10-25-sweep-0.10.0/pytorch.jsonl
+    state: Recorded
+  - run_id: sweep-b1000-h4096-pytorch-cuda-eager-0.10.0
+    date: "2026-10-25"
+    workload: mlp-784-H-10
+    side: PyTorchCudaEager
+    commit: 5b713ce1fc78a0ddae59f7f293244197886d6446
+    opponent_version: torch 2.14.1+cu130, CUDA 13.0
+    mode: Timed
+    batch: 1000
+    hidden: 4096
+    flop_per_step: 13090816000
+    flop_rule: MatmulOnly
+    timed_steps: 6308
+    repeat_count: 3
+    repeats_us_per_step:
+      - 933.9797865958458
+      - 935.391092716646
+      - 936.7484614116033
+    median_us_per_step: 935.391092716646
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1635–1665 (median 1650, n=177) in the 3 timed spans"
+    source: verification-report:mlp-size-sweep-2026-10-25, raw records benchmarks/raw/2026-10-25-sweep-0.10.0/pytorch.jsonl
+    state: Recorded
+  - run_id: sweep-b8192-h64-pytorch-cuda-eager-0.10.0
+    date: "2026-10-25"
+    workload: mlp-784-H-10
+    side: PyTorchCudaEager
+    commit: 5b713ce1fc78a0ddae59f7f293244197886d6446
+    opponent_version: torch 2.14.1+cu130, CUDA 13.0
+    mode: Timed
+    batch: 8192
+    hidden: 64
+    flop_per_step: 1675624448
+    flop_rule: MatmulOnly
+    timed_steps: 13170
+    repeat_count: 3
+    repeats_us_per_step:
+      - 424.1572724105104
+      - 408.1447191901318
+      - 441.28410005482334
+    median_us_per_step: 424.1572724105104
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1860–1860 (median 1860, n=167) in the 3 timed spans"
+    source: verification-report:mlp-size-sweep-2026-10-25, raw records benchmarks/raw/2026-10-25-sweep-0.10.0/pytorch.jsonl
+    state: Recorded
+  - run_id: sweep-b8192-h256-pytorch-cuda-eager-0.10.0
+    date: "2026-10-25"
+    workload: mlp-784-H-10
+    side: PyTorchCudaEager
+    commit: 5b713ce1fc78a0ddae59f7f293244197886d6446
+    opponent_version: torch 2.14.1+cu130, CUDA 13.0
+    mode: Timed
+    batch: 8192
+    hidden: 256
+    flop_per_step: 6702497792
+    flop_rule: MatmulOnly
+    timed_steps: 11721
+    repeat_count: 3
+    repeats_us_per_step:
+      - 531.0535965340047
+      - 525.5032196626984
+      - 530.8937297817887
+    median_us_per_step: 530.8937297817887
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1665–1740 (median 1680, n=186) in the 3 timed spans"
+    source: verification-report:mlp-size-sweep-2026-10-25, raw records benchmarks/raw/2026-10-25-sweep-0.10.0/pytorch.jsonl
+    state: Recorded
+  - run_id: sweep-b8192-h1024-pytorch-cuda-eager-0.10.0
+    date: "2026-10-25"
+    workload: mlp-784-H-10
+    side: PyTorchCudaEager
+    commit: 5b713ce1fc78a0ddae59f7f293244197886d6446
+    opponent_version: torch 2.14.1+cu130, CUDA 13.0
+    mode: Timed
+    batch: 8192
+    hidden: 1024
+    flop_per_step: 26809991168
+    flop_rule: MatmulOnly
+    timed_steps: 3646
+    repeat_count: 3
+    repeats_us_per_step:
+      - 1773.8925022069513
+      - 1773.9758379522402
+      - 1781.5446854046395
+    median_us_per_step: 1773.9758379522402
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1575–1620 (median 1590, n=193) in the 3 timed spans"
+    source: verification-report:mlp-size-sweep-2026-10-25, raw records benchmarks/raw/2026-10-25-sweep-0.10.0/pytorch.jsonl
+    state: Recorded
+  - run_id: sweep-b8192-h4096-pytorch-cuda-eager-0.10.0
+    date: "2026-10-25"
+    workload: mlp-784-H-10
+    side: PyTorchCudaEager
+    commit: 5b713ce1fc78a0ddae59f7f293244197886d6446
+    opponent_version: torch 2.14.1+cu130, CUDA 13.0
+    mode: Timed
+    batch: 8192
+    hidden: 4096
+    flop_per_step: 107239964672
+    flop_rule: MatmulOnly
+    timed_steps: 900
+    repeat_count: 3
+    repeats_us_per_step:
+      - 6823.44188913703
+      - 6840.956413394048
+      - 6862.231928130819
+    median_us_per_step: 6840.956413394048
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1530–1605 (median 1575, n=184) in the 3 timed spans"
+    source: verification-report:mlp-size-sweep-2026-10-25, raw records benchmarks/raw/2026-10-25-sweep-0.10.0/pytorch.jsonl
+    state: Recorded
+  - run_id: sweep-b100-h64-pytorch-cuda-compile-0.10.0
+    date: "2026-10-25"
+    workload: mlp-784-H-10
+    side: PyTorchCudaCompile
+    commit: 5b713ce1fc78a0ddae59f7f293244197886d6446
+    opponent_version: torch 2.14.1+cu130, CUDA 13.0
+    mode: Timed
+    batch: 100
+    hidden: 64
+    flop_per_step: 20454400
+    flop_rule: MatmulOnly
+    timed_steps: 10337
+    repeat_count: 3
+    repeats_us_per_step:
+      - 497.5161686088449
+      - 498.4908758865267
+      - 495.3000822179383
+    median_us_per_step: 497.5161686088449
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1860–1860 (median 1860, n=154) in the 3 timed spans"
+    source: verification-report:mlp-size-sweep-2026-10-25, raw records benchmarks/raw/2026-10-25-sweep-0.10.0/pytorch.jsonl
+    state: Recorded
+  - run_id: sweep-b100-h256-pytorch-cuda-compile-0.10.0
+    date: "2026-10-25"
+    workload: mlp-784-H-10
+    side: PyTorchCudaCompile
+    commit: 5b713ce1fc78a0ddae59f7f293244197886d6446
+    opponent_version: torch 2.14.1+cu130, CUDA 13.0
+    mode: Timed
+    batch: 100
+    hidden: 256
+    flop_per_step: 81817600
+    flop_rule: MatmulOnly
+    timed_steps: 11466
+    repeat_count: 3
+    repeats_us_per_step:
+      - 516.567838115245
+      - 514.7460517183547
+      - 505.81812332407844
+    median_us_per_step: 514.7460517183547
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1860–1860 (median 1860, n=176) in the 3 timed spans"
+    source: verification-report:mlp-size-sweep-2026-10-25, raw records benchmarks/raw/2026-10-25-sweep-0.10.0/pytorch.jsonl
+    state: Recorded
+  - run_id: sweep-b100-h1024-pytorch-cuda-compile-0.10.0
+    date: "2026-10-25"
+    workload: mlp-784-H-10
+    side: PyTorchCudaCompile
+    commit: 5b713ce1fc78a0ddae59f7f293244197886d6446
+    opponent_version: torch 2.14.1+cu130, CUDA 13.0
+    mode: Timed
+    batch: 100
+    hidden: 1024
+    flop_per_step: 327270400
+    flop_rule: MatmulOnly
+    timed_steps: 12346
+    repeat_count: 3
+    repeats_us_per_step:
+      - 508.57925472852577
+      - 508.06406082453594
+      - 575.729391760744
+    median_us_per_step: 508.57925472852577
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1860–1860 (median 1860, n=196) in the 3 timed spans"
+    source: verification-report:mlp-size-sweep-2026-10-25, raw records benchmarks/raw/2026-10-25-sweep-0.10.0/pytorch.jsonl
+    state: Recorded
+  - run_id: sweep-b100-h4096-pytorch-cuda-compile-0.10.0
+    date: "2026-10-25"
+    workload: mlp-784-H-10
+    side: PyTorchCudaCompile
+    commit: 5b713ce1fc78a0ddae59f7f293244197886d6446
+    opponent_version: torch 2.14.1+cu130, CUDA 13.0
+    mode: Timed
+    batch: 100
+    hidden: 4096
+    flop_per_step: 1309081600
+    flop_rule: MatmulOnly
+    timed_steps: 12141
+    repeat_count: 3
+    repeats_us_per_step:
+      - 500.65499020007206
+      - 482.93300231826794
+      - 487.5422914473104
+    median_us_per_step: 487.5422914473104
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1860–1860 (median 1860, n=178) in the 3 timed spans"
+    source: verification-report:mlp-size-sweep-2026-10-25, raw records benchmarks/raw/2026-10-25-sweep-0.10.0/pytorch.jsonl
+    state: Recorded
+  - run_id: sweep-b1000-h64-pytorch-cuda-compile-0.10.0
+    date: "2026-10-25"
+    workload: mlp-784-H-10
+    side: PyTorchCudaCompile
+    commit: 5b713ce1fc78a0ddae59f7f293244197886d6446
+    opponent_version: torch 2.14.1+cu130, CUDA 13.0
+    mode: Timed
+    batch: 1000
+    hidden: 64
+    flop_per_step: 204544000
+    flop_rule: MatmulOnly
+    timed_steps: 11830
+    repeat_count: 3
+    repeats_us_per_step:
+      - 558.2718975331858
+      - 655.0768289922887
+      - 511.6795344767889
+    median_us_per_step: 558.2718975331858
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1860–1860 (median 1860, n=204) in the 3 timed spans"
+    source: verification-report:mlp-size-sweep-2026-10-25, raw records benchmarks/raw/2026-10-25-sweep-0.10.0/pytorch.jsonl
+    state: Recorded
+  - run_id: sweep-b1000-h256-pytorch-cuda-compile-0.10.0
+    date: "2026-10-25"
+    workload: mlp-784-H-10
+    side: PyTorchCudaCompile
+    commit: 5b713ce1fc78a0ddae59f7f293244197886d6446
+    opponent_version: torch 2.14.1+cu130, CUDA 13.0
+    mode: Timed
+    batch: 1000
+    hidden: 256
+    flop_per_step: 818176000
+    flop_rule: MatmulOnly
+    timed_steps: 10124
+    repeat_count: 3
+    repeats_us_per_step:
+      - 539.3263194227981
+      - 582.3601603839901
+      - 524.5107742238397
+    median_us_per_step: 539.3263194227981
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1860–1860 (median 1860, n=167) in the 3 timed spans"
+    source: verification-report:mlp-size-sweep-2026-10-25, raw records benchmarks/raw/2026-10-25-sweep-0.10.0/pytorch.jsonl
+    state: Recorded
+  - run_id: sweep-b1000-h1024-pytorch-cuda-compile-0.10.0
+    date: "2026-10-25"
+    workload: mlp-784-H-10
+    side: PyTorchCudaCompile
+    commit: 5b713ce1fc78a0ddae59f7f293244197886d6446
+    opponent_version: torch 2.14.1+cu130, CUDA 13.0
+    mode: Timed
+    batch: 1000
+    hidden: 1024
+    flop_per_step: 3272704000
+    flop_rule: MatmulOnly
+    timed_steps: 10592
+    repeat_count: 3
+    repeats_us_per_step:
+      - 549.6438557325702
+      - 536.2072113772651
+      - 550.3623042304175
+    median_us_per_step: 549.6438557325702
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1860–1860 (median 1860, n=173) in the 3 timed spans"
+    source: verification-report:mlp-size-sweep-2026-10-25, raw records benchmarks/raw/2026-10-25-sweep-0.10.0/pytorch.jsonl
+    state: Recorded
+  - run_id: sweep-b1000-h4096-pytorch-cuda-compile-0.10.0
+    date: "2026-10-25"
+    workload: mlp-784-H-10
+    side: PyTorchCudaCompile
+    commit: 5b713ce1fc78a0ddae59f7f293244197886d6446
+    opponent_version: torch 2.14.1+cu130, CUDA 13.0
+    mode: Timed
+    batch: 1000
+    hidden: 4096
+    flop_per_step: 13090816000
+    flop_rule: MatmulOnly
+    timed_steps: 6445
+    repeat_count: 3
+    repeats_us_per_step:
+      - 934.0538628127706
+      - 933.3901196180665
+      - 933.2591089036365
+    median_us_per_step: 933.3901196180665
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1635–1650 (median 1635, n=180) in the 3 timed spans"
+    source: verification-report:mlp-size-sweep-2026-10-25, raw records benchmarks/raw/2026-10-25-sweep-0.10.0/pytorch.jsonl
+    state: Recorded
+  - run_id: sweep-b8192-h64-pytorch-cuda-compile-0.10.0
+    date: "2026-10-25"
+    workload: mlp-784-H-10
+    side: PyTorchCudaCompile
+    commit: 5b713ce1fc78a0ddae59f7f293244197886d6446
+    opponent_version: torch 2.14.1+cu130, CUDA 13.0
+    mode: Timed
+    batch: 8192
+    hidden: 64
+    flop_per_step: 1675624448
+    flop_rule: MatmulOnly
+    timed_steps: 11754
+    repeat_count: 3
+    repeats_us_per_step:
+      - 518.3179123697637
+      - 520.5765724139659
+      - 529.2598933351675
+    median_us_per_step: 520.5765724139659
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1860–1860 (median 1860, n=184) in the 3 timed spans"
+    source: verification-report:mlp-size-sweep-2026-10-25, raw records benchmarks/raw/2026-10-25-sweep-0.10.0/pytorch.jsonl
+    state: Recorded
+  - run_id: sweep-b8192-h256-pytorch-cuda-compile-0.10.0
+    date: "2026-10-25"
+    workload: mlp-784-H-10
+    side: PyTorchCudaCompile
+    commit: 5b713ce1fc78a0ddae59f7f293244197886d6446
+    opponent_version: torch 2.14.1+cu130, CUDA 13.0
+    mode: Timed
+    batch: 8192
+    hidden: 256
+    flop_per_step: 6702497792
+    flop_rule: MatmulOnly
+    timed_steps: 10434
+    repeat_count: 3
+    repeats_us_per_step:
+      - 528.3947564637939
+      - 517.8173784561454
+      - 527.4360998304629
+    median_us_per_step: 527.4360998304629
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1650–1770 (median 1665, n=164) in the 3 timed spans"
+    source: verification-report:mlp-size-sweep-2026-10-25, raw records benchmarks/raw/2026-10-25-sweep-0.10.0/pytorch.jsonl
+    state: Recorded
+  - run_id: sweep-b8192-h1024-pytorch-cuda-compile-0.10.0
+    date: "2026-10-25"
+    workload: mlp-784-H-10
+    side: PyTorchCudaCompile
+    commit: 5b713ce1fc78a0ddae59f7f293244197886d6446
+    opponent_version: torch 2.14.1+cu130, CUDA 13.0
+    mode: Timed
+    batch: 8192
+    hidden: 1024
+    flop_per_step: 26809991168
+    flop_rule: MatmulOnly
+    timed_steps: 3368
+    repeat_count: 3
+    repeats_us_per_step:
+      - 1790.5352452455747
+      - 1829.0128123906668
+      - 1828.6538292928167
+    median_us_per_step: 1828.6538292928167
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1545–1620 (median 1590, n=183) in the 3 timed spans"
+    source: verification-report:mlp-size-sweep-2026-10-25, raw records benchmarks/raw/2026-10-25-sweep-0.10.0/pytorch.jsonl
+    state: Recorded
+  - run_id: sweep-b8192-h4096-pytorch-cuda-compile-0.10.0
+    date: "2026-10-25"
+    workload: mlp-784-H-10
+    side: PyTorchCudaCompile
+    commit: 5b713ce1fc78a0ddae59f7f293244197886d6446
+    opponent_version: torch 2.14.1+cu130, CUDA 13.0
+    mode: Timed
+    batch: 8192
+    hidden: 4096
+    flop_per_step: 107239964672
+    flop_rule: MatmulOnly
+    timed_steps: 874
+    repeat_count: 3
+    repeats_us_per_step:
+      - 6819.789459847886
+      - 6778.1615609119835
+      - 6782.020502393421
+    median_us_per_step: 6782.020502393421
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1530–1590 (median 1560, n=178) in the 3 timed spans"
+    source: verification-report:mlp-size-sweep-2026-10-25, raw records benchmarks/raw/2026-10-25-sweep-0.10.0/pytorch.jsonl
+    state: Recorded
