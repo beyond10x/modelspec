@@ -71,10 +71,17 @@ fn spirv_val_accepts_every_elementwise_broadcast_and_sgd_module_of_the_examples(
         for kernel in &kernels {
             assert_valid(kernel);
             kinds.push(kernel.kind);
-            ops.push(match kernel.epilogue {
-                Some(_) => "Relu",
-                None => kernel.op,
-            });
+            match kernel.epilogue {
+                Some(_) => ops.push("Relu"),
+                // A fused elementwise chain (story:fuse-elementwise-chains-and-gradient-sums)
+                // counts as each of its ops.
+                None => ops.extend(
+                    kernel
+                        .op
+                        .split('>')
+                        .map(|link| link.split('@').next().unwrap_or(link)),
+                ),
+            }
             if kernel.kind == KernelKind::SgdUpdate && kernel.operands.len() == 3 {
                 let words = emit(kernel).expect("the update emits");
                 let (missing, all) = common::words::uncontracted_arithmetic(&words);

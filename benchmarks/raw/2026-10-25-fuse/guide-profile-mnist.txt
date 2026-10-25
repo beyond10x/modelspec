@@ -1,0 +1,28 @@
+# command: modelspec train examples/mnist_mlp.mspec --backend vulkan --steps 72000 --profile, after three runs of the same command with --stats; the inspect-a-run guide's sample
+# gpu-apps-before []
+# sm-clock-samples-100ms 915 MHz 915 MHz 915 MHz 915 MHz 915 MHz 780 MHz 780 MHz 780 MHz 780 MHz 780 MHz 825 MHz 825 MHz 825 MHz 825 MHz 825 MHz 855 MHz 855 MHz 855 MHz 855 MHz 855 MHz 900 MHz 900 MHz 900 MHz 900 MHz 900 MHz 930 MHz 930 MHz 930 MHz 930 MHz 930 MHz 975 MHz 975 MHz 975 MHz 975 MHz 975 MHz 1005 MHz 1005 MHz 1005 MHz 1005 MHz 1005 MHz 1050 MHz 1050 MHz 1050 MHz 1050 MHz 1050 MHz 1080 MHz 
+profile dispatch step 0 6bd32d9c-1c0c-8fd4-96b2-46d2c722adc9 main calls 72000 total_us 1077227.040 mean_us 14.961 flop 10035200 bytes 565504 gflop_per_s 670.735 gb_per_s 37.797
+profile dispatch step 2 b2b11a63-ac18-8b96-9ec3-1751b6ebc039 main calls 72000 total_us 279154.240 mean_us 3.877 flop 128000 bytes 32160 gflop_per_s 33.014 gb_per_s 8.295
+profile dispatch step 4 d588cbc2-b3eb-8bf1-93a1-29d8680aba58 main calls 72000 total_us 547090.624 mean_us 7.598 flop 2000 bytes 8004 gflop_per_s 0.263 gb_per_s 1.053
+profile dispatch step 5 09cd7ac3-53f2-8dbf-9ba7-b3ae566b111b main calls 72000 total_us 221928.928 mean_us 3.082 flop 2000 bytes 12000 gflop_per_s 0.649 gb_per_s 3.893
+profile dispatch step 7 aa03322b-5cc2-8da1-afcf-82921498cd59 main calls 72000 total_us 256955.776 mean_us 3.569 flop 128000 bytes 32160 gflop_per_s 35.866 gb_per_s 9.011
+profile dispatch step 8 41241727-be45-83a9-81e8-662471eaedc9 main calls 72000 total_us 314758.784 mean_us 4.372 flop 128000 bytes 32160 gflop_per_s 29.280 gb_per_s 7.356
+profile dispatch step 10 ae896a79-8d47-8bca-807a-453bc394ae43 main calls 72000 total_us 224121.088 mean_us 3.113 flop 6400 bytes 76800 gflop_per_s 2.056 gb_per_s 24.672
+profile dispatch step 12 c2dc253f-25aa-8b18-8282-fcea6ad8f491 main calls 72000 total_us 590253.824 mean_us 8.198 flop 10035200 bytes 539904 gflop_per_s 1224.108 gb_per_s 65.858
+profile dispatch step 14 88daaa23-8dc9-8bc4-ab05-dc5ecc946d99 main calls 72000 total_us 277634.752 mean_us 3.856 flop 100352 bytes 602112 gflop_per_s 26.025 gb_per_s 156.148
+profile dispatch step 15 f509ed52-1817-8bb7-91f5-a998f93b9005 main calls 72000 total_us 219640.544 mean_us 3.051 flop 1280 bytes 7680 gflop_per_s 0.420 gb_per_s 2.518
+profile dispatch final 0 6bd32d9c-1c0c-8fd4-96b2-46d2c722adc9 main calls 1 total_us 12.288 mean_us 12.288 flop 10035200 bytes 565504 gflop_per_s 816.667 gb_per_s 46.021
+profile dispatch final 2 b2b11a63-ac18-8b96-9ec3-1751b6ebc039 main calls 1 total_us 4.096 mean_us 4.096 flop 128000 bytes 32160 gflop_per_s 31.250 gb_per_s 7.852
+profile dispatch final 4 d588cbc2-b3eb-8bf1-93a1-29d8680aba58 main calls 1 total_us 6.144 mean_us 6.144 flop 2000 bytes 8004 gflop_per_s 0.326 gb_per_s 1.303
+profile dispatches 720003
+profile submits 282
+profile host_waits 1
+profile barriers_per_step 9
+profile bytes_uploaded 520864
+profile bytes_downloaded 491268
+profile device_allocations 16
+profile peak_device_bytes 2134704
+profile pipeline_creation_us 1324.508
+profile compile_us 1741.990
+profile steady_us_per_step 59.444
+profile step_total flop 20566432 bytes 1908484 gflop_per_s 345.983 gb_per_s 32.106 uncounted_sites 0

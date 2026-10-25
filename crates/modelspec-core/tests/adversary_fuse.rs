@@ -129,6 +129,40 @@ fn scaled_chain() -> String {
     )
 }
 
+/// `h = relu(matmul(x, w1))` read by `n` matmuls whose products are added: the adjoint of `h`
+/// is a chain of `n - 1` `Add`s into the `ReluGrad` (story:fuse-elementwise-chains-and-gradient-sums).
+fn adjoint_sum(n: usize) -> String {
+    let mut params = "    param w1: Tensor<f32, [12, 9]> = xavier_uniform();\n".to_owned();
+    let mut sum = "matmul(h, w2)".to_owned();
+    for i in 2..=n + 1 {
+        params.push_str(&format!(
+            "    param w{i}: Tensor<f32, [9, 5]> = xavier_uniform();\n"
+        ));
+        if i > 2 {
+            sum = format!("add({sum}, matmul(h, w{i}))");
+        }
+    }
+    model(
+        "AdjointSum",
+        &params,
+        &format!("        let h = relu(matmul(x, w1));\n        return {sum};"),
+        "[10, 5]",
+        "mse(model.forward(x), y)",
+    )
+}
+
+/// `a` read by two ops, so no chain intermediate; `relu(a)` read once by the `add`.
+fn fan_out() -> String {
+    model(
+        "FanOut",
+        W1W2,
+        "        let a = mul(matmul(x, w1), 2.0);
+        return matmul(add(a, relu(a)), w2);",
+        "[10, 5]",
+        "mse(model.forward(x), y)",
+    )
+}
+
 /// Every model of this file, with its name.
 fn battery() -> Vec<(&'static str, String)> {
     vec![
@@ -137,6 +171,10 @@ fn battery() -> Vec<(&'static str, String)> {
         ("relu_of_prediction", relu_of_prediction()),
         ("transposed", transposed()),
         ("scaled_chain", scaled_chain()),
+        ("adjoint_sum_2", adjoint_sum(2)),
+        ("adjoint_sum_3", adjoint_sum(3)),
+        ("adjoint_sum_6", adjoint_sum(6)),
+        ("fan_out", fan_out()),
         (
             "mnist_mlp",
             std::fs::read_to_string(repo_root().join("examples/mnist_mlp.mspec"))
@@ -288,11 +326,12 @@ fn no_barrier_group_holds_a_hazard_on_any_model() {
 }
 
 /// `spec/domains/artifact.yaml`, `ExecutionPlan.buffers`: "In M1 each stored value has its own
-/// buffer, with five exceptions": an SGD update writes its parameter's buffer in place, a folded
+/// buffer, with six exceptions": an SGD update writes its parameter's buffer in place, a folded
 /// scalar has no buffer, the `lr * g` of a fused update has none, a matmul pre-activation that
 /// no op but its ReLU epilogue reads, and that is not the loss or the prediction, has none, and a
 /// transpose that no op but matmuls reads, and that is not the loss or the prediction, has none
-/// (no MNIST transpose reads a parameter after its update). So the
+/// (no MNIST transpose reads a parameter after its update), and each value of an elementwise
+/// chain but its last has none (story:fuse-elementwise-chains-and-gradient-sums). So the
 /// plan has at least one buffer per data declaration, per parameter, and per stored (non-`Scalar`)
 /// computing value of the step outside those exceptions, plus the loss.
 #[test]
@@ -300,7 +339,7 @@ fn every_value_has_its_own_buffer_as_the_artifact_spec_states() {
     let spec = std::fs::read_to_string(repo_root().join("spec/domains/artifact.yaml"))
         .expect("the spec reads");
     assert!(
-        spec.contains("In M1 each stored value has its own buffer, with five exceptions."),
+        spec.contains("In M1 each stored value has its own buffer, with six exceptions."),
         "the sentence this case drives from is in the spec"
     );
     let source = std::fs::read_to_string(repo_root().join("examples/mnist_mlp.mspec"))
@@ -343,6 +382,22 @@ fn every_value_has_its_own_buffer_as_the_artifact_spec_states() {
             && !readers.is_empty()
             && readers.iter().all(|r| r.op == TensorOp::MatMul)
     };
+    let elementwise = |op: &TensorOp| {
+        matches!(
+            op,
+            TensorOp::Add | TensorOp::Sub | TensorOp::Mul | TensorOp::Relu | TensorOp::ReluGrad
+        )
+    };
+    // At most every elementwise value read once, by one elementwise op of its type alone: a
+    // chain intermediate of the scheduler is one of these, so leaving them all out bounds the
+    // count from below.
+    let chain_intermediate = |n: &TensorNode| {
+        elementwise(&n.op)
+            && !bound.contains(&n.id)
+            && matches!(readers(n.id)[..], [r] if elementwise(&r.op)
+                && r.ty == n.ty
+                && r.operands.iter().filter(|&&o| o == n.id).count() == 1)
+    };
     let stored = all
         .iter()
         .filter(|n| {
@@ -354,6 +409,7 @@ fn every_value_has_its_own_buffer_as_the_artifact_spec_states() {
                 && !scaled_product(n)
                 && !epilogue_only(n)
                 && !folded_transpose(n)
+                && !chain_intermediate(n)
         })
         .count();
     let plan = &artifact.execution;
@@ -409,4 +465,68 @@ fn a_relu_of_compile_time_scalars_stays_a_kernel_as_the_schedule_documentation_s
         "one kernel computes from compile-time scalars alone, the relu of the folded 6.0: \
          {scalar_only:#?}"
     );
+}
+
+/// DESIGN.md § 3.1 and the `buffers` summary of `spec/domains/artifact.yaml` state the chain
+/// rule of story:fuse-elementwise-chains-and-gradient-sums, and every model of the battery obeys
+/// it: each kernel whose op names a chain (`First>Op@at>…`) is an `elementwise` kernel of at
+/// least two of the five elementwise ops, binds at most 3 buffers besides its result, and no
+/// step reads a view that only a chain's intermediate would have had.
+#[test]
+fn the_elementwise_chain_rule_is_stated_and_every_chain_obeys_it() {
+    let design = std::fs::read_to_string(repo_root().join("DESIGN.md")).expect("DESIGN.md reads");
+    assert!(
+        design.contains("**Revision:** 0.40 (2026-10-25)"),
+        "DESIGN.md is at revision 0.40"
+    );
+    assert!(
+        design.contains("each op but the last read once and by the next op alone"),
+        "DESIGN.md § 3.1 states the chain rule"
+    );
+    assert!(
+        design.contains("left to right, as the IR adds them"),
+        "DESIGN.md § 3.1 states the order of an adjoint's sum"
+    );
+    let spec = std::fs::read_to_string(repo_root().join("spec/domains/artifact.yaml"))
+        .expect("the spec reads");
+    assert!(
+        spec.contains("each value of an elementwise chain but its last"),
+        "the artifact spec states the chain exception"
+    );
+    let mut seen = BTreeSet::new();
+    for (name, source) in battery() {
+        let artifact = artifact(&source);
+        let plan = &artifact.execution;
+        for kernel in plan.kernels.iter().filter(|k| k.op.contains('>')) {
+            assert_eq!(
+                kernel.kind,
+                modelspec_core::ir::kernel::KernelKind::Elementwise,
+                "{name}: {}",
+                kernel.signature()
+            );
+            let ops: Vec<&str> = kernel
+                .op
+                .split('>')
+                .map(|l| l.split('@').next().unwrap_or(l))
+                .collect();
+            assert!(ops.len() >= 2, "{name}: {}", kernel.op);
+            for op in &ops {
+                assert!(
+                    ["Add", "Sub", "Mul", "Relu", "ReluGrad"].contains(op),
+                    "{name}: {}",
+                    kernel.op
+                );
+            }
+            let buffers = kernel
+                .operands
+                .iter()
+                .filter(|o| matches!(o, Operand::Buffer(_)))
+                .count();
+            assert!(buffers <= 3, "{name}: {}", kernel.signature());
+            seen.insert(kernel.op);
+        }
+    }
+    for chain in ["Sub>Mul@0", "Add>ReluGrad@1", "Add>Add@0", "Relu>Add@1"] {
+        assert!(seen.contains(chain), "the battery fuses {chain}: {seen:?}");
+    }
 }

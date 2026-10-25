@@ -604,6 +604,114 @@ impl fmt::Display for Epilogue {
     }
 }
 
+/// The Tensor IR ops an `elementwise` kernel implements, alone or in a chain.
+pub const ELEMENTWISE_OPS: [&str; 5] = ["Add", "Sub", "Mul", "Relu", "ReluGrad"];
+
+/// The operand count of the elementwise op `op`: 1 for `Relu`, 2 for `Add`, `Sub`, `Mul` and
+/// `ReluGrad`; `None` for an op that is not elementwise.
+pub fn elementwise_arity(op: &str) -> Option<usize> {
+    match op {
+        "Relu" => Some(1),
+        "Add" | "Sub" | "Mul" | "ReluGrad" => Some(2),
+        _ => None,
+    }
+}
+
+/// One op of an [`ElementwiseChain`] after its first: the op, and the position among its
+/// operands of the result of the op before it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ChainLink {
+    pub op: &'static str,
+    pub at: usize,
+}
+
+/// A chain of elementwise ops that one `elementwise` kernel computes in order (DESIGN.md § 3.1):
+/// each op after the first reads the result of the op before it, which no other op reads, at
+/// [`ChainLink::at`]. Its kernel op is its [`ElementwiseChain::name`], `First>Op@at>Op@at...`,
+/// for example `Sub>Mul@0`, and its operands are the chain's leaves: the first op's operands in
+/// order, then each later op's operands in order without the result before it. Each op rounds
+/// its result once, as the unfused kernels do.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ElementwiseChain {
+    pub first: &'static str,
+    pub links: Vec<ChainLink>,
+}
+
+impl ElementwiseChain {
+    /// The chain a kernel op names: at least one link, every op elementwise, every position
+    /// within its op's operands, and the name in the canonical form [`Self::name`] prints.
+    /// `None` for a single op or any other text.
+    pub fn parse(name: &str) -> Option<Self> {
+        let mut parts = name.split('>');
+        let first = static_op(parts.next()?)?;
+        let links = parts
+            .map(|part| {
+                let (op, at) = part.split_once('@')?;
+                let op = static_op(op)?;
+                let at: usize = at.parse().ok()?;
+                (at < elementwise_arity(op)?).then_some(ChainLink { op, at })
+            })
+            .collect::<Option<Vec<_>>>()?;
+        if links.is_empty() {
+            return None;
+        }
+        let chain = ElementwiseChain { first, links };
+        (chain.render() == name).then_some(chain)
+    }
+
+    fn render(&self) -> String {
+        let mut name = self.first.to_owned();
+        for link in &self.links {
+            name.push_str(&format!(">{}@{}", link.op, link.at));
+        }
+        name
+    }
+
+    /// The kernel op of the chain, interned so that a [`Kernel`] can hold it.
+    pub fn name(&self) -> &'static str {
+        intern(self.render())
+    }
+
+    /// The ops of the chain in order.
+    pub fn ops(&self) -> impl Iterator<Item = &'static str> + '_ {
+        std::iter::once(self.first).chain(self.links.iter().map(|link| link.op))
+    }
+
+    /// The number of the chain's leaves, its kernel's operands.
+    pub fn operands(&self) -> usize {
+        let arity = |op| elementwise_arity(op).unwrap_or(0);
+        arity(self.first)
+            + self
+                .links
+                .iter()
+                .map(|link| arity(link.op) - 1)
+                .sum::<usize>()
+    }
+}
+
+/// `op` as the `'static` name of an elementwise op.
+fn static_op(op: &str) -> Option<&'static str> {
+    ELEMENTWISE_OPS.iter().copied().find(|known| *known == op)
+}
+
+/// The one `'static` copy of `name`. A program has few distinct chains, and each is leaked once
+/// for the life of the process.
+fn intern(name: String) -> &'static str {
+    use std::collections::BTreeSet;
+    use std::sync::{Mutex, OnceLock};
+    static NAMES: OnceLock<Mutex<BTreeSet<&'static str>>> = OnceLock::new();
+    let mut names = NAMES
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(known) = names.get(name.as_str()) {
+        return known;
+    }
+    let leaked: &'static str = Box::leak(name.into_boxed_str());
+    names.insert(leaked);
+    leaked
+}
+
 /// One kernel of Kernel IR. Its bindings are its buffer operands in order, each read, then what
 /// it writes: the pre-activation of an [`Epilogue`] that keeps it, then its result.
 #[derive(Clone, Debug, PartialEq)]
@@ -611,7 +719,8 @@ pub struct Kernel {
     /// [`Kernel::module_id`] of the other fields.
     pub id: KernelModuleId,
     pub kind: KernelKind,
-    /// The Tensor IR op the kernel implements, by name.
+    /// The Tensor IR op the kernel implements, by name; for an `elementwise` kernel that fuses a
+    /// chain of ops, the [`ElementwiseChain::name`] of the chain.
     pub op: &'static str,
     pub dtype: DType,
     pub operands: Vec<Operand>,
@@ -662,7 +771,8 @@ impl Kernel {
 
     /// The floating-point operations of one dispatch of the kernel under the counting rule of
     /// DESIGN.md § 3.1: `2·m·k·n` for a matmul, its epilogue adding none; per output element,
-    /// one for `Add`, `Sub`, `Mul`, `Relu` and `ReluGrad` and two for the scaled SGD update
+    /// one for `Add`, `Sub`, `Mul`, `Relu` and `ReluGrad`, one per op for an elementwise chain
+    /// ([`ElementwiseChain`]), and two for the scaled SGD update
     /// `p - (lr * g)`; one per element of the buffer operands of a reduction stage or a loss
     /// sum; none for a transpose or a broadcast. `None` for an op without a rule, a shape with
     /// a dimension that is not static, or a count past `u64`.
@@ -681,7 +791,7 @@ impl Kernel {
             }
             KernelKind::Elementwise => match self.op {
                 "Add" | "Sub" | "Mul" | "Relu" | "ReluGrad" => per_output(1),
-                _ => None,
+                chain => per_output(ElementwiseChain::parse(chain)?.ops().count() as u64),
             },
             KernelKind::SgdUpdate => match (self.op, self.operands.len()) {
                 ("Sub", 3) => per_output(2),

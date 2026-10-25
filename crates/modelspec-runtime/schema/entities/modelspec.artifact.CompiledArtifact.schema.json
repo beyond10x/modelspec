@@ -73,7 +73,7 @@
       }
     },
     "buffers": {
-      "description": "The size in bytes of each plan buffer, indexed by BufferView.buffer; both plans and every bound view share them (DESIGN.md § 3.1 resources, § 7.1). In M1 each stored value has its own buffer, with five exceptions. An SGD update writes its parameter's buffer in place, a compile-time scalar folded into its readers' immediates has no buffer, the lr * g product of an update fused into one sgd_update kernel has no buffer, a matmul pre-activation that no op but its ReLU epilogue reads, and that is not the loss or the prediction, has no buffer, and a transpose that no op but matmuls reads, that is not the loss or the prediction, and whose operand is not a parameter updated before one of those matmuls, has no buffer, each matmul reading its operand in place (DESIGN.md § 3.1); no data, loss or prediction view lies in a parameter buffer. No buffer exceeds 4294967295 bytes, the u32 range of a storage buffer binding.",
+      "description": "The size in bytes of each plan buffer, indexed by BufferView.buffer; both plans and every bound view share them (DESIGN.md § 3.1 resources, § 7.1). In M1 each stored value has its own buffer, with six exceptions. An SGD update writes its parameter's buffer in place, a compile-time scalar folded into its readers' immediates has no buffer, the lr * g product of an update fused into one sgd_update kernel has no buffer, a matmul pre-activation that no op but its ReLU epilogue reads, and that is not the loss or the prediction, has no buffer, and a transpose that no op but matmuls reads, that is not the loss or the prediction, and whose operand is not a parameter updated before one of those matmuls, has no buffer, each matmul reading its operand in place, and each value of an elementwise chain but its last, read once and by the next op of the chain alone, has no buffer, the chain one elementwise dispatch that rounds the value of each op in order (DESIGN.md § 3.1); no data, loss or prediction view lies in a parameter buffer. No buffer exceeds 4294967295 bytes, the u32 range of a storage buffer binding.",
       "type": "array",
       "items": {
         "type": "integer"
@@ -115,8 +115,8 @@
   "x-ess-provenance": {
     "system": "modelspec",
     "specification_version": "v1",
-    "source_digest": "24ea52726edb1123cacc7ac06868d8f3d16b3e67a7268f7f0a4165db3314744d",
-    "contract_digest": "slice-sha256/2:1ac79944936ae6b264d3dd8d763dd17c248c6b106c3ea6f55a4fa625c44b2cdc",
+    "source_digest": "cb65661d492b4821f46839753d15cf96071f8f2c6cd0249eb75956c524aab399",
+    "contract_digest": "slice-sha256/2:f8888232c411cfca129fc8a4ec0491b4978c8dbac0b84e4ed35111596738e91a",
     "regenerate": "ess generate"
   },
   "$defs": {

@@ -10,7 +10,8 @@
 //! dispatch nothing: inputs and parameters are bound views, and a scalar is compiled into the
 //! kernels that read it.
 //!
-//! Three exceptions remove dispatches without changing a bit of any result (DESIGN.md § 3.1,
+//! Three exceptions, and the elementwise chains below, remove dispatches without changing a bit
+//! of any result (DESIGN.md § 3.1,
 //! § 5.4). An `Add`, `Sub` or `Mul` of rank 0 whose operands are all compile-time scalars is
 //! folded: the host computes it as one round-to-nearest-even `f32` operation, and every reader
 //! takes the result as an immediate. It is not folded when an operand or the result is infinite,
@@ -29,10 +30,21 @@
 //! operand is a parameter whose in-place update comes before one of its readers. A matmul that
 //! reads a folded transpose computes every output element as before (DESIGN.md § 3.1, § 5.2).
 //!
+//! A chain of elementwise ops (`Add`, `Sub`, `Mul`, `Relu`, `ReluGrad`) not fused above, each op
+//! but the last read once and by the next op alone, at that op's type, and neither the loss nor
+//! the prediction, is one `Elementwise` dispatch at the place of its last op
+//! (story:fuse-elementwise-chains-and-gradient-sums). Ops are taken in order: an op extends the
+//! chain of its first operand, by position, that qualifies while the chain's buffer operands stay
+//! within [`MAX_CHAIN_READS`] and no parameter it reads is updated before the op, and otherwise
+//! starts a chain. The kernel's op is the chain's [`ElementwiseChain::name`] and its operands
+//! the chain's leaves, so an adjoint's sum `((c0 + c1) + c2) + …` keeps the order the IR adds
+//! it in. The emitter rounds each op once, as the unfused kernels do, so the chain's result has
+//! the bits of the unfused plan.
+//!
 //! There is no buffer reuse: every stored value has its own buffer, except that each SGD update
 //! writes its parameter's one view in place, a folded scalar is an immediate, the `lr * g` of a
 //! fused update has no buffer, a pre-activation that nothing but its epilogue `Relu` reads
-//! has none either, and neither has a folded transpose. A `Barrier` precedes any Dispatch that
+//! has none either, and neither has a folded transpose nor a value inside an elementwise chain. A `Barrier` precedes any Dispatch that
 //! reads a buffer an earlier Dispatch wrote since the last barrier, or writes one an earlier
 //! Dispatch read or wrote since then; it depends on the previous barrier and on every Dispatch
 //! since, so a step after it is ordered after everything before it. Each plan ends with its one
@@ -52,8 +64,8 @@ use thiserror::Error;
 
 use crate::artifact::{DataRole, DataSpec, ParameterSpec, canonical_parameter_id};
 use crate::ir::kernel::{
-    BufferView, Epilogue, ExecutionPlan, Kernel, KernelKind, MatMulLimits, MatMulTile, Operand,
-    PlanOp, PlanStep,
+    BufferView, ChainLink, ElementwiseChain, Epilogue, ExecutionPlan, Kernel, KernelKind,
+    MatMulLimits, MatMulTile, Operand, PlanOp, PlanStep,
 };
 use crate::ir::tensor::{DType, Dim, ParamId, TensorNode, TensorOp, TensorType, ValueId};
 use crate::ir::training::{TrainConfig, TrainingStep};
@@ -146,6 +158,40 @@ struct Fusions {
     absorbed: BTreeSet<ValueId>,
     /// Each folded transpose: the operand its matmul readers read in place.
     transposed: BTreeMap<ValueId, ValueId>,
+    /// Each fused elementwise chain, by the value of its last op.
+    chains: BTreeMap<ValueId, Chain>,
+}
+
+/// The most buffers a fused elementwise chain reads: with its result, 4 storage buffers, the
+/// Vulkan minimum of `maxPerStageDescriptorStorageBuffers`.
+pub const MAX_CHAIN_READS: usize = 3;
+
+/// A chain of elementwise ops one kernel computes (the module documentation).
+struct Chain {
+    /// Its ops in order, the last the one whose value the dispatch names.
+    nodes: Vec<ValueId>,
+    /// The first op's operands, then each later op's operands but the result before it.
+    leaves: Vec<ValueId>,
+    /// The kernel op, [`ElementwiseChain::name`].
+    name: &'static str,
+}
+
+/// The chain an elementwise op is the last op of, as the pass builds it.
+struct OpenChain {
+    nodes: Vec<ValueId>,
+    leaves: Vec<ValueId>,
+    first: &'static str,
+    links: Vec<ChainLink>,
+}
+
+/// The name of `op` when it is one of the five elementwise ops.
+fn elementwise_op(op: &TensorOp) -> Option<&'static str> {
+    match op {
+        TensorOp::Add | TensorOp::Sub | TensorOp::Mul | TensorOp::Relu | TensorOp::ReluGrad => {
+            Some(op.name())
+        }
+        _ => None,
+    }
 }
 
 /// Whether `op` reads an immediate operand in its kernel.
@@ -291,12 +337,96 @@ fn fusions(
         transposed.insert(node.id, operand);
     }
 
+    // Elementwise chains, in node order: an op extends the chain of its first operand, by
+    // position, that it alone reads, once, at its own type, while the chain's buffer leaves stay
+    // within MAX_CHAIN_READS and no parameter leaf is updated before the op; else it starts one.
+    let fused_before = absorbed.clone();
+    let ty_of: BTreeMap<ValueId, &TensorType> = nodes.iter().map(|n| (n.id, &n.ty)).collect();
+    let updated_before = |leaf: ValueId, at: usize| match op_of(leaf) {
+        Some(TensorOp::ParamRead { param }) => update_of
+            .get(param)
+            .and_then(|update| position.get(update))
+            .is_some_and(|&updated| updated < at),
+        _ => false,
+    };
+    let buffers = |values: &[ValueId]| values.iter().filter(|v| !constants.contains_key(v)).count();
+    let mut open: BTreeMap<ValueId, OpenChain> = BTreeMap::new();
+    for node in nodes {
+        let Some(name) = elementwise_op(&node.op) else {
+            continue;
+        };
+        if folded.contains_key(&node.id)
+            || fused_before.contains(&node.id)
+            || updates.contains_key(&node.id)
+        {
+            continue;
+        }
+        let at = position[&node.id];
+        let extended = node.operands.iter().enumerate().find_map(|(i, &operand)| {
+            let chain = open.get(&operand)?;
+            let others: Vec<ValueId> = node
+                .operands
+                .iter()
+                .enumerate()
+                .filter(|&(j, _)| j != i)
+                .map(|(_, &v)| v)
+                .collect();
+            let fits = !bound.contains(&operand)
+                && matches!(readers_of(operand), [r] if r.id == node.id)
+                && ty_of.get(&operand) == Some(&&node.ty)
+                && buffers(&chain.leaves) + buffers(&others) <= MAX_CHAIN_READS
+                && !chain
+                    .leaves
+                    .iter()
+                    .chain(&others)
+                    .any(|&leaf| updated_before(leaf, at));
+            fits.then_some((i, operand, others))
+        });
+        let chain = match extended {
+            Some((i, operand, others)) => {
+                let mut chain = open.remove(&operand).expect("the chain is open");
+                chain.nodes.push(node.id);
+                chain.leaves.extend(others);
+                chain.links.push(ChainLink { op: name, at: i });
+                chain
+            }
+            None => OpenChain {
+                nodes: vec![node.id],
+                leaves: node.operands.clone(),
+                first: name,
+                links: Vec::new(),
+            },
+        };
+        open.insert(node.id, chain);
+    }
+    let mut chains = BTreeMap::new();
+    for (last, chain) in open {
+        if chain.links.is_empty() {
+            continue;
+        }
+        absorbed.extend(&chain.nodes[..chain.nodes.len() - 1]);
+        let name = ElementwiseChain {
+            first: chain.first,
+            links: chain.links,
+        }
+        .name();
+        chains.insert(
+            last,
+            Chain {
+                nodes: chain.nodes,
+                leaves: chain.leaves,
+                name,
+            },
+        );
+    }
+
     Fusions {
         folded,
         relu_of,
         scaled,
         absorbed,
         transposed,
+        chains,
     }
 }
 
@@ -490,6 +620,7 @@ fn schedule_with(
         }
 
         let scaled = fused.scaled.get(&node.id).copied();
+        let chain = fused.chains.get(&node.id);
         let sources = match scaled {
             Some(product) => {
                 let mul = program
@@ -502,7 +633,10 @@ fn schedule_with(
                 sources.extend(&mul.operands);
                 sources
             }
-            None => node.operands.clone(),
+            None => match chain {
+                Some(chain) => chain.leaves.clone(),
+                None => node.operands.clone(),
+            },
         };
         let mut operands = Vec::new();
         let mut reads = Vec::new();
@@ -539,6 +673,9 @@ fn schedule_with(
         let update = updates.get(&node.id).copied();
         let relu = fused.relu_of.get(&node.id).copied();
         let mut values = vec![node.id];
+        if let Some(chain) = chain {
+            values.extend(&chain.nodes[..chain.nodes.len() - 1]);
+        }
         let mut writes = Vec::new();
         match (update, relu) {
             (Some(at), _) => {
@@ -595,7 +732,12 @@ fn schedule_with(
                 } else {
                     KernelKind::Elementwise
                 };
-                (vec![one(kind, operands)?], None)
+                let mut built = one(kind, operands)?;
+                if let Some(chain) = chain {
+                    built.op = chain.name;
+                    built.id = Kernel::module_id(&built.signature());
+                }
+                (vec![built], None)
             }
             TensorOp::BroadcastScalar { .. } => (vec![one(KernelKind::Broadcast, operands)?], None),
             TensorOp::Transpose => (vec![one(KernelKind::Transpose, operands)?], None),

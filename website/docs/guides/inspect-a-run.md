@@ -62,7 +62,7 @@ names a dispatch by its position in `plan step`. Each `dispatch` line carries, a
 workgroups, `flop <n> bytes <n>`: the arithmetic of the kernel and the bytes of the views it reads
 and writes, by the counting rule of DESIGN.md § 3.1, or `uncounted` for a kernel the rule has no
 count for. Step 0, `k0`, is `flop 10035200 bytes 565504`, the `2·m·k·n` of
-`[100, 784] x [784, 64]`; the 11 dispatches of the step count 20,566,432 FLOP and 1,916,484 bytes.
+`[100, 784] x [784, 64]`; the 10 dispatches of the step count 20,566,432 FLOP and 1,908,484 bytes.
 
 ## 4. The compiled artifact
 
@@ -74,7 +74,7 @@ writes the artifact directory `build/mnist`: `artifact.json`, the manifest with 
 kernels and plans, and `kernels/<kernel_module_id>.spv`, one SPIR-V module per `kernel` line of
 `--stage kernel`. `--device-profile` builds the modules for a device profile file, here the RTX
 3090 profile the tests use, so no GPU or Vulkan loader is needed; without it `compile` builds for
-device 0. Before it prints `artifact <artifact_id> <artifact_hash> kernels=11 build/mnist`, it
+device 0. Before it prints `artifact <artifact_id> <artifact_hash> kernels=10 build/mnist`, it
 reads the directory back through the same reader that refuses an altered artifact with
 `E-ARTIFACT-001` to `E-ARTIFACT-004`. Compiling the same file twice gives byte-equal directories.
 
@@ -106,35 +106,36 @@ trains as without `--profile`, with the same lines on stdout and the same single
 stderr it adds one line per dispatch site and then the counters. `--steps 72000` makes the run
 long enough to time a warm GPU: the file's 1,800 steps finish in about 0.3 s, too short a run
 to time a GPU whose clocks are not locked. This is one run on an RTX 3090 that had just run the
-same command three times with `--stats`, its SM clock 1,965 MHz in all 30 of its 100 ms samples:
+same command three times with `--stats`. Its SM clock was between 780 and 1,080 MHz in its 46
+samples of 100 ms, below the 1,965 MHz of the runs in the last paragraph, so its times do not
+compare with theirs:
 
 ```text
-profile dispatch step 0 6bd32d9c-1c0c-8fd4-96b2-46d2c722adc9 main calls 72000 total_us 607600.128 mean_us 8.439 flop 10035200 bytes 565504 gflop_per_s 1189.161 gb_per_s 67.012
-profile dispatch step 2 b2b11a63-ac18-8b96-9ec3-1751b6ebc039 main calls 72000 total_us 166697.152 mean_us 2.315 flop 128000 bytes 32160 gflop_per_s 55.286 gb_per_s 13.891
-profile dispatch step 4 d588cbc2-b3eb-8bf1-93a1-29d8680aba58 main calls 72000 total_us 284984.064 mean_us 3.958 flop 2000 bytes 8004 gflop_per_s 0.505 gb_per_s 2.022
-profile dispatch step 5 2e1ec459-43bd-81d2-b9db-fa0f7fe3ae74 main calls 72000 total_us 135981.216 mean_us 1.889 flop 1000 bytes 12000 gflop_per_s 0.529 gb_per_s 6.354
-profile dispatch step 7 3e9bd9e4-7689-8b30-9582-05282d19167c main calls 72000 total_us 129937.472 mean_us 1.805 flop 1000 bytes 8000 gflop_per_s 0.554 gb_per_s 4.433
-profile dispatch step 9 aa03322b-5cc2-8da1-afcf-82921498cd59 main calls 72000 total_us 155874.432 mean_us 2.165 flop 128000 bytes 32160 gflop_per_s 59.125 gb_per_s 14.855
-profile dispatch step 10 41241727-be45-83a9-81e8-662471eaedc9 main calls 72000 total_us 186567.904 mean_us 2.591 flop 128000 bytes 32160 gflop_per_s 49.398 gb_per_s 12.411
-profile dispatch step 12 ae896a79-8d47-8bca-807a-453bc394ae43 main calls 72000 total_us 136235.072 mean_us 1.892 flop 6400 bytes 76800 gflop_per_s 3.382 gb_per_s 40.589
-profile dispatch step 14 c2dc253f-25aa-8b18-8282-fcea6ad8f491 main calls 72000 total_us 339166.080 mean_us 4.711 flop 10035200 bytes 539904 gflop_per_s 2130.326 gb_per_s 114.614
-profile dispatch step 16 88daaa23-8dc9-8bc4-ab05-dc5ecc946d99 main calls 72000 total_us 171031.968 mean_us 2.375 flop 100352 bytes 602112 gflop_per_s 42.246 gb_per_s 253.473
-profile dispatch step 17 f509ed52-1817-8bb7-91f5-a998f93b9005 main calls 72000 total_us 134048.896 mean_us 1.862 flop 1280 bytes 7680 gflop_per_s 0.688 gb_per_s 4.125
-profile dispatch final 0 6bd32d9c-1c0c-8fd4-96b2-46d2c722adc9 main calls 1 total_us 8.064 mean_us 8.064 flop 10035200 bytes 565504 gflop_per_s 1244.444 gb_per_s 70.127
-profile dispatch final 2 b2b11a63-ac18-8b96-9ec3-1751b6ebc039 main calls 1 total_us 2.048 mean_us 2.048 flop 128000 bytes 32160 gflop_per_s 62.500 gb_per_s 15.703
-profile dispatch final 4 d588cbc2-b3eb-8bf1-93a1-29d8680aba58 main calls 1 total_us 4.096 mean_us 4.096 flop 2000 bytes 8004 gflop_per_s 0.488 gb_per_s 1.954
-profile dispatches 792003
+profile dispatch step 0 6bd32d9c-1c0c-8fd4-96b2-46d2c722adc9 main calls 72000 total_us 1077227.040 mean_us 14.961 flop 10035200 bytes 565504 gflop_per_s 670.735 gb_per_s 37.797
+profile dispatch step 2 b2b11a63-ac18-8b96-9ec3-1751b6ebc039 main calls 72000 total_us 279154.240 mean_us 3.877 flop 128000 bytes 32160 gflop_per_s 33.014 gb_per_s 8.295
+profile dispatch step 4 d588cbc2-b3eb-8bf1-93a1-29d8680aba58 main calls 72000 total_us 547090.624 mean_us 7.598 flop 2000 bytes 8004 gflop_per_s 0.263 gb_per_s 1.053
+profile dispatch step 5 09cd7ac3-53f2-8dbf-9ba7-b3ae566b111b main calls 72000 total_us 221928.928 mean_us 3.082 flop 2000 bytes 12000 gflop_per_s 0.649 gb_per_s 3.893
+profile dispatch step 7 aa03322b-5cc2-8da1-afcf-82921498cd59 main calls 72000 total_us 256955.776 mean_us 3.569 flop 128000 bytes 32160 gflop_per_s 35.866 gb_per_s 9.011
+profile dispatch step 8 41241727-be45-83a9-81e8-662471eaedc9 main calls 72000 total_us 314758.784 mean_us 4.372 flop 128000 bytes 32160 gflop_per_s 29.280 gb_per_s 7.356
+profile dispatch step 10 ae896a79-8d47-8bca-807a-453bc394ae43 main calls 72000 total_us 224121.088 mean_us 3.113 flop 6400 bytes 76800 gflop_per_s 2.056 gb_per_s 24.672
+profile dispatch step 12 c2dc253f-25aa-8b18-8282-fcea6ad8f491 main calls 72000 total_us 590253.824 mean_us 8.198 flop 10035200 bytes 539904 gflop_per_s 1224.108 gb_per_s 65.858
+profile dispatch step 14 88daaa23-8dc9-8bc4-ab05-dc5ecc946d99 main calls 72000 total_us 277634.752 mean_us 3.856 flop 100352 bytes 602112 gflop_per_s 26.025 gb_per_s 156.148
+profile dispatch step 15 f509ed52-1817-8bb7-91f5-a998f93b9005 main calls 72000 total_us 219640.544 mean_us 3.051 flop 1280 bytes 7680 gflop_per_s 0.420 gb_per_s 2.518
+profile dispatch final 0 6bd32d9c-1c0c-8fd4-96b2-46d2c722adc9 main calls 1 total_us 12.288 mean_us 12.288 flop 10035200 bytes 565504 gflop_per_s 816.667 gb_per_s 46.021
+profile dispatch final 2 b2b11a63-ac18-8b96-9ec3-1751b6ebc039 main calls 1 total_us 4.096 mean_us 4.096 flop 128000 bytes 32160 gflop_per_s 31.250 gb_per_s 7.852
+profile dispatch final 4 d588cbc2-b3eb-8bf1-93a1-29d8680aba58 main calls 1 total_us 6.144 mean_us 6.144 flop 2000 bytes 8004 gflop_per_s 0.326 gb_per_s 1.303
+profile dispatches 720003
 profile submits 282
 profile host_waits 1
-profile barriers_per_step 10
+profile barriers_per_step 9
 profile bytes_uploaded 520864
 profile bytes_downloaded 491268
-profile device_allocations 17
-profile peak_device_bytes 2138704
-profile pipeline_creation_us 1419.235
-profile compile_us 1860.517
-profile steady_us_per_step 37.278
-profile step_total flop 20566432 bytes 1916484 gflop_per_s 551.702 gb_per_s 51.410 uncounted_sites 0
+profile device_allocations 16
+profile peak_device_bytes 2134704
+profile pipeline_creation_us 1324.508
+profile compile_us 1741.990
+profile steady_us_per_step 59.444
+profile step_total flop 20566432 bytes 1908484 gflop_per_s 345.983 gb_per_s 32.106 uncounted_sites 0
 ```
 
 | Field | What it says |
@@ -153,21 +154,21 @@ profile step_total flop 20566432 bytes 1916484 gflop_per_s 551.702 gb_per_s 51.4
 | `uncounted` | in place of the four fields above, for a dispatch the counting rule has no count for |
 | `step_total` | the last line: the `flop` and `bytes` of every counted `step` site, over `steady_us_per_step`, and `uncounted_sites`, the `step` sites it leaves out |
 
-The step's 10 barriers are the 8 `barrier` steps of `plan step` and the 2 around the copy of its
-loss, and the 17 allocations are the 14 plan buffers, the loss buffer and one staging buffer each
+The step's 9 barriers are the 7 `barrier` steps of `plan step` and the 2 around the copy of its
+loss, and the 16 allocations are the 13 plan buffers, the loss buffer and one staging buffer each
 for the upload and the read-back. None of the counters depends on timing. The last line divides
-the step's 20,566,432 FLOP and 1,916,484 bytes by the 37.278 µs step. Bytes are what the views
+the step's 20,566,432 FLOP and 1,908,484 bytes by the 59.444 µs step. Bytes are what the views
 name, not DRAM traffic measured on the device.
 
 Here step position 4, module `d588cbc2…`, is `k2`, the `mse` loss sum on one workgroup of 64
-invocations: 4.0 µs of the 37.3 µs step. A device without timestamp queries prints
+invocations: 7.6 µs of the 59.4 µs step. A device without timestamp queries prints
 `profile kernel timings unavailable: no timestamp queries` in place of the dispatch lines and
 still prints the counters.
 
 The timestamps cost time themselves. On the same warm RTX 3090, 72,000 steps of the 14
 dispatches the step had before matmuls read transposed operands in place took 27.1 to 27.3 µs
 per step with `--stats` alone and 44.0 to 44.2 µs with `--profile` (three runs each, SM clock
-between 1,860 and 1,980 MHz in 100 ms samples, 1,965 MHz in 182 of 192). The 11 dispatches of
-the current step take 37.1 to 37.3 µs with `--profile` (three runs, SM clock 1,965 MHz in all
-90 samples). Compare profiled runs with profiled runs, and use `--stats` alone for the time per
-step.
+between 1,860 and 1,980 MHz in 100 ms samples, 1,965 MHz in 182 of 192). The 11 dispatches the
+step had before its loss gradient became one elementwise chain took 37.1 to 37.3 µs with
+`--profile` (three runs, SM clock 1,965 MHz in all 90 samples). Compare profiled runs with
+profiled runs, and use `--stats` alone for the time per step.

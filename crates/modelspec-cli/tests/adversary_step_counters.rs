@@ -128,8 +128,8 @@ fn stats_and_profile_print_the_same_three_counters() {
         assert_eq!(both_profile.get(counter), Some(value), "{counter}");
         assert_eq!(profile_only.get(counter), Some(value), "{counter}");
     }
-    assert_eq!(stats_only["barriers per step"], "7");
-    assert_eq!(stats_only["device allocations"], "11");
+    assert_eq!(stats_only["barriers per step"], "6");
+    assert_eq!(stats_only["device allocations"], "10");
 }
 
 /// A run that writes checkpoints on the way, and a run resumed from one, record the same step,

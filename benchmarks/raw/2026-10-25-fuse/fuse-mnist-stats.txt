@@ -1,0 +1,15 @@
+# after binary (worktree)
+# command: modelspec train examples/mnist_mlp.mspec --backend vulkan --stats --record <scratch>/runs/fuse-mnist.record --checkpoint <scratch>/runs/fuse-mnist.msckpt
+# gpu-apps-before []
+steps: 1800
+host waits: 1
+submits: 8
+dispatches: 18003
+dispatches per step: 10
+barriers per step: 9
+bytes uploaded: 520864
+bytes downloaded: 210468
+device allocations: 16
+peak device bytes: 1573104
+numerics class: tolerance
+us per step: 48.691

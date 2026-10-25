@@ -46,7 +46,8 @@ use std::collections::{BTreeMap, VecDeque};
 use modelspec_core::artifact::{CompiledArtifact, ContentHash};
 use modelspec_core::device::DeviceProfile;
 use modelspec_core::ir::kernel::{
-    Epilogue, Kernel, KernelKind, KernelModuleId, MatMulLayout, MatMulTile, Operand,
+    ElementwiseChain, Epilogue, Kernel, KernelKind, KernelModuleId, MatMulLayout, MatMulTile,
+    Operand,
 };
 use modelspec_core::ir::tensor::{DType, Dim, TensorType};
 use rspirv::binary::Assemble;
@@ -310,6 +311,8 @@ fn buffer_shapes(kernel: &Kernel, arity: usize) -> Result<Vec<Vec<u64>>, EmitErr
 /// What one module computes, its constants taken from the kernel's shapes.
 enum Body {
     Elementwise(Arith, Vec<Source>),
+    /// A fused elementwise chain ([`ElementwiseChain`]): each op and its inputs, in order.
+    Chain(Vec<(Arith, Vec<Input>)>),
     Stage1,
     Stage2 {
         divide_by: Option<u32>,
@@ -543,7 +546,70 @@ enum Source {
     Immediate(f32),
 }
 
+/// One input of an op of a fused elementwise chain.
+#[derive(Clone, Copy)]
+enum Input {
+    /// A leaf of the chain, an operand of the kernel.
+    Source(Source),
+    /// The result of the op before it.
+    Previous,
+}
+
+/// The body of an `elementwise` kernel whose op names the chain `chain`: its operands are the
+/// chain's leaves, bound in order.
+fn chain_body(kernel: &Kernel, chain: &ElementwiseChain) -> Result<Body, EmitError> {
+    if kernel.operands.len() != chain.operands() {
+        return Err(operands_error(
+            kernel,
+            format!(
+                "{} operands, the chain takes {}",
+                kernel.operands.len(),
+                chain.operands()
+            ),
+        ));
+    }
+    let mut binding = 0;
+    let mut leaves = kernel.operands.iter().map(|operand| match operand {
+        Operand::Buffer(ty) => {
+            let source = Source::Buffer {
+                binding,
+                scalar: ty.rank() == 0,
+            };
+            binding += 1;
+            Input::Source(source)
+        }
+        Operand::Immediate(value) => Input::Source(Source::Immediate(*value)),
+    });
+    let arith = |op: &str| match op {
+        "Add" => Arith::Add,
+        "Sub" => Arith::Sub,
+        "Mul" => Arith::Mul,
+        "Relu" => Arith::Relu,
+        _ => Arith::ReluGrad,
+    };
+    let mut ops = Vec::new();
+    let first = arith(chain.first);
+    ops.push((first, leaves.by_ref().take(first.arity()).collect()));
+    for link in &chain.links {
+        let op = arith(link.op);
+        let inputs = (0..op.arity())
+            .map(|i| match i == link.at {
+                true => Some(Input::Previous),
+                false => leaves.next(),
+            })
+            .collect::<Option<Vec<Input>>>()
+            .expect("the operand count is the chain's");
+        ops.push((op, inputs));
+    }
+    Ok(Body::Chain(ops))
+}
+
 fn elementwise(kernel: &Kernel) -> Result<Body, EmitError> {
+    if kernel.kind == KernelKind::Elementwise
+        && let Some(chain) = ElementwiseChain::parse(kernel.op)
+    {
+        return chain_body(kernel, &chain);
+    }
     let arith = Arith::of(kernel)?;
     if kernel.operands.len() != arith.arity() {
         return Err(operands_error(
@@ -626,9 +692,9 @@ fn build(
         ));
     }
     // Every float add, subtract, multiply and fused multiply-add of a reduction, loss-sum,
-    // transpose or matmul module, and the product and difference of an SGD update with three
-    // operands, is decorated `NoContraction`; none is in a `fast_math` module (DESIGN.md § 5.4,
-    // § 12 ADR-008, ADR-009).
+    // transpose or matmul module, the product and difference of an SGD update with three
+    // operands, and each op of a fused elementwise chain, is decorated `NoContraction`; none is
+    // in a `fast_math` module (DESIGN.md § 3.1, § 5.4, § 12 ADR-008, ADR-009).
     let exact = !fast_math
         && match body {
             Body::Elementwise(arith, _) => arith == Arith::ScaledSub,
@@ -645,6 +711,7 @@ fn build(
     )?;
     match body {
         Body::Elementwise(arith, sources) => m.elementwise(arith, &sources)?,
+        Body::Chain(ops) => m.chain(&ops)?,
         Body::Stage1 => m.stage1()?,
         Body::Stage2 { divide_by } => m.stage2(divide_by)?,
         Body::LossSum {
@@ -1292,6 +1359,47 @@ impl Shell {
                 Arith::Copy => values[0],
             };
             m.write(index, result)
+        })
+    }
+
+    /// A fused elementwise chain: each op computed from its inputs and rounded once, in order,
+    /// its add, subtract or multiply decorated `NoContraction` unless the module is `fast_math`,
+    /// so no driver contracts two ops into one fused multiply-add; the last op's result is
+    /// written. The intermediate results stay in registers.
+    fn chain(&mut self, ops: &[(Arith, Vec<Input>)]) -> Result<(), EmitError> {
+        let (index, count) = (self.index, self.count);
+        let inside = self.less(index, count)?;
+        self.when(inside, |m| {
+            let mut previous = None;
+            for (arith, inputs) in ops {
+                let mut values = Vec::new();
+                for input in inputs {
+                    let value = match *input {
+                        Input::Previous => previous.expect("only a later op reads the previous"),
+                        Input::Source(Source::Buffer { binding, scalar }) => {
+                            let at = if scalar { m.uint(0) } else { index };
+                            m.read(binding as usize, at)?
+                        }
+                        Input::Source(Source::Immediate(value)) => m.float(value),
+                    };
+                    values.push(value);
+                }
+                let result = match arith {
+                    Arith::Add => m.f_add(values[0], values[1])?,
+                    Arith::Sub => m.f_sub(values[0], values[1])?,
+                    Arith::Mul => m.f_mul(values[0], values[1])?,
+                    Arith::Relu => m.relu(values[0])?,
+                    Arith::ReluGrad => {
+                        let f_zero = m.float(0.0);
+                        let (f32_ty, bool_ty) = (m.f32_ty, m.bool_ty);
+                        let positive = m.b.f_ord_greater_than(bool_ty, None, values[0], f_zero)?;
+                        m.b.select(f32_ty, None, positive, values[1], f_zero)?
+                    }
+                    Arith::ScaledSub | Arith::Copy => unreachable!("no op of a chain"),
+                };
+                previous = Some(result);
+            }
+            m.write(index, previous.expect("a chain has ops"))
         })
     }
 

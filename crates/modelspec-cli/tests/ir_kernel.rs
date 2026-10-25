@@ -48,6 +48,29 @@ fn the_golden_is_the_printed_plan_of_the_vulkan_artifact() {
     assert_eq!(print_kernel(&artifact.execution), GOLDEN);
 }
 
+/// story:fuse-elementwise-chains-and-gradient-sums: the `Sub`→`Mul` chain of the linear
+/// regression's loss gradient is one dispatch, and its `Sub` has no buffer.
+#[test]
+fn the_golden_runs_the_loss_gradient_chain_as_one_dispatch() {
+    let chain = GOLDEN
+        .lines()
+        .find(|l| l.starts_with("kernel ") && l.contains(" elementwise "))
+        .expect("an elementwise kernel");
+    assert!(
+        chain.contains(
+            " elementwise Sub>Mul@0 f32 (Tensor<f32, [8, 1]>, Tensor<f32, [8, 1]>, 0.25) \
+             -> Tensor<f32, [8, 1]> "
+        ),
+        "{chain}"
+    );
+    let step = plan_lines(GOLDEN, "step");
+    let dispatches = step.iter().filter(|l| l.contains(": dispatch ")).count();
+    let barriers = step.iter().filter(|l| l.contains(": barrier")).count();
+    assert_eq!((dispatches, barriers), (5, 4), "{GOLDEN}");
+    let buffers = GOLDEN.lines().filter(|l| l.starts_with("buffer ")).count();
+    assert_eq!(buffers, 7, "no buffer for the chain's `Sub`: {GOLDEN}");
+}
+
 #[test]
 fn the_golden_shows_both_plans_and_no_completion_point() {
     assert!(GOLDEN.contains("\nplan step\n"), "{GOLDEN}");
@@ -93,7 +116,31 @@ fn ir_stage_kernel_of_mnist_shows_the_fused_step_plan() {
     let step = plan_lines(&printed, "step");
     let dispatches = step.iter().filter(|l| l.contains(": dispatch ")).count();
     let barriers = step.iter().filter(|l| l.contains(": barrier")).count();
-    assert_eq!((dispatches, barriers), (11, 8), "{printed}");
+    // The `(y - t) * c` of the loss gradient is one fused elementwise chain since
+    // story:fuse-elementwise-chains-and-gradient-sums: 11 dispatches and 8 barriers before it.
+    assert_eq!((dispatches, barriers), (10, 7), "{printed}");
+    let chains: Vec<&str> = printed
+        .lines()
+        .filter(|l| l.starts_with("kernel ") && l.contains(" elementwise "))
+        .filter(|l| {
+            l.split(" elementwise ")
+                .nth(1)
+                .and_then(|rest| rest.split(' ').next())
+                .is_some_and(|op| op.contains('>'))
+        })
+        .collect();
+    let [chain] = chains[..] else {
+        panic!("one fused elementwise chain: {chains:#?}\n{printed}");
+    };
+    assert!(
+        chain.contains(
+            " elementwise Sub>Mul@0 f32 (Tensor<f32, [100, 10]>, Tensor<f32, [100, 10]>, 0.002) \
+             -> Tensor<f32, [100, 10]> "
+        ),
+        "{chain}"
+    );
+    assert!(!printed.contains(" elementwise Sub f32 "), "{printed}");
+    assert!(!printed.contains(" elementwise Mul f32 "), "{printed}");
     // Each transpose of the step is read only by matmuls, which read it in place (DESIGN.md § 3.1).
     assert!(!printed.contains(" transpose Transpose "), "{printed}");
     assert_eq!(printed.matches("> transposed").count(), 3, "{printed}");
