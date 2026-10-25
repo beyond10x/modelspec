@@ -1,0 +1,13 @@
+{
+  "at": "2026-10-25T13:38:38Z",
+  "actor": "human:timo",
+  "artifact": "story:bert-adamw-warmup",
+  "kind": "story",
+  "revision": 6,
+  "change": {
+    "change": "evidence",
+    "kind": "test_result",
+    "source": "task ci",
+    "reference": "8630f168590a1256e9e53607368ea4be728684bb"
+  }
+}
