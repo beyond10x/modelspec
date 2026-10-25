@@ -1,0 +1,13 @@
+# binary: <scratch>/bin/mlp_sweep-fbadb51
+# cwd: <scratch>/tree-fbadb51/crates/modelspec-runtime
+# args: --bench --point 8192:4096 --min-seconds 6
+# start: 1792902213203
+mlp_sweep: warning: not a clean checkout: Build { version: Some("0.9.0"), commit: None, dirty: None }
+mlp_sweep: batch 8192 hidden 4096: 107239964672 FLOP per step
+mlp_sweep:   calibration: 451 steps in 4.152 s
+mlp_sweep:   calibration: 783 steps in 6.383 s
+mlp_sweep:   timed: 783 steps in 6.201 s, 7919.188 us per step
+mlp_sweep:   timed: 783 steps in 6.403 s, 8176.935 us per step
+mlp_sweep:   timed: 783 steps in 6.460 s, 8250.228 us per step
+# end: 1792902246681
+EXIT=0

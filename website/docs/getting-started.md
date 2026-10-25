@@ -1,19 +1,19 @@
 ---
 title: Getting started
-description: Download the modelspec 0.9.0 binary, verify it, and check and train the example model on the CPU reference or a Vulkan GPU.
+description: Download the modelspec 0.10.0 binary, verify it, and check and train the example model on the CPU reference or a Vulkan GPU.
 ---
 
 # Getting started
 
-## Install the 0.9.0 binary
+## Install the 0.10.0 binary
 
-The [0.9.0 release](https://github.com/beyond10x/modelspec/releases/tag/0.9.0) carries one
+The [0.10.0 release](https://github.com/beyond10x/modelspec/releases/tag/0.10.0) carries one
 prebuilt binary, for Linux on x86_64, and its SHA-256 checksum. There is no macOS, Windows or
 aarch64 binary; on those, [build from source](#build-from-source).
 
 ```sh
-base=https://github.com/beyond10x/modelspec/releases/download/0.9.0
-bin=modelspec-0.9.0-x86_64-unknown-linux-gnu
+base=https://github.com/beyond10x/modelspec/releases/download/0.10.0
+bin=modelspec-0.10.0-x86_64-unknown-linux-gnu
 curl -fsSLO "$base/$bin"
 curl -fsSLO "$base/$bin.sha256"
 sha256sum -c "$bin.sha256"
@@ -21,8 +21,8 @@ install -D -m 755 "$bin" ~/.local/bin/modelspec
 modelspec --version
 ```
 
-`sha256sum -c` prints `modelspec-0.9.0-x86_64-unknown-linux-gnu: OK`, and `modelspec --version`
-prints `modelspec 0.9.0`. `install -D` creates `~/.local/bin` if it is missing; that directory
+`sha256sum -c` prints `modelspec-0.10.0-x86_64-unknown-linux-gnu: OK`, and `modelspec --version`
+prints `modelspec 0.10.0`. `install -D` creates `~/.local/bin` if it is missing; that directory
 must be on your `PATH` for the last line to find the binary. The binary links only the C runtime
 (`libc`, `libm` and `libgcc_s`), which every glibc Linux system has. `train --backend vulkan` and
 `inspect-device` open the system Vulkan loader when they run; a machine without one gets

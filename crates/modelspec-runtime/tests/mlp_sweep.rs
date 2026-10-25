@@ -399,7 +399,7 @@ fn every_result_line_carries_its_build() {
 #[cfg(feature = "vulkan")]
 mod rtx3090 {
     use modelspec_core::artifact::Backend;
-    use modelspec_core::compile::{compile_artifact, compile_training};
+    use modelspec_core::compile::{compile_artifact, compile_artifact_for, compile_training};
     use modelspec_core::device::DeviceProfile;
     use modelspec_core::ir::kernel::{Kernel, KernelKind, PlanOp};
     use modelspec_runtime::spirv::emit::emit_kernels;
@@ -492,6 +492,43 @@ mod rtx3090 {
                 ..RunOptions::default()
             };
             assert_eq!(options.data.as_ref(), Some(&data), "{name}");
+        }
+    }
+
+    /// story:sweep-run-starts-busy: the bench compiles a point once, at the warm-up's step count,
+    /// and runs its calibration and timed runs on that one setup with their own step counts
+    /// (`benches/mlp_sweep/runs.rs`). That is the run of the point's source at those step counts
+    /// because nothing the runner reads depends on the count: the training step, the forward
+    /// program, the device plan and its matmul limits are the same, and the train block differs
+    /// in its `steps` alone. Every point, scheduled for the RTX 3090 profile as the bench
+    /// schedules it.
+    #[test]
+    fn a_point_s_plan_is_the_same_at_every_step_count() {
+        let profile = DeviceProfile::from_json(FIXTURE).expect("the fixture is a valid profile");
+        for point in points() {
+            let name = point.file_name();
+            let warm_source = point.source(20);
+            let timed_source = point.source(5000);
+            let warm = compile_training(&name, &warm_source).expect("compiles");
+            let timed = compile_training(&name, &timed_source).expect("compiles");
+            assert_eq!(warm.training, timed.training, "{name}");
+            assert_eq!(warm.forward, timed.forward, "{name}");
+            assert_eq!(
+                (warm.config.steps, timed.config.steps),
+                (20, 5000),
+                "{name}"
+            );
+            let mut config = timed.config.clone();
+            config.steps = warm.config.steps;
+            assert_eq!(config, warm.config, "{name}");
+            let artifact = |source: &str| {
+                compile_artifact_for(&name, source, Backend::Vulkan, Some(&profile))
+                    .expect("compiles for Vulkan")
+            };
+            let (warm, timed) = (artifact(&warm_source), artifact(&timed_source));
+            assert_eq!(warm.execution, timed.execution, "{name}");
+            assert_eq!(warm.matmul_limits, timed.matmul_limits, "{name}");
+            assert_eq!(warm.fast_math, timed.fast_math, "{name}");
         }
     }
 }

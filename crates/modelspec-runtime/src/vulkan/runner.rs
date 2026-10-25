@@ -40,6 +40,12 @@
 //! [`train_profiled`] runs the same recording with a timestamp before and after each dispatch,
 //! written into one query pool per command buffer and read after the one wait, and returns a
 //! [`Profile`] of every dispatch site (DESIGN.md § 8, `--profile`).
+//!
+//! [`train_repeatedly`] runs [`train`] again and again on one setup, each run from step 0 with a
+//! step count of its own, so the device idles between two runs only while the host reads one run
+//! back and records the next run's first command buffer: what the MLP size sweep's back-to-back
+//! timed runs need (story:sweep-run-starts-busy). The parameters and losses are read back from a
+//! [`Device::download_buffer`], host-cached memory where the device has it.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -368,6 +374,49 @@ pub fn train_with(
     Ok((done.run, done.stats))
 }
 
+/// [`train`] on `data` (the synthetic batch the run draws itself when `None`), run after run on
+/// one setup: the SPIR-V, the pipelines, the buffers, the descriptor sets, the initial parameter
+/// draws and the upload staging buffer are made once. Each run starts at step 0 from the same
+/// initial parameters and batch, copied up by its first command buffer, and ends with its one
+/// host wait, as a [`train`] of the same file with that many steps would. The first run has the
+/// file's `steps`; `next`, given each finished run and its [`RunStats`], returns the steps of the
+/// next run, or `None` to end. Between one run's wait and the next run's first submit the host
+/// reads the run back, checks it (E-TRAIN-001), makes the next run's losses and read-back
+/// buffers and records its first command buffer; nothing else, so the device does not idle
+/// through a whole setup between two runs (story:sweep-run-starts-busy). A run that diverges ends
+/// the series with its [`VulkanRunError::NonFinite`]. Each run's [`RunStats`] count its own
+/// submits, waits, dispatches and copies; `device_allocations` and `peak_device_bytes` count from
+/// the start of the series, the setup's buffers included.
+pub fn train_repeatedly(
+    device: &Device<'_>,
+    profile: &DeviceProfile,
+    negotiated: &Negotiated,
+    compiled: &CompiledTraining,
+    artifact: &CompiledArtifact,
+    data: Option<SyntheticData>,
+    next: &mut dyn FnMut(Run, RunStats) -> Option<u64>,
+) -> Result<(), VulkanRunError> {
+    let job = Job {
+        steps: compiled.config.steps,
+        profiled: false,
+        predict: false,
+    };
+    let options = RunOptions {
+        data,
+        ..RunOptions::default()
+    };
+    execute_runs(
+        device,
+        profile,
+        negotiated,
+        compiled,
+        artifact,
+        job,
+        options,
+        &mut |done| next(done.run, done.stats),
+    )
+}
+
 /// The forward program of `compiled` on `device` with the parameter values `params` (a
 /// checkpoint's, [`crate::train::checkpoint::Checkpoint::parameters_for`]) and the synthetic batch
 /// of the file's `train` block: the steps of the step plan up to the loss, recorded once, with one
@@ -453,9 +502,8 @@ struct Stamps<'p> {
     next: u32,
 }
 
-/// [`train`] for `job` from the start and with the checkpoints of `options`. A device that reports
-/// less than the limits `artifact` was scheduled for is refused before anything is built or
-/// dispatched ([`check_device`], E-ARTIFACT-005).
+/// [`train`] for `job` from the start and with the checkpoints of `options`: [`execute_runs`]
+/// for one run.
 fn execute(
     device: &Device<'_>,
     profile: &DeviceProfile,
@@ -465,6 +513,44 @@ fn execute(
     job: Job,
     options: RunOptions<'_>,
 ) -> Result<Done, VulkanRunError> {
+    let mut finished = None;
+    execute_runs(
+        device,
+        profile,
+        negotiated,
+        compiled,
+        artifact,
+        job,
+        options,
+        &mut |done| {
+            finished = Some(done);
+            None
+        },
+    )?;
+    Ok(finished.expect("execute_runs hands over at least one run"))
+}
+
+/// [`train`] for `job` from the start and with the checkpoints of `options`, then again on the
+/// same pipelines, buffers, descriptor sets and upload for as long as `next`, given each finished
+/// run, returns the step count of another. A device that reports less than the limits
+/// `artifact` was scheduled for is refused before anything is built or dispatched
+/// ([`check_device`], E-ARTIFACT-005).
+///
+/// Every run starts at `options.start` from the same initial parameters and batch, copied up from
+/// the one upload staging buffer by the run's first command buffer, and writes the checkpoints of
+/// `options` that fall in it. Only the losses buffer, the read-back buffer and the timestamp pools
+/// are made per run, for its step count.
+#[allow(clippy::too_many_arguments)]
+fn execute_runs(
+    device: &Device<'_>,
+    profile: &DeviceProfile,
+    negotiated: &Negotiated,
+    compiled: &CompiledTraining,
+    artifact: &CompiledArtifact,
+    job: Job,
+    options: RunOptions<'_>,
+    next: &mut dyn FnMut(Done) -> Option<u64>,
+) -> Result<(), VulkanRunError> {
     check_device(artifact, profile).map_err(|refused| VulkanRunError::Plan(refused.to_string()))?;
     let plan = &artifact.execution;
     let config = &compiled.config;
@@ -481,7 +567,7 @@ fn execute(
         checkpoints,
         data,
     } = options;
-    let end = start
+    start
         .checked_add(steps)
         .ok_or_else(|| refused(RunError::StepCount { start, steps }))?;
     let mut initial = initialize(&forward.program, config.seed, Stream::Init)
@@ -495,16 +581,6 @@ fn execute(
         Some(Checkpoints { every, write }) if every > 0 => (every, Some(write)),
         _ => (0, None),
     };
-    // The steps after which the host waits, counted from the start: each due checkpoint, then
-    // the end.
-    let mut stops: Vec<u64> = if write.is_some() {
-        (1..steps)
-            .filter(|k| (start + k).is_multiple_of(every))
-            .collect()
-    } else {
-        Vec::new()
-    };
-    stops.push(steps);
 
     // The device memory of the run: every buffer it makes is made after this.
     let memory = MemorySpan::start();
@@ -577,18 +653,6 @@ fn execute(
             .collect::<Vec<_>>(),
     )?;
 
-    let loss_slots = steps
-        .checked_add(1)
-        .ok_or_else(|| VulkanRunError::Plan(format!("{steps} steps have no final loss")))?;
-    let losses = device.device_local_buffer(4 * loss_slots)?;
-    let param_bytes: u64 = plan.parameters.iter().map(|p| p.views[0].size_bytes).sum();
-    let prediction_bytes = if predict {
-        plan.prediction_view.size_bytes
-    } else {
-        0
-    };
-    let mut download = device.staging_buffer(param_bytes + 4 * loss_slots + prediction_bytes)?;
-
     let dispatch_steps = plan
         .step
         .iter()
@@ -624,283 +688,317 @@ fn execute(
     let clock = device
         .clock()
         .filter(|_| profiled && profile.timestamp_queries);
-    let mut pools = Vec::new();
-    if clock.is_some() {
-        let per_step = 2 * step_sites.len() as u64;
-        let chunks = steps.div_ceil(CHUNK_STEPS).max(1);
-        for chunk in 0..chunks {
-            let chunk_steps = (steps - chunk * CHUNK_STEPS).min(CHUNK_STEPS);
-            let mut queries = per_step * chunk_steps;
-            if chunk + 1 == chunks {
-                queries += 2 * final_sites.len() as u64;
-            }
-            let queries = u32::try_from(queries).map_err(|_| {
-                VulkanRunError::Plan(format!("{queries} timestamp queries do not fit u32"))
-            })?;
-            pools.push(device.timestamp_pool(queries)?);
-        }
-    }
-    let stamps_of = |chunk: usize, next: u32| pools.get(chunk).map(|pool| Stamps { pool, next });
-
-    let class = numerics_class(negotiated, artifact);
-    let waits_before = device.host_waits();
-    let submits_before = device.submits();
-    let dispatches_before = device.dispatches();
-    let uploaded_before = device.bytes_uploaded();
-    let downloaded_before = device.bytes_downloaded();
-    let mut dispatches_per_step = 0;
-    let mut barriers_per_step = 0;
-    let mut first_submit: Option<Instant> = None;
-    let loss = buffer(&buffers, &plan.loss_view)?;
-    // The counters of the first `ran` steps, from the first submit to the last wait.
-    let count = |ran: u64,
-                 dispatches_per_step: u64,
-                 barriers_per_step: u64,
-                 first_submit: Option<Instant>| RunStats {
-        steps: ran,
-        host_waits: device.host_waits() - waits_before,
-        submits: device.submits() - submits_before,
-        dispatches: device.dispatches() - dispatches_before,
-        dispatches_per_step,
-        barriers_per_step,
-        bytes_uploaded: device.bytes_uploaded() - uploaded_before,
-        bytes_downloaded: device.bytes_downloaded() - downloaded_before,
-        device_allocations: memory.allocations(),
-        peak_device_bytes: memory.peak_bytes(),
-        class,
-        elapsed: first_submit
-            .expect("a run submits at least one command buffer")
-            .elapsed(),
-    };
-    // The profile of the first `ran` steps, when `profiled`. `stopped` is `None` for the whole
-    // run, every pool written and the final loss evaluation last; for a run stopped at a
-    // checkpoint it is the chunk the last step recorded into and the queries written in its pool,
-    // the pools after it unwritten and no final loss evaluation recorded.
-    let profile_of = |ran: u64, stopped: Option<(usize, u32)>| {
-        if !profiled {
-            return Ok(None);
-        }
-        let timings = match clock {
-            Some(clock) => {
-                let mut stamps = Vec::new();
-                let full = stopped.map_or(pools.len(), |(chunk, _)| chunk);
-                for pool in &pools[..full] {
-                    stamps.extend(pool.read()?);
-                }
-                if let Some((chunk, written)) = stopped
-                    && let Some(pool) = pools.get(chunk)
-                {
-                    stamps.extend(pool.read_first(written)?);
-                }
-                let finals: &[Site] = if stopped.is_none() { &final_sites } else { &[] };
-                Some(
-                    timings(&step_sites, finals, ran, &stamps, clock)
-                        .map_err(VulkanRunError::Plan)?,
-                )
-            }
-            None => None,
+    let mut steps = steps;
+    loop {
+        let end = start
+            .checked_add(steps)
+            .ok_or_else(|| refused(RunError::StepCount { start, steps }))?;
+        // The steps after which the host waits, counted from the start: each due checkpoint, then
+        // the end.
+        let mut stops: Vec<u64> = if write.is_some() {
+            (1..steps)
+                .filter(|k| (start + k).is_multiple_of(every))
+                .collect()
+        } else {
+            Vec::new()
         };
-        Ok::<_, VulkanRunError>(Some(Profile {
-            timings,
-            pipeline_creation,
-            compile: emitted,
-            pipeline_statistics: pipeline_statistics.clone(),
-        }))
-    };
-    // The chunk the next step records into and its next timestamp query, across the command
-    // buffers a checkpoint ends.
-    let mut chunk = 0;
-    let mut next_query = 0;
-    let mut from = 0;
-    // The first step of the last stop's window, which the check after the last wait reads.
-    let mut last_from = 0;
-    let param_floats = (param_bytes / 4) as usize;
-    for &stop in &stops {
-        let last = stop == steps;
-        {
-            let mut chain = device.chain();
-            let mut recording = device.record()?;
-            let mut stamps = stamps_of(chunk, next_query);
-            if from == 0 {
-                if let Some(stamps) = &stamps {
-                    recording.reset_timestamps(stamps.pool);
+        stops.push(steps);
+        let loss_slots = steps
+            .checked_add(1)
+            .ok_or_else(|| VulkanRunError::Plan(format!("{steps} steps have no final loss")))?;
+        let losses = device.device_local_buffer(4 * loss_slots)?;
+        let param_bytes: u64 = plan.parameters.iter().map(|p| p.views[0].size_bytes).sum();
+        let prediction_bytes = if predict {
+            plan.prediction_view.size_bytes
+        } else {
+            0
+        };
+        let mut download =
+            device.download_buffer(param_bytes + 4 * loss_slots + prediction_bytes)?;
+
+        let mut pools = Vec::new();
+        if clock.is_some() {
+            let per_step = 2 * step_sites.len() as u64;
+            let chunks = steps.div_ceil(CHUNK_STEPS).max(1);
+            for chunk in 0..chunks {
+                let chunk_steps = (steps - chunk * CHUNK_STEPS).min(CHUNK_STEPS);
+                let mut queries = per_step * chunk_steps;
+                if chunk + 1 == chunks {
+                    queries += 2 * final_sites.len() as u64;
                 }
-                let mut at = 0;
-                for (view, _) in &uploads {
-                    recording.copy_region(
-                        &upload,
-                        at,
-                        buffer(&buffers, view)?,
-                        view.offset,
-                        view.size_bytes,
-                    )?;
-                    at += view.size_bytes;
-                }
-                recording.barrier(Barrier::TransferToCompute);
+                let queries = u32::try_from(queries).map_err(|_| {
+                    VulkanRunError::Plan(format!("{queries} timestamp queries do not fit u32"))
+                })?;
+                pools.push(device.timestamp_pool(queries)?);
             }
-            for k in from..stop {
-                if k > 0 && k % CHUNK_STEPS == 0 {
-                    if k != from {
-                        let recorded = recording.finish()?;
-                        first_submit.get_or_insert_with(Instant::now);
-                        chain.submit(recorded)?;
-                        recording = device.record()?;
+        }
+        let stamps_of =
+            |chunk: usize, next: u32| pools.get(chunk).map(|pool| Stamps { pool, next });
+
+        let class = numerics_class(negotiated, artifact);
+        let waits_before = device.host_waits();
+        let submits_before = device.submits();
+        let dispatches_before = device.dispatches();
+        let uploaded_before = device.bytes_uploaded();
+        let downloaded_before = device.bytes_downloaded();
+        let mut dispatches_per_step = 0;
+        let mut barriers_per_step = 0;
+        let mut first_submit: Option<Instant> = None;
+        let loss = buffer(&buffers, &plan.loss_view)?;
+        // The counters of the first `ran` steps, from the first submit to the last wait.
+        let count = |ran: u64,
+                     dispatches_per_step: u64,
+                     barriers_per_step: u64,
+                     first_submit: Option<Instant>| RunStats {
+            steps: ran,
+            host_waits: device.host_waits() - waits_before,
+            submits: device.submits() - submits_before,
+            dispatches: device.dispatches() - dispatches_before,
+            dispatches_per_step,
+            barriers_per_step,
+            bytes_uploaded: device.bytes_uploaded() - uploaded_before,
+            bytes_downloaded: device.bytes_downloaded() - downloaded_before,
+            device_allocations: memory.allocations(),
+            peak_device_bytes: memory.peak_bytes(),
+            class,
+            elapsed: first_submit
+                .expect("a run submits at least one command buffer")
+                .elapsed(),
+        };
+        // The profile of the first `ran` steps, when `profiled`. `stopped` is `None` for the whole
+        // run, every pool written and the final loss evaluation last; for a run stopped at a
+        // checkpoint it is the chunk the last step recorded into and the queries written in its pool,
+        // the pools after it unwritten and no final loss evaluation recorded.
+        let profile_of = |ran: u64, stopped: Option<(usize, u32)>| {
+            if !profiled {
+                return Ok(None);
+            }
+            let timings = match clock {
+                Some(clock) => {
+                    let mut stamps = Vec::new();
+                    let full = stopped.map_or(pools.len(), |(chunk, _)| chunk);
+                    for pool in &pools[..full] {
+                        stamps.extend(pool.read()?);
                     }
-                    chunk += 1;
-                    stamps = stamps_of(chunk, 0);
+                    if let Some((chunk, written)) = stopped
+                        && let Some(pool) = pools.get(chunk)
+                    {
+                        stamps.extend(pool.read_first(written)?);
+                    }
+                    let finals: &[Site] = if stopped.is_none() { &final_sites } else { &[] };
+                    Some(
+                        timings(&step_sites, finals, ran, &stamps, clock)
+                            .map_err(VulkanRunError::Plan)?,
+                    )
+                }
+                None => None,
+            };
+            Ok::<_, VulkanRunError>(Some(Profile {
+                timings,
+                pipeline_creation,
+                compile: emitted,
+                pipeline_statistics: pipeline_statistics.clone(),
+            }))
+        };
+        // The chunk the next step records into and its next timestamp query, across the command
+        // buffers a checkpoint ends.
+        let mut chunk = 0;
+        let mut next_query = 0;
+        let mut from = 0;
+        // The first step of the last stop's window, which the check after the last wait reads.
+        let mut last_from = 0;
+        let param_floats = (param_bytes / 4) as usize;
+        for &stop in &stops {
+            let last = stop == steps;
+            {
+                let mut chain = device.chain();
+                let mut recording = device.record()?;
+                let mut stamps = stamps_of(chunk, next_query);
+                if from == 0 {
                     if let Some(stamps) = &stamps {
                         recording.reset_timestamps(stamps.pool);
                     }
+                    let mut at = 0;
+                    for (view, _) in &uploads {
+                        recording.copy_region(
+                            &upload,
+                            at,
+                            buffer(&buffers, view)?,
+                            view.offset,
+                            view.size_bytes,
+                        )?;
+                        at += view.size_bytes;
+                    }
+                    recording.barrier(Barrier::TransferToCompute);
                 }
-                let before = recording.dispatches();
-                let barriers_before = recorded_barriers();
-                record(&mut recording, &actions, &buffers, stamps.as_mut())?;
-                dispatches_per_step = recording.dispatches() - before;
-                recording.barrier(Barrier::ComputeToTransfer);
-                recording.copy_region(loss, plan.loss_view.offset, &losses, 4 * k, 4)?;
-                recording.barrier(Barrier::TransferToCompute);
-                barriers_per_step = recorded_barriers() - barriers_before;
-            }
-            if last {
-                record(
-                    &mut recording,
-                    &actions[..loss_end],
-                    &buffers,
-                    stamps.as_mut(),
-                )?;
-                recording.barrier(Barrier::ComputeToTransfer);
-                recording.copy_region(loss, plan.loss_view.offset, &losses, 4 * steps, 4)?;
-            }
-            let mut at = 0;
-            for parameter in &plan.parameters {
-                let view = parameter.views[0];
-                recording.copy_region(
-                    buffer(&buffers, &view)?,
-                    view.offset,
-                    &download,
-                    at,
-                    view.size_bytes,
-                )?;
-                at += view.size_bytes;
-            }
-            if last {
-                if predict {
-                    let view = plan.prediction_view;
+                for k in from..stop {
+                    if k > 0 && k % CHUNK_STEPS == 0 {
+                        if k != from {
+                            let recorded = recording.finish()?;
+                            first_submit.get_or_insert_with(Instant::now);
+                            chain.submit(recorded)?;
+                            recording = device.record()?;
+                        }
+                        chunk += 1;
+                        stamps = stamps_of(chunk, 0);
+                        if let Some(stamps) = &stamps {
+                            recording.reset_timestamps(stamps.pool);
+                        }
+                    }
+                    let before = recording.dispatches();
+                    let barriers_before = recorded_barriers();
+                    record(&mut recording, &actions, &buffers, stamps.as_mut())?;
+                    dispatches_per_step = recording.dispatches() - before;
+                    recording.barrier(Barrier::ComputeToTransfer);
+                    recording.copy_region(loss, plan.loss_view.offset, &losses, 4 * k, 4)?;
+                    recording.barrier(Barrier::TransferToCompute);
+                    barriers_per_step = recorded_barriers() - barriers_before;
+                }
+                if last {
+                    record(
+                        &mut recording,
+                        &actions[..loss_end],
+                        &buffers,
+                        stamps.as_mut(),
+                    )?;
+                    recording.barrier(Barrier::ComputeToTransfer);
+                    recording.copy_region(loss, plan.loss_view.offset, &losses, 4 * steps, 4)?;
+                }
+                let mut at = 0;
+                for parameter in &plan.parameters {
+                    let view = parameter.views[0];
                     recording.copy_region(
                         buffer(&buffers, &view)?,
                         view.offset,
                         &download,
-                        at + 4 * loss_slots,
+                        at,
                         view.size_bytes,
                     )?;
+                    at += view.size_bytes;
                 }
-                recording.barrier(Barrier::TransferToTransfer);
-                recording.copy_region(&losses, 0, &download, at, 4 * loss_slots)?;
-            } else if stop > from {
-                // A checkpoint's read-back also carries the losses of the steps since the last
-                // stop, so the check before the checkpoint is written sees them.
-                recording.barrier(Barrier::TransferToTransfer);
-                recording.copy_region(
-                    &losses,
-                    4 * from,
-                    &download,
-                    at + 4 * from,
-                    4 * (stop - from),
-                )?;
+                if last {
+                    if predict {
+                        let view = plan.prediction_view;
+                        recording.copy_region(
+                            buffer(&buffers, &view)?,
+                            view.offset,
+                            &download,
+                            at + 4 * loss_slots,
+                            view.size_bytes,
+                        )?;
+                    }
+                    recording.barrier(Barrier::TransferToTransfer);
+                    recording.copy_region(&losses, 0, &download, at, 4 * loss_slots)?;
+                } else if stop > from {
+                    // A checkpoint's read-back also carries the losses of the steps since the last
+                    // stop, so the check before the checkpoint is written sees them.
+                    recording.barrier(Barrier::TransferToTransfer);
+                    recording.copy_region(
+                        &losses,
+                        4 * from,
+                        &download,
+                        at + 4 * from,
+                        4 * (stop - from),
+                    )?;
+                }
+                recording.barrier(Barrier::TransferToHost);
+                let recorded = recording.finish()?;
+                first_submit.get_or_insert_with(Instant::now);
+                chain.finish(recorded)?.wait()?;
+                next_query = stamps.map_or(0, |stamps| stamps.next);
             }
-            recording.barrier(Barrier::TransferToHost);
-            let recorded = recording.finish()?;
-            first_submit.get_or_insert_with(Instant::now);
-            chain.finish(recorded)?.wait()?;
-            next_query = stamps.map_or(0, |stamps| stamps.next);
-        }
-        if !last && let Some(write) = write.as_mut() {
-            let read = download.read_f32()?;
-            let values = parameters(plan, &initial, &read)?;
-            let read_losses = &read[param_floats..param_floats + stop as usize];
-            if let Some((kept, diagnostic)) =
-                diverged(compiled, start, from..stop, false, read_losses, &values)
-            {
-                let run = Run {
-                    start_step: start,
-                    initial,
-                    losses: read_losses[..kept as usize].to_vec(),
-                    state: state_of(compiled, values, start + stop),
-                    teacher: data.teacher,
-                };
-                return Err(VulkanRunError::NonFinite(Box::new(DivergedOnDevice {
-                    diverged: Diverged { diagnostic, run },
-                    stats: count(stop, dispatches_per_step, barriers_per_step, first_submit),
-                    profile: profile_of(stop, Some((chunk, next_query)))?,
-                })));
+            if !last && let Some(write) = write.as_mut() {
+                let read = download.read_f32()?;
+                let values = parameters(plan, &initial, &read)?;
+                let read_losses = &read[param_floats..param_floats + stop as usize];
+                if let Some((kept, diagnostic)) =
+                    diverged(compiled, start, from..stop, false, read_losses, &values)
+                {
+                    let run = Run {
+                        start_step: start,
+                        initial: initial.clone(),
+                        losses: read_losses[..kept as usize].to_vec(),
+                        state: state_of(compiled, values, start + stop),
+                        teacher: data.teacher.clone(),
+                    };
+                    return Err(VulkanRunError::NonFinite(Box::new(DivergedOnDevice {
+                        diverged: Diverged { diagnostic, run },
+                        stats: count(stop, dispatches_per_step, barriers_per_step, first_submit),
+                        profile: profile_of(stop, Some((chunk, next_query)))?,
+                    })));
+                }
+                write(start + stop, &values).map_err(|error| refused(error.into()))?;
             }
-            write(start + stop, &values).map_err(|error| refused(error.into()))?;
+            last_from = from;
+            from = stop;
         }
-        last_from = from;
-        from = stop;
-    }
-    let stats = count(steps, dispatches_per_step, barriers_per_step, first_submit);
-    let profiled = profile_of(steps, None)?;
+        let stats = count(steps, dispatches_per_step, barriers_per_step, first_submit);
+        let profiled = profile_of(steps, None)?;
 
-    let read = download.read_f32()?;
-    let values = parameters(plan, &initial, &read)?;
-    let at = param_floats;
-    let losses = read[at..at + loss_slots as usize].to_vec();
-    if !predict
-        && let Some((kept, diagnostic)) =
-            diverged(compiled, start, last_from..steps, true, &losses, &values)
-    {
+        let read = download.read_f32()?;
+        let values = parameters(plan, &initial, &read)?;
+        let at = param_floats;
+        let losses = read[at..at + loss_slots as usize].to_vec();
+        if !predict
+            && let Some((kept, diagnostic)) =
+                diverged(compiled, start, last_from..steps, true, &losses, &values)
+        {
+            let run = Run {
+                start_step: start,
+                initial: initial.clone(),
+                losses: losses[..kept as usize].to_vec(),
+                state: state_of(compiled, values, end),
+                teacher: data.teacher.clone(),
+            };
+            return Err(VulkanRunError::NonFinite(Box::new(DivergedOnDevice {
+                diverged: Diverged { diagnostic, run },
+                stats,
+                profile: profiled,
+            })));
+        }
+        let prediction = if predict {
+            let at = at + loss_slots as usize;
+            let count = plan.prediction_view.element_count as usize;
+            let node = forward.program.node(forward.prediction).ok_or_else(|| {
+                VulkanRunError::Plan("the forward program defines no prediction value".into())
+            })?;
+            let shape = node
+                .ty
+                .shape
+                .iter()
+                .map(|dim| match dim {
+                    Dim::Static(n) => Ok(*n),
+                    Dim::Symbol(_) => Err(VulkanRunError::Plan(format!(
+                        "the prediction {} is not static",
+                        node.ty
+                    ))),
+                })
+                .collect::<Result<Vec<u64>, _>>()?;
+            Some(
+                HostTensor::new(shape, read[at..at + count].to_vec())
+                    .map_err(|error| VulkanRunError::Plan(format!("the prediction: {error}")))?,
+            )
+        } else {
+            None
+        };
         let run = Run {
             start_step: start,
-            initial,
-            losses: losses[..kept as usize].to_vec(),
+            initial: initial.clone(),
+            losses,
             state: state_of(compiled, values, end),
-            teacher: data.teacher,
+            teacher: data.teacher.clone(),
         };
-        return Err(VulkanRunError::NonFinite(Box::new(DivergedOnDevice {
-            diverged: Diverged { diagnostic, run },
+        let done = Done {
+            run,
             stats,
             profile: profiled,
-        })));
+            prediction,
+        };
+        match next(done) {
+            Some(more) => steps = more,
+            None => return Ok(()),
+        }
     }
-    let prediction = if predict {
-        let at = at + loss_slots as usize;
-        let count = plan.prediction_view.element_count as usize;
-        let node = forward.program.node(forward.prediction).ok_or_else(|| {
-            VulkanRunError::Plan("the forward program defines no prediction value".into())
-        })?;
-        let shape = node
-            .ty
-            .shape
-            .iter()
-            .map(|dim| match dim {
-                Dim::Static(n) => Ok(*n),
-                Dim::Symbol(_) => Err(VulkanRunError::Plan(format!(
-                    "the prediction {} is not static",
-                    node.ty
-                ))),
-            })
-            .collect::<Result<Vec<u64>, _>>()?;
-        Some(
-            HostTensor::new(shape, read[at..at + count].to_vec())
-                .map_err(|error| VulkanRunError::Plan(format!("the prediction: {error}")))?,
-        )
-    } else {
-        None
-    };
-    let run = Run {
-        start_step: start,
-        initial,
-        losses,
-        state: state_of(compiled, values, end),
-        teacher: data.teacher,
-    };
-    Ok(Done {
-        run,
-        stats,
-        profile: profiled,
-        prediction,
-    })
 }
 
 /// The state of `values` after `version` updates of each parameter the optimizer updates.

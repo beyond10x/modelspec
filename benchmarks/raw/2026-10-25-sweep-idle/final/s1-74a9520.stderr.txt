@@ -1,0 +1,13 @@
+# binary: <scratch>/bin/mlp_sweep-74a9520
+# cwd: <scratch>/tree-74a9520/crates/modelspec-runtime
+# args: --bench --point 8192:4096 --min-seconds 6
+# start: 1792904035720
+mlp_sweep: warning: not a clean checkout: Build { version: Some("0.9.0"), commit: Some("74a9520da4e50e961c77770781b46af92dfd99ce"), dirty: Some(true) }
+mlp_sweep: batch 8192 hidden 4096: 107239964672 FLOP per step
+mlp_sweep:   calibration: 466 steps in 4.154 s
+mlp_sweep:   calibration: 808 steps in 6.046 s
+mlp_sweep:   timed: 808 steps in 6.142 s, 7601.616 us per step
+mlp_sweep:   timed: 808 steps in 6.402 s, 7922.913 us per step
+mlp_sweep:   timed: 808 steps in 6.327 s, 7830.606 us per step
+# end: 1792904068141
+EXIT=0

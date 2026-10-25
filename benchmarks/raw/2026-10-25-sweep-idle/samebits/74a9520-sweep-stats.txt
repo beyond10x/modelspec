@@ -1,0 +1,12 @@
+steps: 20
+host waits: 1
+submits: 1
+dispatches: 203
+dispatches per step: 10
+barriers per step: 9
+bytes uploaded: 39026688
+bytes downloaded: 13008980
+device allocations: 16
+peak device bytes: 641597648
+numerics class: tolerance
+us per step: 15943.157

@@ -1,0 +1,232 @@
+# binary: <worktree>/target/release/deps/mlp_sweep-9fb6b8e357cfbac8
+# cwd: <worktree>/crates/modelspec-runtime
+# args: --bench --point 8192:256 --min-seconds 6
+# start: 1792902699238
+mlp_sweep: warning: not a clean checkout: Build { version: Some("0.9.0"), commit: Some("74a9520da4e50e961c77770781b46af92dfd99ce"), dirty: Some(true) }
+mlp_sweep: batch 8192 hidden 256: 6702497792 FLOP per step
+[DEBUG-sweepidle] 1792902699740.0 harness: train_with called
+[DEBUG-sweepidle] 1792902699749.0 execute start
+[DEBUG-sweepidle] 1792902699751.8 params drawn
+[DEBUG-sweepidle] 1792902699755.3 spirv emitted
+[DEBUG-sweepidle] 1792902699757.7 pipelines created
+[DEBUG-sweepidle] 1792902699759.4 buffers allocated
+[DEBUG-sweepidle] 1792902699766.0 staging allocated
+[DEBUG-sweepidle] 1792902699779.3 staging written
+[DEBUG-sweepidle] 1792902699780.7 descriptors bound, pools made
+[DEBUG-sweepidle] 1792902699781.1 submit last, wait
+[DEBUG-sweepidle] 1792902699844.8 wait done
+[DEBUG-sweepidle] 1792902699844.8 stats, profile
+[DEBUG-sweepidle] 1792902699847.8 download read
+[DEBUG-sweepidle] 1792902699847.9 parameters built
+[DEBUG-sweepidle] 1792902699848.0 read back, checked
+[DEBUG-sweepidle] 1792902699848.0 run built
+[DEBUG-sweepidle] 1792902699853.7 harness: train_with returned
+[DEBUG-sweepidle] 1792902699904.6 harness: train_with called
+[DEBUG-sweepidle] 1792902699906.8 execute start
+[DEBUG-sweepidle] 1792902699909.0 params drawn
+[DEBUG-sweepidle] 1792902699911.5 spirv emitted
+[DEBUG-sweepidle] 1792902699912.9 pipelines created
+[DEBUG-sweepidle] 1792902699914.7 buffers allocated
+[DEBUG-sweepidle] 1792902699921.0 staging allocated
+[DEBUG-sweepidle] 1792902699934.7 staging written
+[DEBUG-sweepidle] 1792902699935.3 descriptors bound, pools made
+[DEBUG-sweepidle] 1792902699937.6 submit chunk
+[DEBUG-sweepidle] 1792902699940.4 submit chunk
+[DEBUG-sweepidle] 1792902699942.7 submit chunk
+[DEBUG-sweepidle] 1792902699945.3 submit chunk
+[DEBUG-sweepidle] 1792902699947.6 submit chunk
+[DEBUG-sweepidle] 1792902699949.8 submit chunk
+[DEBUG-sweepidle] 1792902699952.0 submit chunk
+[DEBUG-sweepidle] 1792902699954.3 submit chunk
+[DEBUG-sweepidle] 1792902699956.7 submit last, wait
+[DEBUG-sweepidle] 1792902703928.7 wait done
+[DEBUG-sweepidle] 1792902703928.7 stats, profile
+[DEBUG-sweepidle] 1792902703930.9 download read
+[DEBUG-sweepidle] 1792902703931.3 parameters built
+[DEBUG-sweepidle] 1792902703931.6 read back, checked
+[DEBUG-sweepidle] 1792902703931.6 run built
+[DEBUG-sweepidle] 1792902703937.1 harness: train_with returned
+mlp_sweep:   calibration: 2261 steps in 3.991 s
+[DEBUG-sweepidle] 1792902703987.5 harness: train_with called
+[DEBUG-sweepidle] 1792902703995.8 execute start
+[DEBUG-sweepidle] 1792902703999.5 params drawn
+[DEBUG-sweepidle] 1792902704005.6 spirv emitted
+[DEBUG-sweepidle] 1792902704008.0 pipelines created
+[DEBUG-sweepidle] 1792902704012.9 buffers allocated
+[DEBUG-sweepidle] 1792902704024.6 staging allocated
+[DEBUG-sweepidle] 1792902704050.7 staging written
+[DEBUG-sweepidle] 1792902704051.7 descriptors bound, pools made
+[DEBUG-sweepidle] 1792902704054.3 submit chunk
+[DEBUG-sweepidle] 1792902704057.1 submit chunk
+[DEBUG-sweepidle] 1792902704059.9 submit chunk
+[DEBUG-sweepidle] 1792902704063.2 submit chunk
+[DEBUG-sweepidle] 1792902704066.9 submit chunk
+[DEBUG-sweepidle] 1792902704072.3 submit chunk
+[DEBUG-sweepidle] 1792902704077.4 submit chunk
+[DEBUG-sweepidle] 1792902704082.6 submit chunk
+[DEBUG-sweepidle] 1792902704085.8 submit chunk
+[DEBUG-sweepidle] 1792902704090.1 submit chunk
+[DEBUG-sweepidle] 1792902704094.8 submit chunk
+[DEBUG-sweepidle] 1792902704099.3 submit chunk
+[DEBUG-sweepidle] 1792902704104.5 submit chunk
+[DEBUG-sweepidle] 1792902704112.2 submit chunk
+[DEBUG-sweepidle] 1792902704119.0 submit chunk
+[DEBUG-sweepidle] 1792902704709.8 submit last, wait
+[DEBUG-sweepidle] 1792902710031.9 wait done
+[DEBUG-sweepidle] 1792902710031.9 stats, profile
+[DEBUG-sweepidle] 1792902710034.9 download read
+[DEBUG-sweepidle] 1792902710034.9 parameters built
+[DEBUG-sweepidle] 1792902710035.1 read back, checked
+[DEBUG-sweepidle] 1792902710035.1 run built
+[DEBUG-sweepidle] 1792902710041.2 harness: train_with returned
+mlp_sweep:   calibration: 4079 steps in 5.978 s
+[DEBUG-sweepidle] 1792902710091.5 harness: train_with called
+[DEBUG-sweepidle] 1792902710093.4 execute start
+[DEBUG-sweepidle] 1792902710095.7 params drawn
+[DEBUG-sweepidle] 1792902710098.5 spirv emitted
+[DEBUG-sweepidle] 1792902710100.0 pipelines created
+[DEBUG-sweepidle] 1792902710101.8 buffers allocated
+[DEBUG-sweepidle] 1792902710108.4 staging allocated
+[DEBUG-sweepidle] 1792902710122.4 staging written
+[DEBUG-sweepidle] 1792902710123.2 descriptors bound, pools made
+[DEBUG-sweepidle] 1792902710124.9 submit chunk
+[DEBUG-sweepidle] 1792902710126.5 submit chunk
+[DEBUG-sweepidle] 1792902710128.1 submit chunk
+[DEBUG-sweepidle] 1792902710129.7 submit chunk
+[DEBUG-sweepidle] 1792902710131.3 submit chunk
+[DEBUG-sweepidle] 1792902710133.0 submit chunk
+[DEBUG-sweepidle] 1792902710134.6 submit chunk
+[DEBUG-sweepidle] 1792902710136.2 submit chunk
+[DEBUG-sweepidle] 1792902710137.8 submit chunk
+[DEBUG-sweepidle] 1792902710139.4 submit chunk
+[DEBUG-sweepidle] 1792902710141.0 submit chunk
+[DEBUG-sweepidle] 1792902710142.6 submit chunk
+[DEBUG-sweepidle] 1792902710144.1 submit chunk
+[DEBUG-sweepidle] 1792902710145.8 submit chunk
+[DEBUG-sweepidle] 1792902710147.4 submit chunk
+[DEBUG-sweepidle] 1792902710538.4 submit chunk
+[DEBUG-sweepidle] 1792902710549.5 submit chunk
+[DEBUG-sweepidle] 1792902710968.4 submit chunk
+[DEBUG-sweepidle] 1792902711350.5 submit chunk
+[DEBUG-sweepidle] 1792902711702.5 submit last, wait
+[DEBUG-sweepidle] 1792902716522.2 wait done
+[DEBUG-sweepidle] 1792902716522.3 stats, profile
+[DEBUG-sweepidle] 1792902716525.2 download read
+[DEBUG-sweepidle] 1792902716525.3 parameters built
+[DEBUG-sweepidle] 1792902716525.5 read back, checked
+[DEBUG-sweepidle] 1792902716525.5 run built
+[DEBUG-sweepidle] 1792902716531.3 harness: train_with returned
+mlp_sweep:   calibration: 4914 steps in 6.397 s
+[DEBUG-sweepidle] 1792902716581.7 harness: train_with called
+[DEBUG-sweepidle] 1792902716583.4 execute start
+[DEBUG-sweepidle] 1792902716585.5 params drawn
+[DEBUG-sweepidle] 1792902716588.2 spirv emitted
+[DEBUG-sweepidle] 1792902716589.6 pipelines created
+[DEBUG-sweepidle] 1792902716591.3 buffers allocated
+[DEBUG-sweepidle] 1792902716597.6 staging allocated
+[DEBUG-sweepidle] 1792902716610.5 staging written
+[DEBUG-sweepidle] 1792902716611.2 descriptors bound, pools made
+[DEBUG-sweepidle] 1792902716612.9 submit chunk
+[DEBUG-sweepidle] 1792902716614.5 submit chunk
+[DEBUG-sweepidle] 1792902716616.1 submit chunk
+[DEBUG-sweepidle] 1792902716617.7 submit chunk
+[DEBUG-sweepidle] 1792902716619.3 submit chunk
+[DEBUG-sweepidle] 1792902716620.9 submit chunk
+[DEBUG-sweepidle] 1792902716622.5 submit chunk
+[DEBUG-sweepidle] 1792902716624.1 submit chunk
+[DEBUG-sweepidle] 1792902716625.7 submit chunk
+[DEBUG-sweepidle] 1792902716627.6 submit chunk
+[DEBUG-sweepidle] 1792902716629.2 submit chunk
+[DEBUG-sweepidle] 1792902716630.8 submit chunk
+[DEBUG-sweepidle] 1792902716632.4 submit chunk
+[DEBUG-sweepidle] 1792902716633.9 submit chunk
+[DEBUG-sweepidle] 1792902716635.4 submit chunk
+[DEBUG-sweepidle] 1792902716637.0 submit chunk
+[DEBUG-sweepidle] 1792902717101.0 submit chunk
+[DEBUG-sweepidle] 1792902717531.1 submit chunk
+[DEBUG-sweepidle] 1792902717923.1 submit chunk
+[DEBUG-sweepidle] 1792902718281.2 submit last, wait
+[DEBUG-sweepidle] 1792902723131.8 wait done
+[DEBUG-sweepidle] 1792902723131.8 stats, profile
+[DEBUG-sweepidle] 1792902723134.2 download read
+[DEBUG-sweepidle] 1792902723134.3 parameters built
+[DEBUG-sweepidle] 1792902723134.5 read back, checked
+[DEBUG-sweepidle] 1792902723134.5 run built
+[DEBUG-sweepidle] 1792902723140.4 harness: train_with returned
+mlp_sweep:   timed: 4914 steps in 6.519 s, 1326.597 us per step
+[DEBUG-sweepidle] 1792902723190.5 harness: train_with called
+[DEBUG-sweepidle] 1792902723192.2 execute start
+[DEBUG-sweepidle] 1792902723194.3 params drawn
+[DEBUG-sweepidle] 1792902723197.0 spirv emitted
+[DEBUG-sweepidle] 1792902723198.4 pipelines created
+[DEBUG-sweepidle] 1792902723200.2 buffers allocated
+[DEBUG-sweepidle] 1792902723206.2 staging allocated
+[DEBUG-sweepidle] 1792902723218.8 staging written
+[DEBUG-sweepidle] 1792902723219.5 descriptors bound, pools made
+[DEBUG-sweepidle] 1792902723221.1 submit chunk
+[DEBUG-sweepidle] 1792902723224.0 submit chunk
+[DEBUG-sweepidle] 1792902723226.0 submit chunk
+[DEBUG-sweepidle] 1792902723227.6 submit chunk
+[DEBUG-sweepidle] 1792902723229.2 submit chunk
+[DEBUG-sweepidle] 1792902723230.8 submit chunk
+[DEBUG-sweepidle] 1792902723232.3 submit chunk
+[DEBUG-sweepidle] 1792902723233.9 submit chunk
+[DEBUG-sweepidle] 1792902723235.5 submit chunk
+[DEBUG-sweepidle] 1792902723237.0 submit chunk
+[DEBUG-sweepidle] 1792902723238.6 submit chunk
+[DEBUG-sweepidle] 1792902723240.2 submit chunk
+[DEBUG-sweepidle] 1792902723241.8 submit chunk
+[DEBUG-sweepidle] 1792902723243.3 submit chunk
+[DEBUG-sweepidle] 1792902723244.9 submit chunk
+[DEBUG-sweepidle] 1792902723246.5 submit chunk
+[DEBUG-sweepidle] 1792902723711.4 submit chunk
+[DEBUG-sweepidle] 1792902724134.0 submit chunk
+[DEBUG-sweepidle] 1792902724524.8 submit chunk
+[DEBUG-sweepidle] 1792902724883.2 submit last, wait
+[DEBUG-sweepidle] 1792902729730.1 wait done
+[DEBUG-sweepidle] 1792902729730.1 stats, profile
+[DEBUG-sweepidle] 1792902729733.1 download read
+[DEBUG-sweepidle] 1792902729733.2 parameters built
+[DEBUG-sweepidle] 1792902729733.3 read back, checked
+[DEBUG-sweepidle] 1792902729733.4 run built
+[DEBUG-sweepidle] 1792902729738.5 harness: train_with returned
+mlp_sweep:   timed: 4914 steps in 6.509 s, 1324.589 us per step
+[DEBUG-sweepidle] 1792902729788.6 harness: train_with called
+[DEBUG-sweepidle] 1792902729790.3 execute start
+[DEBUG-sweepidle] 1792902729792.4 params drawn
+[DEBUG-sweepidle] 1792902729795.6 spirv emitted
+[DEBUG-sweepidle] 1792902729798.1 pipelines created
+[DEBUG-sweepidle] 1792902729799.9 buffers allocated
+[DEBUG-sweepidle] 1792902729805.6 staging allocated
+[DEBUG-sweepidle] 1792902729819.3 staging written
+[DEBUG-sweepidle] 1792902729819.8 descriptors bound, pools made
+[DEBUG-sweepidle] 1792902729821.4 submit chunk
+[DEBUG-sweepidle] 1792902729823.1 submit chunk
+[DEBUG-sweepidle] 1792902729824.8 submit chunk
+[DEBUG-sweepidle] 1792902729826.5 submit chunk
+[DEBUG-sweepidle] 1792902729828.1 submit chunk
+[DEBUG-sweepidle] 1792902729829.8 submit chunk
+[DEBUG-sweepidle] 1792902729831.4 submit chunk
+[DEBUG-sweepidle] 1792902729833.1 submit chunk
+[DEBUG-sweepidle] 1792902729834.7 submit chunk
+[DEBUG-sweepidle] 1792902729836.3 submit chunk
+[DEBUG-sweepidle] 1792902729837.9 submit chunk
+[DEBUG-sweepidle] 1792902729839.5 submit chunk
+[DEBUG-sweepidle] 1792902729841.2 submit chunk
+[DEBUG-sweepidle] 1792902729842.8 submit chunk
+[DEBUG-sweepidle] 1792902729844.4 submit chunk
+[DEBUG-sweepidle] 1792902729846.0 submit chunk
+[DEBUG-sweepidle] 1792902730320.1 submit chunk
+[DEBUG-sweepidle] 1792902730759.2 submit chunk
+[DEBUG-sweepidle] 1792902731156.4 submit chunk
+[DEBUG-sweepidle] 1792902731512.5 submit last, wait
+[DEBUG-sweepidle] 1792902736373.1 wait done
+[DEBUG-sweepidle] 1792902736373.1 stats, profile
+[DEBUG-sweepidle] 1792902736375.5 download read
+[DEBUG-sweepidle] 1792902736375.6 parameters built
+[DEBUG-sweepidle] 1792902736375.8 read back, checked
+[DEBUG-sweepidle] 1792902736375.8 run built
+[DEBUG-sweepidle] 1792902736381.0 harness: train_with returned
+mlp_sweep:   timed: 4914 steps in 6.552 s, 1333.269 us per step
+# end: 1792902736415
+EXIT=0

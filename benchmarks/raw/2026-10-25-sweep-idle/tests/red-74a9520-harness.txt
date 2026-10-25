@@ -1,0 +1,27 @@
+b10x-build-slot: slot 2 of 3, 130G free
+    Finished `release` profile [optimized] target(s) in 0.03s
+     Running tests/vulkan_mlp_sweep.rs (target/release/deps/vulkan_mlp_sweep-bbee05b7e6b4bd6b)
+
+running 1 test
+test the_timed_runs_of_the_widest_point_leave_the_device_idle_under_40_ms_between_them ... FAILED
+
+failures:
+
+---- the_timed_runs_of_the_widest_point_leave_the_device_idle_under_40_ms_between_them stdout ----
+mlp_sweep:   calibration: 39 steps in 0.569 s
+mlp_sweep:   timed: 39 steps in 0.577 s, 14805.075 us per step
+mlp_sweep:   timed: 39 steps in 0.571 s, 14632.731 us per step
+mlp_sweep:   timed: 39 steps in 0.579 s, 14852.430 us per step
+39 steps per timed run; ms between consecutive timed spans: [134, 136]
+
+thread 'the_timed_runs_of_the_widest_point_leave_the_device_idle_under_40_ms_between_them' (1309064) panicked at crates/modelspec-runtime/tests/vulkan_mlp_sweep.rs:61:5:
+the device idled [134, 136] ms between timed runs, at least 40 ms
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    the_timed_runs_of_the_widest_point_leave_the_device_idle_under_40_ms_between_them
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.28s
+
+error: test failed, to rerun pass `-p modelspec-runtime --test vulkan_mlp_sweep`
