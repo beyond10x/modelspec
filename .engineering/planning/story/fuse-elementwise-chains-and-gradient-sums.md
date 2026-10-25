@@ -2,7 +2,7 @@
 format: aep.planning-md/3
 id: story:fuse-elementwise-chains-and-gradient-sums
 kind: story
-status: active
+status: implemented
 title: Fuse elementwise chains and gradient sums
 relations:
 - informed_by: story:m1-fuse-elementwise
@@ -33,10 +33,11 @@ scope:
   path: spec/domains/artifact.yaml
 - confidence: cited
   path: website/docs/guides/inspect-a-run.md
-revision: 11
+revision: 12
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-25T00:49:23Z", actor: "human:timo", revision: 10, decided_on: {"recorded":{"review_outcome":4}}}
 - {from: "proposed", to: "active", at: "2026-10-25T00:49:23Z", actor: "human:timo", revision: 11, decided_on: {"recorded":{"review_outcome":4}}}
+- {from: "active", to: "implemented", at: "2026-10-25T03:07:22Z", actor: "human:timo", revision: 12, decided_on: {"recorded":{"test_result":1,"review_outcome":5}}}
 ---
 # Fuse elementwise chains and gradient sums
 

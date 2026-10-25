@@ -1,0 +1,13 @@
+{
+  "at": "2026-10-25T03:07:22Z",
+  "actor": "human:timo",
+  "artifact": "story:fuse-elementwise-chains-and-gradient-sums",
+  "kind": "story",
+  "revision": 11,
+  "change": {
+    "change": "evidence",
+    "kind": "test_result",
+    "source": "task ci",
+    "reference": "acd837867f9996304394e6a5e1738dd7fa36acc6"
+  }
+}
