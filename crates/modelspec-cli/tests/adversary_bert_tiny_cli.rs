@@ -5,6 +5,9 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+#[path = "common/markov_corpus.rs"]
+mod markov_corpus;
+
 const CORPUS: &str = "crates/modelspec-runtime/tests/fixtures/corpus";
 const EXAMPLE: &str = "examples/bert_tiny.mspec";
 const TWIN: &str = "crates/modelspec-cli/tests/fixtures/bert_cpu.mspec";
@@ -49,9 +52,22 @@ fn path(p: &Path) -> &str {
 
 /// The fixture corpus with a `vocab`-token tokenizer packed into sequences of 16 under `case`.
 fn packed(case: &Path, vocab: u32) -> PathBuf {
+    packed_from(CORPUS, case, vocab)
+}
+
+/// The synthetic corpus of `reproducible` (`common/markov_corpus.rs`, coordinator decision D72),
+/// written under `case`, with a `vocab`-token tokenizer packed into sequences of 16 under `case`.
+fn packed_synthetic(case: &Path, vocab: u32) -> PathBuf {
+    let corpus = case.join("corpus");
+    markov_corpus::write(&corpus);
+    packed_from(path(&corpus), case, vocab)
+}
+
+/// The corpus `corpus` with a `vocab`-token tokenizer packed into sequences of 16 under `case`.
+fn packed_from(corpus: &str, case: &Path, vocab: u32) -> PathBuf {
     let dataset = case.join("dataset");
     assert_exit(
-        &modelspec(&["data", "prepare", CORPUS, "--out", path(&dataset)]),
+        &modelspec(&["data", "prepare", corpus, "--out", path(&dataset)]),
         0,
     );
     let tokenizer = case.join("tokenizer.json");
@@ -107,15 +123,15 @@ fn step_lines(stdout: &str) -> Vec<&str> {
     stdout.lines().filter(|l| l.starts_with("step ")).collect()
 }
 
-/// ADV-TINY-1 (H5): the twin's 500 steps on the packed fixture corpus learn something a
-/// unigram model knows: the held-out loss of its last `eval` line is below the held-out unigram
-/// baseline `data pack` records in `packed.json`. `reproducible` asserts only that the last
-/// `step` loss (one batch of 2 sequences) is below the step-0 loss, which a run at
-/// `lr = 1e-9` also passes.
+/// ADV-TINY-1 (H5): the twin's run on the packed synthetic corpus of `reproducible` learns more
+/// than a unigram model knows: the held-out loss of its last `eval` line is at least 0.2 nats
+/// below the held-out unigram baseline `data pack` records in `packed.json` (coordinator decision
+/// D72). A last-`step`-below-step-0 check (one batch of 2 sequences) passes a run at
+/// `lr = 1e-9` too.
 #[test]
 fn adv_tiny_1_twin_heldout_loss_falls_below_the_unigram_baseline() {
     let case = scratch("heldout");
-    let packed = packed(&case, 300);
+    let packed = packed_synthetic(&case, 300);
     let record: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(packed.join("packed.json")).unwrap())
             .unwrap();
@@ -136,7 +152,7 @@ fn adv_tiny_1_twin_heldout_loss_falls_below_the_unigram_baseline() {
     let (first_step, first) = evals[0];
     let (last_step, last) = *evals.last().unwrap();
     assert!(
-        last < baseline,
+        last <= baseline - 0.2,
         "held-out loss {first} at eval {first_step}, {last} at eval {last_step}; the unigram \
          baseline is {baseline}; ln(300) = {}",
         300f64.ln()
@@ -144,7 +160,7 @@ fn adv_tiny_1_twin_heldout_loss_falls_below_the_unigram_baseline() {
 }
 
 /// H5: the seed is read: the twin with `seed = 7` instead of 42 prints other `step` lines over
-/// the same 60 steps of the same data.
+/// the same 100 steps (more than the twin's 80 warm-up steps) of the same data.
 #[test]
 fn another_seed_prints_other_step_lines() {
     let case = scratch("seed");
@@ -162,7 +178,7 @@ fn another_seed_prints_other_step_lines() {
             "--data",
             path(&packed),
             "--steps",
-            "60",
+            "100",
         ]);
         assert_exit(&out, 0);
         stdout(&out)
@@ -217,7 +233,7 @@ fn setting<'a>(line: &'a str, name: &str) -> Option<&'a str> {
 }
 
 /// The optimizer settings the twin may set to its own value: its warm-up, which follows its run
-/// length, and its learning rate, which a run of 2 sequences a step on the fixture corpus tunes
+/// length, and its learning rate, which a run of 2 sequences a step on the synthetic corpus tunes
 /// apart from the example's (coordinator decision D71).
 const RUN_SETTINGS: [&str; 2] = ["warmup_steps", "lr"];
 
@@ -373,7 +389,7 @@ fn adv_tiny_3_train_refuses_a_table_wider_than_the_packed_vocabulary() {
             "--data",
             path(&packed),
             "--steps",
-            "60",
+            "100",
         ]);
         assert_ne!(
             out.status.code(),

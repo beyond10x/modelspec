@@ -1,11 +1,13 @@
 // The hidden-32 twin of examples/bert_tiny.mspec: the same program with H = 32, 2 heads,
-// F = 64, S = 16, batches of 2 and the 300-token vocabulary of the fixture tokenizer, 28,684
-// parameters. tests/gradients_bert_cpu.rs of modelspec-runtime checks every parameter's gradient
-// against central differences in f64, and tests/bert_cpu_train.rs trains it twice from one seed
-// on the packed fixture corpus. Like the example it differs from Devlin et al. 2019 in four
-// ways: weight decay applies to every parameter, layer-norm gains and biases included; every
-// matrix is initialised xavier-uniform, not from N(0, 0.02); there is no dropout on the
-// attention probabilities; and the warm-up is 10 % of the run, not 1 %.
+// F = 64, S = 16, batches of 2 and the 300-token vocabulary its tests train, 28,684 parameters,
+// with its own learning rate and run length. tests/gradients_bert_cpu.rs of modelspec-runtime
+// checks every parameter's gradient against central differences in f64, and
+// tests/bert_cpu_train.rs trains it twice from one seed on a synthetic corpus the test writes,
+// and its held-out loss ends at least 0.2 nats below the unigram baseline. Like the example it
+// differs from Devlin et al. 2019 in four ways: weight decay applies to every parameter,
+// layer-norm gains and biases included; every matrix is initialised xavier-uniform, not from
+// N(0, 0.02); there is no dropout on the attention probabilities; and the warm-up is 10 % of the
+// run, not 1 %.
 model BertTiny {
     param tok_table: Tensor<f32, [300, 32]> = xavier_uniform();
     param pos_table: Tensor<f32, [16, 32]> = xavier_uniform();
@@ -85,8 +87,8 @@ train Pretrain {
     target labels: Tensor<i32, [32]>;
     target weights: Tensor<f32, [32]>;
     loss = cross_entropy(model.forward(ids, positions, key_mask), labels, weights);
-    optimizer = adamw(lr = 1e-4, weight_decay = 0.01, beta1 = 0.9, beta2 = 0.999, eps = 1e-6, warmup_steps = 50);
-    steps = 500;
+    optimizer = adamw(lr = 3e-3, weight_decay = 0.01, beta1 = 0.9, beta2 = 0.999, eps = 1e-6, warmup_steps = 80);
+    steps = 800;
     seed = 42;
     device = cpu;
 }

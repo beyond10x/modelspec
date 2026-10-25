@@ -138,10 +138,12 @@ const EXAMPLES: &[Example] = &[
                 elements; Turc et al.'s BERT-tiny has 4.4M at the 30,522 tokens of the original \
                 BERT release. `task check-examples` checks it on every change. Its hidden-32 twin, \
                 `crates/modelspec-cli/tests/fixtures/bert_cpu.mspec`, is the same program with \
-                other sizes: the tests of `modelspec-runtime` check the gradient of every one of \
-                its parameters against central differences in `f64`, and the tests of \
-                `modelspec-cli` train it twice from one seed on a packed corpus and compare the \
-                output line for line.",
+                other sizes and its own learning rate and run length: the tests of \
+                `modelspec-runtime` check the gradient of every one of its parameters against \
+                central differences in `f64`, and the tests of `modelspec-cli` train it twice \
+                from one seed on a synthetic corpus the test writes, compare the output line for \
+                line and require the last held-out loss to end at least 0.2 nats below the \
+                unigram baseline.",
         runs: &[&["check", "{file}"], &["ir", "{file}", "--stage", "tensor"]],
         expected: &[0, 0],
     },

@@ -2,15 +2,21 @@
 //! BERT-tiny, `crates/modelspec-cli/tests/fixtures/bert_cpu.mspec` (story:bert-tiny-cpu-model).
 //!
 //! The packed directory is made as `train_data.rs` makes it, with `modelspec data prepare`,
-//! `data tokenizer --vocab-size 300` and `data pack --seq-len 16`, from the corpus fixture of
-//! story:bert-corpus-splits, `crates/modelspec-runtime/tests/fixtures/corpus/`, into a directory
-//! under this crate's build directory (`CARGO_TARGET_TMPDIR`, under the tree's `target/tmp/`).
+//! `data tokenizer --vocab-size 300` and `data pack --seq-len 16`, from a synthetic corpus the
+//! test writes (`common/markov_corpus.rs`, coordinator decision D72), all in a directory under
+//! this crate's build directory (`CARGO_TARGET_TMPDIR`, under the tree's `target/tmp/`). The
+//! corpus fixture of story:bert-corpus-splits packs to 20 training sequences, too few for the
+//! twin's held-out loss to show it learns.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-const CORPUS: &str = "crates/modelspec-runtime/tests/fixtures/corpus";
+#[path = "common/markov_corpus.rs"]
+mod markov_corpus;
+
 const TWIN: &str = "crates/modelspec-cli/tests/fixtures/bert_cpu.mspec";
+/// How far below the held-out unigram baseline the last held-out loss ends, in nats.
+const MARGIN: f64 = 0.2;
 
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -51,12 +57,14 @@ fn path(p: &Path) -> &str {
     p.to_str().expect("a UTF-8 path")
 }
 
-/// The fixture corpus prepared, a 300-token tokenizer trained on it and the two packed into
-/// sequences of 16, all under `case`; returns the packed directory.
+/// The synthetic corpus written and prepared, a 300-token tokenizer trained on it and the two
+/// packed into sequences of 16, all under `case`; returns the packed directory.
 fn packed(case: &Path) -> PathBuf {
+    let corpus = case.join("corpus");
+    markov_corpus::write(&corpus);
     let dataset = case.join("dataset");
     assert_exit(
-        &modelspec(&["data", "prepare", CORPUS, "--out", path(&dataset)]),
+        &modelspec(&["data", "prepare", path(&corpus), "--out", path(&dataset)]),
         0,
     );
     let tokenizer = case.join("tokenizer.json");
@@ -107,12 +115,12 @@ fn losses(stdout: &str) -> Vec<(u64, f32)> {
 /// The `--eval-every` of the run.
 const EVAL_EVERY: &str = "100";
 
-/// Scenario 4: the twin, trained twice from its one seed on the packed fixture corpus with
+/// Scenario 4: the twin, trained twice from its one seed on the packed synthetic corpus with
 /// `--eval-every`, exits 0 both times and prints identical stdout, `step` and `eval` lines
-/// included, and the held-out loss of its last `eval` line is below the held-out unigram baseline
-/// `data pack` records in `packed.json`: the twin learns more than token frequencies. A `step`
-/// loss is one batch of 2 sequences, so a twin that does not learn can end below its step 0
-/// (coordinator decision D71).
+/// included, and the held-out loss of its last `eval` line is at least [`MARGIN`] nats below the
+/// held-out unigram baseline `data pack` records in `packed.json`: the twin learns more than
+/// token frequencies. A `step` loss is one batch of 2 sequences, so a twin that does not learn
+/// can end below its step 0 (coordinator decisions D71 and D72).
 #[test]
 fn reproducible() {
     let case = scratch("reproducible");
@@ -161,9 +169,9 @@ fn reproducible() {
         .expect("heldout_unigram_baseline_nats");
     let (last_eval, heldout) = *held_out(&out).last().unwrap();
     assert!(
-        heldout < baseline,
-        "held-out loss {heldout} at eval {last_eval} not below the held-out unigram baseline \
-         {baseline}:\n{out}"
+        heldout <= baseline - MARGIN,
+        "held-out loss {heldout} at eval {last_eval} not {MARGIN} nats below the held-out unigram \
+         baseline {baseline}:\n{out}"
     );
 }
 

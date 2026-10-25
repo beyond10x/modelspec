@@ -66,7 +66,8 @@ tokenizer (1,486,720 parameters; Turc et al.'s BERT-tiny has 4.4M at 30,522 toke
 modelspec-cli --test bert_tiny`), and `crates/modelspec-cli/tests/fixtures/bert_cpu.mspec` is the
 same program at hidden size 32, whose every parameter `cargo test -p modelspec-runtime --test
 gradients_bert_cpu` checks against central differences in `f64` and which `cargo test -p
-modelspec-cli --test bert_cpu_train` trains twice from one seed on the packed `corpus` fixture.
+modelspec-cli --test bert_cpu_train` trains twice from one seed on a synthetic corpus the test
+writes (`crates/modelspec-cli/tests/common/markov_corpus.rs`).
 Two tests guard the pair, so change both files together:
 `adversary_bert_cpu.rs::both_files_are_post_ln_bert_in_the_ir` (modelspec-runtime) walks the
 Tensor IR of both as post-layer-norm BERT, and
