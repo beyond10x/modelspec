@@ -109,6 +109,13 @@
     },
     {
       "area": "GPU",
+      "detail": "embedding, add_rows, gelu, dropout, layer_norm, softmax and their gradients are one per_element, per_row or per_column dispatch each, summed in the CPU interpreter's order, without atomics, the dropout mask computed by Philox4x32-10 on the device and bit-equal to the CPU's; spirv-val accepts every module. A device run of a model with dropout is refused with E-TARGET-011. Held by test every_rowwise_kernel_on_unaligned_shapes_passes_spirv_val in crates/modelspec-runtime/tests/spirv_bert_rowwise.rs.",
+      "href": "/docs/concepts/pipeline",
+      "label": "SPIR-V kernels for the row-wise BERT operators",
+      "status": "shipped"
+    },
+    {
+      "area": "GPU",
       "detail": "modelspec train --backend vulkan trains both examples on the device; every loss and final parameter lies within the GPU tolerance of the CPU reference run. Held by test linear_regression_trains_on_the_device_within_tolerance_of_the_cpu in crates/modelspec-runtime/tests/vulkan_train.rs.",
       "href": "/docs/reference/cli",
       "label": "End-to-end f32 training on an RTX 3090",

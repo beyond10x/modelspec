@@ -436,27 +436,48 @@ fn adversary_embedding_a_refused_compile_writes_nothing() {
 
 /// Attack 8, finding F2: a command that needs the schedule of an embedding program answers with
 /// a user-facing code, not E-INTERNAL-002, whose documentation says no source file is meant to
-/// reach it. `train --backend vulkan`, `infer --backend vulkan` and `ir --stage kernel` all stop
-/// at compile time, before any device is opened.
+/// reach it. Since story:bert-vulkan-kernels-rowwise `embedding` has kernels: `ir --stage kernel`
+/// prints the schedule, `train --backend vulkan` stops at the missing loader (E-TARGET-002) and
+/// `infer --backend vulkan` at the missing checkpoint (E-CKPT-001), each run given a Vulkan
+/// library path that does not exist.
 #[test]
 fn adversary_embedding_no_kernel_is_not_a_compiler_bug() {
     let fixture = fixture();
     let missing = scratch("no_kernel").join("no-such-checkpoint");
-    for args in [
-        vec!["ir", "--stage", "kernel", fixture.as_str()],
-        vec!["train", fixture.as_str(), "--backend", "vulkan"],
-        vec![
-            "infer",
-            fixture.as_str(),
-            "--backend",
-            "vulkan",
-            "--checkpoint",
-            missing.to_str().unwrap(),
-        ],
+    for (args, refusal) in [
+        (vec!["ir", "--stage", "kernel", fixture.as_str()], None),
+        (
+            vec!["train", fixture.as_str(), "--backend", "vulkan"],
+            Some("E-TARGET-002: "),
+        ),
+        (
+            vec![
+                "infer",
+                fixture.as_str(),
+                "--backend",
+                "vulkan",
+                "--checkpoint",
+                missing.to_str().unwrap(),
+            ],
+            Some("E-CKPT-001: "),
+        ),
     ] {
-        let output = modelspec(&args);
+        let output = Command::new(env!("CARGO_BIN_EXE_modelspec"))
+            .args(&args)
+            .env(
+                "MODELSPEC_VULKAN_LIBRARY",
+                "/nonexistent/modelspec-test/libvulkan-missing.so.1",
+            )
+            .output()
+            .expect("modelspec runs");
         let text = stderr(&output);
-        assert_eq!(output.status.code(), Some(1), "{args:?}:\n{text}");
+        match refusal {
+            None => assert_eq!(output.status.code(), Some(0), "{args:?}:\n{text}"),
+            Some(code) => {
+                assert_eq!(output.status.code(), Some(1), "{args:?}:\n{text}");
+                assert!(text.starts_with(code), "{args:?}:\n{text}");
+            }
+        }
         assert!(
             !text.contains("E-INTERNAL") && !text.contains("compiler bug"),
             "{args:?}:\n{text}"

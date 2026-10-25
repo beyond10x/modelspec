@@ -192,6 +192,15 @@ pub const CAPABILITIES: &[Capability] = &[
     ),
     shipped(
         "GPU",
+        "SPIR-V kernels for the row-wise BERT operators",
+        "embedding, add_rows, gelu, dropout, layer_norm, softmax and their gradients are one per_element, per_row or per_column dispatch each, summed in the CPU interpreter's order, without atomics, the dropout mask computed by Philox4x32-10 on the device and bit-equal to the CPU's; spirv-val accepts every module. A device run of a model with dropout is refused with E-TARGET-011.",
+        Evidence::Test(
+            "crates/modelspec-runtime/tests/spirv_bert_rowwise.rs::every_rowwise_kernel_on_unaligned_shapes_passes_spirv_val",
+        ),
+        "/docs/concepts/pipeline",
+    ),
+    shipped(
+        "GPU",
         "End-to-end f32 training on an RTX 3090",
         "modelspec train --backend vulkan trains both examples on the device; every loss and final parameter lies within the GPU tolerance of the CPU reference run.",
         Evidence::Test(

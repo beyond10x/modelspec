@@ -6,7 +6,11 @@
 //! [`MatMulTile`]; the `mse` loss is one Dispatch of one workgroup
 //! (DESIGN.md § 5.4); every other reduce is four consecutive steps: an `Allocate` of its partials
 //! buffer, a stage-1 Dispatch that writes one partial per workgroup into it, a `Barrier`, and a
-//! stage-2 Dispatch of one workgroup that reads the partials. `Input`, `ParamRead` and `Scalar`
+//! stage-2 Dispatch of one workgroup that reads the partials. Each row-wise op is one Dispatch
+//! of workgroups of 64 ([`rowwise_kernel`]): `Embedding`, `AddRows`, `Gelu`, `GeluGrad`,
+//! `Dropout` and `DropoutGrad` one invocation per output element, `EmbeddingGrad`, `LayerNorm`,
+//! `LayerNormGradX`, `Softmax` and `SoftmaxGrad` one per output row, and the column reductions
+//! `SumRows` and `LayerNormGradGamma` one per output column. `Input`, `ParamRead` and `Scalar`
 //! dispatch nothing: inputs and parameters are bound views, and a scalar is compiled into the
 //! kernels that read it.
 //!
@@ -93,11 +97,9 @@ pub enum ScheduleError {
     BufferTooLarge { buffer: u32, bytes: u64 },
     #[error("{value} dispatches {invocations} invocations, more than a 32-bit index counts")]
     TooManyInvocations { value: ValueId, invocations: u64 },
-    /// The op has no Vulkan kernel yet (`E-TARGET-011`): `Embedding`, `EmbeddingGrad`, `AddRows`,
-    /// `SumRows`, `Gelu`, `GeluGrad`, `LayerNorm`, `LayerNormGradX`, `LayerNormGradGamma`,
-    /// `Softmax`, `SoftmaxGrad`, `Attention`, `AttentionGradQ`, `AttentionGradK`,
-    /// `AttentionGradV`, `CrossEntropy`, `CrossEntropyGrad`, `Dropout` and `DropoutGrad` run on
-    /// the CPU interpreter only.
+    /// The op has no Vulkan kernel yet (`E-TARGET-011`): `Attention`, `AttentionGradQ`,
+    /// `AttentionGradK`, `AttentionGradV`, `CrossEntropy` and `CrossEntropyGrad` run on the CPU
+    /// interpreter only, and so does a row-wise op that reads an immediate operand.
     #[error("{value} is {op}, which has no Vulkan kernel")]
     NoKernel { value: ValueId, op: &'static str },
 }
@@ -801,14 +803,28 @@ fn schedule_with(
             | TensorOp::LayerNormGradGamma
             | TensorOp::Softmax
             | TensorOp::SoftmaxGrad
-            | TensorOp::Attention { .. }
+            | TensorOp::Dropout { .. }
+            | TensorOp::DropoutGrad { .. } => match built {
+                Kernels::None => continue,
+                Kernels::Vulkan => {
+                    let no_kernel = || ScheduleError::NoKernel {
+                        value: node.id,
+                        op: node.op.name(),
+                    };
+                    let (_, invocations) =
+                        rowwise_shape(&node.op, &operands, &node.ty).ok_or_else(no_kernel)?;
+                    spread(node, invocations.div_ceil(ROWWISE_WORKGROUP))?;
+                    let built = rowwise_kernel(&node.op, operands, node.ty.clone())
+                        .ok_or_else(no_kernel)?;
+                    (vec![built], None)
+                }
+            },
+            TensorOp::Attention { .. }
             | TensorOp::AttentionGradQ { .. }
             | TensorOp::AttentionGradK { .. }
             | TensorOp::AttentionGradV { .. }
             | TensorOp::CrossEntropy
-            | TensorOp::CrossEntropyGrad
-            | TensorOp::Dropout { .. }
-            | TensorOp::DropoutGrad { .. } => match built {
+            | TensorOp::CrossEntropyGrad => match built {
                 Kernels::None => continue,
                 Kernels::Vulkan => {
                     return Err(ScheduleError::NoKernel {
@@ -945,19 +961,151 @@ fn elements(ty: &TensorType) -> Option<u64> {
 /// `groups` workgroups over as few dimensions as hold them, each at most
 /// [`MAX_WORKGROUPS_PER_DIMENSION`].
 fn spread(node: &TensorNode, groups: u64) -> Result<[u32; 3], ScheduleError> {
-    let max = u64::from(MAX_WORKGROUPS_PER_DIMENSION);
-    let too_many = ScheduleError::TooManyWorkgroups {
+    spread_groups(groups).ok_or(ScheduleError::TooManyWorkgroups {
         value: node.id,
         groups,
-    };
+    })
+}
+
+/// [`spread`] without a node: `None` past [`MAX_WORKGROUPS_PER_DIMENSION`] in all three.
+fn spread_groups(groups: u64) -> Option<[u32; 3]> {
+    let max = u64::from(MAX_WORKGROUPS_PER_DIMENSION);
     let x = groups.clamp(1, max);
     let rest = groups.div_ceil(max).max(1);
     let y = rest.min(max);
     let z = rest.div_ceil(max).max(1);
     if z > max {
-        return Err(too_many);
+        return None;
     }
-    Ok([x as u32, y as u32, z as u32])
+    Some([x as u32, y as u32, z as u32])
+}
+
+/// The workgroup size of every row-wise kernel ([`KernelKind::workgroup_size`]).
+const ROWWISE_WORKGROUP: u64 = 64;
+
+/// The kernel kind of the row-wise op `op` over `operands` into `result`, and the invocations
+/// its dispatch runs: one per output element of a [`KernelKind::PerElement`] kernel, one per
+/// output row of a [`KernelKind::PerRow`] kernel and one per output column of a
+/// [`KernelKind::PerColumn`] kernel. `None` for another op, an immediate operand, a shape that
+/// is not static or a zero dimension, or operands that are not the op's: an `i32` buffer of ids
+/// or an `i32[2]` RNG token where the op reads one, `f32` elsewhere.
+fn rowwise_shape(
+    op: &TensorOp,
+    operands: &[Operand],
+    result: &TensorType,
+) -> Option<(KernelKind, u64)> {
+    let mut shapes = Vec::with_capacity(operands.len());
+    let mut dtypes = Vec::with_capacity(operands.len());
+    for operand in operands {
+        let Operand::Buffer(ty) = operand else {
+            return None;
+        };
+        shapes.push(static_dims(ty)?);
+        dtypes.push(ty.dtype);
+    }
+    let out = static_dims(result)?;
+    if result.dtype != DType::F32 || out.contains(&0) || shapes.iter().flatten().any(|&d| d == 0) {
+        return None;
+    }
+    let f32s =
+        |at: &[usize]| (0..dtypes.len()).all(|i| (dtypes[i] == DType::F32) == at.contains(&i));
+    let out_elements = out.iter().product::<u64>();
+    let token = [2_u64];
+    let views: Vec<&[u64]> = shapes.iter().map(Vec::as_slice).collect();
+    let (kind, invocations) = match (op, views.as_slice(), out.as_slice()) {
+        (TensorOp::Embedding, [[v, h], [n]], [rn, rh]) if (n, h) == (rn, rh) && *v > 0 => {
+            f32s(&[0]).then_some((KernelKind::PerElement, out_elements))?
+        }
+        (TensorOp::EmbeddingGrad { rows }, [[n], [gn, h]], [v, rh])
+            if n == gn && h == rh && *rows == Dim::Static(*v) =>
+        {
+            f32s(&[1]).then_some((KernelKind::PerRow, *v))?
+        }
+        (TensorOp::AddRows, [[n, h], [bh]], [rn, rh]) if h == bh && (n, h) == (rn, rh) => {
+            f32s(&[0, 1]).then_some((KernelKind::PerElement, out_elements))?
+        }
+        (TensorOp::SumRows, [[_, h]], [rh]) if h == rh => {
+            f32s(&[0]).then_some((KernelKind::PerColumn, *h))?
+        }
+        (TensorOp::Gelu, [x], _) if *x == out.as_slice() => {
+            f32s(&[0]).then_some((KernelKind::PerElement, out_elements))?
+        }
+        (TensorOp::GeluGrad, [x, g], _) if x == g && *x == out.as_slice() => {
+            f32s(&[0, 1]).then_some((KernelKind::PerElement, out_elements))?
+        }
+        (TensorOp::Dropout { .. }, [x, t], _) if *x == out.as_slice() && *t == token => {
+            f32s(&[0]).then_some((KernelKind::PerElement, out_elements))?
+        }
+        (TensorOp::DropoutGrad { .. }, [t, g], _) if *g == out.as_slice() && *t == token => {
+            f32s(&[1]).then_some((KernelKind::PerElement, out_elements))?
+        }
+        (TensorOp::LayerNorm, [[n, h], [gh], [bh]], [rn, rh])
+            if h == gh && h == bh && (n, h) == (rn, rh) =>
+        {
+            f32s(&[0, 1, 2]).then_some((KernelKind::PerRow, *n))?
+        }
+        (TensorOp::LayerNormGradX, [[n, h], [gh], g], [rn, rh])
+            if h == gh && *g == [*n, *h] && (n, h) == (rn, rh) =>
+        {
+            f32s(&[0, 1, 2]).then_some((KernelKind::PerRow, *n))?
+        }
+        (TensorOp::LayerNormGradGamma, [[n, h], g], [rh]) if h == rh && *g == [*n, *h] => {
+            f32s(&[0, 1]).then_some((KernelKind::PerColumn, *h))?
+        }
+        (TensorOp::Softmax, [[n, h]], [rn, rh]) if (n, h) == (rn, rh) => {
+            f32s(&[0]).then_some((KernelKind::PerRow, *n))?
+        }
+        (TensorOp::SoftmaxGrad, [[n, h], g], [rn, rh]) if *g == [*n, *h] && (n, h) == (rn, rh) => {
+            f32s(&[0, 1]).then_some((KernelKind::PerRow, *n))?
+        }
+        _ => return None,
+    };
+    Some((kind, invocations))
+}
+
+/// The static dimensions of `ty`.
+fn static_dims(ty: &TensorType) -> Option<Vec<u64>> {
+    ty.shape
+        .iter()
+        .map(|dim| match dim {
+            Dim::Static(n) => Some(*n),
+            Dim::Symbol(_) => None,
+        })
+        .collect()
+}
+
+/// The kernel record of the row-wise op `op` over the buffer operands `operands`, in the op's
+/// operand order, into `result`, as [`schedule`] builds it (DESIGN.md § 5.2): its kind
+/// ([`KernelKind::PerElement`], [`KernelKind::PerRow`] or [`KernelKind::PerColumn`]),
+/// workgroups of 64 over its invocations, and its module id. A `Dropout` or `DropoutGrad`
+/// carries its drop probability `p` as a last, immediate operand, so it is in the module id;
+/// the run key is not, the pipeline supplies it. `None` where [`rowwise_shape`] is: another
+/// op, or operands that are not the op's.
+pub fn rowwise_kernel(
+    op: &TensorOp,
+    mut operands: Vec<Operand>,
+    result: TensorType,
+) -> Option<Kernel> {
+    let (kind, invocations) = rowwise_shape(op, &operands, &result)?;
+    let workgroups = spread_groups(invocations.div_ceil(ROWWISE_WORKGROUP))?;
+    if let Some(p) = op.dropout_rate() {
+        operands.push(Operand::Immediate(p));
+    }
+    let mut kernel = Kernel {
+        id: crate::ir::kernel::KernelModuleId([0; 16]),
+        kind,
+        op: op.name(),
+        dtype: result.dtype,
+        operands,
+        result,
+        reduces: None,
+        epilogue: None,
+        transposed: [false, false],
+        workgroup_size: kind.workgroup_size(),
+        workgroups,
+    };
+    kernel.id = Kernel::module_id(&kernel.signature());
+    Some(kernel)
 }
 
 /// The tile of a matmul over `operands` `[m, k]` and `[k, n]`, reading the operands marked in

@@ -53,17 +53,17 @@ use std::ops::Range;
 use std::time::{Duration, Instant};
 
 use modelspec_core::artifact::{CompiledArtifact, check_device};
-use modelspec_core::compile::CompiledTraining;
+use modelspec_core::compile::{CompiledTraining, codes};
 use modelspec_core::device::DeviceProfile;
 use modelspec_core::diag::Diagnostic;
 use modelspec_core::ir::kernel::{BufferView, ExecutionPlan, KernelKind, PlanOp, PlanStep};
-use modelspec_core::ir::tensor::{Dim, ParamId};
+use modelspec_core::ir::tensor::{Dim, ParamId, TensorOp};
 use thiserror::Error;
 
 use super::dispatch::{Bound, DescriptorArena, Recording, TimestampPool};
 use super::memory::{Buffer, MemorySpan};
 use super::negotiate::{Negotiated, NumericsClass, negotiate};
-use super::pipeline::{Pipeline, PipelineStatistics};
+use super::pipeline::{Pipeline, PipelineStatistics, reads_seed};
 use super::profile::{PlanName, Profile, Site, timings};
 use super::select::select_device;
 use super::sync::{Barrier, recorded_barriers};
@@ -243,7 +243,8 @@ pub fn train_on_device_with(
 }
 
 /// [`train_on_device_with`], from the start and with the checkpoints of `options`
-/// ([`train_with`]).
+/// ([`train_with`]). A training step with a dropout is refused before Vulkan is loaded
+/// ([`dropout_refused`]).
 pub fn train_on_device_from(
     device: Option<usize>,
     compiled: &CompiledTraining,
@@ -251,6 +252,9 @@ pub fn train_on_device_from(
     profiled: bool,
     options: RunOptions<'_>,
 ) -> Result<(Run, RunStats, Option<Profile>), DeviceRunError> {
+    if let Some(refused) = dropout_refused(compiled) {
+        return Err(DeviceRunError::Refused(refused));
+    }
     on_device(device, profiled, artifact, |opened, profile, negotiated| {
         let job = Job {
             steps: compiled.config.steps,
@@ -264,6 +268,31 @@ pub fn train_on_device_from(
     })
 }
 
+/// `E-TARGET-011` at the first `dropout` of `compiled`'s training step, when it has one: the
+/// `Dropout` and `DropoutGrad` kernels exist, but the device run uploads no RNG token per step
+/// and no run key, and inference runs the step plan with its dropouts, so neither a training
+/// run nor inference on the device would compute what the CPU does (DESIGN.md § 2.3,
+/// § 5.2). `None` for a step without dropout.
+pub fn dropout_refused(compiled: &CompiledTraining) -> Option<Diagnostic> {
+    let node = compiled
+        .training
+        .training
+        .program
+        .nodes
+        .iter()
+        .find(|node| matches!(node.op, TensorOp::Dropout { .. }))?;
+    let refused = Diagnostic::new(
+        codes::NO_KERNEL,
+        "operator `dropout` has no Vulkan run yet: the device run supplies no RNG token per \
+         step",
+    )
+    .note("train and infer it with `--backend cpu`");
+    Some(match node.source_span.clone() {
+        Some(span) => refused.at(span),
+        None => refused,
+    })
+}
+
 /// Loads Vulkan, selects device `device` (0 when `None`), negotiates and opens it, and runs
 /// [`infer`] on it with `params`.
 pub fn infer_on_device(
@@ -272,6 +301,9 @@ pub fn infer_on_device(
     artifact: &CompiledArtifact,
     params: &BTreeMap<ParamId, HostTensor<f32>>,
 ) -> Result<(Inference, RunStats), DeviceRunError> {
+    if let Some(refused) = dropout_refused(compiled) {
+        return Err(DeviceRunError::Refused(refused));
+    }
     on_device(device, false, artifact, |opened, profile, negotiated| {
         Ok(infer(
             opened, profile, negotiated, compiled, artifact, params,
@@ -553,6 +585,12 @@ fn execute_runs(
 ) -> Result<(), VulkanRunError> {
     check_device(artifact, profile).map_err(|refused| VulkanRunError::Plan(refused.to_string()))?;
     let plan = &artifact.execution;
+    if let Some(kernel) = plan.kernels.iter().find(|kernel| reads_seed(kernel)) {
+        return Err(VulkanRunError::Plan(format!(
+            "kernel {} draws a dropout mask; the device run supplies no RNG token per step",
+            kernel.id
+        )));
+    }
     let config = &compiled.config;
     let Job {
         steps,

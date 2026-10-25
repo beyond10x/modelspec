@@ -145,6 +145,15 @@ impl Buffer<'_> {
 
     /// Writes `values` at the start of a staging buffer.
     pub fn write_f32(&mut self, values: &[f32]) -> Result<(), ExecError> {
+        self.write_words(values)
+    }
+
+    /// Writes `values`, row ids or an RNG token, at the start of a staging buffer.
+    pub fn write_i32(&mut self, values: &[i32]) -> Result<(), ExecError> {
+        self.write_words(values)
+    }
+
+    fn write_words<T: Copy>(&mut self, values: &[T]) -> Result<(), ExecError> {
         let needed = std::mem::size_of_val(values) as u64;
         let at = self.mapped.ok_or(ExecError::NotHostVisible)?;
         if needed > self.bytes {

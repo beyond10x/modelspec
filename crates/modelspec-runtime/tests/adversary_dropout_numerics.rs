@@ -289,13 +289,28 @@ fn adv_drop_runner_keys_each_step_with_the_global_step_token() {
     }
 }
 
-/// `compile --backend vulkan` of a file with dropout is E-TARGET-011 at the `dropout` call.
+/// Since story:bert-vulkan-kernels-rowwise a Vulkan artifact of a file with dropout has its
+/// `Dropout` and `DropoutGrad` kernels, and the device run is refused with E-TARGET-011 at the
+/// `dropout` call, because it supplies no RNG token per step.
 #[test]
 fn adv_drop_vulkan_artifact_is_e_target_011_at_the_call() {
-    let errors = compile_artifact("one_step.mspec", ONE_STEP, Backend::Vulkan)
-        .expect_err("dropout has no Vulkan kernel");
-    assert_eq!(errors.len(), 1, "{errors:?}");
-    assert_eq!(errors[0].code.to_string(), "E-TARGET-011", "{errors:?}");
-    let span = errors[0].span.as_ref().expect("a span");
-    assert_eq!((span.line, span.column), (7, 17), "{errors:?}");
+    let artifact = compile_artifact("one_step.mspec", ONE_STEP, Backend::Vulkan)
+        .unwrap_or_else(|errors| panic!("{errors:?}"));
+    let ops: Vec<&str> = artifact
+        .execution
+        .kernels
+        .iter()
+        .map(|kernel| kernel.op)
+        .collect();
+    assert!(ops.contains(&"Dropout"), "{ops:?}");
+    assert!(ops.contains(&"DropoutGrad"), "{ops:?}");
+    #[cfg(feature = "vulkan")]
+    {
+        let compiled = compile_training("one_step.mspec", ONE_STEP).expect("it compiles");
+        let refused = modelspec_runtime::vulkan::runner::dropout_refused(&compiled)
+            .expect("the device run is refused");
+        assert_eq!(refused.code.to_string(), "E-TARGET-011", "{refused:?}");
+        let span = refused.span.as_ref().expect("a span");
+        assert_eq!((span.line, span.column), (7, 17), "{refused:?}");
+    }
 }

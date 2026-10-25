@@ -39,9 +39,10 @@ pub mod codes {
     /// checks; reduce the shape.
     pub const TOO_LARGE_FOR_TARGET: Code = Code::new("E-TARGET-010");
 
-    /// An operator of the training step has no Vulkan kernel yet: `embedding`, whose lookup and
-    /// gradient run on the CPU interpreter only (DESIGN.md § 8.1). The file checks; use
-    /// `--backend cpu`.
+    /// An operator of the training step has no Vulkan kernel yet: `attention` and
+    /// `cross_entropy`, which run on the CPU interpreter only, and, refused by the device run
+    /// rather than the schedule, `dropout`, whose kernels need an RNG token per step the run does
+    /// not supply (DESIGN.md § 8.1). The file checks; use `--backend cpu`.
     pub const NO_KERNEL: Code = Code::new("E-TARGET-011");
 }
 

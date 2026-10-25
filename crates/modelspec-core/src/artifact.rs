@@ -1093,9 +1093,15 @@ enum WireKind {
     MatMul,
     #[serde(rename = "sgd_update")]
     SgdUpdate,
+    #[serde(rename = "per_element")]
+    PerElement,
+    #[serde(rename = "per_row")]
+    PerRow,
+    #[serde(rename = "per_column")]
+    PerColumn,
 }
 
-const KINDS: [(WireKind, KernelKind); 8] = [
+const KINDS: [(WireKind, KernelKind); 11] = [
     (WireKind::Elementwise, KernelKind::Elementwise),
     (WireKind::Broadcast, KernelKind::Broadcast),
     (WireKind::ReduceStage1, KernelKind::ReduceStage1),
@@ -1104,10 +1110,13 @@ const KINDS: [(WireKind, KernelKind); 8] = [
     (WireKind::Transpose, KernelKind::Transpose),
     (WireKind::MatMul, KernelKind::MatMul),
     (WireKind::SgdUpdate, KernelKind::SgdUpdate),
+    (WireKind::PerElement, KernelKind::PerElement),
+    (WireKind::PerRow, KernelKind::PerRow),
+    (WireKind::PerColumn, KernelKind::PerColumn),
 ];
 
 /// The Tensor IR op names a kernel can implement (`TensorOp::name`).
-const OPS: [&str; 14] = [
+const OPS: [&str; 27] = [
     "Input",
     "ParamRead",
     "Scalar",
@@ -1122,6 +1131,19 @@ const OPS: [&str; 14] = [
     "Mse",
     "ReluGrad",
     "BroadcastScalar",
+    "Embedding",
+    "EmbeddingGrad",
+    "AddRows",
+    "SumRows",
+    "Gelu",
+    "GeluGrad",
+    "Dropout",
+    "DropoutGrad",
+    "LayerNorm",
+    "LayerNormGradX",
+    "LayerNormGradGamma",
+    "Softmax",
+    "SoftmaxGrad",
 ];
 
 /// A kernel operand: a buffer of a type, or an `f32` constant by its bits, so that it reads back

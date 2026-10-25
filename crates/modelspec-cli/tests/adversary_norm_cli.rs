@@ -1,6 +1,6 @@
 //! Adversary pass 1 on story:bert-layer-norm-softmax, through the `modelspec` binary: the shape,
 //! rank and dtype rules of `layer_norm` and `softmax` at the call, `E-TYPE-017` with a norm in the
-//! model, the diagnostics page, `E-TARGET-011` for every command that needs a Vulkan kernel, and
+//! model, the diagnostics page, the row-wise kernels every Vulkan command schedules, and
 //! the operand order the IR printer shows for the new ops and their gradients.
 //!
 //! No test here creates a Vulkan instance: every run sets `MODELSPEC_VULKAN_LIBRARY` to a path
@@ -222,39 +222,70 @@ fn vulkan_commands(fixture: &str, tag: &str) -> Vec<Vec<String>> {
     ]
 }
 
-fn refuses_with_no_kernel(name: &str, operator: &str, at: &str) {
+/// Every Vulkan command on `name` gets past the schedule: `ir --stage kernel` prints each of
+/// `kernels` (`<kind> <op>`) on a kernel line, `compile --backend vulkan` writes the artifact,
+/// `train` stops at the missing loader (E-TARGET-002) and `infer` at the missing checkpoint
+/// (E-CKPT-001), none with E-TARGET-011.
+fn schedules_its_kernels(name: &str, tag: &str, kernels: &[&str]) {
     let fixture = fixture(name);
-    for args in vulkan_commands(&fixture, operator) {
+    let commands = vulkan_commands(&fixture, tag);
+    let expected = [None, None, Some("E-TARGET-002: "), Some("E-CKPT-001: ")];
+    for (args, refusal) in commands.iter().zip(expected) {
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
         let output = modelspec(&args);
         let text = stderr(&output);
-        assert_eq!(output.status.code(), Some(1), "{args:?}:\n{text}");
-        assert!(
-            text.contains(&format!(
-                "E-TARGET-011: operator `{operator}` has no Vulkan kernel yet"
-            )),
-            "{args:?}:\n{text}"
-        );
-        assert!(
-            text.contains(&format!("{name}:{at}")),
-            "{args:?}: not at {at}:\n{text}"
-        );
+        assert!(!text.contains("E-TARGET-011"), "{args:?}:\n{text}");
         assert!(!text.contains("E-INTERNAL"), "{args:?}:\n{text}");
-        assert!(stdout(&output).is_empty(), "{args:?}: printed a plan");
+        match refusal {
+            None => assert_eq!(output.status.code(), Some(0), "{args:?}:\n{text}"),
+            Some(code) => {
+                assert_eq!(output.status.code(), Some(1), "{args:?}:\n{text}");
+                assert!(text.starts_with(code), "{args:?}:\n{text}");
+                assert!(stdout(&output).is_empty(), "{args:?}: printed a plan");
+            }
+        }
+        if args[0] == "ir" {
+            let printed = stdout(&output);
+            for kernel in kernels {
+                assert!(
+                    printed
+                        .lines()
+                        .any(|l| l.starts_with("kernel ") && l.contains(&format!(" {kernel} "))),
+                    "{args:?}: no `{kernel}` kernel line:\n{printed}"
+                );
+            }
+        }
     }
+    let artifact = Path::new(&commands[1][7]).join("artifact.json");
+    assert!(artifact.is_file(), "no {}", artifact.display());
 }
 
-/// Attack 6. On `norm_softmax_train.mspec` every Vulkan command answers `E-TARGET-011` naming
-/// `layer_norm`, the first operator without a kernel, at its call (line 7, column 24).
+/// Attack 6, since story:bert-vulkan-kernels-rowwise: on `norm_softmax_train.mspec` every Vulkan
+/// command schedules `layer_norm`, `softmax` and their gradients as row-wise kernels.
 #[test]
-fn adversary_norm_every_vulkan_command_refuses_layer_norm_at_its_call() {
-    refuses_with_no_kernel("norm_softmax_train.mspec", "layer_norm", "7:24");
+fn adversary_norm_every_vulkan_command_schedules_layer_norm_and_softmax() {
+    schedules_its_kernels(
+        "norm_softmax_train.mspec",
+        "layer_norm",
+        &[
+            "per_row LayerNorm",
+            "per_row Softmax",
+            "per_row SoftmaxGrad",
+            "per_row LayerNormGradX",
+            "per_column LayerNormGradGamma",
+            "per_column SumRows",
+        ],
+    );
 }
 
-/// Attack 6. A program whose only new operator is `softmax` is refused naming `softmax`.
+/// Attack 6. A program whose only new operator is `softmax` schedules its two kernels.
 #[test]
-fn adversary_norm_every_vulkan_command_refuses_softmax_at_its_call() {
-    refuses_with_no_kernel("adversary_norm_softmax_only.mspec", "softmax", "5:16");
+fn adversary_norm_every_vulkan_command_schedules_softmax() {
+    schedules_its_kernels(
+        "adversary_norm_softmax_only.mspec",
+        "softmax",
+        &["per_row Softmax", "per_row SoftmaxGrad"],
+    );
 }
 
 // ---------------------------------------------------------------------------------------------

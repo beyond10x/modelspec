@@ -1,8 +1,9 @@
-//! An `embedding` program and the schedule (DESIGN.md § 8.1): `embedding` has no Vulkan kernel
-//! yet, so every command that needs one (`ir --stage kernel`, `compile --backend vulkan`,
-//! `train --backend vulkan`, `infer --backend vulkan`) answers E-TARGET-011 at the operator's
-//! call, exit 1, before any device is opened. A Cpu artifact has no kernels, so
-//! `compile --backend cpu` writes one, and the artifact reader accepts its `i32` ids view.
+//! An `embedding` program and the schedule (DESIGN.md § 5.2): since
+//! story:bert-vulkan-kernels-rowwise `embedding` and `EmbeddingGrad` have Vulkan kernels, so
+//! `ir --stage kernel` prints them, `compile --backend vulkan` writes an artifact, and
+//! `train --backend vulkan` and `infer --backend vulkan` get past the schedule to the missing
+//! loader and the missing checkpoint. A Cpu artifact has no kernels, so `compile --backend cpu`
+//! writes one, and the artifact reader accepts its `i32` ids view.
 //!
 //! No test here creates a Vulkan instance: every run sets `MODELSPEC_VULKAN_LIBRARY` to a path
 //! that does not exist.
@@ -58,7 +59,7 @@ fn stderr(output: &Output) -> String {
 }
 
 #[test]
-fn every_command_that_needs_a_vulkan_kernel_answers_e_target_011_at_the_call() {
+fn every_command_that_needs_a_vulkan_kernel_schedules_embedding() {
     let fixture = fixture();
     let profile = profile();
     let out = scratch("vulkan").join("artifact");
@@ -87,18 +88,33 @@ fn every_command_that_needs_a_vulkan_kernel_answers_e_target_011_at_the_call() {
     ] {
         let output = modelspec(&args);
         let text = stderr(&output);
-        assert_eq!(output.status.code(), Some(1), "{args:?}:\n{text}");
-        assert!(
-            text.contains("E-TARGET-011: operator `embedding` has no Vulkan kernel yet"),
-            "{args:?}:\n{text}"
-        );
-        assert!(
-            text.contains("embedding_ids.mspec:5:16"),
-            "{args:?}: not at the call:\n{text}"
-        );
+        assert!(!text.contains("E-TARGET-011"), "{args:?}:\n{text}");
         assert!(!text.contains("E-INTERNAL"), "{args:?}:\n{text}");
+        match args[0] {
+            "ir" => {
+                assert_eq!(output.status.code(), Some(0), "{args:?}:\n{text}");
+                let printed = String::from_utf8_lossy(&output.stdout);
+                for kernel in [" per_element Embedding ", " per_row EmbeddingGrad "] {
+                    assert!(
+                        printed
+                            .lines()
+                            .any(|l| l.starts_with("kernel ") && l.contains(kernel)),
+                        "no `{kernel}` kernel line:\n{printed}"
+                    );
+                }
+            }
+            "compile" => assert_eq!(output.status.code(), Some(0), "{args:?}:\n{text}"),
+            "train" => {
+                assert_eq!(output.status.code(), Some(1), "{args:?}:\n{text}");
+                assert!(text.starts_with("E-TARGET-002: "), "{args:?}:\n{text}");
+            }
+            _ => {
+                assert_eq!(output.status.code(), Some(1), "{args:?}:\n{text}");
+                assert!(text.starts_with("E-CKPT-001: "), "{args:?}:\n{text}");
+            }
+        }
     }
-    assert!(!out.exists(), "a refused compile left {}", out.display());
+    assert!(out.join("artifact.json").is_file(), "no {}", out.display());
 }
 
 #[test]

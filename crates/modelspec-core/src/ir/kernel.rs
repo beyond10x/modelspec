@@ -141,6 +141,16 @@ pub enum KernelKind {
     /// (or `(p, g, lr)`) it is `p - (lr * g)`, the product rounded before the subtraction and
     /// neither contracted; with operands `(p, d)` it is `p - d`.
     SgdUpdate,
+    /// A row-wise op computed one output element per invocation: `Embedding`, `AddRows`,
+    /// `Gelu`, `GeluGrad`, `Dropout` and `DropoutGrad` (DESIGN.md § 5.2).
+    PerElement,
+    /// A row-wise op computed one output row per invocation, its reductions over the row in
+    /// ascending column order: `EmbeddingGrad` (each table row, its ids scanned in ascending
+    /// order), `LayerNorm`, `LayerNormGradX`, `Softmax` and `SoftmaxGrad`.
+    PerRow,
+    /// A column reduction over the rows of its operands in ascending row order, one output
+    /// column per invocation: `SumRows` and `LayerNormGradGamma`.
+    PerColumn,
 }
 
 impl KernelKind {
@@ -664,6 +674,9 @@ impl fmt::Display for KernelKind {
             KernelKind::Transpose => "transpose",
             KernelKind::MatMul => "matmul",
             KernelKind::SgdUpdate => "sgd_update",
+            KernelKind::PerElement => "per_element",
+            KernelKind::PerRow => "per_row",
+            KernelKind::PerColumn => "per_column",
         })
     }
 }
@@ -877,8 +890,15 @@ impl Kernel {
     /// one for `Add`, `Sub`, `Mul`, `Relu` and `ReluGrad`, one per op for an elementwise chain
     /// ([`ElementwiseChain`]), and two for the scaled SGD update
     /// `p - (lr * g)`; one per element of the buffer operands of a reduction stage or a loss
-    /// sum; none for a transpose or a broadcast. `None` for an op without a rule, a shape with
-    /// a dimension that is not static, or a count past `u64`.
+    /// sum; none for a transpose or a broadcast. A row-wise kernel counts the operations of the
+    /// CPU interpreter's definition of its op, each add, subtract, multiply, compare, division,
+    /// square root and `exp` one and each fused multiply-add two: none for `Embedding`; one per
+    /// output element for `AddRows`, `Dropout` and `DropoutGrad`; one per element of the
+    /// gradient for `EmbeddingGrad` and of the operand for `SumRows`; 10 per element for `Gelu`
+    /// and 24 for `GeluGrad`; 5 per element for `Softmax` and 4 for `SoftmaxGrad`; for an
+    /// `[n, h]` operand, `n·(8h + 3)` for `LayerNorm` and `LayerNormGradGamma` and
+    /// `n·(14h + 3)` for `LayerNormGradX` (DESIGN.md § 3.1). `None` for an op without a rule, a
+    /// shape with a dimension that is not static, or a count past `u64`.
     pub fn flop(&self) -> Option<u64> {
         let elements = |ty: &TensorType| {
             ty.shape.iter().try_fold(1u64, |n, dim| match dim {
@@ -887,6 +907,18 @@ impl Kernel {
             })
         };
         let per_output = |flop: u64| elements(&self.result)?.checked_mul(flop);
+        let operand = |i: usize| match self.operands.get(i)? {
+            Operand::Buffer(ty) => Some(ty),
+            Operand::Immediate(_) => None,
+        };
+        // `n·(per_element·h + per_row)` over the rows `[n, h]` of operand 0.
+        let rows = |per_element: u64, per_row: u64| match operand(0)?.shape[..] {
+            [Dim::Static(n), Dim::Static(h)] => per_element
+                .checked_mul(h)?
+                .checked_add(per_row)?
+                .checked_mul(n),
+            _ => None,
+        };
         match self.kind {
             KernelKind::MatMul => {
                 let (m, k, n) = Kernel::matmul_shape(&self.operands)?;
@@ -909,6 +941,26 @@ impl Kernel {
                     Operand::Immediate(_) => Some(n),
                 }),
             KernelKind::Transpose | KernelKind::Broadcast => Some(0),
+            KernelKind::PerElement => match self.op {
+                "Embedding" => Some(0),
+                "AddRows" | "Dropout" | "DropoutGrad" => per_output(1),
+                "Gelu" => per_output(10),
+                "GeluGrad" => per_output(24),
+                _ => None,
+            },
+            KernelKind::PerRow => match self.op {
+                "EmbeddingGrad" => elements(operand(1)?),
+                "LayerNorm" => rows(8, 3),
+                "LayerNormGradX" => rows(14, 3),
+                "Softmax" => per_output(5),
+                "SoftmaxGrad" => per_output(4),
+                _ => None,
+            },
+            KernelKind::PerColumn => match self.op {
+                "SumRows" => elements(operand(0)?),
+                "LayerNormGradGamma" => rows(8, 3),
+                _ => None,
+            },
         }
     }
 

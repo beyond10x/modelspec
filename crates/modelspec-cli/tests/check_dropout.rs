@@ -141,24 +141,39 @@ fn check_dropout_ir_names_the_site_and_its_token() {
     assert!(!stdout.contains("dropout#"), "{stdout}");
 }
 
-/// `dropout` has no Vulkan kernel: `compile --backend vulkan` is `E-TARGET-011` at the call,
-/// and `compile --backend cpu` writes an artifact, the token taking a buffer of its own.
+/// `dropout` has Vulkan kernels (story:bert-vulkan-kernels-rowwise): `compile --backend vulkan`
+/// writes an artifact, but `train --backend vulkan` is `E-TARGET-011` at the call, before any
+/// device is opened, because the device run supplies no RNG token per step; `compile --backend
+/// cpu` writes an artifact, the token taking a buffer of its own.
 #[test]
 fn compile_dropout_is_e_target_011_for_vulkan_and_compiles_for_cpu() {
     let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("check_dropout");
     let vulkan = out.join("vulkan");
-    let (output, relative) = modelspec(
+    let profile = repo_root().join("crates/modelspec-runtime/tests/fixtures/rtx3090.device.json");
+    let (output, _) = modelspec(
         "compile",
         "dropout_train.mspec",
-        &["--backend", "vulkan", "--output", vulkan.to_str().unwrap()],
+        &[
+            "--backend",
+            "vulkan",
+            "--device-profile",
+            profile.to_str().unwrap(),
+            "--output",
+            vulkan.to_str().unwrap(),
+        ],
     );
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output.stderr));
+    assert!(vulkan.join("artifact.json").is_file());
+
+    let (output, relative) = modelspec("train", "dropout_train.mspec", &["--backend", "vulkan"]);
     let stderr = text(&output.stderr);
     assert_eq!(output.status.code(), Some(1), "{stderr}");
     assert!(
-        stderr.starts_with("E-TARGET-011: operator `dropout` has no Vulkan kernel yet\n"),
+        stderr.starts_with("E-TARGET-011: operator `dropout` has no Vulkan run yet: the device run supplies no RNG token per step\n"),
         "{stderr}"
     );
     assert!(stderr.contains(&format!("  {relative}:7:17\n")), "{stderr}");
+    assert!(output.stdout.is_empty(), "{}", text(&output.stdout));
 
     let cpu = out.join("cpu");
     let (output, _) = modelspec(

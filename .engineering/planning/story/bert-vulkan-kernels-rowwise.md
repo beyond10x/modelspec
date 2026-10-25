@@ -2,13 +2,12 @@
 format: aep.planning-md/3
 id: story:bert-vulkan-kernels-rowwise
 kind: story
-status: draft
+status: active
 title: Vulkan kernels for the row-wise BERT operators, checked against the CPU oracle
 summary: SPIR-V kernels for embedding, add_rows, gelu, dropout, layer_norm and softmax with their gradients, within 1e-5 absolute plus 1e-4 relative of the CPU oracle on a device, tolerances recorded in DESIGN.md first; device runs are operator-started.
 relations:
 - decomposes: epic:bert-from-scratch
 - serves: vision:modelspec
-- depends_on: story:bert-tiny-cpu-model
 - depends_on: epic:m1-vulkan-execution
 scope:
 - confidence: cited
@@ -27,7 +26,10 @@ scope:
   path: crates/modelspec-runtime/tests/vulkan_bert_rowwise.rs
 - confidence: cited
   path: website/data/status.json
-revision: 4
+revision: 6
+transitions:
+- {from: "draft", to: "proposed", at: "2026-10-25T09:23:02Z", actor: "human:timo", revision: 5}
+- {from: "proposed", to: "active", at: "2026-10-25T09:23:02Z", actor: "human:timo", revision: 6}
 ---
 # Vulkan kernels for the row-wise BERT operators, checked against the CPU oracle
 

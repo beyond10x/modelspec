@@ -1,5 +1,5 @@
 //! Adversary pass 1 on story:bert-dense-gelu, through the `modelspec` binary: the shape rules of
-//! `add_rows` at the call, `E-TARGET-011` for every command that needs a Vulkan kernel, the CPU
+//! `add_rows` at the call, the row-wise kernels every Vulkan command schedules, the CPU
 //! artifact and inference path, what the training fixture exercises, and the diagnostics page.
 //!
 //! No test here creates a Vulkan instance: every run sets `MODELSPEC_VULKAN_LIBRARY` to a path
@@ -130,38 +130,67 @@ fn vulkan_commands(fixture: &str, tag: &str) -> Vec<Vec<String>> {
     ]
 }
 
-fn refuses_with_no_kernel(name: &str, operator: &str, at: &str) {
+/// Every Vulkan command on `name` gets past the schedule: `ir --stage kernel` prints each of
+/// `kernels` (`<kind> <op>`) on a kernel line, `compile --backend vulkan` writes the artifact,
+/// `train` stops at the missing loader (E-TARGET-002) and `infer` at the missing checkpoint
+/// (E-CKPT-001), none with E-TARGET-011.
+fn schedules_its_kernels(name: &str, tag: &str, kernels: &[&str]) {
     let fixture = fixture(name);
-    for args in vulkan_commands(&fixture, operator) {
+    let commands = vulkan_commands(&fixture, tag);
+    let expected = [None, None, Some("E-TARGET-002: "), Some("E-CKPT-001: ")];
+    for (args, refusal) in commands.iter().zip(expected) {
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
         let output = modelspec(&args);
         let text = stderr(&output);
-        assert_eq!(output.status.code(), Some(1), "{args:?}:\n{text}");
-        assert!(
-            text.contains(&format!(
-                "E-TARGET-011: operator `{operator}` has no Vulkan kernel yet"
-            )),
-            "{args:?}:\n{text}"
-        );
-        assert!(
-            text.contains(&format!("{name}:{at}")),
-            "{args:?}: not at {at}:\n{text}"
-        );
+        assert!(!text.contains("E-TARGET-011"), "{args:?}:\n{text}");
         assert!(!text.contains("E-INTERNAL"), "{args:?}:\n{text}");
+        match refusal {
+            None => assert_eq!(output.status.code(), Some(0), "{args:?}:\n{text}"),
+            Some(code) => {
+                assert_eq!(output.status.code(), Some(1), "{args:?}:\n{text}");
+                assert!(text.starts_with(code), "{args:?}:\n{text}");
+            }
+        }
+        if args[0] == "ir" {
+            let printed = stdout(&output);
+            for kernel in kernels {
+                assert!(
+                    printed
+                        .lines()
+                        .any(|l| l.starts_with("kernel ") && l.contains(&format!(" {kernel} "))),
+                    "{args:?}: no `{kernel}` kernel line:\n{printed}"
+                );
+            }
+        }
     }
+    let artifact = Path::new(&commands[1][7]).join("artifact.json");
+    assert!(artifact.is_file(), "no {}", artifact.display());
 }
 
-/// Attack 6: on `dense_gelu_train.mspec` every Vulkan command answers `E-TARGET-011` naming
-/// `add_rows`, the first operator without a kernel, at its call (line 6, column 21).
+/// Attack 6, since story:bert-vulkan-kernels-rowwise: on `dense_gelu_train.mspec` every Vulkan
+/// command schedules `add_rows`, `gelu` and their gradients as row-wise kernels.
 #[test]
-fn adversary_every_vulkan_command_refuses_add_rows_at_its_call() {
-    refuses_with_no_kernel("dense_gelu_train.mspec", "add_rows", "6:21");
+fn adversary_every_vulkan_command_schedules_add_rows_and_gelu() {
+    schedules_its_kernels(
+        "dense_gelu_train.mspec",
+        "add_rows",
+        &[
+            "per_element AddRows",
+            "per_element Gelu",
+            "per_element GeluGrad",
+            "per_column SumRows",
+        ],
+    );
 }
 
-/// Attack 6: a program whose only new operator is `gelu` is refused naming `gelu` at its call.
+/// Attack 6: a program whose only new operator is `gelu` schedules its two kernels.
 #[test]
-fn adversary_every_vulkan_command_refuses_gelu_at_its_call() {
-    refuses_with_no_kernel("adversary_dense_gelu_only.mspec", "gelu", "6:16");
+fn adversary_every_vulkan_command_schedules_gelu() {
+    schedules_its_kernels(
+        "adversary_dense_gelu_only.mspec",
+        "gelu",
+        &["per_element Gelu", "per_element GeluGrad"],
+    );
 }
 
 /// The `step <k> loss <v>` lines of a `train` run.

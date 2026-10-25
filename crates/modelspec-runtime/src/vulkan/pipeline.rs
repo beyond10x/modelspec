@@ -2,7 +2,9 @@
 //!
 //! The pipeline layout matches what `crate::spirv::emit` declares: descriptor set 0 with one
 //! storage buffer per binding, and a 4-byte push constant (the element count) for the compute
-//! stage.
+//! stage. A `Dropout` or `DropoutGrad` module reads the run key, the 64-bit seed of its Philox
+//! draws, as two `u32` specialization constants ([`SEED_SPEC_IDS`]), which only
+//! [`Device::kernel_pipeline_seeded`] supplies.
 
 use ash::vk;
 use modelspec_core::ir::kernel::{Kernel, KernelModuleId, Operand};
@@ -11,6 +13,14 @@ use super::{Device, ExecError};
 
 /// The bytes of the push constant every pipeline declares: the element count, a `u32`.
 pub const PUSH_CONSTANT_BYTES: u32 = 4;
+
+/// The `SpecId`s of the run key's low and high 32 bits in a dropout module.
+pub const SEED_SPEC_IDS: [u32; 2] = [0, 1];
+
+/// Whether `kernel`'s module reads the run key: a `Dropout` or `DropoutGrad` kernel.
+pub fn reads_seed(kernel: &Kernel) -> bool {
+    matches!(kernel.op, "Dropout" | "DropoutGrad")
+}
 
 /// A compute pipeline, its layout and its shader module.
 pub struct Pipeline<'d> {
@@ -280,23 +290,45 @@ impl Device<'_> {
     /// `bindings` must equal what the module's `Binding` decorations declare, 0 to
     /// `bindings - 1`, all in set 0, as `LocalSize` is read from the module too.
     pub fn pipeline(&self, words: &[u32], bindings: u32) -> Result<Pipeline<'_>, ExecError> {
-        self.pipeline_with(words, vec![false; bindings as usize])
+        self.pipeline_with(words, vec![false; bindings as usize], None)
     }
 
     /// The compute pipeline of `kernel`, whose SPIR-V module is `words`: its bindings and which
-    /// of them are rank-0 come from the kernel ([`kernel_broadcast`]).
+    /// of them are rank-0 come from the kernel ([`kernel_broadcast`]). A kernel that reads the
+    /// run key ([`reads_seed`]) is refused with [`ExecError::KernelShape`]: its pipeline is
+    /// [`Device::kernel_pipeline_seeded`]'s, so no dropout draws under a default key.
     pub fn kernel_pipeline(
         &self,
         kernel: &Kernel,
         words: &[u32],
     ) -> Result<Pipeline<'_>, ExecError> {
-        self.pipeline_with(words, kernel_broadcast(kernel))
+        if reads_seed(kernel) {
+            return Err(ExecError::KernelShape {
+                kernel: kernel.signature(),
+                reason: "a dropout kernel reads the run key; create it with \
+                         kernel_pipeline_seeded"
+                    .to_owned(),
+            });
+        }
+        self.pipeline_with(words, kernel_broadcast(kernel), None)
+    }
+
+    /// [`Device::kernel_pipeline`] under the run key `seed`: the specialization constants
+    /// [`SEED_SPEC_IDS`] take its low and high 32 bits. A module without them ignores the key.
+    pub fn kernel_pipeline_seeded(
+        &self,
+        kernel: &Kernel,
+        words: &[u32],
+        seed: u64,
+    ) -> Result<Pipeline<'_>, ExecError> {
+        self.pipeline_with(words, kernel_broadcast(kernel), Some(seed))
     }
 
     fn pipeline_with(
         &self,
         words: &[u32],
         broadcast: Vec<bool>,
+        seed: Option<u64>,
     ) -> Result<Pipeline<'_>, ExecError> {
         let bindings = broadcast.len() as u32;
         let local_size = local_size(words).ok_or(ExecError::NoLocalSize)?;
@@ -348,10 +380,28 @@ impl Device<'_> {
         // SAFETY: `info` and what it points to outlive the call.
         pipeline.layout = unsafe { self.device.create_pipeline_layout(&info, None) }
             .map_err(ExecError::call("vkCreatePipelineLayout"))?;
-        let stage = vk::PipelineShaderStageCreateInfo::default()
+        let key = seed.map(|seed| [seed as u32, (seed >> 32) as u32]);
+        let key_bytes: Vec<u8> = key
+            .iter()
+            .flatten()
+            .flat_map(|word| word.to_ne_bytes())
+            .collect();
+        let entries = SEED_SPEC_IDS.map(|id| {
+            vk::SpecializationMapEntry::default()
+                .constant_id(id)
+                .offset(4 * id)
+                .size(4)
+        });
+        let specialization = vk::SpecializationInfo::default()
+            .map_entries(&entries)
+            .data(&key_bytes);
+        let mut stage = vk::PipelineShaderStageCreateInfo::default()
             .stage(vk::ShaderStageFlags::COMPUTE)
             .module(pipeline.module)
             .name(c"main");
+        if key.is_some() {
+            stage = stage.specialization_info(&specialization);
+        }
         let flags = if pipeline.statistics.is_some() {
             vk::PipelineCreateFlags::CAPTURE_STATISTICS_KHR
         } else {

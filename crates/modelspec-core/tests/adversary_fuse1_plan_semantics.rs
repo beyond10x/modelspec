@@ -193,6 +193,9 @@ fn dispatch_terms(terms: &mut Terms, kernel: &Kernel, read: &[u32]) -> Vec<u32> 
                 }
             }
         }
+        KernelKind::PerElement | KernelKind::PerRow | KernelKind::PerColumn => {
+            vec![terms.op(kernel.op, operands)]
+        }
         KernelKind::LossSum => vec![terms.op("Mse", operands)],
         KernelKind::Transpose => vec![terms.op("Transpose", operands)],
         KernelKind::ReduceStage1 => vec![terms.op(&format!("{}:stage1", kernel.op), operands)],

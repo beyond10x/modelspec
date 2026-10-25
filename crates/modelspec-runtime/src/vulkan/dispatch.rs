@@ -685,8 +685,9 @@ impl<'r> Recording<'r> {
 /// What a dispatch of one kernel's module binds and covers.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct KernelBindings {
-    /// The push constant: the output elements of an elementwise, broadcast, SGD, transpose or
-    /// matmul kernel; the elements a reduction stage or a loss sum reads.
+    /// The push constant: the output elements of an elementwise, broadcast, SGD, transpose,
+    /// matmul or per-element kernel; the elements a reduction stage or a loss sum reads; the
+    /// output rows of a per-row kernel and the output columns of a per-column one.
     pub count: u32,
     /// The elements each binding must hold, operands then each written binding
     /// ([`Kernel::written`]).
@@ -737,6 +738,19 @@ pub fn kernel_bindings(kernel: &Kernel) -> Result<KernelBindings, ExecError> {
         | KernelKind::SgdUpdate
         | KernelKind::Transpose => (result, result),
         KernelKind::MatMul => (result, matmul_invocations(kernel)?),
+        KernelKind::PerElement | KernelKind::PerColumn => (result, result),
+        KernelKind::PerRow => {
+            let rows = match kernel.result.shape.first() {
+                Some(Dim::Static(rows)) => *rows,
+                _ => {
+                    return Err(ExecError::KernelShape {
+                        kernel: kernel.signature(),
+                        reason: "a per-row kernel writes static rows".to_owned(),
+                    });
+                }
+            };
+            (rows, rows)
+        }
     };
     let elements = match kernel.kind {
         KernelKind::Elementwise | KernelKind::Broadcast | KernelKind::SgdUpdate => operands

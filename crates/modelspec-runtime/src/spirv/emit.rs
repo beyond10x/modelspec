@@ -1,5 +1,6 @@
 //! The SPIR-V compute module of one M1 kernel (DESIGN.md § 5.2): elementwise, broadcast, SGD,
-//! the two stages of a reduction, the `mse` loss sum, transpose and matmul.
+//! the two stages of a reduction, the `mse` loss sum, transpose and matmul, and the row-wise
+//! kernels of the BERT operators (`rowwise`, `per_element`, `per_row` and `per_column`).
 //!
 //! The module is SPIR-V 1.5, the version Vulkan 1.2 consumes, with capability `Shader`, the
 //! `GLSL450` logical memory model and one `GLCompute` entry point `main`, with `LocalSize` the
@@ -8,11 +9,13 @@
 //! their capabilities to a loss-sum or matmul module exactly when the device profile reports all
 //! three for f32; no other module declares a float-control mode. A matmul or loss-sum module
 //! fuses each product after the first of every sum into the sum, one `GLSL.std.450 Fma` per
-//! product-and-sum, the instruction set imported once by such a module and by no other
-//! (DESIGN.md § 12 ADR-009). Every `OpFAdd`, `OpFSub`, `OpFMul` and `Fma` of a reduction,
-//! loss-sum or matmul module is decorated `NoContraction`, so no driver fuses a multiply and an
-//! add or splits an `Fma`; so are the multiply and the subtraction of an SGD update with three
-//! operands, `p - (lr * g)` (DESIGN.md § 3.1). The modules [`emit_kernels`] builds for an
+//! product-and-sum, the instruction set imported once by such a module, by a row-wise module
+//! that fuses a sum or takes an `Exp` or a `Sqrt`, and by no other (DESIGN.md § 12 ADR-009).
+//! Every `OpFAdd`, `OpFSub`, `OpFMul` and `Fma` of a reduction, loss-sum or matmul module is
+//! decorated `NoContraction`, so no driver fuses a multiply and an add or splits an `Fma`; so
+//! are the multiply and the subtraction of an SGD update with three operands, `p - (lr * g)`
+//! (DESIGN.md § 3.1), and every `OpFAdd`, `OpFSub`, `OpFMul`, `OpFDiv` and `Fma` of a row-wise
+//! module. The modules [`emit_kernels`] builds for an
 //! artifact whose `fast_math` is set carry none of these decorations, and nothing else in them
 //! changes: the same `Fma` instructions, and a driver free to contract what is left; their
 //! cache keys say `fast_math` (DESIGN.md § 12 ADR-008). [`emit`], [`emit_module`] and
@@ -25,8 +28,11 @@
 //! `NonWritable`), then what it writes: the pre-activation of an epilogue that keeps it, then the
 //! result. A push constant holds the dispatch's count: the
 //! output elements of an elementwise, transpose or matmul kernel, the elements a reduction stage
-//! or a loss sum reads. A rank-0 buffer operand of an elementwise kernel is read at element 0 by
-//! every invocation; an immediate operand is a constant of the module.
+//! or a loss sum reads, the output rows of a `per_row` kernel and the output columns of a
+//! `per_column` one. A row-wise module reads an `i32` operand as `u32` words, and a dropout
+//! module the run key from two specialization constants. A rank-0 buffer operand of an
+//! elementwise kernel is read at element 0 by every invocation; an immediate operand is a
+//! constant of the module.
 //!
 //! The order of every sum is fixed by the shape alone (DESIGN.md § 3.3). Stage 1 of a reduction
 //! sums 64 consecutive elements per workgroup with a pairwise tree in workgroup memory and writes
@@ -56,6 +62,8 @@ use rspirv::spirv::{
     AddressingModel, BuiltIn, Capability, Decoration, ExecutionMode, ExecutionModel,
     FunctionControl, GlslStd450Op, LoopControl, MemoryModel, SelectionControl, StorageClass, Word,
 };
+
+mod rowwise;
 
 /// Why a kernel has no module.
 #[derive(Debug, thiserror::Error)]
@@ -339,6 +347,8 @@ enum Body {
         /// Where the tile's values lie in workgroup memory ([`MatMulTile::layout_within`]).
         layout: MatMulLayout,
     },
+    /// A row-wise kernel ([`rowwise::Rowwise`]).
+    Rowwise(rowwise::Rowwise),
 }
 
 /// What `kernel` computes, for a device with `shared_bytes` of workgroup memory.
@@ -351,6 +361,9 @@ fn body_of(kernel: &Kernel, variant: Variant, shared_bytes: u32) -> Result<Body,
     let body = match (kernel.kind, kernel.op) {
         (KernelKind::Elementwise | KernelKind::Broadcast | KernelKind::SgdUpdate, _) => {
             elementwise(kernel)?
+        }
+        (KernelKind::PerElement | KernelKind::PerRow | KernelKind::PerColumn, _) => {
+            Body::Rowwise(rowwise::Rowwise::of(kernel)?)
         }
         (KernelKind::ReduceStage1 | KernelKind::ReduceStage2, "ReduceSum" | "ReduceMean") => {
             if kernel.workgroup_size != TREE {
@@ -670,21 +683,28 @@ fn build(
     fast_math: bool,
 ) -> Result<dr::Module, EmitError> {
     let body = body_of(kernel, variant, shared_bytes)?;
-    let reads = kernel
+    // One flag per read binding: whether it holds `u32` words, an `i32` operand's bits.
+    let reads: Vec<bool> = kernel
         .operands
         .iter()
-        .filter(|operand| matches!(operand, Operand::Buffer(_)))
-        .count();
+        .filter_map(|operand| match operand {
+            Operand::Buffer(ty) => Some(ty.dtype == DType::I32),
+            Operand::Immediate(_) => None,
+        })
+        .collect();
     let shared = match body {
         Body::Stage1 | Body::Stage2 { .. } => Some((TREE, false)),
         Body::LossSum { chunk, .. } => Some((chunk, false)),
         Body::MatMul { layout, tile, .. } => Some((layout.shared_values(), tile.vector_reads())),
+        Body::Rowwise(rowwise) => rowwise.shared().map(|values| (values, false)),
         _ => None,
     };
     let matmul_vars = match body {
         Body::MatMul { k, tile, .. } => matmul_accumulators(&tile) + matmul_carried(k, &tile),
+        Body::Rowwise(rowwise) => rowwise.f32_vars(),
         _ => 0,
     };
+    let seeded = matches!(body, Body::Rowwise(rowwise) if rowwise.seeded());
     if kernel.epilogue.is_some() && !matches!(body, Body::MatMul { .. }) {
         return Err(operands_error(
             kernel,
@@ -701,13 +721,14 @@ fn build(
             _ => true,
         };
     let mut m = Shell::new(
-        reads,
+        &reads,
         kernel.written(),
         kernel.workgroup_size,
         shared,
         matmul_vars,
         float_controls,
         exact,
+        seeded,
     )?;
     match body {
         Body::Elementwise(arith, sources) => m.elementwise(arith, &sources)?,
@@ -729,6 +750,7 @@ fn build(
             transposed,
             layout,
         } => m.matmul([rows, k, n], epilogue, tile, transposed, layout)?,
+        Body::Rowwise(rowwise) => m.rowwise(rowwise)?,
     }
     m.finish()
 }
@@ -899,29 +921,41 @@ struct Shell {
     u32_vars: [Word; 2],
     f32_var: Word,
     /// The `f32` function variables of a matmul invocation: its per-row accumulators, then the
-    /// tiles its tile loop carries from one pass to the next ([`matmul_carried`]).
+    /// tiles its tile loop carries from one pass to the next ([`matmul_carried`]); of a
+    /// row-wise kernel, the accumulators it keeps beside `f32_var`.
     matmul_vars: Vec<Word>,
     /// The workgroup size, the `LocalSize` x of the entry point.
     group: Word,
-    /// Whether [`Shell::f_add`], [`Shell::f_sub`], [`Shell::f_mul`] and [`Shell::f_fma`]
-    /// decorate their result `NoContraction`.
+    /// Whether [`Shell::f_add`], [`Shell::f_sub`], [`Shell::f_mul`], [`Shell::f_div`] and
+    /// [`Shell::f_fma`] decorate their result `NoContraction`.
     exact: bool,
-    /// The `GLSL.std.450` instruction set, imported by the first [`Shell::f_fma`] of the module:
-    /// once by a module that fuses a product into a sum, and by no other.
+    /// The `GLSL.std.450` instruction set, imported by the first extended instruction of the
+    /// module ([`Shell::f_fma`], [`Shell::exp`], [`Shell::sqrt`]), and by no other module.
     glsl: Option<Word>,
+    /// The pointer to one `u32` element of a storage buffer: an `i32` operand's ids or RNG
+    /// token, read as their bit patterns; declared only by a module that reads one, so the words
+    /// of every other module are unchanged.
+    u32_element_ptr: Option<Word>,
+    /// The run key's low and high 32 bits, the specialization constants of a module that reads
+    /// it (`crate::vulkan::pipeline::SEED_SPEC_IDS`).
+    seed: Option<[Word; 2]>,
     u32_constants: BTreeMap<u32, Word>,
     f32_constants: BTreeMap<u32, Word>,
 }
 
 impl Shell {
+    /// `reads` holds one flag per read binding: `true` for a buffer of `u32` (an `i32`
+    /// operand's bits), `false` for one of `f32`. `seeded` declares the run key.
+    #[allow(clippy::too_many_arguments)]
     fn new(
-        reads: usize,
+        reads: &[bool],
         writes: usize,
         workgroup_size: u32,
         shared: Option<(u32, bool)>,
         matmul_vars: usize,
         float_controls: bool,
         exact: bool,
+        seeded: bool,
     ) -> Result<Self, EmitError> {
         let mut b = Builder::new();
         b.set_version(1, 5);
@@ -958,6 +992,22 @@ impl Shell {
         let read_ptr = b.type_pointer(None, StorageClass::StorageBuffer, read_struct);
         let write_ptr = b.type_pointer(None, StorageClass::StorageBuffer, write_struct);
         let element_ptr = b.type_pointer(None, StorageClass::StorageBuffer, f32_ty);
+        // A read binding of `u32` and its element pointer, declared only by a module that reads
+        // one.
+        let (u32_element_ptr, u32_read_ptr) = if reads.contains(&true) {
+            let element = b.type_pointer(None, StorageClass::StorageBuffer, u32_ty);
+            let rta = b.type_runtime_array(u32_ty);
+            b.decorate(rta, Decoration::ArrayStride, [dr::Operand::LiteralBit32(4)]);
+            let id = b.id();
+            let ty = b.type_struct_id(Some(id), [rta]);
+            b.decorate(ty, Decoration::Block, []);
+            b.member_decorate(ty, 0, Decoration::Offset, [dr::Operand::LiteralBit32(0)]);
+            b.member_decorate(ty, 0, Decoration::NonWritable, []);
+            let read = b.type_pointer(None, StorageClass::StorageBuffer, ty);
+            (Some(element), Some(read))
+        } else {
+            (None, None)
+        };
         let shared_ptr = b.type_pointer(None, StorageClass::Workgroup, f32_ty);
         let u32_fn_ptr = b.type_pointer(None, StorageClass::Function, u32_ty);
         let f32_fn_ptr = b.type_pointer(None, StorageClass::Function, f32_ty);
@@ -1001,12 +1051,30 @@ impl Shell {
             );
             var
         };
-        let buffers: Vec<Word> = (0..reads as u32)
-            .map(|binding| bind(&mut b, read_ptr, binding))
+        let buffers: Vec<Word> = reads
+            .iter()
+            .enumerate()
+            .map(|(binding, &integer)| {
+                let ptr = match (integer, u32_read_ptr) {
+                    (true, Some(ptr)) => ptr,
+                    _ => read_ptr,
+                };
+                bind(&mut b, ptr, binding as u32)
+            })
             .collect();
         let outs: Vec<Word> = (0..writes as u32)
-            .map(|at| bind(&mut b, write_ptr, reads as u32 + at))
+            .map(|at| bind(&mut b, write_ptr, reads.len() as u32 + at))
             .collect();
+        let seed = if seeded {
+            let words = crate::vulkan::pipeline::SEED_SPEC_IDS.map(|id| {
+                let word = b.spec_constant_bit32(u32_ty, 0);
+                b.decorate(word, Decoration::SpecId, [dr::Operand::LiteralBit32(id)]);
+                word
+            });
+            Some(words)
+        } else {
+            None
+        };
         let pc = b.variable(pc_ptr, None, StorageClass::PushConstant, None);
         // Workgroup memory of `length` `f32` values, an array of `vec4` when `vectors`.
         let mut shared_vectors = None;
@@ -1100,6 +1168,8 @@ impl Shell {
             group,
             exact,
             glsl: None,
+            u32_element_ptr,
+            seed,
             u32_constants,
             f32_constants: BTreeMap::new(),
         })
@@ -1157,22 +1227,41 @@ impl Shell {
     /// way, so the driver neither splits it into a multiply and an add nor treats it as the
     /// expression `a * b + c`.
     fn f_fma(&mut self, a: Word, b: Word, c: Word) -> Result<Word, EmitError> {
+        let id = self.glsl_f32(GlslStd450Op::Fma, &[a, b, c])?;
+        Ok(self.no_contraction(id))
+    }
+
+    /// `a / b`, decorated `NoContraction` where the arithmetic is, so no driver turns it into
+    /// a product with a reciprocal.
+    fn f_div(&mut self, a: Word, b: Word) -> Result<Word, EmitError> {
+        let id = self.b.f_div(self.f32_ty, None, a, b)?;
+        Ok(self.no_contraction(id))
+    }
+
+    /// `GLSL.std.450 Exp` of `x`.
+    fn exp(&mut self, x: Word) -> Result<Word, EmitError> {
+        self.glsl_f32(GlslStd450Op::Exp, &[x])
+    }
+
+    /// `GLSL.std.450 Sqrt` of `x`.
+    fn sqrt(&mut self, x: Word) -> Result<Word, EmitError> {
+        self.glsl_f32(GlslStd450Op::Sqrt, &[x])
+    }
+
+    /// The `f32` extended instruction `op` of `GLSL.std.450` over `args`, the instruction set
+    /// imported by the module's first such instruction.
+    fn glsl_f32(&mut self, op: GlslStd450Op, args: &[Word]) -> Result<Word, EmitError> {
         let glsl = match self.glsl {
             Some(glsl) => glsl,
             None => *self.glsl.insert(self.b.ext_inst_import("GLSL.std.450")),
         };
-        let id = self.b.ext_inst(
+        Ok(self.b.ext_inst(
             self.f32_ty,
             None,
             glsl,
-            GlslStd450Op::Fma as u32,
-            [
-                dr::Operand::IdRef(a),
-                dr::Operand::IdRef(b),
-                dr::Operand::IdRef(c),
-            ],
-        )?;
-        Ok(self.no_contraction(id))
+            op as u32,
+            args.iter().map(|&arg| dr::Operand::IdRef(arg)),
+        )?)
     }
 
     fn add(&mut self, a: Word, b: Word) -> Result<Word, EmitError> {
@@ -1207,6 +1296,28 @@ impl Shell {
         let ptr = self
             .b
             .access_chain(self.element_ptr, None, self.buffers[binding], [zero, at])?;
+        Ok(self.b.load(self.f32_ty, None, ptr, None, [])?)
+    }
+
+    /// Element `at` of read binding `binding`, a buffer of `u32`.
+    fn read_u32(&mut self, binding: usize, at: Word) -> Result<Word, EmitError> {
+        let element_ptr = self
+            .u32_element_ptr
+            .ok_or_else(|| EmitError::Build(format!("binding {binding} is not declared as u32")))?;
+        let zero = self.uint(0);
+        let ptr = self
+            .b
+            .access_chain(element_ptr, None, self.buffers[binding], [zero, at])?;
+        Ok(self.b.load(self.u32_ty, None, ptr, None, [])?)
+    }
+
+    /// Element `at` of the result, the last written binding, as this invocation wrote it.
+    fn read_result(&mut self, at: Word) -> Result<Word, EmitError> {
+        let zero = self.uint(0);
+        let out = self.outs[self.outs.len() - 1];
+        let ptr = self
+            .b
+            .access_chain(self.element_ptr, None, out, [zero, at])?;
         Ok(self.b.load(self.f32_ty, None, ptr, None, [])?)
     }
 
