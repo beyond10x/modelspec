@@ -2,13 +2,16 @@
 format: aep.planning-md/3
 id: story:step-sites-beat-pytorch
 kind: story
-status: draft
+status: active
 title: 'The b8192 h4096 step beats PyTorch eager: the sites outside the two big matmuls'
 summary: Pairs every dispatch site of the b8192 h4096 step with PyTorch's kernels in one session, changes the group with the largest gap while keeping the bits, and judges the goal on the back-to-back sweep run.
 relations:
 - serves: vision:modelspec
 - depends_on: story:sweep-run-starts-busy
-revision: 1
+revision: 3
+transitions:
+- {from: "draft", to: "proposed", at: "2026-10-25T07:30:13Z", actor: "human:timo", revision: 2}
+- {from: "proposed", to: "active", at: "2026-10-25T07:30:13Z", actor: "human:timo", revision: 3}
 ---
 # The b8192 h4096 step beats PyTorch eager: the sites outside the two big matmuls
 

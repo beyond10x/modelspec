@@ -46,6 +46,11 @@ python3 -m venv ~/.cache/modelspec-opponents-venv
 ```
 
 `--point BATCH:HIDDEN` (repeatable) runs a subset, `--modes eager` or `--modes compile` one mode.
+`--profile` runs the 3 timed runs under `torch.profiler` (CUDA activity only) and prints to stderr
+one `profile kernel` line per CUDA kernel, memset or copy, the most device time first (calls,
+total µs, mean µs per call, µs per timed step), then `profile steps <n> device_us_per_step <µs>`.
+The model and the timed loop are the same; the timed figures of a profiled run carry the
+profiler's cost and are not sweep figures.
 The bench's `--crossover` reads its output beside the bench's:
 
 ```console

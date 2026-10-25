@@ -1,0 +1,71 @@
+diff --git a/crates/modelspec-core/src/schedule.rs b/crates/modelspec-core/src/schedule.rs
+index 6db553a..40671dd 100644
+--- a/crates/modelspec-core/src/schedule.rs
++++ b/crates/modelspec-core/src/schedule.rs
+@@ -850,7 +850,7 @@ fn schedule_with(
+         }
+     }
+ 
+-    let step_plan = record(works.iter());
++    let step_plan = record(step_order(&works).into_iter().map(|at| &works[at]));
+     let ancestors = ancestors(&program.nodes, prediction);
+     let forward_plan = record(
+         works
+@@ -996,10 +996,56 @@ fn ancestors(nodes: &[TensorNode], prediction: ValueId) -> BTreeSet<ValueId> {
+     reached
+ }
+ 
++/// PROBE: the loss sum moved after the most-FLOP later work it has no hazard with.
++fn step_order(works: &[Work]) -> Vec<usize> {
++    let mut order: Vec<usize> = (0..works.len()).collect();
++    let Some(loss) = works
++        .iter()
++        .position(|w| matches!(&w.kernels[..], [k] if k.kind == KernelKind::LossSum))
++    else {
++        return order;
++    };
++    let buffers = |views: &[BufferView]| views.iter().map(|v| v.buffer).collect::<BTreeSet<u32>>();
++    let reads = buffers(&works[loss].reads);
++    let writes = buffers(&works[loss].writes);
++    let mut best: Option<(u64, usize)> = None;
++    for (at, work) in works.iter().enumerate().skip(loss + 1) {
++        let w = buffers(&work.writes);
++        let r = buffers(&work.reads);
++        if !w.is_disjoint(&reads) || !w.is_disjoint(&writes) || !r.is_disjoint(&writes) {
++            break;
++        }
++        let flop = match &work.kernels[..] {
++            [k] if k.kind == KernelKind::MatMul => k.flop().unwrap_or(0),
++            _ => 0,
++        };
++        if flop > 0 && best.is_none_or(|(f, _)| flop > f) {
++            best = Some((flop, at));
++        }
++    }
++    if let Some((_, at)) = best {
++        let moved = order.remove(loss);
++        if std::env::var_os("MODELSPEC_PROBE_LEAD").is_some() {
++            order.insert(at - 1, moved);
++        } else {
++            order.insert(at, moved);
++        }
++    }
++    order
++}
++
+ /// The plan steps of `works` in order, with the barriers the schedule needs.
+ fn record<'a>(works: impl Iterator<Item = &'a Work>) -> Vec<PlanStep> {
+     let mut recorder = Recorder::default();
+-    for work in works {
++    let works: Vec<&Work> = works.collect();
++    let lead = std::env::var_os("MODELSPEC_PROBE_LEAD").is_some();
++    for (i, work) in works.iter().enumerate() {
++        let is_loss = matches!(&work.kernels[..], [k] if k.kind == KernelKind::LossSum);
++        if lead && is_loss {
++            if let Some(next) = works.get(i + 1) {
++                recorder.sync_for(&next.reads, &next.writes);
++            }
++        }
+         match (&work.kernels[..], work.partials) {
+             ([], None) => recorder.copy(work.value, work.reads.clone(), work.writes.clone()),
+             ([single], None) => {

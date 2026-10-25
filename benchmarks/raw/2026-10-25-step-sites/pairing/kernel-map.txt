@@ -1,0 +1,16 @@
+aten::mm                                 [[8192, 784], [784, 4096]]                                             ampere_sgemm_128x64_tn
+aten::clamp_min                          [[8192, 4096], []]                                                     void at::native::vectorized_elementwise_kernel<4, at::native::(anonymous namespa
+aten::mm                                 [[8192, 4096], [4096, 10]]                                             Memset (Device)
+aten::mm                                 [[8192, 4096], [4096, 10]]                                             ampere_sgemm_32x32_sliced1x4_tn
+aten::mse_loss                           [[8192, 10], [8192, 10], []]                                           void at::native::vectorized_elementwise_kernel<4, at::native::mse_kernel_cuda(at
+aten::mean                               [[8192, 10], [], [], [], []]                                           void at::native::reduce_kernel<512, 1, at::native::ReduceOp<float, at::native::M
+aten::fill_                              [[], []]                                                               void at::native::vectorized_elementwise_kernel<4, at::native::FillFunctor<float>
+aten::fill_                              [[8192, 10], []]                                                       void at::native::vectorized_elementwise_kernel<4, at::native::FillFunctor<float>
+aten::mse_loss_backward                  [[], [8192, 10], [8192, 10], [], [8192, 10]]                           void at::native::elementwise_kernel<128, 2, at::native::gpu_kernel_impl_nocast<a
+aten::mm                                 [[10, 8192], [8192, 4096]]                                             void cutlass::Kernel2<cutlass_80_simt_sgemm_128x32_8x5_nt_align1>(cutlass_80_sim
+aten::mm                                 [[10, 8192], [8192, 4096]]                                             void cublasLt::splitKreduce_kernel<32, 16, int, float, float, float, float, fals
+aten::mm                                 [[8192, 10], [10, 4096]]                                               ampere_sgemm_128x32_nn
+aten::threshold_backward                 [[8192, 4096], [8192, 4096], []]                                       void at::native::vectorized_elementwise_kernel<4, at::native::BinaryFunctor<floa
+aten::mm                                 [[4096, 8192], [8192, 784]]                                            Memset (Device)
+aten::mm                                 [[4096, 8192], [8192, 784]]                                            void cutlass::Kernel2<cutlass_80_simt_sgemm_128x256_8x4_nt_align1>(cutlass_80_si
+aten::_foreach_add_                      [[], [], []]                                                           void at::native::(anonymous namespace)::multi_tensor_apply_kernel<at::native::(a
