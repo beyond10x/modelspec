@@ -521,6 +521,21 @@ fn a_cpu_artifact_has_no_kernels_and_empty_plans() {
     verify_plan(&artifact.execution).expect("a Cpu plan verifies");
 }
 
+/// A Cpu artifact takes the views of `schedule::schedule_views`, which skips only an op with no
+/// Vulkan kernel: for a program with a kernel for every op, its plan is the Vulkan plan with the
+/// kernels and both plans cleared, buffer for buffer and view for view.
+#[test]
+fn a_cpu_artifact_keeps_every_view_of_the_vulkan_plan() {
+    for path in [LINEAR, TWO_LAYER] {
+        let text = source(path);
+        let mut vulkan = artifact(&text, Backend::Vulkan).execution;
+        vulkan.kernels.clear();
+        vulkan.step.clear();
+        vulkan.forward.clear();
+        assert_eq!(artifact(&text, Backend::Cpu).execution, vulkan, "{path}");
+    }
+}
+
 /// `schedule.rs` names no `DeviceProfile`, `schedule` gives the artifact's plan, and
 /// `schedule_for` takes a device only as a `MatMulLimits` of exactly two values: two profiles
 /// that differ in every other field but share those two values get the same plan, the plan of

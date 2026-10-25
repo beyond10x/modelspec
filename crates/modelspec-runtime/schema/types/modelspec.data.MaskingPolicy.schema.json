@@ -4,14 +4,14 @@
   "x-ess-provenance": {
     "system": "modelspec",
     "specification_version": "v1",
-    "source_digest": "998b709593a81af16984c6701148f23622d1f12d28d518e936357e50d9af1d21",
-    "contract_digest": "slice-sha256/2:bf89c5dc195f0552c22d44de4477e636f8bb744d1b9bbf48e5080c75768baab8",
+    "source_digest": "41c62036015b6a9d0512319f47a1fd871d1faaa22cf43e296d58b04da20f21ad",
+    "contract_digest": "slice-sha256/2:7ddff55147e455bb2183c4f5c7f078cc071b8c30bf2d96fa2b360c7405065b88",
     "regenerate": "ess generate"
   },
   "$defs": {
     "modelspec.data.MaskingPolicy": {
       "title": "MaskingPolicy",
-      "description": "The masked-language-modelling policy; of the selected tokens a fraction is replaced by the vocabulary's mask token, a fraction by a random token and the rest kept, 80/10/10 (epic:bert-from-scratch). The three fractions sum to 1, which ESS does not state here. Draws use the Philox key/counter derivation (DESIGN.md § 2.3) with stream tag 3, the next after the tags 0 to 2 of DESIGN.md § 2.3 (story:bert-mlm-batches adds it there). The values are BERT's (Devlin, Chang, Lee, Toutanova 2018, § 3.1) — selection_rate 0.15, mask_fraction 0.8, random_fraction 0.1, keep_fraction 0.1 (coordinator decision D19, 2026-10-24, `.engineering/waves/bert-1.md`).",
+      "description": "The masked-language-modelling policy; of the selected tokens a fraction is replaced by the vocabulary's mask token, a fraction by a random token and the rest kept, 80/10/10 (epic:bert-from-scratch). The three fractions sum to 1, which ESS does not state here. Draws use the Philox key/counter derivation (DESIGN.md § 2.3) with stream tag 3, the next after the tags 0 to 2 of DESIGN.md § 2.3, keyed by the run seed and drawn anew at every step (coordinator decision D26, 2026-10-24, `.engineering/waves/bert-1.md`). Row n of the batch of step k, flattened to N = B × S rows, takes the block of counter [n, 3, id as u32, (id >> 32) as u32], where id is k for the Train split and k + 2^63 for the HeldOut split. The row is selected when its token is not one of the five special tokens and the uniform draw (w + 0.5) / 2^32 of word 0 is below selection_rate; a selected row becomes `[MASK]` when the uniform draw of word 1 is below mask_fraction, a random token when it is below mask_fraction + random_fraction, and keeps its token otherwise. The random token is 5 + ⌊w2 × (V − 5) / 2^32⌋ for word 2 w2 and vocabulary size V, so it is never a special token. The values are BERT's (Devlin, Chang, Lee, Toutanova 2018, § 3.1) — selection_rate 0.15, mask_fraction 0.8, random_fraction 0.1, keep_fraction 0.1 (coordinator decision D19, 2026-10-24, `.engineering/waves/bert-1.md`).",
       "x-ess-name": "modelspec.data.MaskingPolicy",
       "x-ess-kind": "struct",
       "type": "object",

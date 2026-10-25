@@ -20,12 +20,14 @@ types:
   - name: modelspec.checkpoint.DType
     kind: enum
     naming:
-      summary: A tensor element type and its size in bytes; `f32` is the only M0/M1 dtype (DESIGN.md § 2.2).
+      summary: A tensor element type and its size in bytes; `f32` for every value, `i32` only for row ids an `embedding` reads, never a parameter or a checkpoint tensor (DESIGN.md § 2.2).
     attributes:
       - name: size_bytes
         type: Integer
     variants:
       - name: F32
+        attributes: {size_bytes: 4}
+      - name: I32
         attributes: {size_bytes: 4}
 
   - name: modelspec.checkpoint.Shape

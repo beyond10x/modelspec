@@ -25,7 +25,8 @@ model TwoLayer {
 
 Each `param` is a trainable tensor. Its canonical path, `TwoLayer.w1` and `TwoLayer.w2`, is the
 name the IR and the training output use for it, and what its initial value is drawn from.
-`xavier_uniform()` is the one initializer in M0 and needs a rank-2 parameter.
+`xavier_uniform()` needs a rank-2 parameter; `zeros()` and `ones()` take a parameter of any rank
+from 1, such as the bias `b: Tensor<f32, [H]>` of a dense layer, and draw nothing.
 
 ## 2. The forward function
 

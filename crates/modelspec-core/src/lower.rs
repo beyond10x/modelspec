@@ -58,7 +58,7 @@ pub enum LowerError {
     #[error("{span}: {source}")]
     Build {
         span: SourceSpan,
-        source: BuildError,
+        source: Box<BuildError>,
     },
     #[error("{span}: {what}")]
     Malformed { span: SourceSpan, what: String },
@@ -129,7 +129,7 @@ pub fn lower(hir: &Hir) -> Result<LoweredProgram, LowerError> {
 fn build_error(span: &SourceSpan) -> impl FnOnce(BuildError) -> LowerError + '_ {
     move |source| LowerError::Build {
         span: span.clone(),
-        source,
+        source: Box::new(source),
     }
 }
 

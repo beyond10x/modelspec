@@ -14,8 +14,11 @@ types:
   - name: modelspec.artifact.ContentHash
     kind: newtype
     of: String
+    alphabet: "0123456789abcdef"
+    invariants:
+      - value.count == 64
     naming:
-      summary: A blake3 digest under explicit serialization and version rules (DESIGN.md § 7).
+      summary: A blake3 digest under explicit serialization and version rules (DESIGN.md § 7), written as its 32 bytes in 64 lowercase hexadecimal digits (story:content-hash-schema-constrained).
 
   - name: modelspec.artifact.Backend
     kind: enum

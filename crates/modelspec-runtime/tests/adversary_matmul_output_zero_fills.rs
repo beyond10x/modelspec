@@ -53,6 +53,9 @@ impl Element for Plain {
     fn from_count(count: u64) -> Self {
         Plain(count as f64)
     }
+    fn exp(self) -> Self {
+        Plain(self.0.exp())
+    }
 }
 
 fn operands<T: Element>(m: usize, k: usize, n: usize) -> (Vec<T>, Vec<T>) {

@@ -67,6 +67,18 @@
         "via": "device_profile_id"
       }
     },
+    "data_binding_id": {
+      "$ref": "#/$defs/modelspec.data.TrainingDataBindingId",
+      "description": "The corpus, tokenizer, sequence length and masking policy a masked-language-model run trained on; absent for a run on synthetic or dense data. story:bert-train-data-binding writes it (coordinator decision D26, 2026-10-24, `.engineering/waves/bert-1.md`).",
+      "x-ess-relation": {
+        "name": "data_binding",
+        "kind": "references",
+        "source": "modelspec.training.TrainingRun",
+        "target": "modelspec.data.TrainingDataBinding",
+        "cardinality": "one",
+        "via": "data_binding_id"
+      }
+    },
     "state": {
       "$ref": "#/$defs/modelspec.training.TrainingRun.State"
     }
@@ -85,8 +97,8 @@
   "x-ess-provenance": {
     "system": "modelspec",
     "specification_version": "v1",
-    "source_digest": "998b709593a81af16984c6701148f23622d1f12d28d518e936357e50d9af1d21",
-    "contract_digest": "slice-sha256/2:b227381c337fc090f897d684c28bab1ae9bb1c4242fc18a15bc2b1de7b07911d",
+    "source_digest": "41c62036015b6a9d0512319f47a1fd871d1faaa22cf43e296d58b04da20f21ad",
+    "contract_digest": "slice-sha256/2:cf43b3e07f6661fcf400b6a5748d0532e90df6699b9642a8187daea47d29a07b",
     "regenerate": "ess generate"
   },
   "$defs": {
@@ -101,6 +113,14 @@
     "modelspec.checkpoint.CheckpointId": {
       "title": "CheckpointId",
       "x-ess-name": "modelspec.checkpoint.CheckpointId",
+      "x-ess-kind": "newtype",
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    },
+    "modelspec.data.TrainingDataBindingId": {
+      "title": "TrainingDataBindingId",
+      "x-ess-name": "modelspec.data.TrainingDataBindingId",
       "x-ess-kind": "newtype",
       "type": "string",
       "format": "uuid",

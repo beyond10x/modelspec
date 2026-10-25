@@ -13,7 +13,8 @@
 //! Element `i` takes block `philox4x32_10(counter(i), key)`. A uniform draw uses word 0 as
 //! `u = (w + 0.5) / 2^32`, in `(0, 1)`; a standard normal draw is Box-Muller over words 0 and 1,
 //! `sqrt(-2 ln u0) * cos(2 pi u1)`. Both are computed in `f64` and rounded to `f32`. A tensor
-//! with more than `2^32` elements has no counter for its last ones and is refused.
+//! with more than `2^32` elements has no counter for its last ones and is refused. A `zeros` or
+//! `ones` parameter is filled, not drawn: it addresses no counter, so it shifts no other draw.
 //!
 //! `modelspec train --init <dir>` replaces the draw of a parameter by the values of its file in
 //! `<dir>` ([`read_params`]).
@@ -38,6 +39,11 @@ pub enum Stream {
     Teacher,
     /// M0 synthetic data inputs.
     Data,
+    /// Masked-language-model masking, drawn per step (`dataset::mlm`; coordinator decision D26).
+    Masking,
+    /// The epoch order of packed `Train` sequences (`dataset::mlm`; coordinator decision D26).
+    /// Tag 4, between this and [`Stream::Masking`], is reserved for dropout.
+    DataOrder,
 }
 
 impl Stream {
@@ -47,6 +53,8 @@ impl Stream {
             Stream::Init => 0,
             Stream::Teacher => 1,
             Stream::Data => 2,
+            Stream::Masking => 3,
+            Stream::DataOrder => 5,
         }
     }
 }
@@ -179,7 +187,18 @@ pub fn standard_normal(
     })
 }
 
-/// The value of every declared parameter of `program`, by its initializer, on `stream`.
+/// A tensor of type `ty` whose every element is `value`. It draws nothing, so it addresses no
+/// counter and leaves every draw of `seed` as it is (DESIGN.md § 2.3).
+pub fn filled(path: &str, ty: &TensorType, value: f32) -> Result<HostTensor<f32>, InitError> {
+    let (shape, last) = dims(path, ty)?;
+    Ok(HostTensor::from_parts(
+        shape,
+        vec![value; last as usize + 1],
+    ))
+}
+
+/// The value of every declared parameter of `program`, by its initializer, on `stream`. A
+/// `zeros` or `ones` parameter is the same on every stream and draws nothing.
 pub fn initialize(
     program: &TensorProgram,
     seed: u64,
@@ -191,6 +210,8 @@ pub fn initialize(
         .map(|(&param, decl)| {
             let value = match decl.init {
                 Initializer::XavierUniform => xavier_uniform(seed, stream, &decl.path, &decl.ty)?,
+                Initializer::Zeros => filled(&decl.path, &decl.ty, 0.0)?,
+                Initializer::Ones => filled(&decl.path, &decl.ty, 1.0)?,
             };
             Ok((param, value))
         })

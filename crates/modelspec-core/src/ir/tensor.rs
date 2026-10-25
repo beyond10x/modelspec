@@ -33,17 +33,19 @@ impl fmt::Display for ParamId {
     }
 }
 
-/// Element type. `f32` is the only M0 dtype (DESIGN.md § 2.2).
+/// Element type (DESIGN.md § 2.2). Every value is `f32` except row ids: an `i32` tensor is only
+/// a program input, and only the ids operand of `Embedding` and `EmbeddingGrad` reads one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum DType {
     F32,
+    I32,
 }
 
 impl DType {
     /// Bytes per element.
     pub const fn size_bytes(self) -> u64 {
         match self {
-            DType::F32 => 4,
+            DType::F32 | DType::I32 => 4,
         }
     }
 }
@@ -52,6 +54,7 @@ impl fmt::Display for DType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             DType::F32 => f.write_str("f32"),
+            DType::I32 => f.write_str("i32"),
         }
     }
 }
@@ -86,6 +89,14 @@ impl TensorType {
     pub fn f32(shape: &[u64]) -> Self {
         Self {
             dtype: DType::F32,
+            shape: shape.iter().map(|&n| Dim::Static(n)).collect(),
+        }
+    }
+
+    /// An `i32` tensor of static shape `shape`: row ids.
+    pub fn i32(shape: &[u64]) -> Self {
+        Self {
+            dtype: DType::I32,
             shape: shape.iter().map(|&n| Dim::Static(n)).collect(),
         }
     }
@@ -146,6 +157,25 @@ pub enum TensorOp {
     BroadcastScalar {
         shape: Vec<Dim>,
     },
+    /// `table: f32[V, H]`, `ids: i32[N] -> f32[N, H]`: row `n` of the result is row `ids[n]` of
+    /// the table.
+    Embedding,
+    /// Internal gradient op over operands `ids: i32[N]`, `G: f32[N, H]`: a zero `[rows, H]`
+    /// tensor with row `G[n]` added to row `ids[n]`, in ascending `n` (DESIGN.md § 4).
+    EmbeddingGrad {
+        rows: Dim,
+    },
+    /// `x: f32[N, H]`, `b: f32[H] -> f32[N, H]`: `b` added to every row of `x`.
+    AddRows,
+    /// Internal gradient op `f32[N, H] -> f32[H]`: the rows summed in ascending order, starting
+    /// from the first row (DESIGN.md § 4).
+    SumRows,
+    /// The tanh form of GELU, `0.5 x (1 + tanh(sqrt(2/pi) (x + 0.044715 x^3)))`, element by
+    /// element on any shape (DESIGN.md § 4).
+    Gelu,
+    /// Internal gradient op over operands `A, G` of one shape: the derivative of [`Self::Gelu`]
+    /// at `A` times `G`, element by element (DESIGN.md § 4).
+    GeluGrad,
 }
 
 impl TensorOp {
@@ -166,6 +196,12 @@ impl TensorOp {
             TensorOp::Mse => "Mse",
             TensorOp::ReluGrad => "ReluGrad",
             TensorOp::BroadcastScalar { .. } => "BroadcastScalar",
+            TensorOp::Embedding => "Embedding",
+            TensorOp::EmbeddingGrad { .. } => "EmbeddingGrad",
+            TensorOp::AddRows => "AddRows",
+            TensorOp::SumRows => "SumRows",
+            TensorOp::Gelu => "Gelu",
+            TensorOp::GeluGrad => "GeluGrad",
         }
     }
 }
@@ -180,17 +216,43 @@ pub struct TensorNode {
     pub source_span: Option<SourceSpan>,
 }
 
-/// How a parameter's initial value is drawn (DESIGN.md § 2.3).
+/// How a parameter's initial value is set (DESIGN.md § 2.3).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Initializer {
+    /// Drawn from the parameter stream; a rank-2 parameter only.
     XavierUniform,
+    /// Every element `+0.0`, no draw; a parameter of any rank from 1.
+    Zeros,
+    /// Every element `1.0`, no draw; a parameter of any rank from 1.
+    Ones,
+}
+
+impl Initializer {
+    /// Every initializer, in the order the language documents them.
+    pub const ALL: [Initializer; 3] = [
+        Initializer::XavierUniform,
+        Initializer::Zeros,
+        Initializer::Ones,
+    ];
+
+    /// The initializer whose source name, the name it prints with, is `name`.
+    pub fn from_name(name: &str) -> Option<Initializer> {
+        Self::ALL.into_iter().find(|init| init.name() == name)
+    }
+
+    /// Its source name: `xavier_uniform`, `zeros` or `ones`.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Initializer::XavierUniform => "xavier_uniform",
+            Initializer::Zeros => "zeros",
+            Initializer::Ones => "ones",
+        }
+    }
 }
 
 impl fmt::Display for Initializer {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Initializer::XavierUniform => f.write_str("xavier_uniform"),
-        }
+        f.write_str(self.name())
     }
 }
 
@@ -350,6 +412,41 @@ impl TensorProgramBuilder {
         self.push(TensorOp::BroadcastScalar { shape }, &[a])
     }
 
+    /// Rows `ids` of `table`.
+    pub fn embedding(&mut self, table: ValueId, ids: ValueId) -> Result<ValueId, BuildError> {
+        self.push(TensorOp::Embedding, &[table, ids])
+    }
+
+    /// The gradient of a `[rows, H]` table read at `ids`, from the result's gradient `g`.
+    pub fn embedding_grad(
+        &mut self,
+        ids: ValueId,
+        g: ValueId,
+        rows: Dim,
+    ) -> Result<ValueId, BuildError> {
+        self.push(TensorOp::EmbeddingGrad { rows }, &[ids, g])
+    }
+
+    /// The `[H]` row `b` added to every row of the `[N, H]` `x`.
+    pub fn add_rows(&mut self, x: ValueId, b: ValueId) -> Result<ValueId, BuildError> {
+        self.push(TensorOp::AddRows, &[x, b])
+    }
+
+    /// The rows of the `[N, H]` `g` summed, in ascending order, to an `[H]` row.
+    pub fn sum_rows(&mut self, g: ValueId) -> Result<ValueId, BuildError> {
+        self.push(TensorOp::SumRows, &[g])
+    }
+
+    /// The tanh form of GELU of `a`, element by element.
+    pub fn gelu(&mut self, a: ValueId) -> Result<ValueId, BuildError> {
+        self.push(TensorOp::Gelu, &[a])
+    }
+
+    /// The derivative of GELU at `a` times `g`, element by element.
+    pub fn gelu_grad(&mut self, a: ValueId, g: ValueId) -> Result<ValueId, BuildError> {
+        self.push(TensorOp::GeluGrad, &[a, g])
+    }
+
     /// Adds any op except `Input`, typed by the registry.
     pub fn push(&mut self, op: TensorOp, operands: &[ValueId]) -> Result<ValueId, BuildError> {
         self.push_at(op, operands, None)
@@ -416,5 +513,115 @@ impl TensorProgramBuilder {
             source_span,
         });
         id
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One of each op. The match below fails to compile when an op is added and not listed.
+    fn every_op() -> Vec<TensorOp> {
+        let ops = vec![
+            TensorOp::Input {
+                name: String::new(),
+            },
+            TensorOp::ParamRead { param: ParamId(0) },
+            TensorOp::Scalar(0.0),
+            TensorOp::Add,
+            TensorOp::Sub,
+            TensorOp::Mul,
+            TensorOp::MatMul,
+            TensorOp::Relu,
+            TensorOp::Transpose,
+            TensorOp::ReduceSum,
+            TensorOp::ReduceMean,
+            TensorOp::Mse,
+            TensorOp::ReluGrad,
+            TensorOp::BroadcastScalar { shape: Vec::new() },
+            TensorOp::Embedding,
+            TensorOp::EmbeddingGrad {
+                rows: Dim::Static(1),
+            },
+            TensorOp::AddRows,
+            TensorOp::SumRows,
+            TensorOp::Gelu,
+            TensorOp::GeluGrad,
+        ];
+        for op in &ops {
+            match op {
+                TensorOp::Input { .. }
+                | TensorOp::ParamRead { .. }
+                | TensorOp::Scalar(_)
+                | TensorOp::Add
+                | TensorOp::Sub
+                | TensorOp::Mul
+                | TensorOp::MatMul
+                | TensorOp::Relu
+                | TensorOp::Transpose
+                | TensorOp::ReduceSum
+                | TensorOp::ReduceMean
+                | TensorOp::Mse
+                | TensorOp::ReluGrad
+                | TensorOp::BroadcastScalar { .. }
+                | TensorOp::Embedding
+                | TensorOp::EmbeddingGrad { .. }
+                | TensorOp::AddRows
+                | TensorOp::SumRows
+                | TensorOp::Gelu
+                | TensorOp::GeluGrad => {}
+            }
+        }
+        ops
+    }
+
+    /// The `$defs` entry `name` of a schema file `ess generate` wrote for the observatory.
+    fn schema(file: &str, name: &str) -> serde_json::Value {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../modelspec-observatory/schema/types")
+            .join(file);
+        let text = std::fs::read_to_string(&path).expect("the generated schema exists");
+        let document: serde_json::Value = serde_json::from_str(&text).expect("JSON");
+        document["$defs"][name].clone()
+    }
+
+    fn variants(def: &serde_json::Value) -> Vec<String> {
+        def["enum"]
+            .as_array()
+            .expect("an enum")
+            .iter()
+            .map(|v| v.as_str().expect("a name").to_owned())
+            .collect()
+    }
+
+    /// `modelspec.observatory.TensorOperator` names exactly the ops of [`TensorOp`], in order.
+    #[test]
+    fn every_op_is_a_tensor_operator_of_the_specification() {
+        let def = schema(
+            "modelspec.observatory.TensorOperator.schema.json",
+            "modelspec.observatory.TensorOperator",
+        );
+        let names: Vec<String> = every_op().iter().map(|op| op.name().to_owned()).collect();
+        assert_eq!(variants(&def), names);
+    }
+
+    /// `modelspec.checkpoint.DType` names exactly the dtypes of [`DType`], with their sizes.
+    #[test]
+    fn every_dtype_is_a_dtype_of_the_specification() {
+        let def = schema(
+            "modelspec.checkpoint.DType.schema.json",
+            "modelspec.checkpoint.DType",
+        );
+        let dtypes = [DType::F32, DType::I32];
+        let names: Vec<String> = dtypes
+            .iter()
+            .map(|d| d.to_string().to_uppercase())
+            .collect();
+        assert_eq!(variants(&def), names);
+        let sizes = &def["x-ess-attributes"][0]["values"];
+        for dtype in dtypes {
+            let name = dtype.to_string().to_uppercase();
+            assert_eq!(sizes[&name].as_u64(), Some(dtype.size_bytes()), "{name}");
+        }
     }
 }

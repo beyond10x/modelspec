@@ -2,12 +2,16 @@
 format: aep.planning-md/3
 id: story:content-hash-schema-constrained
 kind: story
-status: draft
+status: implemented
 title: The content-hash type and the distinct-roles rule are checked by the schema
 relations:
 - serves: vision:modelspec
 - depends_on: story:bert-corpus-splits
-revision: 1
+revision: 5
+transitions:
+- {from: "draft", to: "proposed", at: "2026-10-24T23:39:34Z", actor: "human:timo", revision: 2}
+- {from: "proposed", to: "active", at: "2026-10-24T23:39:34Z", actor: "human:timo", revision: 3}
+- {from: "active", to: "implemented", at: "2026-10-25T00:24:41Z", actor: "human:timo", revision: 5, decided_on: {"recorded":{"test_result":1,"review_outcome":1}}}
 ---
 # The content-hash type and the distinct-roles rule are checked by the schema
 
@@ -25,7 +29,7 @@ backs `artifact_id` digests and checkpoint records.
 
 `modelspec.artifact.ContentHash` declares its alphabet and length in the specification (ESS
 newtype `alphabet:` and a length invariant, `ess specify formats` lists what the pinned release
-admits), the projection carries them (`pattern`, `minLength`, `maxLength`), and the two ignored
+admits), the projection carries what the pinned release projects (`pattern` for the alphabet; the length invariant reaches the schema only as an `x-ess-invariants` annotation, beyond10x/ess issue 685), and the two ignored
 cases of `crates/modelspec-cli/tests/adversary_corpus_schema.rs` pass un-ignored. Where ESS
 cannot project the distinct-roles invariant into JSON Schema, the story records that as an
 `ess-limit` finding with the refusal or the missing projection quoted, files it on beyond10x/ess,

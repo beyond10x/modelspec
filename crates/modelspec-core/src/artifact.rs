@@ -689,7 +689,7 @@ fn artifact_id(hash: &ContentHash) -> Uuid {
     Uuid::from_bytes(bytes)
 }
 
-/// `f32`, the dtype names of `spec/domains/checkpoint.yaml`.
+/// `f32` and `i32`, the dtype names of `spec/domains/checkpoint.yaml`.
 mod dtype_name {
     use serde::{Deserialize, Deserializer, Serializer};
 
@@ -702,6 +702,7 @@ mod dtype_name {
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<DType, D::Error> {
         match String::deserialize(d)?.as_str() {
             "f32" => Ok(DType::F32),
+            "i32" => Ok(DType::I32),
             other => Err(serde::de::Error::custom(format!("unknown dtype `{other}`"))),
         }
     }

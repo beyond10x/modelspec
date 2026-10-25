@@ -8,7 +8,7 @@
 
 use thiserror::Error;
 
-use crate::ir::tensor::{Dim, TensorOp, TensorType, ValueId};
+use crate::ir::tensor::{DType, Dim, TensorOp, TensorType, ValueId};
 
 /// Why an op's operands do not satisfy its rule.
 #[derive(Clone, Debug, PartialEq, Eq, Error)]
@@ -21,6 +21,15 @@ pub enum OpError {
     },
     #[error("{op} needs a declared result type")]
     MissingDeclaredType { op: &'static str },
+    #[error("{op} operand {index} must be {expected}; got {got}")]
+    OperandDType {
+        op: &'static str,
+        index: usize,
+        expected: DType,
+        got: TensorType,
+    },
+    #[error("a parameter must be f32; got {got}")]
+    ParamDType { got: TensorType },
     #[error("{op} operand dtypes differ: lhs {lhs}, rhs {rhs}")]
     DTypeMismatch {
         op: &'static str,
@@ -59,13 +68,28 @@ pub fn arity(op: &TensorOp) -> usize {
         | TensorOp::Transpose
         | TensorOp::ReduceSum
         | TensorOp::ReduceMean
-        | TensorOp::BroadcastScalar { .. } => 1,
+        | TensorOp::BroadcastScalar { .. }
+        | TensorOp::SumRows
+        | TensorOp::Gelu => 1,
         TensorOp::Add
         | TensorOp::Sub
         | TensorOp::Mul
         | TensorOp::MatMul
         | TensorOp::Mse
-        | TensorOp::ReluGrad => 2,
+        | TensorOp::ReluGrad
+        | TensorOp::Embedding
+        | TensorOp::EmbeddingGrad { .. }
+        | TensorOp::AddRows
+        | TensorOp::GeluGrad => 2,
+    }
+}
+
+/// The element type operand `index` of `op` must have: `i32` for the ids of `Embedding` and
+/// `EmbeddingGrad`, `f32` for every other operand (DESIGN.md § 2.2).
+pub fn operand_dtype(op: &TensorOp, index: usize) -> DType {
+    match (op, index) {
+        (TensorOp::Embedding, 1) | (TensorOp::EmbeddingGrad { .. }, 0) => DType::I32,
+        _ => DType::F32,
     }
 }
 
@@ -87,10 +111,28 @@ pub fn infer(
             got: operands.len(),
         });
     }
+    for (index, operand) in operands.iter().enumerate() {
+        let expected = operand_dtype(op, index);
+        if operand.dtype != expected {
+            return Err(OpError::OperandDType {
+                op: name,
+                index,
+                expected,
+                got: (*operand).clone(),
+            });
+        }
+    }
     match op {
-        TensorOp::Input { .. } | TensorOp::ParamRead { .. } => declared
+        TensorOp::Input { .. } => declared
             .cloned()
             .ok_or(OpError::MissingDeclaredType { op: name }),
+        TensorOp::ParamRead { .. } => {
+            let ty = declared.ok_or(OpError::MissingDeclaredType { op: name })?;
+            if ty.dtype != DType::F32 {
+                return Err(OpError::ParamDType { got: ty.clone() });
+            }
+            Ok(ty.clone())
+        }
         TensorOp::Scalar(_) => Ok(TensorType::f32_scalar()),
         TensorOp::Add | TensorOp::Sub | TensorOp::Mul => {
             let (lhs, rhs) = (operands[0], operands[1]);
@@ -111,7 +153,7 @@ pub fn infer(
             }
             Ok(scalar_of(lhs))
         }
-        TensorOp::ReluGrad => {
+        TensorOp::ReluGrad | TensorOp::GeluGrad => {
             let (a, g) = (operands[0], operands[1]);
             same_dtype(name, a, g)?;
             if a.shape != g.shape {
@@ -137,7 +179,7 @@ pub fn infer(
                 shape: vec![lhs.shape[0], rhs.shape[1]],
             })
         }
-        TensorOp::Relu => Ok(operands[0].clone()),
+        TensorOp::Relu | TensorOp::Gelu => Ok(operands[0].clone()),
         TensorOp::Transpose => {
             let a = operands[0];
             rank(name, a, 2)?;
@@ -153,6 +195,45 @@ pub fn infer(
             Ok(TensorType {
                 dtype: a.dtype,
                 shape: shape.clone(),
+            })
+        }
+        TensorOp::Embedding => {
+            let (table, ids) = (operands[0], operands[1]);
+            rank(name, table, 2)?;
+            rank(name, ids, 1)?;
+            Ok(TensorType {
+                dtype: table.dtype,
+                shape: vec![ids.shape[0], table.shape[1]],
+            })
+        }
+        TensorOp::EmbeddingGrad { rows } => {
+            let (ids, g) = (operands[0], operands[1]);
+            rank(name, ids, 1)?;
+            rank(name, g, 2)?;
+            if ids.shape[0] != g.shape[0] {
+                return Err(shape_mismatch(name, ids, g));
+            }
+            Ok(TensorType {
+                dtype: g.dtype,
+                shape: vec![*rows, g.shape[1]],
+            })
+        }
+        TensorOp::AddRows => {
+            let (x, b) = (operands[0], operands[1]);
+            same_dtype(name, x, b)?;
+            rank(name, x, 2)?;
+            rank(name, b, 1)?;
+            if b.shape[0] != x.shape[1] {
+                return Err(shape_mismatch(name, x, b));
+            }
+            Ok(x.clone())
+        }
+        TensorOp::SumRows => {
+            let g = operands[0];
+            rank(name, g, 2)?;
+            Ok(TensorType {
+                dtype: g.dtype,
+                shape: vec![g.shape[1]],
             })
         }
     }
@@ -175,8 +256,8 @@ pub trait GradientSink {
 /// order, the contribution to the adjoint of each operand `i` with `wanted[i]`, and `None` for
 /// the others; a contribution has its operand's type. The caller sums the contributions of every
 /// use of a value. An operand of rank 0 under a same-shape-or-scalar op receives the sum of its
-/// broadcast contribution. Returns `Ok(None)` for the internal gradient ops `ReluGrad` and
-/// `BroadcastScalar`, which have no rule.
+/// broadcast contribution. Returns `Ok(None)` for the internal gradient ops `ReluGrad`,
+/// `BroadcastScalar`, `EmbeddingGrad`, `SumRows` and `GeluGrad`, which have no rule.
 ///
 /// The rules, for `Y = op(A, B)` and `G = dL/dY`:
 ///
@@ -191,9 +272,15 @@ pub trait GradientSink {
 /// | `ReduceSum` | `broadcast_scalar(G, shape(A))` | |
 /// | `ReduceMean` | `broadcast_scalar(G * (1 / numel(A)), shape(A))` | |
 /// | `Mse` | `(A - B) * (G * (2 / numel(A)))` | `-dA` |
+/// | `Embedding` | `embedding_grad(B, G, rows(A))` (`EmbeddingGrad`: row `G[n]` added to row `B[n]`) | none: `B` is `i32` ids |
+/// | `AddRows` | `G` | `sum_rows(G)` (`SumRows`: the rows of `G` summed in ascending order) |
+/// | `Gelu` | `gelu_grad(A, G)` (`GeluGrad`: `gelu'(A) * G`) | |
 ///
 /// The constants `1 / numel` and `2 / numel` are `f32` scalars. `Mse`'s `B` is a target in a
 /// training program, an input that receives no gradient; a trainable `B` receives `-dA`.
+/// `EmbeddingGrad` adds the rows of `G` in ascending `n`, so a row read twice accumulates in a
+/// fixed order, and a row never read stays exactly zero. `SumRows` starts from row 0 and adds
+/// each later row in ascending order. `gelu'` is the derivative of the tanh form of `Gelu`.
 pub fn gradient<S: GradientSink + ?Sized>(
     sink: &mut S,
     op: &TensorOp,
@@ -283,7 +370,32 @@ pub fn gradient<S: GradientSink + ?Sized>(
                 }
             }
         }
-        TensorOp::ReluGrad | TensorOp::BroadcastScalar { .. } => return Ok(None),
+        TensorOp::Embedding => {
+            if want(0) {
+                let rows = sink.type_of(operands[0]).shape[0];
+                out[0] = Some(sink.emit(TensorOp::EmbeddingGrad { rows }, &[operands[1], g])?);
+            }
+        }
+        TensorOp::AddRows => {
+            if want(0) {
+                out[0] = Some(g);
+            }
+            if want(1) {
+                out[1] = Some(sink.emit(TensorOp::SumRows, &[g])?);
+            }
+        }
+        TensorOp::Gelu => {
+            if want(0) {
+                out[0] = Some(sink.emit(TensorOp::GeluGrad, &[operands[0], g])?);
+            }
+        }
+        TensorOp::ReluGrad
+        | TensorOp::BroadcastScalar { .. }
+        | TensorOp::EmbeddingGrad { .. }
+        | TensorOp::SumRows
+        | TensorOp::GeluGrad => {
+            return Ok(None);
+        }
     }
     Ok(Some(out))
 }
@@ -370,5 +482,253 @@ fn scalar_of(ty: &TensorType) -> TensorType {
     TensorType {
         dtype: ty.dtype,
         shape: Vec::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ir::tensor::DType;
+
+    fn f32(shape: &[u64]) -> TensorType {
+        TensorType::f32(shape)
+    }
+
+    fn i32(shape: &[u64]) -> TensorType {
+        TensorType::i32(shape)
+    }
+
+    #[test]
+    fn embedding_of_a_v_by_h_table_and_n_ids_is_n_by_h() {
+        assert_eq!(
+            infer(&TensorOp::Embedding, &[&f32(&[7, 3]), &i32(&[10])], None),
+            Ok(f32(&[10, 3]))
+        );
+    }
+
+    #[test]
+    fn embedding_refuses_ids_that_are_not_i32_and_a_table_that_is_not_f32() {
+        assert_eq!(
+            infer(&TensorOp::Embedding, &[&f32(&[7, 3]), &f32(&[10])], None),
+            Err(OpError::OperandDType {
+                op: "Embedding",
+                index: 1,
+                expected: DType::I32,
+                got: f32(&[10]),
+            })
+        );
+        assert_eq!(
+            infer(&TensorOp::Embedding, &[&i32(&[7, 3]), &i32(&[10])], None),
+            Err(OpError::OperandDType {
+                op: "Embedding",
+                index: 0,
+                expected: DType::F32,
+                got: i32(&[7, 3]),
+            })
+        );
+    }
+
+    #[test]
+    fn embedding_refuses_a_table_not_of_rank_2_and_ids_not_of_rank_1() {
+        assert_eq!(
+            infer(&TensorOp::Embedding, &[&f32(&[7]), &i32(&[10])], None),
+            Err(OpError::Rank {
+                op: "Embedding",
+                expected: 2,
+                got: f32(&[7]),
+            })
+        );
+        assert_eq!(
+            infer(&TensorOp::Embedding, &[&f32(&[7, 3]), &i32(&[2, 5])], None),
+            Err(OpError::Rank {
+                op: "Embedding",
+                expected: 1,
+                got: i32(&[2, 5]),
+            })
+        );
+    }
+
+    #[test]
+    fn embedding_grad_scatters_n_rows_into_a_rows_by_h_table() {
+        let op = TensorOp::EmbeddingGrad {
+            rows: Dim::Static(7),
+        };
+        assert_eq!(
+            infer(&op, &[&i32(&[10]), &f32(&[10, 3])], None),
+            Ok(f32(&[7, 3]))
+        );
+        assert_eq!(
+            infer(&op, &[&i32(&[10]), &f32(&[9, 3])], None),
+            Err(OpError::ShapeMismatch {
+                op: "EmbeddingGrad",
+                lhs: i32(&[10]),
+                rhs: f32(&[9, 3]),
+            })
+        );
+        assert_eq!(
+            infer(&op, &[&f32(&[10]), &f32(&[10, 3])], None),
+            Err(OpError::OperandDType {
+                op: "EmbeddingGrad",
+                index: 0,
+                expected: DType::I32,
+                got: f32(&[10]),
+            })
+        );
+    }
+
+    /// Every operand of every other op is `f32`: an `i32` is refused whichever side it is on,
+    /// and two `i32`s are refused too.
+    #[test]
+    fn an_i32_operand_of_any_other_op_is_refused() {
+        let ids = i32(&[4, 1]);
+        let x = f32(&[4, 1]);
+        for (op, operands) in [
+            (TensorOp::Add, vec![&ids, &x]),
+            (TensorOp::Sub, vec![&x, &ids]),
+            (TensorOp::Mul, vec![&ids, &ids]),
+            (TensorOp::Mse, vec![&x, &ids]),
+            (TensorOp::Relu, vec![&ids]),
+            (TensorOp::ReduceSum, vec![&ids]),
+            (TensorOp::Transpose, vec![&ids]),
+        ] {
+            let index = operands.iter().position(|t| t.dtype == DType::I32).unwrap();
+            assert_eq!(
+                infer(&op, &operands, None),
+                Err(OpError::OperandDType {
+                    op: op.name(),
+                    index,
+                    expected: DType::F32,
+                    got: ids.clone(),
+                }),
+                "{op:?}"
+            );
+        }
+        let w = f32(&[1, 4]);
+        assert!(matches!(
+            infer(&TensorOp::MatMul, &[&ids, &w], None),
+            Err(OpError::OperandDType { index: 0, .. })
+        ));
+    }
+
+    /// An `i32` input is a leaf like any other; an `i32` parameter is refused.
+    #[test]
+    fn an_i32_input_is_declared_and_an_i32_parameter_is_refused() {
+        let input = TensorOp::Input { name: "ids".into() };
+        assert_eq!(infer(&input, &[], Some(&i32(&[4]))), Ok(i32(&[4])));
+        let read = TensorOp::ParamRead {
+            param: crate::ir::tensor::ParamId(0),
+        };
+        assert_eq!(
+            infer(&read, &[], Some(&i32(&[4, 1]))),
+            Err(OpError::ParamDType { got: i32(&[4, 1]) })
+        );
+    }
+
+    #[test]
+    fn add_rows_of_an_n_by_h_x_and_an_h_row_is_n_by_h() {
+        assert_eq!(
+            infer(&TensorOp::AddRows, &[&f32(&[5, 3]), &f32(&[3])], None),
+            Ok(f32(&[5, 3]))
+        );
+    }
+
+    /// A row of another length is a shape mismatch; an `x` not of rank 2 or a `b` not of rank 1
+    /// is a rank error.
+    #[test]
+    fn add_rows_refuses_a_row_of_another_width_and_operands_of_other_ranks() {
+        assert_eq!(
+            infer(&TensorOp::AddRows, &[&f32(&[5, 3]), &f32(&[4])], None),
+            Err(OpError::ShapeMismatch {
+                op: "AddRows",
+                lhs: f32(&[5, 3]),
+                rhs: f32(&[4]),
+            })
+        );
+        assert_eq!(
+            infer(&TensorOp::AddRows, &[&f32(&[3]), &f32(&[3])], None),
+            Err(OpError::Rank {
+                op: "AddRows",
+                expected: 2,
+                got: f32(&[3]),
+            })
+        );
+        assert_eq!(
+            infer(&TensorOp::AddRows, &[&f32(&[5, 3]), &f32(&[1, 3])], None),
+            Err(OpError::Rank {
+                op: "AddRows",
+                expected: 1,
+                got: f32(&[1, 3]),
+            })
+        );
+        assert_eq!(
+            infer(&TensorOp::AddRows, &[&f32(&[5, 3]), &f32(&[])], None),
+            Err(OpError::Rank {
+                op: "AddRows",
+                expected: 1,
+                got: f32(&[]),
+            })
+        );
+    }
+
+    #[test]
+    fn sum_rows_of_an_n_by_h_tensor_is_an_h_row() {
+        assert_eq!(
+            infer(&TensorOp::SumRows, &[&f32(&[5, 3])], None),
+            Ok(f32(&[3]))
+        );
+        assert_eq!(
+            infer(&TensorOp::SumRows, &[&f32(&[5])], None),
+            Err(OpError::Rank {
+                op: "SumRows",
+                expected: 2,
+                got: f32(&[5]),
+            })
+        );
+    }
+
+    /// `gelu` keeps the shape of any operand; `GeluGrad` needs its two operands of one shape.
+    #[test]
+    fn gelu_keeps_any_shape_and_gelu_grad_needs_one_shape() {
+        for shape in [&[][..], &[7], &[5, 3]] {
+            assert_eq!(infer(&TensorOp::Gelu, &[&f32(shape)], None), Ok(f32(shape)));
+            assert_eq!(
+                infer(&TensorOp::GeluGrad, &[&f32(shape), &f32(shape)], None),
+                Ok(f32(shape))
+            );
+        }
+        assert_eq!(
+            infer(&TensorOp::GeluGrad, &[&f32(&[5, 3]), &f32(&[3, 5])], None),
+            Err(OpError::ShapeMismatch {
+                op: "GeluGrad",
+                lhs: f32(&[5, 3]),
+                rhs: f32(&[3, 5]),
+            })
+        );
+    }
+
+    /// The operands of the four dense ops are `f32`: row ids are refused in every position.
+    #[test]
+    fn the_dense_ops_refuse_an_i32_operand() {
+        let x = f32(&[5, 3]);
+        let b = f32(&[3]);
+        for (op, operands, index) in [
+            (TensorOp::AddRows, vec![i32(&[5, 3]), b.clone()], 0),
+            (TensorOp::AddRows, vec![x.clone(), i32(&[3])], 1),
+            (TensorOp::SumRows, vec![i32(&[5, 3])], 0),
+            (TensorOp::Gelu, vec![i32(&[5, 3])], 0),
+            (TensorOp::GeluGrad, vec![x.clone(), i32(&[5, 3])], 1),
+        ] {
+            let refs: Vec<&TensorType> = operands.iter().collect();
+            assert_eq!(
+                infer(&op, &refs, None),
+                Err(OpError::OperandDType {
+                    op: op.name(),
+                    index,
+                    expected: DType::F32,
+                    got: operands[index].clone(),
+                }),
+                "{op:?}"
+            );
+        }
     }
 }

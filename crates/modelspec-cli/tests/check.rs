@@ -186,6 +186,7 @@ fixtures! {
     e_type_017_no_forward_function => "E-TYPE-017-no-forward-function.mspec",
     e_type_017_two_forward_calls => "E-TYPE-017-two-forward-calls.mspec",
     e_type_017_nested_forward_calls => "E-TYPE-017-nested-forward-calls.mspec",
+    e_type_018_i32_operand => "E-TYPE-018-i32-operand.mspec",
     rule_seed_fits_u64 => "rule-seed-fits-u64.mspec",
     rule_optimizer_is_sgd => "rule-optimizer-is-sgd.mspec",
     rule_learning_rate_finite => "rule-learning-rate-finite.mspec",

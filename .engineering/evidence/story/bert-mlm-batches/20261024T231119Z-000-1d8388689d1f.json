@@ -1,0 +1,13 @@
+{
+  "at": "2026-10-24T23:11:19Z",
+  "actor": "human:timo",
+  "artifact": "story:bert-mlm-batches",
+  "kind": "story",
+  "revision": 6,
+  "change": {
+    "change": "evidence",
+    "kind": "test_result",
+    "source": "task ci",
+    "reference": "7c4cd1a"
+  }
+}

@@ -1,7 +1,8 @@
 //! Host tensors: a shape and dense row-major storage, generic over the element type.
 //!
 //! The same code runs in `f32`, the M0 dtype, and in `f64`, which the finite-difference gradient
-//! checks use as reference math (DESIGN.md § 4).
+//! checks use as reference math (DESIGN.md § 4). Row ids are `HostTensor<i32>`, read only by
+//! `embedding` and its gradient.
 
 use std::fmt::Debug;
 use std::ops::{Add, Div, Mul, Sub};
@@ -44,6 +45,10 @@ pub trait Element:
         self * b + c
     }
 
+    /// `e` raised to `self`, as the standard library computes it for `f32` and `f64`; the
+    /// interpreter's `gelu` and its gradient use it (DESIGN.md § 4).
+    fn exp(self) -> Self;
+
     /// The AVX2 `matmul` kernel for this type ([`Kernel::Avx2`](super::matmul::Kernel::Avx2)):
     /// writes `out`, `m * n` elements, and returns true; `m`, `k` and `n` are nonzero. False,
     /// writing nothing, where the type has no such kernel or the CPU no AVX2 or no FMA, which is
@@ -80,6 +85,10 @@ impl Element for f32 {
         f32::mul_add(self, b, c)
     }
 
+    fn exp(self) -> Self {
+        f32::exp(self)
+    }
+
     #[cfg(target_arch = "x86_64")]
     fn matmul_avx2(
         out: &mut [Self],
@@ -107,6 +116,10 @@ impl Element for f64 {
 
     fn mul_add(self, b: Self, c: Self) -> Self {
         f64::mul_add(self, b, c)
+    }
+
+    fn exp(self) -> Self {
+        f64::exp(self)
     }
 
     #[cfg(target_arch = "x86_64")]
@@ -143,7 +156,8 @@ pub struct HostTensor<T> {
     data: Vec<T>,
 }
 
-impl<T: Element> HostTensor<T> {
+/// Any `Copy` element: an `Element` the interpreter computes in, or the `i32` of row ids.
+impl<T: Copy> HostTensor<T> {
     /// A tensor of shape `shape` holding `data` in row-major order; `data` has exactly as many
     /// elements as the shape.
     pub fn new(shape: Vec<u64>, data: Vec<T>) -> Result<Self, TensorError> {

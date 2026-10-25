@@ -1,0 +1,13 @@
+{
+  "at": "2026-10-25T00:09:35Z",
+  "actor": "human:timo",
+  "artifact": "story:bert-dense-gelu",
+  "kind": "story",
+  "revision": 5,
+  "change": {
+    "change": "evidence",
+    "kind": "test_result",
+    "source": "task ci",
+    "reference": "e254dcf"
+  }
+}

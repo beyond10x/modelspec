@@ -13,7 +13,7 @@
 //!           | "loss" "=" expr ";" | "optimizer" "=" "sgd" "(" "lr" "=" FLOAT ")" ";"
 //!           | "steps" "=" INT ";" | "seed" "=" INT ";"
 //!           | "device" "=" ("cpu" | "vulkan" "(" INT ")") ";"
-//! type     := "Tensor" "<" "f32" "," "[" [INT ("," INT)*] "]" ">"
+//! type     := "Tensor" "<" ("f32" | "i32") "," "[" [INT ("," INT)*] "]" ">"
 //! expr     := INT | FLOAT | IDENT | call | (IDENT | "model") "." IDENT "(" args ")"
 //! call     := IDENT "(" args ")"
 //! args     := [arg ("," arg)*]
@@ -505,15 +505,16 @@ impl<'s> Parser<'s> {
         if self.peek() != Some(Token::Ident) {
             return Err(self.unexpected("a dtype"));
         }
-        if self.text() != "f32" {
-            return Err(self.error(
-                codes::DTYPE,
-                format!(
-                    "dtype `{}` is not in the M0 subset; only `f32` is",
-                    self.text()
-                ),
-            ));
-        }
+        let kind = match self.text() {
+            "f32" => DType::F32,
+            "i32" => DType::I32,
+            other => {
+                return Err(self.error(
+                    codes::DTYPE,
+                    format!("dtype `{other}` is not in the M0 subset; only `f32` and `i32` are"),
+                ));
+            }
+        };
         self.bump();
         self.expect(Token::Comma, "`,`")?;
         self.expect(Token::LBracket, "`[`")?;
@@ -536,7 +537,7 @@ impl<'s> Parser<'s> {
         self.expect(Token::Gt, "`>`")?;
         Ok(TensorType {
             dtype: Dtype {
-                kind: DType::F32,
+                kind,
                 span: dtype_span,
             },
             dims,

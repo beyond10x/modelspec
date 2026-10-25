@@ -4,7 +4,7 @@ id: story:bert-dropout
 kind: story
 status: draft
 title: Dropout drawn from Philox through an explicit per-step RNG token, gradient-checked on the CPU
-summary: Adds dropout on Philox stream tag 3 keyed by site and step through an explicit token input, identity outside the training step, with an f64 finite-difference check at a fixed token.
+summary: Adds dropout on Philox stream tag 4 keyed by site and step through an explicit token input, identity outside the training step, with an f64 finite-difference check at a fixed token.
 relations:
 - decomposes: epic:bert-from-scratch
 - serves: vision:modelspec
@@ -60,7 +60,7 @@ scope:
   path: ui/src/generated/
 - confidence: cited
   path: website/docs/reference/operators.md
-revision: 3
+revision: 5
 ---
 # Dropout drawn from Philox through an explicit per-step RNG token, gradient-checked on the CPU
 
@@ -76,11 +76,11 @@ common-subexpression elimination cannot merge two independent draws. The draw de
 - `dropout(x, p = <float literal>)`, `0 <= p < 1`, any shape. In the training step the result is
   `x * keep / (1 - p)`, element `i` kept when its uniform draw `u_i` (§ 2.3 uniform mapping) is at
   least `p`.
-- Stream tag 3 is dropout. A dropout site is named `<Model>.<fn>.dropout#<k>`, `k` the ordinal of
+- Stream tag 4 is dropout (coordinator decision D30, 2026-10-25: D26 gave tag 3 to masking and reserved 4 for dropout; `Stream::DataOrder` is 5). A dropout site is named `<Model>.<fn>.dropout#<k>`, `k` the ordinal of
   the call in source order within its function, which does not depend on compiler iteration order.
   At step `s` the draw id of a site is the first 8 bytes of `blake3(site name, then s as 8
   little-endian bytes)`, read as a little-endian `u64`; element `i` takes
-  `philox4x32_10([i, 3, id low, id high], key)`.
+  `philox4x32_10([i, 4, id low, id high], key)`.
 - The token: each site reads an internal program input, its RNG token, an `i32` tensor of shape
   `[2]` holding that id, which the training host computes every step. The `Dropout` node and its
   internal gradient op `DropoutGrad(token, g)` read the same token, so the backward pass applies the
@@ -118,14 +118,14 @@ edits next.
   `ir/tensor.rs` (`Dropout`, `DropoutGrad`), `ir/verify.rs`, `ir/print.rs`, `autodiff.rs`,
   `lower.rs` (site names, the token inputs, identity outside the training step),
   `ir/training.rs` (the token inputs of the step).
-- `crates/modelspec-runtime/src/cpu/interpreter.rs`; `src/train/init.rs` (stream tag 3),
+- `crates/modelspec-runtime/src/cpu/interpreter.rs`; `src/train/init.rs` (stream tag 4, already declared as `Stream::Dropout` by story:bert-mlm-batches if present, else added),
   `runner.rs` and `optimizer.rs` (the host computes the tokens of each step).
 - `crates/modelspec-runtime/tests/gradients_dropout.rs` (new);
   `crates/modelspec-cli/tests/check_dropout.rs` and `train_dropout.rs` (new) with fixtures under
   `crates/modelspec-cli/tests/fixtures/`.
 - `spec/domains/observatory.yaml` (`TensorOperator`), the committed observatory JSON Schema,
   `crates/modelspec-observatory/`, `ui/src/generated/`.
-- `DESIGN.md` § 2.3 (tag 3 and the token), § 4, § 8 and the revision line;
+- `DESIGN.md` § 2.3 (tag 4 and the token), § 4, § 8 and the revision line;
   `crates/modelspec-docs/src/operators.rs` and `website/docs/reference/operators.md` through
   `task docs-generate`; `CHANGELOG.md` one line.
 
@@ -145,7 +145,7 @@ Scenarios, each run by `task ci` through the command shown:
    `TOL_F64` in `f64` and `TOL_F32` in `f32` of central differences.
 3. `cargo test -p modelspec-runtime dropout_mask_derivation`: for a fixed seed, site name and step,
    the kept elements equal those the test derives from `philox4x32_10` with counter
-   `[i, 3, id low, id high]`, and the kept share over `10_000` elements at `p = 0.1` lies within
+   `[i, 4, id low, id high]`, and the kept share over `10_000` elements at `p = 0.1` lies within
    `0.9 +- 0.01`.
 4. `cargo test -p modelspec-runtime dropout_sites_and_steps_differ`: two dropout calls on the same
    value in one function give different masks, both nodes stay in the Tensor IR after DCE, and one

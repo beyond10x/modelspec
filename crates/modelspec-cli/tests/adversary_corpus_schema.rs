@@ -45,7 +45,6 @@ fn adv_cs_schema_accepts_a_well_formed_record_and_refuses_a_zero_count() {
 }
 
 #[test]
-#[ignore = "ADV-CORPUS-2: the schema admits a content_hash that is not 64 lowercase hex digits"]
 fn adv_cs_schema_refuses_a_content_hash_that_is_not_hex() {
     let v = validator();
     assert!(!v.is_valid(&record(vec![
@@ -55,7 +54,30 @@ fn adv_cs_schema_refuses_a_content_hash_that_is_not_hex() {
 }
 
 #[test]
-#[ignore = "ADV-CORPUS-2: the schema admits a record with two Train splits (distinct by role is not projected)"]
+fn adv_cs_schema_refuses_an_uppercase_content_hash() {
+    let v = validator();
+    let upper = HASH.to_uppercase();
+    assert!(!v.is_valid(&record(vec![
+        split("Train", &upper),
+        split("HeldOut", HASH)
+    ])));
+}
+
+#[test]
+#[ignore = "ess-limit: text-length-not-projected, https://github.com/beyond10x/ess/issues/685 (ess 0.68.0 projects `value.count == 64` on a String newtype as x-ess-invariants only, no minLength or maxLength)"]
+fn adv_cs_schema_refuses_a_content_hash_that_is_not_64_digits() {
+    let v = validator();
+    for hash in [&HASH[..63], &format!("{HASH}0")[..], ""] {
+        assert!(
+            !v.is_valid(&record(vec![split("Train", hash), split("HeldOut", HASH)])),
+            "{} digits",
+            hash.len()
+        );
+    }
+}
+
+#[test]
+#[ignore = "ess-limit: distinct-by-key-not-projected, https://github.com/beyond10x/ess/issues/686 (ess 0.68.0 projects no `distinct:` invariant, on an entity or a struct, into the JSON Schema)"]
 fn adv_cs_schema_refuses_two_splits_of_one_role() {
     let v = validator();
     assert!(!v.is_valid(&record(vec![split("Train", HASH), split("Train", HASH)])));
