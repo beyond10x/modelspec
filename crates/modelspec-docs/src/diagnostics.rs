@@ -54,7 +54,10 @@ fn stages() -> Vec<Stage> {
             about: "The data loaders of `modelspec train`, synthetic data, the dense files of \
                     `--data`, `--init` and `--eval` and the packed masked-language-model \
                     directory of `--data`, which run after a file checks and before the first \
-                    step.",
+                    step. A `--data` directory without `binding.json` is dense, and when every \
+                    declaration names a batch tensor its refusal follows a line naming the \
+                    directory and `binding.json`; `--eval` beside a packed `--data` is a usage \
+                    error, exit 2, because `--eval` reads dense evaluation tensors.",
             codes: vec![
                 modelspec_runtime::train::data::E_DATA_001,
                 modelspec_runtime::train::data::E_DATA_002,

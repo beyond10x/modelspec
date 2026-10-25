@@ -84,11 +84,11 @@ The type and shape checker. Operator rules come from the operator registry ([Ope
 
 ## Training data
 
-The data loaders of `modelspec train`, synthetic data, the dense files of `--data`, `--init` and `--eval` and the packed masked-language-model directory of `--data`, which run after a file checks and before the first step.
+The data loaders of `modelspec train`, synthetic data, the dense files of `--data`, `--init` and `--eval` and the packed masked-language-model directory of `--data`, which run after a file checks and before the first step. A `--data` directory without `binding.json` is dense, and when every declaration names a batch tensor its refusal follows a line naming the directory and `binding.json`; `--eval` beside a packed `--data` is a usage error, exit 2, because `--eval` reads dense evaluation tensors.
 
 | Code | Meaning | Declared in |
 |---|---|---|
-| <a id="e-data-001"></a>`E-DATA-001` | The `train` block does not declare exactly one `input` and one `target`. | [`crates/modelspec-runtime/src/train/data.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-runtime/src/train/data.rs) |
+| <a id="e-data-001"></a>`E-DATA-001` | The `train` block does not declare exactly one `input` and one `target`. On a `--data` directory without `binding.json`, read as dense, under declarations that all name batch tensors, `train` prints a line naming the directory and `binding.json` before it. | [`crates/modelspec-runtime/src/train/data.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-runtime/src/train/data.rs) |
 | <a id="e-data-002"></a>`E-DATA-002` | The `target` is not of the model output type. | [`crates/modelspec-runtime/src/train/data.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-runtime/src/train/data.rs) |
 | <a id="e-data-003"></a>`E-DATA-003` | A declared `input` or `target` is not read by the loss. | [`crates/modelspec-runtime/src/train/data.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-runtime/src/train/data.rs) |
 | <a id="e-data-004"></a>`E-DATA-004` | A declared `input` or `target` is `i32`: synthetic data draws `f32` values and dense files hold `f32`, so neither can supply row ids. | [`crates/modelspec-runtime/src/train/data.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-runtime/src/train/data.rs) |

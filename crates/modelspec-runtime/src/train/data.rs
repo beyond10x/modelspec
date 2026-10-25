@@ -29,7 +29,9 @@
 //! [`mlm_batch`] of the `Train` split at step `k` with the run seed and the policy of the
 //! binding. A declaration that names no batch tensor is [`E_DATA_005`] and one of another dtype
 //! or shape [`E_DATA_006`], both before any file but the binding is read; E-DATA-001, E-DATA-002
-//! and E-DATA-004 do not apply, and E-DATA-003 does.
+//! and E-DATA-004 do not apply, and E-DATA-003 does. A directory without [`BINDING_FILE`] stays
+//! dense, and when every declaration names a batch tensor its dense refusal follows the line of
+//! [`read_as_dense`] (coordinator decision D56).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::ErrorKind;
@@ -49,7 +51,9 @@ use crate::dataset::mlm::{
     self, BINDING_FILE, MlmBatch, Packed, TrainingDataBinding, binding_id, mlm_batch,
 };
 
-/// The `train` block does not declare exactly one `input` and one `target`.
+/// The `train` block does not declare exactly one `input` and one `target`. On a `--data`
+/// directory without `binding.json`, read as dense, under declarations that all name batch
+/// tensors, `train` prints a line naming the directory and `binding.json` before it.
 pub const E_DATA_001: Code = Code::new("E-DATA-001");
 /// The `target` is not of the model output type.
 pub const E_DATA_002: Code = Code::new("E-DATA-002");
@@ -606,11 +610,35 @@ fn in_source_order(config: &TrainConfig) -> Vec<(&DataDecl, &'static str)> {
     decls
 }
 
+/// Whether `config` declares an `input` or `target` and every one names a batch tensor.
+fn batch_only(config: &TrainConfig) -> bool {
+    let decls = in_source_order(config);
+    !decls.is_empty()
+        && decls
+            .iter()
+            .all(|(d, _)| BatchTensor::of(&d.name).is_some())
+}
+
+/// The line `train` prints before the dense refusal of `dir` when `dir` holds no
+/// [`BINDING_FILE`], so it is read as a dense directory, although every `input` and `target`
+/// declaration of `config` names a batch tensor: `<dir> holds no binding.json, so it is read as a
+/// dense directory` (coordinator decision D56). `None` when `dir` holds the file or a
+/// declaration names no batch tensor.
+pub fn read_as_dense(dir: &Path, config: &TrainConfig) -> Option<String> {
+    let absent = std::fs::metadata(dir.join(BINDING_FILE)).is_err();
+    (absent && batch_only(config)).then(|| {
+        format!(
+            "{} holds no {BINDING_FILE}, so it is read as a dense directory",
+            dir.display()
+        )
+    })
+}
+
 /// What `dir` holds: a packed directory when it holds [`BINDING_FILE`], whose binding is read and
 /// checked here and is the only file read, and dense files otherwise (coordinator decision D48).
 /// A directory that does not exist is read as packed when the `train` block declares batch
 /// tensors only, so that its run is refused naming the directory, and as dense otherwise, whose
-/// refusals do not change. A binding that cannot be read, or whose `binding_id` is not the id of
+/// refusals do not change ([`read_as_dense`] is the line `train` prints before them). A binding that cannot be read, or whose `binding_id` is not the id of
 /// its fields, is [`DataError::Packed`].
 pub fn source(dir: &Path, config: &TrainConfig) -> Result<DataSource, DataError> {
     let file = dir.join(BINDING_FILE);
@@ -619,13 +647,8 @@ pub fn source(dir: &Path, config: &TrainConfig) -> Result<DataSource, DataError>
         reason: format!("{}: {reason}", file.display()),
     };
     if std::fs::metadata(&file).is_err() {
-        let decls = in_source_order(config);
-        let batch_only = !decls.is_empty()
-            && decls
-                .iter()
-                .all(|(d, _)| BatchTensor::of(&d.name).is_some());
         return match std::fs::metadata(dir) {
-            Err(error) if error.kind() == ErrorKind::NotFound && batch_only => {
+            Err(error) if error.kind() == ErrorKind::NotFound && batch_only(config) => {
                 Err(DataError::Packed {
                     dir: dir.to_path_buf(),
                     reason: error.to_string(),

@@ -72,7 +72,10 @@
 //! recorded or run and its id is the `data_binding_id` of `RunStarted`; a declaration that names
 //! no batch tensor is refused with `E-DATA-005`, one of another dtype or shape with `E-DATA-006`,
 //! and a packed directory that cannot be read is reported on one line naming the file, each
-//! before the first step.
+//! before the first step. A directory without `binding.json` is dense even when every
+//! declaration names a batch tensor; its refusal then follows one line naming the directory and
+//! `binding.json` ([`data::read_as_dense`]), and `--eval` beside a packed `--data` is a usage
+//! error (coordinator decision D56).
 //!
 //! `--steps <n>` runs `n` steps instead of the block's. `--checkpoint <path>` writes the state
 //! after the last step as a `.msckpt` file ([`checkpoint`]; DESIGN.md § 6.2), and
@@ -187,8 +190,9 @@ pub struct Args {
     /// that file instead of its initializer.
     #[arg(long, value_name = "DIR")]
     pub init: Option<PathBuf>,
-    /// After the last step, run the forward program over every sample of DIR, laid out as for
-    /// --data, and print `eval loss=<mean loss> accuracy=<fraction>`.
+    /// After the last step, run the forward program over every sample of DIR, dense f32 files
+    /// laid out as for a dense --data, and print `eval loss=<mean loss> accuracy=<fraction>`;
+    /// beside a packed --data directory it is a usage error.
     #[arg(long, value_name = "DIR")]
     pub eval: Option<PathBuf>,
     /// Run N steps instead of the steps of the file's train block; a resumed run ends at its
@@ -316,6 +320,8 @@ struct Files {
     /// The binding of a packed `--data` directory, read before the server binds; `None` for
     /// dense data and for a run without `--data`.
     binding: Option<TrainingDataBinding>,
+    /// The line printed before a refusal of the dense `--data` directory ([`data::read_as_dense`]).
+    read_as_dense: Option<String>,
     init: Option<PathBuf>,
     eval: Option<PathBuf>,
     checkpoint: Option<PathBuf>,
@@ -359,28 +365,31 @@ impl Files {
         Some(path.with_file_name(format!("{stem}-{k}.msckpt")))
     }
 
-    fn load(&self, compiled: &CompiledTraining) -> Result<Loaded, DataError> {
+    /// The files of the run, or why one cannot be used, with the line printed before it when
+    /// the dense `--data` directory was refused ([`Self::read_as_dense`]).
+    fn load(&self, compiled: &CompiledTraining) -> Result<Loaded, Box<(DataError, Option<&str>)>> {
         let forward = &compiled.forward;
         let mut config = compiled.config.clone();
         config.steps = config.steps.saturating_add(self.start());
         let config = &config;
+        let plain = |error: DataError| Box::new((error, None));
         let data = match (&self.data, &self.binding) {
-            (Some(dir), Some(binding)) => Some(TrainData::Packed(data::packed(
-                dir,
-                binding.clone(),
-                config,
-                forward,
-            )?)),
-            (Some(dir), None) => Some(TrainData::Dense(data::dense(dir, config, forward)?)),
+            (Some(dir), Some(binding)) => Some(TrainData::Packed(
+                data::packed(dir, binding.clone(), config, forward).map_err(plain)?,
+            )),
+            (Some(dir), None) => Some(TrainData::Dense(
+                data::dense(dir, config, forward)
+                    .map_err(|error| Box::new((error, self.read_as_dense.as_deref())))?,
+            )),
             (None, _) => None,
         };
         let init = match (&self.init, &self.resume) {
             (_, Some((_, values))) => values.clone(),
-            (Some(dir), None) => init::read_params(dir, &forward.program)?,
+            (Some(dir), None) => init::read_params(dir, &forward.program).map_err(plain)?,
             (None, None) => BTreeMap::new(),
         };
         let eval = match &self.eval {
-            Some(dir) => Some(data::dense_eval(dir, config, forward)?),
+            Some(dir) => Some(data::dense_eval(dir, config, forward).map_err(plain)?),
             None => None,
         };
         Ok(Loaded { data, init, eval })
@@ -512,6 +521,19 @@ pub fn run(args: Args, stdout: &mut dyn Write, stderr: &mut dyn Write) -> u8 {
             }
         },
     };
+    if let (Some(dir), Some(_), Some(_)) = (&args.data, &binding, &args.eval) {
+        let _ = writeln!(
+            stderr,
+            "error: the argument '--eval' reads dense evaluation tensors, and the '--data' \
+             directory {} is a packed MLM directory",
+            dir.display()
+        );
+        return crate::EXIT_USAGE;
+    }
+    let read_as_dense = match (&args.data, &binding) {
+        (Some(dir), None) => data::read_as_dense(dir, &compiled.config),
+        _ => None,
+    };
     let ui = match &args.ui {
         None => None,
         Some(dir) => match Ui::read(dir) {
@@ -597,6 +619,7 @@ pub fn run(args: Args, stdout: &mut dyn Write, stderr: &mut dyn Write) -> u8 {
     let files = Files {
         data: args.data,
         binding,
+        read_as_dense,
         init: args.init,
         eval: args.eval,
         checkpoint: args.checkpoint,
@@ -799,7 +822,14 @@ fn train(
         };
         let loaded = match files.load(compiled) {
             Ok(loaded) => loaded,
-            Err(error) => break 'run Err(RunError::from(error).into()),
+            Err(failed) => {
+                let (error, before) = *failed;
+                if let Some(line) = before {
+                    end();
+                    let _ = writeln!(stderr, "modelspec train {file}: {line}");
+                }
+                break 'run Err(RunError::from(error).into());
+            }
         };
         let start = files.start();
         let end = start.saturating_add(compiled.config.steps);

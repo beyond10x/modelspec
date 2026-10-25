@@ -271,6 +271,44 @@ fn reproducible_with_one_seed_and_not_with_another() {
     );
 }
 
+/// Scenario 2, the seed reaches the batches: with the parameters fixed by `--init`, so that the
+/// seed cannot change them, seed 7 and seed 8 print one `init` line and other step-0 losses,
+/// because they feed other batches at step 0.
+#[test]
+fn reproducible_batches_follow_the_seed_with_fixed_init() {
+    let case = scratch("reproducible_fixed_init");
+    let packed = packed(&case);
+    let init = case.join("init");
+    std::fs::create_dir_all(&init).unwrap();
+    let table: Vec<u8> = (0..300 * 16)
+        .flat_map(|i| (((i as f32) * 0.61).cos() * 0.1).to_le_bytes())
+        .collect();
+    std::fs::write(init.join("table.f32"), table).unwrap();
+    let eight = variant(&case, "seed_8", &[("seed = 7;", "seed = 8;")]);
+    let seven = train(MLM_BAG, &packed, &["--steps", "1", "--init", path(&init)]);
+    let eight = train(&eight, &packed, &["--steps", "1", "--init", path(&init)]);
+    assert_exit(&seven, 0);
+    assert_exit(&eight, 0);
+    let (seven, eight) = (stdout(&seven), stdout(&eight));
+    let init_line = |out: &str| {
+        out.lines()
+            .find(|l| l.starts_with("init "))
+            .map(str::to_owned)
+    };
+    assert!(init_line(&seven).is_some(), "{seven}");
+    assert_eq!(
+        init_line(&seven),
+        init_line(&eight),
+        "--init fixes the parameters"
+    );
+    let (a, b) = (losses(&seven), losses(&eight));
+    assert_eq!((a[0].0, b[0].0), (0, 0), "{seven}\n{eight}");
+    assert_ne!(
+        a[0].1, b[0].1,
+        "seed 7 and seed 8 feed one batch at step 0\n{seven}\n{eight}"
+    );
+}
+
 /// Scenario 2, D48: step `k` feeds the batch of step `k`, so a run resumed at step 100 prints
 /// the `step` lines and final parameters of the run that never stopped.
 #[test]
@@ -378,4 +416,92 @@ fn refusals_name_the_declaration_or_the_directory() {
     assert!(text.contains(path(&bare)), "{text}");
     assert!(text.contains("packed.json"), "{text}");
     assert_eq!(stdout(&output), "");
+}
+
+/// The line coordinator decision D56 puts before a dense refusal of a run whose declarations all
+/// name batch tensors.
+fn read_as_dense(file: &str, dir: &Path) -> String {
+    format!(
+        "modelspec train {file}: {} holds no binding.json, so it is read as a dense directory",
+        path(dir)
+    )
+}
+
+/// Scenario 3, coordinator decision D56: a directory without `binding.json` is dense (D48), so
+/// the fixture on the dataset directory of `data prepare` or on an empty directory is refused,
+/// exit 1, with one line naming the directory and `binding.json` and then today's E-DATA-001;
+/// any dense refusal of batch-tensor declarations takes that line (here E-DATA-007), and dense
+/// files under those names still train without it. `--eval` beside a packed `--data` is a usage
+/// error, exit 2, on one line, before anything runs.
+#[test]
+fn refusals_name_the_missing_binding_and_the_packed_eval() {
+    let case = scratch("refusals_d56");
+    let packed = packed(&case);
+    let dataset = case.join("dataset");
+    let empty = case.join("empty");
+    std::fs::create_dir_all(&empty).unwrap();
+    for dir in [&dataset, &empty] {
+        let output = train(MLM_BAG, dir, &[]);
+        assert_exit(&output, 1);
+        assert_eq!(stdout(&output), "", "nothing runs");
+        let text = stderr(&output);
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(
+            lines,
+            [
+                read_as_dense(MLM_BAG, dir).as_str(),
+                "E-DATA-001: dense data needs exactly one input and one target",
+                "  crates/modelspec-cli/tests/fixtures/mlm_bag.mspec:9:1",
+                "  inputs: 1",
+                "  targets: 2",
+            ],
+            "{text}"
+        );
+    }
+
+    let renamed = case.join("renamed.mspec");
+    let linear = std::fs::read_to_string(repo_root().join("examples/linear_regression.mspec"))
+        .unwrap()
+        .replace("input x:", "input key_mask:")
+        .replace("target y:", "target weights:")
+        .replace(
+            "mse(model.forward(x), y)",
+            "mse(model.forward(key_mask), weights)",
+        );
+    std::fs::write(&renamed, linear).unwrap();
+    let renamed = path(&renamed);
+    let output = train(renamed, &empty, &[]);
+    assert_exit(&output, 1);
+    assert_eq!(stdout(&output), "", "nothing runs");
+    let text = stderr(&output);
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines[0], read_as_dense(renamed, &empty), "{text}");
+    assert!(lines[1].starts_with("E-DATA-007: "), "{text}");
+    assert!(text.contains("key_mask.f32"), "{text}");
+    let f32_bytes =
+        |n: usize, v: f32| -> Vec<u8> { (0..n).flat_map(|_| v.to_le_bytes()).collect() };
+    std::fs::write(empty.join("key_mask.f32"), f32_bytes(32, 0.5)).unwrap();
+    std::fs::write(empty.join("weights.f32"), f32_bytes(8, 0.25)).unwrap();
+    let output = train(renamed, &empty, &["--steps", "1"]);
+    assert_exit(&output, 0);
+    assert!(stdout(&output).starts_with("init "), "{}", stdout(&output));
+    assert!(
+        !stderr(&output).contains("binding.json"),
+        "{}",
+        stderr(&output)
+    );
+
+    let output = train(MLM_BAG, &packed, &["--eval", path(&packed)]);
+    assert_exit(&output, 2);
+    assert_eq!(stdout(&output), "", "nothing runs");
+    assert_eq!(
+        stderr(&output),
+        format!(
+            "error: the argument '--eval' reads dense evaluation tensors, and the '--data' \
+             directory {} is a packed MLM directory\n",
+            path(&packed)
+        )
+    );
+    let output = train(MLM_BAG, &packed, &["--eval", path(&dataset)]);
+    assert_exit(&output, 2);
 }
