@@ -4,14 +4,14 @@
   "x-ess-provenance": {
     "system": "modelspec",
     "specification_version": "v1",
-    "source_digest": "ad1ff02b9ad733a39c5a5bb54d7589cebbf5d2229136d75af8c902a909c480bc",
-    "contract_digest": "slice-sha256/2:43bf2d6d6a2280cd7ec6019894a915dd3dba8728d1822191da7cc6230954a93f",
+    "source_digest": "df63a058020b8c5751d98177b2ce8ba9d7c236e4fcb00c473e4e3455a6e0a0f3",
+    "contract_digest": "slice-sha256/2:4b1fe789941c1d0c0a4da7ee759d1173e7c9dba2a60a161990842ef29da94ed6",
     "regenerate": "ess generate"
   },
   "$defs": {
     "modelspec.training.OptimizerKind": {
       "title": "OptimizerKind",
-      "description": "SGD from M0; AdamW with weight decay joins at M3 (DESIGN.md § 1, § 11 iteration 4; epic:bert-from-scratch). The CLI accepts only `sgd` until then.",
+      "description": "SGD from M0; AdamW with decoupled weight decay and a warmup schedule from M3, written `adamw(lr = F, weight_decay = F, beta1 = F, beta2 = F, eps = F, warmup_steps = N)` (DESIGN.md § 1, § 2.1, § 11 iteration 4; epic:bert-from-scratch).",
       "x-ess-name": "modelspec.training.OptimizerKind",
       "x-ess-kind": "enum",
       "type": "string",

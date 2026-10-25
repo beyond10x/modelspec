@@ -201,6 +201,10 @@ pub enum DataRole {
 pub enum Optimizer {
     /// `sgd(lr = <float>)`.
     Sgd { lr: f64, lr_span: SourceSpan },
+    /// `adamw(<args>)`, at `span`, the `adamw` name: the arguments as written, which the checker
+    /// requires to be `lr`, `weight_decay`, `beta1`, `beta2`, `eps` and `warmup_steps`, each
+    /// once and named (DESIGN.md § 2.1).
+    AdamW { args: Vec<Arg>, span: SourceSpan },
 }
 
 /// The execution device of a train block.
@@ -407,6 +411,10 @@ impl Erase for Optimizer {
     fn erase(&mut self) {
         match self {
             Optimizer::Sgd { lr_span, .. } => lr_span.erase(),
+            Optimizer::AdamW { args, span } => {
+                args.erase();
+                span.erase();
+            }
         }
     }
 }

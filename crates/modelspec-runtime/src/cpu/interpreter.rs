@@ -1027,6 +1027,8 @@ impl<'p, T: Element> Prepared<'p, T> {
             }
             TensorOp::Dropout { p } => self.masked(data, arg(0).data, operands[1], *p, ids),
             TensorOp::DropoutGrad { p } => self.masked(data, arg(1).data, operands[0], *p, ids),
+            TensorOp::Sqrt => data.extend(arg(0).data.iter().map(|&x| x.sqrt())),
+            TensorOp::Div => elementwise(data, arg(0), arg(1), |a, b| a / b),
         }
     }
 }
@@ -1529,8 +1531,8 @@ fn relu_where<T: Element>(a: T, g: T) -> T {
     if a > T::ZERO { g } else { T::ZERO }
 }
 
-/// `Add`, `Sub`, `Mul`: same shapes element by element, or one rank-0 operand against every
-/// element of the other, operand order kept.
+/// `Add`, `Sub`, `Mul`, `Div`: same shapes element by element, or one rank-0 operand against
+/// every element of the other, operand order kept.
 fn elementwise<T: Element>(
     data: &mut Vec<T>,
     a: View<'_, T>,

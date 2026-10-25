@@ -44,8 +44,8 @@
   "x-ess-provenance": {
     "system": "modelspec",
     "specification_version": "v1",
-    "source_digest": "ad1ff02b9ad733a39c5a5bb54d7589cebbf5d2229136d75af8c902a909c480bc",
-    "contract_digest": "slice-sha256/2:7f277ca25db2a7eb5b7df14f8e69f8cdaef0532f34ebc29cf0c9910491274aea",
+    "source_digest": "df63a058020b8c5751d98177b2ce8ba9d7c236e4fcb00c473e4e3455a6e0a0f3",
+    "contract_digest": "slice-sha256/2:aa2cb7c07009eb325dc81289f163dc22e66d1bc2c7ed30a9841a330db54b2c9a",
     "regenerate": "ess generate"
   },
   "$defs": {
@@ -207,7 +207,7 @@
     },
     "modelspec.observatory.TensorOperator": {
       "title": "TensorOperator",
-      "description": "The Tensor IR operations, ReluGrad, BroadcastScalar, EmbeddingGrad, SumRows, GeluGrad, LayerNormGradX, LayerNormGradGamma, SoftmaxGrad, AttentionGradQ, AttentionGradK, AttentionGradV, CrossEntropyGrad and DropoutGrad being internal gradient ops (DESIGN.md § 3.1, § 4; `TensorOp` in `modelspec-core/src/ir/tensor.rs`). The operators of epic:bert-from-scratch join as the compiler gains them.",
+      "description": "The Tensor IR operations, ReluGrad, BroadcastScalar, EmbeddingGrad, SumRows, GeluGrad, LayerNormGradX, LayerNormGradGamma, SoftmaxGrad, AttentionGradQ, AttentionGradK, AttentionGradV, CrossEntropyGrad and DropoutGrad being internal gradient ops and Sqrt and Div internal ops of the optimizer subgraph of an AdamW step (DESIGN.md § 3.1, § 4; `TensorOp` in `modelspec-core/src/ir/tensor.rs`). The operators of epic:bert-from-scratch join as the compiler gains them.",
       "x-ess-name": "modelspec.observatory.TensorOperator",
       "x-ess-kind": "enum",
       "type": "string",
@@ -244,7 +244,9 @@
         "CrossEntropy",
         "CrossEntropyGrad",
         "Dropout",
-        "DropoutGrad"
+        "DropoutGrad",
+        "Sqrt",
+        "Div"
       ]
     }
   }

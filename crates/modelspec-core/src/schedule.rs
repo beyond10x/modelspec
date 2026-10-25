@@ -808,7 +808,9 @@ fn schedule_with(
             | TensorOp::CrossEntropy
             | TensorOp::CrossEntropyGrad
             | TensorOp::Dropout { .. }
-            | TensorOp::DropoutGrad { .. } => match built {
+            | TensorOp::DropoutGrad { .. }
+            | TensorOp::Sqrt
+            | TensorOp::Div => match built {
                 Kernels::None => continue,
                 Kernels::Vulkan => {
                     return Err(ScheduleError::NoKernel {

@@ -8,6 +8,7 @@
 
 use crate::diag::SourceSpan;
 use crate::ir::tensor::{Initializer, TensorOp, TensorType};
+use crate::ir::training::OptimizerRule;
 
 /// A checked `.mspec` file: one model and its train block.
 #[derive(Clone, Debug, PartialEq)]
@@ -133,8 +134,10 @@ pub struct HirTrain {
     pub data: Vec<HirData>,
     /// The loss; its type is rank 0.
     pub loss: HirExpr,
-    /// The `sgd` learning rate: positive and finite.
+    /// The learning rate of `sgd`, or the peak rate of `adamw`: positive and finite.
     pub lr: f32,
+    /// The update rule of the `optimizer` setting, with the `adamw` hyperparameters.
+    pub optimizer: OptimizerRule,
     /// The number of training steps: positive.
     pub steps: u64,
     pub seed: u64,

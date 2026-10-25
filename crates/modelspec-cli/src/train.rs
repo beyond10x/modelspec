@@ -84,7 +84,9 @@
 //! parameters and step `s`: the run ends at `s + steps`, its `init` lines are the values at `s`,
 //! and its `step` lines start at `s`. A checkpoint that cannot be read or does not match the file
 //! and its optimizer is refused with its `E-CKPT` code before anything is served or run; a
-//! checkpoint that cannot be written fails the run on one line.
+//! checkpoint that cannot be written fails the run on one line. A file whose optimizer is
+//! `adamw(...)` takes neither `--checkpoint` nor `--resume`, a usage error, since a checkpoint
+//! does not hold its moments yet (DESIGN.md § 6, coordinator decision D50).
 //!
 //! `--serve <addr>` also streams the run as `text/event-stream` at `http://<addr>/events`
 //! (`spec/domains/observatory.yaml`, `ServeAddress` and `StreamFrame`; [`modelspec_observatory`]).
@@ -134,6 +136,7 @@ use std::sync::mpsc;
 use modelspec_core::compile::{self, CompiledTraining};
 use modelspec_core::diag::{Code, Diagnostic};
 use modelspec_core::ir::tensor::ParamId;
+use modelspec_core::ir::training::OptimizerRule;
 use modelspec_observatory::{
     EVENTS_PATH, EventSequence, ParameterStatistics, Recorder, RunEventBody, RunFailed, RunStarted,
     Server, StatisticsSubject, StepCompleted, TrainingRunId, Ui,
@@ -475,6 +478,21 @@ pub fn run(args: Args, stdout: &mut dyn Write, stderr: &mut dyn Write) -> u8 {
     };
     if let Some(steps) = args.steps {
         compiled.config.steps = steps;
+    }
+    if let OptimizerRule::AdamW(_) = compiled.training.optimizer.rule {
+        let flag = match (&args.checkpoint, &args.resume) {
+            (Some(_), _) => Some("--checkpoint"),
+            (None, Some(_)) => Some("--resume"),
+            (None, None) => None,
+        };
+        if let Some(flag) = flag {
+            let _ = writeln!(
+                stderr,
+                "error: the argument '{flag}' cannot be used with the `adamw` optimizer of \
+                 {file}; a checkpoint does not hold its first and second moments yet"
+            );
+            return crate::EXIT_USAGE;
+        }
     }
     let engine = match args.backend {
         Backend::Cpu => Engine::Cpu {

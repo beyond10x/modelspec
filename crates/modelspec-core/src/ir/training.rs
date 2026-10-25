@@ -7,11 +7,15 @@
 //! consumer, the CPU interpreter included, runs it through `&training.program`;
 //! [`crate::ir::verify::verify_training`] checks it.
 //!
-//! A [`TrainingStep`] is a training program with the SGD [`Optimizer`] subgraph attached by
-//! [`attach_sgd`]: one `p_next = p - lr * grad` output per loss-reachable parameter, after the
-//! gradients. Its persistent-state effects are metadata, not `TensorOp`s: every parameter carries a
-//! [`StateVersion`], and every `ParamRead` and every `p_next` carries an [`Effect`] with an ordered
-//! [`EffectToken`]; an update yields version `n + 1` from `n` (DESIGN.md § 3.1, § 4).
+//! A [`TrainingStep`] is a training program with an [`Optimizer`] subgraph attached: by
+//! [`attach_sgd`], one `p_next = p - lr * grad` output per loss-reachable parameter, after the
+//! gradients; or by [`attach_adamw`], the AdamW update of each such parameter, which also reads
+//! and writes its first and second moments `m` and `v` ([`Moments`]) and reads three rank-0
+//! inputs the training host supplies at every step ([`StepInputs`]). Its persistent-state effects
+//! are metadata, not `TensorOp`s: every parameter carries a [`StateVersion`], and every
+//! `ParamRead` and every `p_next` carries an [`Effect`] with an ordered [`EffectToken`]; an update
+//! yields version `n + 1` from `n` (DESIGN.md § 3.1, § 4). A moment's read and write carry a
+//! [`MomentEffect`] at its parameter's versions, in the same token order.
 //! [`crate::ir::verify::verify_step`] checks it, the legal-effects rules of DESIGN.md § 3.2
 //! included.
 //!
@@ -40,8 +44,9 @@ pub enum Subgraph {
     /// The backward computation: every value other than the seed that depends on the seed,
     /// adjoints and parameter gradients.
     Gradient,
-    /// The optimizer step: the learning rate and each parameter's next value. Only a
-    /// [`TrainingStep`] has `Optimizer` nodes, and no node of another subgraph uses one.
+    /// The optimizer step: its constants, the host inputs of an AdamW step, each moment's next
+    /// value and each parameter's next value. Only a [`TrainingStep`] has `Optimizer` nodes, and
+    /// no node of another subgraph uses one.
     Optimizer,
 }
 
@@ -121,23 +126,210 @@ pub struct Effect {
     pub version: StateVersion,
 }
 
-/// The SGD optimizer step of a [`TrainingStep`], the one M0 optimizer.
+/// The update rule of an [`Optimizer`], the `optimizer` setting of a `train` block (DESIGN.md
+/// § 2.1).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum OptimizerRule {
+    /// `sgd(lr = F)`: `p - lr * grad` at a constant rate.
+    Sgd,
+    /// `adamw(...)`: AdamW with decoupled weight decay and the linear warmup and decay schedule.
+    AdamW(AdamW),
+}
+
+/// The hyperparameters of `adamw(...)` besides its peak learning rate `lr`, as the checker accepts
+/// them (DESIGN.md § 2.1, coordinator decision D50).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AdamW {
+    /// The decoupled weight decay: finite and at least 0.
+    pub weight_decay: f32,
+    /// The first-moment decay rate, in `[0, 1)`.
+    pub beta1: f32,
+    /// The second-moment decay rate, in `[0, 1)`.
+    pub beta2: f32,
+    /// The denominator term: positive and finite.
+    pub eps: f32,
+    /// The steps of the linear warmup from 0, `0` for none; fewer than the run's steps.
+    pub warmup_steps: u64,
+}
+
+/// The rank-0 values the training host supplies to step `t` of an AdamW run
+/// ([`AdamW::scalars`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StepScalars {
+    /// The learning rate of the step, by the schedule.
+    pub lr_t: f32,
+    /// The first-moment bias correction `1 / (1 - beta1^t)`.
+    pub c1: f32,
+    /// The second-moment bias correction `1 / (1 - beta2^t)`.
+    pub c2: f32,
+}
+
+impl AdamW {
+    /// Whether every hyperparameter is in range: `weight_decay` finite and at least 0, each beta
+    /// in `[0, 1)`, `eps` positive and finite. Whether `warmup_steps` is below the run's steps is
+    /// the checker's and the runner's to say.
+    pub fn in_range(&self) -> bool {
+        let beta = |b: f32| (0.0..1.0).contains(&b);
+        self.weight_decay.is_finite()
+            && self.weight_decay >= 0.0
+            && beta(self.beta1)
+            && beta(self.beta2)
+            && self.eps.is_finite()
+            && self.eps > 0.0
+    }
+
+    /// The constants of the update, in the order [`attach_adamw`] adds their `Scalar` nodes:
+    /// `beta1`, `1 - beta1`, `beta2`, `1 - beta2`, `eps`, `weight_decay`. Each `1 - beta` is
+    /// computed in `f64` from the `f32` beta and rounded once to `f32`.
+    pub fn constants(&self) -> [f32; 6] {
+        let complement = |beta: f32| (1.0 - f64::from(beta)) as f32;
+        [
+            self.beta1,
+            complement(self.beta1),
+            self.beta2,
+            complement(self.beta2),
+            self.eps,
+            self.weight_decay,
+        ]
+    }
+
+    /// The host inputs of step `t`, counted from 1, of a run of `steps` steps whose peak rate is
+    /// `lr`, each computed in `f64` and rounded once to `f32` (DESIGN.md § 8, coordinator
+    /// decision D50, settlement 1): `lr_t = lr * t / warmup_steps` for `t <= warmup_steps`, and
+    /// `lr * (steps - t) / (steps - warmup_steps)` after, a linear warmup from 0 and a linear
+    /// decay to 0 at the last step (Devlin et al. 2019); `c1 = 1 / (1 - beta1^t)` and
+    /// `c2 = 1 / (1 - beta2^t)`. `lr_t` is 0 past the last step and when `warmup_steps` is not
+    /// below `steps`, a run the checker and the runner refuse.
+    pub fn scalars(&self, lr: f32, t: u64, steps: u64) -> StepScalars {
+        let peak = f64::from(lr);
+        let warmup = self.warmup_steps;
+        let rate = if t <= warmup {
+            peak * t as f64 / warmup as f64
+        } else {
+            match steps.saturating_sub(warmup) {
+                0 => 0.0,
+                span => peak * steps.saturating_sub(t) as f64 / span as f64,
+            }
+        };
+        let power = i32::try_from(t).unwrap_or(i32::MAX);
+        let correction = |beta: f32| (1.0 / (1.0 - f64::from(beta).powi(power))) as f32;
+        StepScalars {
+            lr_t: rate as f32,
+            c1: correction(self.beta1),
+            c2: correction(self.beta2),
+        }
+    }
+}
+
+/// The name of the host input of an AdamW step's learning rate.
+pub const LR_T_INPUT: &str = "optimizer.lr_t";
+/// The name of the host input of an AdamW step's first-moment bias correction.
+pub const C1_INPUT: &str = "optimizer.c1";
+/// The name of the host input of an AdamW step's second-moment bias correction.
+pub const C2_INPUT: &str = "optimizer.c2";
+
+/// The first or the second moment of a parameter under AdamW, printed `m` and `v`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Moment {
+    First,
+    Second,
+}
+
+impl Moment {
+    /// Both moments, in the order a step reads and writes them.
+    pub const BOTH: [Moment; 2] = [Moment::First, Moment::Second];
+}
+
+impl fmt::Display for Moment {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Moment::First => "m",
+            Moment::Second => "v",
+        })
+    }
+}
+
+/// The name of the `Input` a step reads `moment` of the parameter at canonical `path` from:
+/// `optimizer.m@<path>` or `optimizer.v@<path>`.
+pub fn moment_input(moment: Moment, path: &str) -> String {
+    format!("optimizer.{moment}@{path}")
+}
+
+/// The three rank-0 `f32` inputs of an AdamW step, named [`LR_T_INPUT`], [`C1_INPUT`] and
+/// [`C2_INPUT`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StepInputs {
+    pub lr_t: ValueId,
+    pub c1: ValueId,
+    pub c2: ValueId,
+}
+
+/// The moments of one parameter in an AdamW step: the `Input`s the step reads them from, of the
+/// parameter's type, and their next values, outputs of the step.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Moments {
+    pub m: ValueId,
+    pub v: ValueId,
+    pub m_next: ValueId,
+    pub v_next: ValueId,
+}
+
+impl Moments {
+    /// The `Input` that reads `moment`.
+    pub fn input(&self, moment: Moment) -> ValueId {
+        match moment {
+            Moment::First => self.m,
+            Moment::Second => self.v,
+        }
+    }
+
+    /// The next value of `moment`.
+    pub fn next(&self, moment: Moment) -> ValueId {
+        match moment {
+            Moment::First => self.m_next,
+            Moment::Second => self.v_next,
+        }
+    }
+}
+
+/// One access to a moment of a parameter, carried by the value that performs it: the moment's
+/// `Input` reads, its next value writes. A moment is at its parameter's version.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct MomentEffect {
+    pub token: EffectToken,
+    pub param: ParamId,
+    pub moment: Moment,
+    pub access: Access,
+    /// The version a read reads, or the version a write produces.
+    pub version: StateVersion,
+}
+
+/// The optimizer step of a [`TrainingStep`]: SGD, or AdamW with its moments.
 ///
 /// The versions are those of the step as compiled: every parameter is at version 0, its
 /// initializer, when the step first runs. Each run of the step reads version `n` of a trained
 /// parameter and writes `n + 1`; a runner tracks `n`, and these versions fix the relation.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Optimizer {
-    /// The SGD learning rate: positive and finite.
+    /// The learning rate of SGD, or the peak rate of AdamW's schedule: positive and finite.
     pub lr: f32,
+    /// The rule of the update.
+    pub rule: OptimizerRule,
     /// The state version of every declared parameter when the step starts.
     pub versions: BTreeMap<ParamId, StateVersion>,
-    /// The next value `p - lr * grad` of each parameter with a gradient, and only those: a
-    /// parameter the loss does not read keeps its value and its version.
+    /// The next value of each parameter with a gradient, and only those: a parameter the loss
+    /// does not read keeps its value and its version.
     pub updates: BTreeMap<ParamId, ValueId>,
     /// The effect of each value that accesses parameter state, keyed by that value: every
     /// `ParamRead` node and every update.
     pub effects: BTreeMap<ValueId, Effect>,
+    /// The host inputs of an AdamW step with at least one update; `None` under SGD.
+    pub step_inputs: Option<StepInputs>,
+    /// The moments of each parameter with an update under AdamW; empty under SGD.
+    pub moments: BTreeMap<ParamId, Moments>,
+    /// The effect of each value that accesses a moment, keyed by that value: every moment's
+    /// `Input` and every next moment. Its tokens and those of [`Self::effects`] are one order.
+    pub moment_effects: BTreeMap<ValueId, MomentEffect>,
 }
 
 impl Optimizer {
@@ -148,13 +340,26 @@ impl Optimizer {
         effects.sort_by_key(|(_, e)| e.token);
         effects
     }
+
+    /// The `Input`s of the step the training host supplies beside the data and the dropout
+    /// tokens: the three step inputs and each moment's input under AdamW, none under SGD.
+    pub fn host_inputs(&self) -> Vec<ValueId> {
+        let mut inputs: Vec<ValueId> = self
+            .step_inputs
+            .iter()
+            .flat_map(|s| [s.lr_t, s.c1, s.c2])
+            .collect();
+        inputs.extend(self.moments.values().flat_map(|m| [m.m, m.v]));
+        inputs
+    }
 }
 
-/// A whole training step: forward, loss, backward and SGD in one program (DESIGN.md § 0
-/// invariant 5).
+/// A whole training step: forward, loss, backward and the optimizer in one program (DESIGN.md
+/// § 0 invariant 5).
 ///
 /// The outputs of `training.program` are the loss, then each gradient, then each of
-/// [`Optimizer::updates`], both in `ParamId` order. [`TrainingProgram::gradients`] and
+/// [`Optimizer::updates`], then, under AdamW, the next `m` and `v` of each entry of
+/// [`Optimizer::moments`], all in `ParamId` order. [`TrainingProgram::gradients`] and
 /// [`TrainingProgram::loss`] keep their meaning.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TrainingStep {
@@ -162,12 +367,15 @@ pub struct TrainingStep {
     pub optimizer: Optimizer,
 }
 
-/// Why [`attach_sgd`] refused.
+/// Why [`attach_sgd`] or [`attach_adamw`] refused.
 #[derive(Clone, Debug, PartialEq, Eq, Error)]
 pub enum AttachError {
     /// The learning rate is not positive and finite; its bits are kept so the error compares.
     #[error("learning rate {} is not positive and finite", f32::from_bits(*lr_bits))]
     LearningRate { lr_bits: u32 },
+    /// An AdamW hyperparameter is out of range ([`AdamW::in_range`]).
+    #[error("the adamw hyperparameters are out of range")]
+    Hyperparameters,
     /// The optimizer step needs a value id past `u32::MAX`.
     #[error("no value id is left for the optimizer step: ids run past u32::MAX")]
     ValueIdsExhausted,
@@ -201,6 +409,122 @@ pub fn dropout_sites(program: &TensorProgram) -> Vec<String> {
         .collect()
 }
 
+/// Appends optimizer nodes to a training program, numbering them after its largest value id.
+struct Appender {
+    next: Option<u32>,
+}
+
+impl Appender {
+    fn new(training: &TrainingProgram) -> Self {
+        let next = match training.program.nodes.iter().map(|n| n.id.0).max() {
+            Some(largest) => largest.checked_add(1),
+            None => Some(0),
+        };
+        Self { next }
+    }
+
+    /// Appends `op` over `operands`, tagged [`Subgraph::Optimizer`]; an `Input` takes the type
+    /// `declared` and is appended to the program's inputs.
+    fn push(
+        &mut self,
+        training: &mut TrainingProgram,
+        param: ParamId,
+        op: TensorOp,
+        operands: Vec<ValueId>,
+        declared: Option<&TensorType>,
+    ) -> Result<ValueId, AttachError> {
+        let program = &training.program;
+        let types: Vec<&TensorType> = operands
+            .iter()
+            .map(|&o| &program.node(o).expect("a verified operand is defined").ty)
+            .collect();
+        let ty = ops::infer(&op, &types, declared)
+            .map_err(|source| AttachError::Rule { param, source })?;
+        let id = ValueId(self.next.ok_or(AttachError::ValueIdsExhausted)?);
+        self.next = id.0.checked_add(1);
+        let input = matches!(op, TensorOp::Input { .. });
+        training.program.nodes.push(TensorNode {
+            id,
+            op,
+            operands,
+            ty,
+            source_span: None,
+        });
+        if input {
+            training.program.inputs.push(id);
+        }
+        training.subgraphs.insert(id, Subgraph::Optimizer);
+        Ok(id)
+    }
+
+    /// Appends the `Input` `name` of type `ty`.
+    fn input(
+        &mut self,
+        training: &mut TrainingProgram,
+        param: ParamId,
+        name: String,
+        ty: &TensorType,
+    ) -> Result<ValueId, AttachError> {
+        let op = TensorOp::Input { name };
+        self.push(training, param, op, Vec::new(), Some(ty))
+    }
+
+    /// Appends `op` over `operands`, neither of them an `Input`.
+    fn op(
+        &mut self,
+        training: &mut TrainingProgram,
+        param: ParamId,
+        op: TensorOp,
+        operands: &[ValueId],
+    ) -> Result<ValueId, AttachError> {
+        self.push(training, param, op, operands.to_vec(), None)
+    }
+}
+
+/// The first `ParamRead` of `param` in node order.
+fn first_read(training: &TrainingProgram, param: ParamId) -> ValueId {
+    training
+        .program
+        .nodes
+        .iter()
+        .find(|n| n.op == TensorOp::ParamRead { param })
+        .expect("a parameter with a gradient is read")
+        .id
+}
+
+/// The checks every attachment starts with: `training` verifies and `lr` is positive and finite.
+fn check_attach(training: &TrainingProgram, lr: f32) -> Result<(), AttachError> {
+    verify_training(training)?;
+    if !(lr.is_finite() && lr > 0.0) {
+        return Err(AttachError::LearningRate {
+            lr_bits: lr.to_bits(),
+        });
+    }
+    Ok(())
+}
+
+/// Every declared parameter of `training` at [`StateVersion`] 0.
+fn initial_versions(training: &TrainingProgram) -> BTreeMap<ParamId, StateVersion> {
+    training
+        .program
+        .params
+        .keys()
+        .map(|&p| (p, StateVersion(0)))
+        .collect()
+}
+
+/// [`attach_sgd`] or [`attach_adamw`], as `rule` names.
+pub fn attach(
+    training: TrainingProgram,
+    lr: f32,
+    rule: OptimizerRule,
+) -> Result<TrainingStep, AttachError> {
+    match rule {
+        OptimizerRule::Sgd => attach_sgd(training, lr),
+        OptimizerRule::AdamW(adamw) => attach_adamw(training, lr, adamw),
+    }
+}
+
 /// Attaches the SGD step `p_next = p - lr * grad` to `training`, one update per parameter with a
 /// gradient, in `ParamId` order.
 ///
@@ -212,68 +536,25 @@ pub fn dropout_sites(program: &TensorProgram) -> Vec<String> {
 /// order, each of version 0, then a write for each update in `ParamId` order, each of version 1.
 /// The result passes [`crate::ir::verify::verify_step`].
 pub fn attach_sgd(training: TrainingProgram, lr: f32) -> Result<TrainingStep, AttachError> {
-    verify_training(&training)?;
-    if !(lr.is_finite() && lr > 0.0) {
-        return Err(AttachError::LearningRate {
-            lr_bits: lr.to_bits(),
-        });
-    }
+    check_attach(&training, lr)?;
     let mut training = training;
-    let mut next = match training.program.nodes.iter().map(|n| n.id.0).max() {
-        Some(largest) => largest.checked_add(1),
-        None => Some(0),
-    };
-    let mut push = |training: &mut TrainingProgram,
-                    param: ParamId,
-                    op: TensorOp,
-                    operands: Vec<ValueId>|
-     -> Result<ValueId, AttachError> {
-        let program = &training.program;
-        let types: Vec<&TensorType> = operands
-            .iter()
-            .map(|&o| &program.node(o).expect("a verified operand is defined").ty)
-            .collect();
-        let ty =
-            ops::infer(&op, &types, None).map_err(|source| AttachError::Rule { param, source })?;
-        let id = ValueId(next.ok_or(AttachError::ValueIdsExhausted)?);
-        next = id.0.checked_add(1);
-        training.program.nodes.push(TensorNode {
-            id,
-            op,
-            operands,
-            ty,
-            source_span: None,
-        });
-        training.subgraphs.insert(id, Subgraph::Optimizer);
-        Ok(id)
-    };
+    let mut append = Appender::new(&training);
 
     let mut updates = BTreeMap::new();
     let gradients: Vec<(ParamId, ValueId)> =
         training.gradients.iter().map(|(&p, &g)| (p, g)).collect();
     if let Some(&(first, _)) = gradients.first() {
-        let rate = push(&mut training, first, TensorOp::Scalar(lr), Vec::new())?;
+        let rate = append.op(&mut training, first, TensorOp::Scalar(lr), &[])?;
         for (param, grad) in gradients {
-            let read = training
-                .program
-                .nodes
-                .iter()
-                .find(|n| n.op == TensorOp::ParamRead { param })
-                .expect("a parameter with a gradient is read")
-                .id;
-            let scaled = push(&mut training, param, TensorOp::Mul, vec![rate, grad])?;
-            let update = push(&mut training, param, TensorOp::Sub, vec![read, scaled])?;
+            let read = first_read(&training, param);
+            let scaled = append.op(&mut training, param, TensorOp::Mul, &[rate, grad])?;
+            let update = append.op(&mut training, param, TensorOp::Sub, &[read, scaled])?;
             updates.insert(param, update);
         }
     }
     training.program.outputs.extend(updates.values().copied());
 
-    let versions: BTreeMap<ParamId, StateVersion> = training
-        .program
-        .params
-        .keys()
-        .map(|&p| (p, StateVersion(0)))
-        .collect();
+    let versions = initial_versions(&training);
     let mut effects = BTreeMap::new();
     let mut token = 0u32;
     let mut record = |value: ValueId, param: ParamId, access: Access, version: u64| {
@@ -301,9 +582,172 @@ pub fn attach_sgd(training: TrainingProgram, lr: f32) -> Result<TrainingStep, At
         training,
         optimizer: Optimizer {
             lr,
+            rule: OptimizerRule::Sgd,
             versions,
             updates,
             effects,
+            step_inputs: None,
+            moments: BTreeMap::new(),
+            moment_effects: BTreeMap::new(),
+        },
+    };
+    verify_step(&step)?;
+    Ok(step)
+}
+
+/// Attaches the AdamW step of `adamw` at peak rate `lr` to `training`: one update per parameter
+/// with a gradient, in `ParamId` order, with decoupled weight decay (Loshchilov and Hutter) and
+/// the moments `m` and `v` as versioned state (DESIGN.md § 2.1, § 6, coordinator decision D50).
+///
+/// `training` must pass [`crate::ir::verify::verify_training`], `lr` must be positive and finite
+/// and `adamw` in range ([`AdamW::in_range`]). With at least one gradient the result appends,
+/// tagged [`Subgraph::Optimizer`], a `Scalar` for each of [`AdamW::constants`] in its order, the
+/// rank-0 `f32` inputs `lr_t`, `c1` and `c2` ([`StepInputs`]), and then for each parameter `p`
+/// with gradient `g`, in `ParamId` order, the inputs `m` and `v` of its type
+/// ([`moment_input`]) and, each one rounded `f32` operation in this order:
+///
+/// ```text
+/// m' = beta1 * m + (1 - beta1) * g
+/// v' = beta2 * v + ((1 - beta2) * g) * g
+/// p' = p - lr_t * ((m' * c1) / (sqrt(v' * c2) + eps) + weight_decay * p)
+/// ```
+///
+/// where `p` is the first `ParamRead` of the parameter in node order. Its outputs are those of
+/// `training`, then the updates, then `m'` and `v'` of each parameter. Every declared parameter
+/// is at [`StateVersion`] 0. Effect tokens count from 0: a read for each `ParamRead` node in node
+/// order, a read of `m` then of `v` for each parameter, a write for each update, then a write of
+/// `m'` then of `v'` for each parameter, each in `ParamId` order; reads are of version 0, writes
+/// of version 1. The result passes [`crate::ir::verify::verify_step`].
+pub fn attach_adamw(
+    training: TrainingProgram,
+    lr: f32,
+    adamw: AdamW,
+) -> Result<TrainingStep, AttachError> {
+    check_attach(&training, lr)?;
+    if !adamw.in_range() {
+        return Err(AttachError::Hyperparameters);
+    }
+    let mut training = training;
+    let mut append = Appender::new(&training);
+
+    let mut updates = BTreeMap::new();
+    let mut moments = BTreeMap::new();
+    let mut step_inputs = None;
+    let gradients: Vec<(ParamId, ValueId)> =
+        training.gradients.iter().map(|(&p, &g)| (p, g)).collect();
+    if let Some(&(first, _)) = gradients.first() {
+        let t = &mut training;
+        let mut constants = Vec::new();
+        for value in adamw.constants() {
+            constants.push(append.op(t, first, TensorOp::Scalar(value), &[])?);
+        }
+        let [beta1, rest1, beta2, rest2, eps, decay] = constants[..] else {
+            unreachable!("six constants")
+        };
+        let rank0 = TensorType::f32_scalar();
+        let inputs = StepInputs {
+            lr_t: append.input(t, first, LR_T_INPUT.into(), &rank0)?,
+            c1: append.input(t, first, C1_INPUT.into(), &rank0)?,
+            c2: append.input(t, first, C2_INPUT.into(), &rank0)?,
+        };
+        step_inputs = Some(inputs);
+        for (param, g) in gradients {
+            let decl = &t.program.params[&param];
+            let (ty, path) = (decl.ty.clone(), decl.path.clone());
+            let p = first_read(t, param);
+            let m = append.input(t, param, moment_input(Moment::First, &path), &ty)?;
+            let v = append.input(t, param, moment_input(Moment::Second, &path), &ty)?;
+            let mut op = |t: &mut TrainingProgram, op: TensorOp, operands: &[ValueId]| {
+                append.op(t, param, op, operands)
+            };
+            let decayed_m = op(t, TensorOp::Mul, &[beta1, m])?;
+            let new_m = op(t, TensorOp::Mul, &[rest1, g])?;
+            let m_next = op(t, TensorOp::Add, &[decayed_m, new_m])?;
+            let decayed_v = op(t, TensorOp::Mul, &[beta2, v])?;
+            let scaled_g = op(t, TensorOp::Mul, &[rest2, g])?;
+            let new_v = op(t, TensorOp::Mul, &[scaled_g, g])?;
+            let v_next = op(t, TensorOp::Add, &[decayed_v, new_v])?;
+            let m_hat = op(t, TensorOp::Mul, &[m_next, inputs.c1])?;
+            let v_hat = op(t, TensorOp::Mul, &[v_next, inputs.c2])?;
+            let root = op(t, TensorOp::Sqrt, &[v_hat])?;
+            let denominator = op(t, TensorOp::Add, &[root, eps])?;
+            let direction = op(t, TensorOp::Div, &[m_hat, denominator])?;
+            let shrink = op(t, TensorOp::Mul, &[decay, p])?;
+            let step = op(t, TensorOp::Add, &[direction, shrink])?;
+            let scaled = op(t, TensorOp::Mul, &[inputs.lr_t, step])?;
+            let update = op(t, TensorOp::Sub, &[p, scaled])?;
+            updates.insert(param, update);
+            moments.insert(
+                param,
+                Moments {
+                    m,
+                    v,
+                    m_next,
+                    v_next,
+                },
+            );
+        }
+    }
+    training.program.outputs.extend(updates.values().copied());
+    training
+        .program
+        .outputs
+        .extend(moments.values().flat_map(|m| [m.m_next, m.v_next]));
+
+    let versions = initial_versions(&training);
+    let mut effects = BTreeMap::new();
+    let mut moment_effects = BTreeMap::new();
+    let mut token = 0u32;
+    let mut next_token = || {
+        let current = EffectToken(token);
+        token += 1;
+        current
+    };
+    let effect = |token, param, access, version| Effect {
+        token,
+        param,
+        access,
+        version: StateVersion(version),
+    };
+    let moment_effect = |token, param, moment, access, version| MomentEffect {
+        token,
+        param,
+        moment,
+        access,
+        version: StateVersion(version),
+    };
+    for node in &training.program.nodes {
+        if let TensorOp::ParamRead { param } = node.op {
+            effects.insert(node.id, effect(next_token(), param, Access::Read, 0));
+        }
+    }
+    for (&param, state) in &moments {
+        for moment in Moment::BOTH {
+            let read = moment_effect(next_token(), param, moment, Access::Read, 0);
+            moment_effects.insert(state.input(moment), read);
+        }
+    }
+    for (&param, &update) in &updates {
+        effects.insert(update, effect(next_token(), param, Access::Write, 1));
+    }
+    for (&param, state) in &moments {
+        for moment in Moment::BOTH {
+            let write = moment_effect(next_token(), param, moment, Access::Write, 1);
+            moment_effects.insert(state.next(moment), write);
+        }
+    }
+
+    let step = TrainingStep {
+        training,
+        optimizer: Optimizer {
+            lr,
+            rule: OptimizerRule::AdamW(adamw),
+            versions,
+            updates,
+            effects,
+            step_inputs,
+            moments,
+            moment_effects,
         },
     };
     verify_step(&step)?;
@@ -318,7 +762,8 @@ pub struct DataDecl {
     pub span: SourceSpan,
 }
 
-/// The SGD configuration of a `train` block, which the runtime reads (DESIGN.md § 6).
+/// The configuration of a `train` block, which the runtime reads (DESIGN.md § 6). Its optimizer
+/// rule is the step's [`Optimizer::rule`].
 ///
 /// It records the declarations as written; whether there is exactly one `input` and one `target`
 /// is the data loader's to refuse.
@@ -326,7 +771,7 @@ pub struct DataDecl {
 pub struct TrainConfig {
     /// The number of steps of one run: positive.
     pub steps: u64,
-    /// The SGD learning rate: positive and finite.
+    /// The learning rate of `sgd`, or the peak rate of `adamw`: positive and finite.
     pub lr: f32,
     /// The global seed of every random draw (DESIGN.md § 2.3).
     pub seed: u64,
@@ -384,5 +829,163 @@ mod tests {
         let mut b = TensorProgramBuilder::new();
         b.input("x", TensorType::f32(&[3])).unwrap();
         assert!(dropout_sites(&b.finish()).is_empty());
+    }
+
+    const ADAMW: AdamW = AdamW {
+        weight_decay: 0.01,
+        beta1: 0.9,
+        beta2: 0.999,
+        eps: 1e-8,
+        warmup_steps: 2,
+    };
+
+    /// `mse(matmul(x, w), y)` differentiated; with `unused`, a parameter nothing reads.
+    fn linear(unused: bool) -> TrainingProgram {
+        use crate::ir::tensor::Initializer;
+        let mut b = TensorProgramBuilder::new();
+        let w = b
+            .declare_param("L.w", TensorType::f32(&[2, 1]), Initializer::XavierUniform)
+            .unwrap();
+        if unused {
+            b.declare_param("L.u", TensorType::f32(&[2, 1]), Initializer::XavierUniform)
+                .unwrap();
+        }
+        let x = b.input("x", TensorType::f32(&[3, 2])).unwrap();
+        let y = b.input("y", TensorType::f32(&[3, 1])).unwrap();
+        let w = b.param_read(w).unwrap();
+        let h = b.matmul(x, w).unwrap();
+        let loss = b.mse(h, y).unwrap();
+        crate::autodiff::differentiate(&b.finish(), loss).unwrap()
+    }
+
+    /// The schedule warms up linearly from 0 over `warmup_steps` and decays linearly to 0 at the
+    /// last step; the bias corrections are `1 / (1 - beta^t)`; each is computed in `f64` and
+    /// rounded once.
+    #[test]
+    fn adamw_scalars_follow_the_settled_schedule() {
+        let lr = 0.1f32;
+        let rates: Vec<f32> = (1..=5).map(|t| ADAMW.scalars(lr, t, 5).lr_t).collect();
+        let peak = f64::from(lr);
+        let expected = [peak / 2.0, peak, peak * 2.0 / 3.0, peak / 3.0, 0.0];
+        assert_eq!(rates, expected.map(|r| r as f32));
+        let no_warmup = AdamW {
+            warmup_steps: 0,
+            ..ADAMW
+        };
+        assert_eq!(no_warmup.scalars(lr, 1, 4).lr_t, (peak * 0.75) as f32);
+        let first = ADAMW.scalars(lr, 1, 5);
+        assert_eq!(first.c1, (1.0 / (1.0 - f64::from(0.9f32))) as f32);
+        assert_eq!(first.c2, (1.0 / (1.0 - f64::from(0.999f32))) as f32);
+        assert_eq!(ADAMW.scalars(lr, 6, 5).lr_t, 0.0, "past the last step");
+        let refused = AdamW {
+            warmup_steps: 5,
+            ..ADAMW
+        };
+        assert_eq!(refused.scalars(lr, 6, 5).lr_t, 0.0, "no span to decay over");
+    }
+
+    /// The constants are in their order, each `1 - beta` rounded once from `f64`.
+    #[test]
+    fn adamw_constants_are_the_betas_their_complements_eps_and_the_decay() {
+        let [b1, r1, b2, r2, eps, decay] = ADAMW.constants();
+        assert_eq!((b1, b2, eps, decay), (0.9, 0.999, 1e-8, 0.01));
+        assert_eq!(r1, (1.0 - f64::from(0.9f32)) as f32);
+        assert_eq!(r2, (1.0 - f64::from(0.999f32)) as f32);
+        assert!(ADAMW.in_range());
+        for out in [
+            AdamW {
+                beta1: 1.0,
+                ..ADAMW
+            },
+            AdamW {
+                beta2: -0.1,
+                ..ADAMW
+            },
+            AdamW { eps: 0.0, ..ADAMW },
+            AdamW {
+                weight_decay: -0.1,
+                ..ADAMW
+            },
+            AdamW {
+                weight_decay: f32::INFINITY,
+                ..ADAMW
+            },
+        ] {
+            assert!(!out.in_range(), "{out:?}");
+        }
+    }
+
+    /// The update of each parameter is the AdamW formula in written order, one op each, with
+    /// its moments as inputs and outputs and their effects ordered reads before writes.
+    #[test]
+    fn attach_adamw_appends_the_update_in_written_order() {
+        let step = attach_adamw(linear(true), 0.1, ADAMW).unwrap();
+        let optimizer = &step.optimizer;
+        let program = &step.training.program;
+        assert_eq!(optimizer.rule, OptimizerRule::AdamW(ADAMW));
+        let w = ParamId(0);
+        assert_eq!(optimizer.updates.keys().collect::<Vec<_>>(), vec![&w]);
+        assert_eq!(optimizer.moments.keys().collect::<Vec<_>>(), vec![&w]);
+        let names: Vec<&str> = program
+            .nodes
+            .iter()
+            .filter(|n| step.training.subgraphs[&n.id] == Subgraph::Optimizer)
+            .map(|n| n.op.name())
+            .collect();
+        let mut expected = vec!["Scalar"; 6];
+        expected.extend(["Input"; 5]);
+        expected.extend([
+            "Mul", "Mul", "Add", "Mul", "Mul", "Mul", "Add", "Mul", "Mul", "Sqrt", "Add", "Div",
+            "Mul", "Add", "Mul", "Sub",
+        ]);
+        assert_eq!(names, expected);
+        let moments = optimizer.moments[&w];
+        let input = |value: ValueId| match &program.node(value).unwrap().op {
+            TensorOp::Input { name } => name.clone(),
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(input(moments.m), "optimizer.m@L.w");
+        assert_eq!(input(moments.v), "optimizer.v@L.w");
+        let inputs = optimizer.step_inputs.unwrap();
+        assert_eq!(
+            [input(inputs.lr_t), input(inputs.c1), input(inputs.c2)],
+            [LR_T_INPUT, C1_INPUT, C2_INPUT]
+        );
+        let update = optimizer.updates[&w];
+        let mut outputs = vec![step.training.loss, step.training.gradients[&w], update];
+        outputs.extend([moments.m_next, moments.v_next]);
+        assert_eq!(program.outputs, outputs);
+        let tokens = |value: ValueId| optimizer.moment_effects[&value].token.0;
+        let read = optimizer.effects_in_order()[0].1;
+        assert_eq!((read.token.0, read.access), (0, Access::Read));
+        assert_eq!((tokens(moments.m), tokens(moments.v)), (1, 2));
+        assert_eq!(optimizer.effects[&update].token.0, 3);
+        assert_eq!((tokens(moments.m_next), tokens(moments.v_next)), (4, 5));
+        let write = optimizer.moment_effects[&moments.v_next];
+        assert_eq!(
+            (write.moment, write.access, write.version),
+            (Moment::Second, Access::Write, StateVersion(1))
+        );
+        assert_eq!(optimizer.host_inputs().len(), 5);
+    }
+
+    /// Out-of-range hyperparameters and learning rates are refused before anything is appended.
+    #[test]
+    fn attach_adamw_refuses_out_of_range_values() {
+        let beta = AdamW {
+            beta1: 1.0,
+            ..ADAMW
+        };
+        assert_eq!(
+            attach_adamw(linear(false), 0.1, beta),
+            Err(AttachError::Hyperparameters)
+        );
+        assert!(matches!(
+            attach_adamw(linear(false), 0.0, ADAMW),
+            Err(AttachError::LearningRate { .. })
+        ));
+        let sgd = attach(linear(false), 0.1, OptimizerRule::Sgd).unwrap();
+        assert_eq!(sgd, attach_sgd(linear(false), 0.1).unwrap());
+        assert!(sgd.optimizer.moments.is_empty() && sgd.optimizer.step_inputs.is_none());
     }
 }

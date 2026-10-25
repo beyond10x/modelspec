@@ -2,7 +2,7 @@
 format: aep.planning-md/3
 id: story:bert-adamw-warmup
 kind: story
-status: draft
+status: active
 title: AdamW with decoupled weight decay and a warmup schedule, compiled into the training step
 summary: Adds adamw(...) as a compiled Optimizer subgraph with versioned moment state and a host-computed schedule; settles the LearningRateSchedule and OptimizerConfig.schedule markers.
 relations:
@@ -56,7 +56,10 @@ scope:
   path: ui/src/generated/
 - confidence: cited
   path: website/docs/reference/
-revision: 3
+revision: 5
+transitions:
+- {from: "draft", to: "proposed", at: "2026-10-25T09:51:25Z", actor: "human:timo", revision: 4}
+- {from: "proposed", to: "active", at: "2026-10-25T09:51:25Z", actor: "human:timo", revision: 5}
 ---
 # AdamW with decoupled weight decay and a warmup schedule, compiled into the training step
 

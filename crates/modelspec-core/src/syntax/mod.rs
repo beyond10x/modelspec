@@ -56,7 +56,7 @@ pub mod codes {
         REPEAT = "E-SYNTAX-011";
         /// An element type other than `f32` or `i32`.
         DTYPE = "E-SYNTAX-012";
-        /// An optimizer other than `sgd`.
+        /// An optimizer other than `sgd` and `adamw`.
         OPTIMIZER = "E-SYNTAX-013";
         /// A device other than `cpu` or `vulkan(<index>)`.
         DEVICE = "E-SYNTAX-014";
@@ -119,6 +119,9 @@ pub fn print(ast: &Ast) -> String {
     writeln!(out, "    loss = {};", expr(&train.loss.value)).unwrap();
     match &train.optimizer.value {
         Optimizer::Sgd { lr, .. } => writeln!(out, "    optimizer = sgd(lr = {lr:?});").unwrap(),
+        Optimizer::AdamW { args: list, .. } => {
+            writeln!(out, "    optimizer = adamw({});", args(list)).unwrap()
+        }
     }
     writeln!(out, "    steps = {};", train.steps.value).unwrap();
     writeln!(out, "    seed = {};", train.seed.value).unwrap();

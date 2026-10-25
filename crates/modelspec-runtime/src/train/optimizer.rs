@@ -1,10 +1,16 @@
-//! SGD: its configuration and one training step on the CPU interpreter (DESIGN.md § 3.1, § 6).
+//! The optimizer: its configuration and one training step on the CPU interpreter (DESIGN.md
+//! § 3.1, § 6).
 //!
 //! A step runs `&step.training.program` on the interpreter unchanged, reading the current
 //! version of every parameter, then applies each update output as its parameter's next version,
 //! in effect-token order. All writes come after the evaluation, so none overwrites a value a read
 //! of the old version still needs (DESIGN.md § 4). A parameter without an update keeps its value
 //! and its version.
+//!
+//! An AdamW step (story:bert-adamw-warmup) also reads each parameter's two moments from the state
+//! and writes their next values back with the updates, and it takes three host scalars, the
+//! scheduled learning rate and the two bias corrections, which [`PreparedStep::schedule`] sets
+//! from the step number before each evaluation. The moments start at 0 ([`ParamState::new`]).
 //!
 //! [`evaluate_step`] is the evaluation alone: it returns the loss, the gradients and the updates
 //! of the old values and changes nothing, and [`Evaluated::apply`] writes the updates. Between
@@ -19,14 +25,18 @@
 use std::collections::BTreeMap;
 
 use modelspec_core::ir::tensor::ParamId;
-use modelspec_core::ir::training::{StateVersion, TrainConfig, TrainingStep};
+use modelspec_core::ir::training::{
+    AdamW, C1_INPUT, C2_INPUT, LR_T_INPUT, Moment, OptimizerRule, StateVersion, StepScalars,
+    TrainConfig, TrainingStep, moment_input,
+};
 use modelspec_core::ir::verify::{TrainingVerifyError, verify_step_writes};
 use thiserror::Error;
 
 use crate::cpu::interpreter::Prepared;
 use crate::cpu::{HostTensor, RuntimeError};
 
-/// The SGD configuration of a run, from its `train` block.
+/// The learning rate, steps and seed of a run, from its `train` block; `lr` is the constant rate
+/// of `sgd` and the peak rate of `adamw`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SgdConfig {
     pub lr: f32,
@@ -44,19 +54,38 @@ impl SgdConfig {
     }
 }
 
-/// The persistent parameter state of a run: each declared parameter's value and version.
+/// The persistent parameter state of a run: each declared parameter's value and version, and
+/// under AdamW the two moments of each parameter with an update.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ParamState {
     pub values: BTreeMap<ParamId, HostTensor<f32>>,
     pub versions: BTreeMap<ParamId, StateVersion>,
+    /// Each moment of each parameter with an AdamW update, at the parameter's version; empty
+    /// under SGD.
+    pub moments: BTreeMap<(ParamId, Moment), HostTensor<f32>>,
 }
 
 impl ParamState {
-    /// The state before the first step: `values` at the versions `step` is compiled against.
+    /// The state before the first step: `values` at the versions `step` is compiled against, and
+    /// every AdamW moment 0 in the shape of its parameter's value.
     pub fn new(step: &TrainingStep, values: BTreeMap<ParamId, HostTensor<f32>>) -> Self {
+        let moments = step
+            .optimizer
+            .moments
+            .keys()
+            .filter_map(|param| values.get(param).map(|value| (*param, value)))
+            .flat_map(|(param, value)| {
+                Moment::BOTH.map(|moment| {
+                    let zeros =
+                        HostTensor::from_parts(value.shape().to_vec(), vec![0.0; value.len()]);
+                    ((param, moment), zeros)
+                })
+            })
+            .collect();
         Self {
             values,
             versions: step.optimizer.versions.clone(),
+            moments,
         }
     }
 }
@@ -74,6 +103,9 @@ pub enum StepError {
         param: ParamId,
         current: StateVersion,
     },
+    /// An AdamW step was evaluated before [`PreparedStep::schedule`] gave it its step number.
+    #[error("an AdamW step needs its step number and the run's length before it runs")]
+    Unscheduled,
 }
 
 /// What one step computed from the old parameter values.
@@ -93,17 +125,20 @@ pub struct Evaluated {
     pub gradients: BTreeMap<ParamId, HostTensor<f32>>,
     /// Each update and the parameter it is the next version of, in effect-token order.
     updates: Vec<(ParamId, HostTensor<f32>)>,
+    /// Each next AdamW moment and the moment it replaces; empty under SGD.
+    moments: Vec<((ParamId, Moment), HostTensor<f32>)>,
 }
 
 impl Evaluated {
-    /// Writes each update as its parameter's next version, in effect-token order, and returns the
-    /// loss and the gradients.
+    /// Writes each update as its parameter's next version, in effect-token order, and each next
+    /// moment, and returns the loss and the gradients.
     pub fn apply(self, state: &mut ParamState) -> StepOutput {
         for (param, value) in self.updates {
             state.values.insert(param, value);
             let version = state.versions.entry(param).or_insert(StateVersion(0));
             version.0 += 1;
         }
+        state.moments.extend(self.moments);
         StepOutput {
             loss: self.loss,
             gradients: self.gradients,
@@ -123,7 +158,8 @@ pub fn sgd_step(
 
 /// Evaluates one step of `step` on `inputs` and `state` and changes nothing: the step is refused
 /// as [`sgd_step`] refuses it, before it runs, and otherwise holds the loss, the gradients and
-/// the updates for [`Evaluated::apply`].
+/// the updates for [`Evaluated::apply`]. An AdamW step is refused with [`StepError::Unscheduled`]:
+/// it needs its step number, which only a [`PreparedStep`] is given.
 pub fn evaluate_step(
     step: &TrainingStep,
     inputs: &BTreeMap<String, HostTensor<f32>>,
@@ -137,10 +173,17 @@ pub fn evaluate_step(
         .zip(&mut prepared.pending)
         .map(|(&(param, _), update)| (param, update.take().expect("a run holds every update")))
         .collect();
+    let moments = prepared
+        .moments
+        .iter()
+        .zip(&mut prepared.pending_moments)
+        .map(|(&(key, _), next)| (key, next.take().expect("a run holds every moment")))
+        .collect();
     Ok(Evaluated {
         loss,
         gradients: std::mem::take(&mut prepared.gradients),
         updates,
+        moments,
     })
 }
 
@@ -166,6 +209,8 @@ enum Role {
     Gradient(ParamId),
     /// The update of the write at this index of [`PreparedStep::writes`].
     Update(usize),
+    /// The next value of the moment at this index of [`PreparedStep::moments`].
+    Moment(usize),
 }
 
 /// A training step verified and planned once, to be stepped any number of times: a run.
@@ -188,6 +233,20 @@ pub struct PreparedStep<'s> {
     gradients: BTreeMap<ParamId, HostTensor<f32>>,
     /// The updates of the last evaluation not yet applied, by index of [`PreparedStep::writes`].
     pending: Vec<Option<HostTensor<f32>>>,
+    /// The step's peak or constant learning rate and, under AdamW, its hyperparameters.
+    lr: f32,
+    adamw: Option<AdamW>,
+    /// The host scalars of the next AdamW evaluation, set by [`PreparedStep::schedule`].
+    scalars: Option<StepScalars>,
+    /// Each AdamW moment, the output position of its next value and the name of the input that
+    /// reads it, in parameter order, the first moment before the second.
+    moments: Vec<((ParamId, Moment), usize)>,
+    moment_names: Vec<String>,
+    /// The next moments of the last evaluation not yet applied, by index of
+    /// [`PreparedStep::moments`].
+    pending_moments: Vec<Option<HostTensor<f32>>>,
+    /// The inputs of an AdamW run: the caller's, the host scalars and the moments, by name.
+    host: BTreeMap<String, HostTensor<f32>>,
 }
 
 impl<'s> PreparedStep<'s> {
@@ -225,10 +284,30 @@ impl<'s> PreparedStep<'s> {
         for (k, &(_, at)) in writes.iter().enumerate() {
             roles[at] = Some(Role::Update(k));
         }
+        let first_moment = 1 + gradients.len() + step.optimizer.updates.len();
+        let mut moments = Vec::new();
+        let mut moment_names = Vec::new();
+        for (k, (&param, values)) in step.optimizer.moments.iter().enumerate() {
+            for (j, moment) in Moment::BOTH.into_iter().enumerate() {
+                let at = first_moment + 2 * k + j;
+                debug_assert_eq!(
+                    program.outputs[at],
+                    values.next(moment),
+                    "the verified layout"
+                );
+                roles[at] = Some(Role::Moment(moments.len()));
+                moments.push(((param, moment), at));
+                moment_names.push(moment_input(moment, &program.params[&param].path));
+            }
+        }
         let roles = roles
             .into_iter()
             .map(|role| role.expect("the verified layout gives every output a role"))
             .collect();
+        let adamw = match step.optimizer.rule {
+            OptimizerRule::Sgd => None,
+            OptimizerRule::AdamW(adamw) => Some(adamw),
+        };
         Ok(Self {
             program: Prepared::verified(program),
             pending: vec![None; writes.len()],
@@ -236,7 +315,28 @@ impl<'s> PreparedStep<'s> {
             roles,
             outputs: Vec::new(),
             gradients: BTreeMap::new(),
+            lr: step.optimizer.lr,
+            adamw,
+            scalars: None,
+            pending_moments: vec![None; moments.len()],
+            moments,
+            moment_names,
+            host: BTreeMap::new(),
         })
+    }
+
+    /// Makes the next evaluation step `t` of a run of `steps` steps, `t` counted from 1, and
+    /// returns the learning rate its update applies: the constant rate under SGD, and under AdamW
+    /// the scheduled rate, whose bias corrections it sets beside it ([`AdamW::scalars`]).
+    pub fn schedule(&mut self, t: u64, steps: u64) -> f32 {
+        match self.adamw {
+            None => self.lr,
+            Some(adamw) => {
+                let scalars = adamw.scalars(self.lr, t, steps);
+                self.scalars = Some(scalars);
+                scalars.lr_t
+            }
+        }
     }
 
     /// Evaluates one step on `inputs` and `state` and changes nothing until the result is
@@ -297,6 +397,11 @@ impl<'s> PreparedStep<'s> {
                 self.program.recycle(at, update);
             }
         }
+        for (k, &(_, at)) in self.moments.iter().enumerate() {
+            if let Some(next) = self.pending_moments[k].take() {
+                self.program.recycle(at, next);
+            }
+        }
         for &(param, _) in &self.writes {
             let current = state
                 .versions
@@ -307,6 +412,33 @@ impl<'s> PreparedStep<'s> {
                 return Err(StepError::VersionExhausted { param, current });
             }
         }
+        let inputs = match self.adamw {
+            None => inputs,
+            Some(_) => {
+                let scalars = self.scalars.ok_or(StepError::Unscheduled)?;
+                self.host.clear();
+                self.host.extend(
+                    inputs
+                        .iter()
+                        .map(|(name, value)| (name.clone(), value.clone())),
+                );
+                for (name, value) in [
+                    (LR_T_INPUT, scalars.lr_t),
+                    (C1_INPUT, scalars.c1),
+                    (C2_INPUT, scalars.c2),
+                ] {
+                    self.host.insert(name.to_owned(), HostTensor::scalar(value));
+                }
+                // A moment missing from the state is left out, and the interpreter refuses the
+                // run for the input it lacks.
+                for ((key, _), name) in self.moments.iter().zip(&self.moment_names) {
+                    if let Some(value) = state.moments.get(key) {
+                        self.host.insert(name.clone(), value.clone());
+                    }
+                }
+                &self.host
+            }
+        };
         self.program
             .run_into(inputs, ids, &state.values, &mut self.outputs)?;
         let mut loss = f32::NAN;
@@ -322,6 +454,7 @@ impl<'s> PreparedStep<'s> {
                     None => {}
                 },
                 Role::Update(k) => self.pending[k] = Some(output),
+                Role::Moment(k) => self.pending_moments[k] = Some(output),
             }
         }
         Ok(loss)
@@ -345,9 +478,9 @@ impl PendingStep<'_, '_> {
         &self.prepared.gradients
     }
 
-    /// Writes each update as its parameter's next version, in effect-token order, and returns
-    /// the loss. Each value an update replaces becomes the storage of that parameter's next
-    /// update.
+    /// Writes each update as its parameter's next version, in effect-token order, and each next
+    /// AdamW moment, and returns the loss. Each value an update or a moment replaces becomes the
+    /// storage of its next one.
     pub fn apply(self, state: &mut ParamState) -> f32 {
         let prepared = self.prepared;
         for (k, &(param, at)) in prepared.writes.iter().enumerate() {
@@ -359,6 +492,14 @@ impl PendingStep<'_, '_> {
             }
             let version = state.versions.entry(param).or_insert(StateVersion(0));
             version.0 += 1;
+        }
+        for (k, &(key, at)) in prepared.moments.iter().enumerate() {
+            let value = prepared.pending_moments[k]
+                .take()
+                .expect("an evaluated step holds every moment");
+            if let Some(old) = state.moments.insert(key, value) {
+                prepared.program.recycle(at, old);
+            }
         }
         self.loss
     }

@@ -15,7 +15,7 @@ use crate::diag::Diagnostic;
 use crate::hir::Hir;
 use crate::ir::kernel::MatMulLimits;
 use crate::ir::tensor::{TensorProgram, ValueId};
-use crate::ir::training::{TrainConfig, TrainingStep, attach_sgd};
+use crate::ir::training::{OptimizerRule, TrainConfig, TrainingStep, attach};
 use crate::ir::verify::{verify, verify_plan_for, verify_step};
 use crate::lower::{self, LoweredProgram};
 use crate::passes::dce;
@@ -28,7 +28,8 @@ pub mod codes {
 
     /// A compiler verification failure in the tensor or training pipeline, not a user error
     /// (DESIGN.md § 8.1): lowering refused checked HIR, the program its passes produced does not
-    /// verify, or autodiff, SGD attachment or the step's verification refused verified Tensor IR.
+    /// verify, or autodiff, optimizer attachment or the step's verification refused verified
+    /// Tensor IR.
     /// No source file is meant to reach it.
     pub const COMPILER_BUG: Code = Code::new("E-INTERNAL-002");
 
@@ -40,7 +41,8 @@ pub mod codes {
     pub const TOO_LARGE_FOR_TARGET: Code = Code::new("E-TARGET-010");
 
     /// An operator of the training step has no Vulkan kernel yet: `embedding`, whose lookup and
-    /// gradient run on the CPU interpreter only (DESIGN.md § 8.1). The file checks; use
+    /// gradient run on the CPU interpreter only, or the optimizer `adamw`, whose step runs there
+    /// too and is reported at the `train` block (DESIGN.md § 8.1). The file checks; use
     /// `--backend cpu`.
     pub const NO_KERNEL: Code = Code::new("E-TARGET-011");
 }
@@ -55,18 +57,19 @@ pub struct CompiledTraining {
     /// ([`lower::without_dropout`]): what the data loader, the final loss line, evaluation and
     /// inference run. Its node ids are those of the training step.
     pub forward: LoweredProgram,
-    /// The `train` block's SGD configuration and data declarations.
+    /// The `train` block's learning rate, steps, seed and data declarations; its optimizer rule
+    /// is the step's.
     pub config: TrainConfig,
 }
 
-/// [`compile_tensor`], then [`differentiate`] of its loss, [`attach_sgd`] at the `train` block's
-/// learning rate and [`verify_step`]. The step keeps every dropout; the forward program is the
-/// same Tensor IR with each dropout the identity, verified.
+/// [`compile_tensor`], then [`differentiate`] of its loss, [`attach`] of the `train` block's
+/// optimizer, `sgd` or `adamw`, and [`verify_step`]. The step keeps every dropout; the forward
+/// program is the same Tensor IR with each dropout the identity, verified.
 pub fn compile_training(path: &str, source: &str) -> Result<CompiledTraining, Vec<Diagnostic>> {
     let hir = compile_hir(path, source)?;
     let config = TrainConfig::from_hir(&hir.train);
     let lowered = tensor_stage(&hir, dce::eliminate)?;
-    let training = training_stage(&lowered.program, config.lr)?;
+    let training = training_stage(&lowered.program, config.lr, hir.train.optimizer)?;
     let forward = lower::without_dropout(lowered);
     if let Err(error) = verify(&forward.program) {
         return Err(vec![compiler_bug(
@@ -85,7 +88,8 @@ pub fn compile_training(path: &str, source: &str) -> Result<CompiledTraining, Ve
 /// [`verify_plan`]: Kernel IR, the step plan and the forward plan, in an artifact for `backend`.
 /// A Cpu artifact keeps the views and has no kernels and empty plans: it takes the views of
 /// [`schedule::schedule_views`], so an op with no Vulkan kernel does not refuse it. For Vulkan,
-/// such an op is [`codes::NO_KERNEL`] at the op's source span.
+/// such an op is [`codes::NO_KERNEL`] at the op's source span, and an `adamw` step is
+/// [`codes::NO_KERNEL`] at the `train` block before anything is scheduled.
 pub fn compile_artifact(
     path: &str,
     source: &str,
@@ -108,6 +112,18 @@ pub fn compile_artifact_for(
     profile: Option<&DeviceProfile>,
 ) -> Result<CompiledArtifact, Vec<Diagnostic>> {
     let compiled = compile_training(path, source)?;
+    if backend == Backend::Vulkan
+        && let OptimizerRule::AdamW(_) = compiled.training.optimizer.rule
+    {
+        return Err(vec![
+            Diagnostic::new(
+                codes::NO_KERNEL,
+                "optimizer `adamw` has no Vulkan kernel yet",
+            )
+            .note("compile and train it with `--backend cpu`")
+            .at(compiled.config.span.clone()),
+        ]);
+    }
     let limits = profile
         .map(|profile| MatMulLimits::of(profile).checked())
         .transpose()
@@ -161,9 +177,13 @@ pub fn compile_artifact_for(
     Ok(artifact)
 }
 
-/// Differentiates the single output of `forward`, its loss, attaches SGD at `lr` and verifies
-/// the step.
-fn training_stage(forward: &TensorProgram, lr: f32) -> Result<TrainingStep, Vec<Diagnostic>> {
+/// Differentiates the single output of `forward`, its loss, attaches the optimizer `rule` at
+/// `lr` and verifies the step.
+fn training_stage(
+    forward: &TensorProgram,
+    lr: f32,
+    rule: OptimizerRule,
+) -> Result<TrainingStep, Vec<Diagnostic>> {
     let [loss] = forward.outputs[..] else {
         return Err(vec![compiler_bug(
             "the lowered Tensor IR does not have the loss as its one output",
@@ -172,9 +192,9 @@ fn training_stage(forward: &TensorProgram, lr: f32) -> Result<TrainingStep, Vec<
     };
     let training = differentiate(forward, loss)
         .map_err(|error| vec![compiler_bug("autodiff refused verified Tensor IR", &error)])?;
-    let step = attach_sgd(training, lr).map_err(|error| {
+    let step = attach(training, lr, rule).map_err(|error| {
         vec![compiler_bug(
-            "SGD attachment refused the training program",
+            "optimizer attachment refused the training program",
             &error,
         )]
     })?;
@@ -315,7 +335,7 @@ mod tests {
     fn a_forward_program_without_a_single_output_is_a_compiler_bug() {
         let mut program = example_lowered().program;
         program.outputs.push(program.outputs[0]);
-        let diagnostic = the_training_bug(training_stage(&program, 0.1));
+        let diagnostic = the_training_bug(training_stage(&program, 0.1, OptimizerRule::Sgd));
         assert!(
             diagnostic.to_string().contains("outputs: 2"),
             "{diagnostic}"
@@ -326,7 +346,7 @@ mod tests {
     fn an_autodiff_failure_is_a_compiler_bug() {
         let mut program = example_lowered().program;
         program.outputs = vec![program.inputs[0]];
-        let diagnostic = the_training_bug(training_stage(&program, 0.1));
+        let diagnostic = the_training_bug(training_stage(&program, 0.1, OptimizerRule::Sgd));
         assert!(
             diagnostic.message.contains("autodiff refused"),
             "{diagnostic}"
@@ -336,10 +356,36 @@ mod tests {
     #[test]
     fn an_sgd_attachment_failure_is_a_compiler_bug() {
         let program = example_lowered().program;
-        let diagnostic = the_training_bug(training_stage(&program, -0.1));
+        let diagnostic = the_training_bug(training_stage(&program, -0.1, OptimizerRule::Sgd));
         assert!(
             diagnostic.to_string().contains("learning rate -0.1"),
             "{diagnostic}"
+        );
+    }
+
+    /// The example with `adamw(...)`: the step carries the rule, the moments and the step
+    /// inputs, and a Vulkan artifact is E-TARGET-011 at the `train` block.
+    #[test]
+    fn an_adamw_file_compiles_its_step_for_the_cpu_and_has_no_vulkan_kernel() {
+        let source = EXAMPLE.replace(
+            "sgd(lr = 0.1)",
+            "adamw(lr = 0.1, weight_decay = 0.01, beta1 = 0.9, beta2 = 0.999, eps = 1e-8, \
+             warmup_steps = 10)",
+        );
+        let compiled = compile_training("adamw.mspec", &source).expect("it compiles");
+        let OptimizerRule::AdamW(adamw) = compiled.training.optimizer.rule else {
+            panic!("{:?}", compiled.training.optimizer.rule);
+        };
+        assert_eq!(adamw.warmup_steps, 10);
+        assert_eq!(compiled.training.optimizer.moments.len(), 1);
+        assert!(compiled.training.optimizer.step_inputs.is_some());
+        let refused = compile_artifact("adamw.mspec", &source, Backend::Vulkan)
+            .expect_err("no Vulkan kernel");
+        assert_eq!(refused.len(), 1, "{refused:?}");
+        assert_eq!(refused[0].code, codes::NO_KERNEL);
+        assert_eq!(
+            refused[0].span.as_ref().map(|s| s.line),
+            Some(compiled.config.span.line)
         );
     }
 

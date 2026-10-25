@@ -110,13 +110,16 @@ impl OptimizerConfig {
         }
     }
 
-    /// The invariant of `OptimizerConfig`: the AdamW fields are present exactly for AdamW.
+    /// The invariant of `OptimizerConfig`: the AdamW fields and the schedule are present exactly
+    /// for AdamW.
     fn is_valid(&self) -> bool {
         let adamw = [self.weight_decay, self.beta1, self.beta2, self.epsilon];
         self.learning_rate.is_finite()
             && match self.kind {
-                OptimizerKind::Sgd => adamw.iter().all(Option::is_none),
-                OptimizerKind::AdamW => adamw.iter().all(Option::is_some),
+                OptimizerKind::Sgd => adamw.iter().all(Option::is_none) && self.schedule.is_none(),
+                OptimizerKind::AdamW => {
+                    adamw.iter().all(Option::is_some) && self.schedule.is_some()
+                }
             }
     }
 }

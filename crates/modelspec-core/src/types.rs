@@ -17,7 +17,9 @@
 //! function's `return` has its declared type; a `model.<function>(args)` call matches the
 //! function's arguments; the loss is rank 0 and calls `model.forward` exactly once, counting calls
 //! nested in the arguments of another (the prediction is that call's value, DESIGN.md § 2.1);
-//! the `sgd` learning rate is a positive finite `f32`;
+//! the learning rate of `sgd` and `adamw` is a positive finite `f32`, and each other `adamw`
+//! argument is given once, named, and in range (E-TYPE-023, E-TYPE-024, coordinator decision
+//! D50);
 //! `steps` is positive. An operator that takes named compile-time arguments
 //! ([`ops::named_parameters`], `heads` of `attention`, `p` of `dropout`) gets each exactly once,
 //! as a literal of its kind, after the operands (E-TYPE-001 when omitted, E-TYPE-002 when
@@ -29,7 +31,8 @@
 //! not through a `let`, an operator, the result of a `model.<function>(...)` call whose body
 //! reads one, nor an argument of such a call that reaches the result or reaches such an operand
 //! inside the function, which is refused at that argument. The parser already enforces that `seed` fits `u64`, that the optimizer is
-//! `sgd` and that literals are finite `f64`s. A `vulkan(<index>)` device is not validated.
+//! `sgd` or `adamw`, that `sgd` takes `lr` alone, and that literals are finite `f64`s. A
+//! `vulkan(<index>)` device is not validated.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -39,9 +42,21 @@ use crate::hir::{
     HirLet, HirModel, HirParam, HirTrain, LetRef,
 };
 use crate::ir::tensor::{Initializer, TensorOp, TensorType};
+use crate::ir::training::{AdamW, OptimizerRule};
 use crate::ops::{self, OpError};
 use crate::resolve::{self, Binding, ModelNames, Scope};
 use crate::syntax::{self, ast};
+
+/// The named arguments of `adamw(...)`, each required exactly once, in any order (DESIGN.md
+/// § 2.1, coordinator decision D50).
+pub const ADAMW_ARGUMENTS: [&str; 6] = [
+    "lr",
+    "weight_decay",
+    "beta1",
+    "beta2",
+    "eps",
+    "warmup_steps",
+];
 
 /// Type and shape diagnostic codes.
 pub mod codes {
@@ -62,11 +77,12 @@ pub mod codes {
     declare! {
         /// An operator or model function called with the wrong number of arguments, or an
         /// operator call that omits a named argument the operator takes, such as `heads` of
-        /// `attention`.
+        /// `attention`, or an `adamw` optimizer that omits one of its six named arguments.
         ARGUMENT_COUNT = "E-TYPE-001";
         /// A named argument (`a = x`) to a model function or to an operator that takes no named
         /// argument of that name, a named argument given twice, or a named argument before an
-        /// operand: the named arguments follow the operands.
+        /// operand: the named arguments follow the operands. An `adamw` argument that is unnamed,
+        /// not one of its six, or given twice.
         NAMED_ARGUMENT = "E-TYPE-002";
         /// `add`, `sub`, `mul` or `mse` operands of different shapes, neither of them rank 0, an
         /// `add_rows(x, b)` whose `b` is not as long as a row of `x`, a
@@ -93,7 +109,7 @@ pub mod codes {
         ARGUMENT_TYPE = "E-TYPE-008";
         /// A train block's `loss` that is not rank 0.
         LOSS_RANK = "E-TYPE-009";
-        /// An `sgd` learning rate that is not a positive finite `f32`.
+        /// An `sgd` or `adamw` learning rate `lr` that is not a positive finite `f32`.
         LEARNING_RATE = "E-TYPE-010";
         /// A train block's `steps` of 0.
         STEPS = "E-TYPE-011";
@@ -122,7 +138,8 @@ pub mod codes {
         /// A named operator argument whose value is not a literal of its kind, such as
         /// `heads = x` or `heads = 0` of `attention`, whose `heads` is an integer literal of at
         /// least 1, or `p = x` or `p = 0` of `dropout`, whose `p` is a float literal
-        /// (DESIGN.md § 2.1).
+        /// (DESIGN.md § 2.1), or an `adamw` argument other than a float literal, or than an
+        /// integer literal for `warmup_steps`.
         NAMED_VALUE = "E-TYPE-019";
         /// An `attention` whose `heads` does not divide the width `H` of `q`, `k` and `v`.
         HEADS_DIVIDE = "E-TYPE-020";
@@ -137,6 +154,14 @@ pub mod codes {
         /// as `p = 1.0`, whose scale `1 / (1 - p)` is infinite, or `p = -0.1` (DESIGN.md
         /// § 2.3).
         DROPOUT_RATE = "E-TYPE-022";
+        /// An `adamw` argument out of range: a `weight_decay` below 0 or not finite, a `beta1` or
+        /// `beta2` outside `[0, 1)` once rounded to `f32`, such as `beta1 = 1.0`, or an `eps`
+        /// that is not a positive finite `f32`, such as `eps = 0.0` (DESIGN.md § 2.1).
+        OPTIMIZER_HYPERPARAMETER = "E-TYPE-023";
+        /// An `adamw` whose `warmup_steps` is not below the train block's `steps`, which would
+        /// leave its learning rate no step to decay over (DESIGN.md § 2.1, coordinator decision
+        /// D50).
+        WARMUP_STEPS = "E-TYPE-024";
     }
 
     /// A compiler verification failure, not a user error (DESIGN.md § 8.1): the checker reached a
@@ -554,17 +579,11 @@ impl Checker {
             None => None,
         };
 
-        let ast::Optimizer::Sgd { lr, lr_span } = &t.optimizer.value;
-        let lr_f32 = *lr as f32;
-        let lr = if lr_f32.is_finite() && lr_f32 > 0.0 {
-            Some(lr_f32)
-        } else {
-            self.report(
-                codes::LEARNING_RATE,
-                format!("learning rate `{lr:?}` is not a positive finite f32"),
-                lr_span,
-            );
-            None
+        let (lr, optimizer) = match &t.optimizer.value {
+            ast::Optimizer::Sgd { lr, lr_span } => {
+                (self.learning_rate(*lr, lr_span), Some(OptimizerRule::Sgd))
+            }
+            ast::Optimizer::AdamW { args, span } => self.adamw(args, span, t.steps.value),
         };
 
         let steps = if t.steps.value == 0 {
@@ -604,11 +623,181 @@ impl Checker {
             data: data?,
             loss: loss?,
             lr: lr?,
+            optimizer: optimizer?,
             steps: steps?,
             seed: t.seed.value,
             device,
             span: t.span.clone(),
         })
+    }
+
+    /// The learning rate `lr` of `sgd` or `adamw`, written at `span`: a positive finite `f32`,
+    /// E-TYPE-010 otherwise.
+    fn learning_rate(&mut self, lr: f64, span: &SourceSpan) -> Option<f32> {
+        let rounded = lr as f32;
+        if rounded.is_finite() && rounded > 0.0 {
+            return Some(rounded);
+        }
+        self.report(
+            codes::LEARNING_RATE,
+            format!("learning rate `{lr:?}` is not a positive finite f32"),
+            span,
+        );
+        None
+    }
+
+    /// The learning rate and the rule of `adamw(args)`, whose name is at `span`, in a train block
+    /// of `steps` steps (DESIGN.md § 2.1, coordinator decision D50). It takes each of
+    /// [`ADAMW_ARGUMENTS`] exactly once, named, in any order: an unnamed, unknown or repeated
+    /// argument is E-TYPE-002 at it, an omitted one E-TYPE-001 at `adamw`, and a value other
+    /// than a float literal (an integer literal for `warmup_steps`) E-TYPE-019 at its argument.
+    /// `lr` that is not a positive finite `f32` is E-TYPE-010; `weight_decay` below 0 or not
+    /// finite, a beta outside `[0, 1)` once rounded to `f32`, and `eps` that is not a positive
+    /// finite `f32` are E-TYPE-023; `warmup_steps` not below `steps` is E-TYPE-024, unless
+    /// `steps` is 0, which is E-TYPE-011 alone. Every such argument is reported.
+    fn adamw(
+        &mut self,
+        args: &[ast::Arg],
+        span: &SourceSpan,
+        steps: u64,
+    ) -> (Option<f32>, Option<OptimizerRule>) {
+        let takes = || {
+            let names: Vec<String> = ADAMW_ARGUMENTS.iter().map(|n| format!("`{n}`")).collect();
+            names.join(", ")
+        };
+        let kind = |index: usize| match index {
+            5 => "an integer literal",
+            _ => "a float literal",
+        };
+        let mut given: [Option<&ast::Arg>; 6] = [None; 6];
+        let mut valid = true;
+        for arg in args {
+            let Some(name) = &arg.name else {
+                self.report(
+                    codes::NAMED_ARGUMENT,
+                    format!(
+                        "an unnamed argument; `adamw` takes the named arguments {}",
+                        takes()
+                    ),
+                    &arg.span,
+                );
+                valid = false;
+                continue;
+            };
+            let Some(index) = ADAMW_ARGUMENTS.iter().position(|n| *n == name.name) else {
+                self.report(
+                    codes::NAMED_ARGUMENT,
+                    format!(
+                        "named argument `{}`; `adamw` takes the named arguments {}",
+                        name.name,
+                        takes()
+                    ),
+                    &arg.span,
+                );
+                valid = false;
+                continue;
+            };
+            if given[index].is_some() {
+                self.report(
+                    codes::NAMED_ARGUMENT,
+                    format!("named argument `{}` of `adamw` is given twice", name.name),
+                    &arg.span,
+                );
+                valid = false;
+                continue;
+            }
+            given[index] = Some(arg);
+        }
+        let missing: Vec<String> = ADAMW_ARGUMENTS
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| given[*index].is_none())
+            .map(|(index, name)| format!("`{name}` ({})", kind(index)))
+            .collect();
+        if !missing.is_empty() {
+            self.report(
+                codes::ARGUMENT_COUNT,
+                format!("`adamw` needs the named argument(s) {}", missing.join(", ")),
+                span,
+            );
+            valid = false;
+        }
+
+        let mut floats: [Option<(f64, &SourceSpan)>; 5] = [None; 5];
+        let mut warmup: Option<(u64, &SourceSpan)> = None;
+        for (index, arg) in given.iter().enumerate() {
+            let Some(arg) = arg else { continue };
+            match (index, &arg.value.kind) {
+                (5, ast::ExprKind::Int(value)) => warmup = Some((*value, &arg.span)),
+                (0..=4, ast::ExprKind::Float(value)) => floats[index] = Some((*value, &arg.span)),
+                _ => {
+                    self.report(
+                        codes::NAMED_VALUE,
+                        format!(
+                            "`{}` of `adamw` takes {}",
+                            ADAMW_ARGUMENTS[index],
+                            kind(index)
+                        ),
+                        &arg.span,
+                    );
+                    valid = false;
+                }
+            }
+        }
+
+        let lr = floats[0].and_then(|(value, at)| self.learning_rate(value, at));
+        let mut hyperparameter = |index: usize, rule: &str, holds: fn(f32) -> bool| {
+            let (value, at) = floats[index]?;
+            let rounded = value as f32;
+            if holds(rounded) {
+                return Some(rounded);
+            }
+            self.report(
+                codes::OPTIMIZER_HYPERPARAMETER,
+                format!(
+                    "`{}` of `adamw` must be {rule}; got {value:?}",
+                    ADAMW_ARGUMENTS[index]
+                ),
+                at,
+            );
+            None
+        };
+        let weight_decay = hyperparameter(1, "a finite f32 of at least 0", |x| {
+            x.is_finite() && x >= 0.0
+        });
+        let beta1 = hyperparameter(2, "in [0, 1)", |x| (0.0..1.0).contains(&x));
+        let beta2 = hyperparameter(3, "in [0, 1)", |x| (0.0..1.0).contains(&x));
+        let eps = hyperparameter(4, "a positive finite f32", |x| x.is_finite() && x > 0.0);
+        let warmup_steps = match warmup {
+            Some((value, at)) if steps > 0 && value >= steps => {
+                self.report(
+                    codes::WARMUP_STEPS,
+                    format!(
+                        "`warmup_steps` of `adamw` is {value}; it must be below `steps`, {steps}, \
+                         so the learning rate has steps to decay over"
+                    ),
+                    at,
+                );
+                None
+            }
+            Some((value, _)) => Some(value),
+            None => None,
+        };
+        let rule = match (weight_decay, beta1, beta2, eps, warmup_steps) {
+            (Some(weight_decay), Some(beta1), Some(beta2), Some(eps), Some(warmup_steps))
+                if valid =>
+            {
+                Some(OptimizerRule::AdamW(AdamW {
+                    weight_decay,
+                    beta1,
+                    beta2,
+                    eps,
+                    warmup_steps,
+                }))
+            }
+            _ => None,
+        };
+        (lr, rule)
     }
 
     /// E-TYPE-017 unless the typed, rank-0 `loss` calls `model.forward` exactly once. No call is

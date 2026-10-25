@@ -225,7 +225,8 @@ pub fn arity(op: &TensorOp) -> usize {
         | TensorOp::BroadcastScalar { .. }
         | TensorOp::SumRows
         | TensorOp::Gelu
-        | TensorOp::Softmax => 1,
+        | TensorOp::Softmax
+        | TensorOp::Sqrt => 1,
         TensorOp::Add
         | TensorOp::Sub
         | TensorOp::Mul
@@ -239,7 +240,8 @@ pub fn arity(op: &TensorOp) -> usize {
         | TensorOp::LayerNormGradGamma
         | TensorOp::SoftmaxGrad
         | TensorOp::Dropout { .. }
-        | TensorOp::DropoutGrad { .. } => 2,
+        | TensorOp::DropoutGrad { .. }
+        | TensorOp::Div => 2,
         TensorOp::LayerNorm | TensorOp::LayerNormGradX | TensorOp::CrossEntropy => 3,
         TensorOp::Attention { .. } | TensorOp::CrossEntropyGrad => 4,
         TensorOp::AttentionGradQ { .. }
@@ -303,7 +305,7 @@ pub fn infer(
             Ok(ty.clone())
         }
         TensorOp::Scalar(_) => Ok(TensorType::f32_scalar()),
-        TensorOp::Add | TensorOp::Sub | TensorOp::Mul => {
+        TensorOp::Add | TensorOp::Sub | TensorOp::Mul | TensorOp::Div => {
             let (lhs, rhs) = (operands[0], operands[1]);
             same_dtype(name, lhs, rhs)?;
             if lhs.shape == rhs.shape || rhs.rank() == 0 {
@@ -348,7 +350,7 @@ pub fn infer(
                 shape: vec![lhs.shape[0], rhs.shape[1]],
             })
         }
-        TensorOp::Relu | TensorOp::Gelu => Ok(operands[0].clone()),
+        TensorOp::Relu | TensorOp::Gelu | TensorOp::Sqrt => Ok(operands[0].clone()),
         TensorOp::Transpose => {
             let a = operands[0];
             rank(name, a, 2)?;
@@ -574,7 +576,9 @@ pub trait GradientSink {
 /// op receives the sum of its broadcast contribution. Returns `Ok(None)` for the internal
 /// gradient ops `ReluGrad`, `BroadcastScalar`, `EmbeddingGrad`, `SumRows`, `GeluGrad`,
 /// `LayerNormGradX`, `LayerNormGradGamma`, `SoftmaxGrad`, `AttentionGradQ`, `AttentionGradK`,
-/// `AttentionGradV`, `CrossEntropyGrad` and `DropoutGrad`, which have no rule.
+/// `AttentionGradV`, `CrossEntropyGrad` and `DropoutGrad`, which have no rule, and for the internal
+/// optimizer ops `Sqrt` and `Div`, which only the `Optimizer` subgraph of an AdamW step has and
+/// through which no gradient is taken.
 ///
 /// The rules, for `Y = op(A, B, C)` and `G = dL/dY`:
 ///
@@ -776,7 +780,9 @@ pub fn gradient<S: GradientSink + ?Sized>(
         | TensorOp::AttentionGradK { .. }
         | TensorOp::AttentionGradV { .. }
         | TensorOp::CrossEntropyGrad
-        | TensorOp::DropoutGrad { .. } => {
+        | TensorOp::DropoutGrad { .. }
+        | TensorOp::Sqrt
+        | TensorOp::Div => {
             return Ok(None);
         }
     }

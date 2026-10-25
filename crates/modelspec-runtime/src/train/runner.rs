@@ -2,7 +2,7 @@
 //! loss telemetry.
 //!
 //! [`run`] draws the initial parameters on [`Stream::Init`] and the synthetic data of
-//! [`super::data`], then runs `config.steps` SGD steps of the compiled training step. The loss of
+//! [`super::data`], then runs `config.steps` optimizer steps of the compiled training step. The loss of
 //! step `k` is the loss of the parameters after `k` updates: step `k < steps` reports the loss its
 //! own evaluation computes before its update, and step `steps` is the forward program evaluated on
 //! the final parameters. A run therefore records `steps + 1` losses.
@@ -12,6 +12,11 @@
 //! keys its masks with the `train` block's seed, so the loss of each step `k < steps` includes
 //! dropout. The final loss, evaluation and inference run the forward program, in which every
 //! dropout is the identity (coordinator decision D47, 2026-10-25).
+//!
+//! Under AdamW the host computes the learning rate of step `k` by the warmup schedule at
+//! `t = k + 1` of a run that ends at step `start + steps`, and the two bias corrections, and
+//! hands them to the step ([`PreparedStep::schedule`], story:bert-adamw-warmup); a warmup not
+//! shorter than that is refused before the first step ([`RunError::Schedule`]).
 //!
 //! [`run_with`] trains on dense data read from files instead, optionally from parameter values read
 //! from files, and [`evaluate_dense`] measures the trained parameters on an eval directory.
@@ -31,7 +36,7 @@ use std::collections::BTreeMap;
 use modelspec_core::compile::CompiledTraining;
 use modelspec_core::diag::{Code, Diagnostic};
 use modelspec_core::ir::tensor::ParamId;
-use modelspec_core::ir::training::dropout_sites;
+use modelspec_core::ir::training::{OptimizerRule, dropout_sites};
 use thiserror::Error;
 
 use super::checkpoint::CheckpointError;
@@ -87,6 +92,13 @@ pub enum RunError {
         u64::MAX
     )]
     StepCount { start: u64, steps: u64 },
+    /// The AdamW warmup is not shorter than the run, so the learning rate has no steps to decay
+    /// over: `--steps` made the run shorter than its `train` block was checked against.
+    #[error(
+        "the warmup of {warmup_steps} steps is not shorter than the run of {steps} steps; the \
+         learning rate would have no steps to decay over"
+    )]
+    Schedule { warmup_steps: u64, steps: u64 },
     /// The loss or a parameter stopped being finite ([`E_TRAIN_001`]).
     #[error("{}", .0.diagnostic)]
     NonFinite(Box<Diverged>),
@@ -143,7 +155,7 @@ pub(crate) fn non_finite(
     )
 }
 
-/// Runs `compiled.config.steps` SGD steps of `compiled.training` on synthetic data from
+/// Runs `compiled.config.steps` optimizer steps of `compiled.training` on synthetic data from
 /// `compiled.config.seed`.
 pub fn run(compiled: &CompiledTraining) -> Result<Run, RunError> {
     run_observed(compiled, |_, _| {})
@@ -174,6 +186,9 @@ pub struct Observed<'a> {
     /// The gradient of the loss at [`Self::values`] for each parameter the loss reads, the one
     /// this step's update applies; `None` for the last step, which makes no update.
     pub gradients: Option<&'a BTreeMap<ParamId, HostTensor<f32>>>,
+    /// The learning rate this step's update applies: the constant rate of `sgd`, the scheduled
+    /// rate of `adamw`; `None` for the last step, which makes no update.
+    pub learning_rate: Option<f32>,
 }
 
 /// Runs as [`run_observed`] does, on `data` when it is given instead of synthetic data, and with
@@ -231,6 +246,15 @@ pub fn run_on(
         start,
         steps: config.steps,
     })?;
+    if let OptimizerRule::AdamW(adamw) = compiled.training.optimizer.rule
+        && config.steps > 0
+        && adamw.warmup_steps >= end
+    {
+        return Err(RunError::Schedule {
+            warmup_steps: adamw.warmup_steps,
+            steps: end,
+        });
+    }
     let forward = &compiled.forward.program;
     let mut initial = initialize(forward, config.seed, Stream::Init)?;
     initial.extend(init.iter().map(|(&p, v)| (p, v.clone())));
@@ -259,6 +283,7 @@ pub fn run_on(
                 prepared = Some(ready);
             }
             let prepared = prepared.as_mut().expect("prepared above");
+            let learning_rate = prepared.schedule(step + 1, end);
             let (inputs, ids) = feed.inputs(step)?;
             // The `i32` inputs of the step: the batch's ids (packed data) and the RNG token of
             // every dropout site at this step (DESIGN.md § 2.3), by name.
@@ -276,6 +301,7 @@ pub fn run_on(
                 loss: evaluated.loss(),
                 values: &state.values,
                 gradients: Some(evaluated.gradients()),
+                learning_rate: Some(learning_rate),
             });
             evaluated.apply(&mut state)
         } else {
@@ -286,6 +312,7 @@ pub fn run_on(
                 loss,
                 values: &state.values,
                 gradients: None,
+                learning_rate: None,
             });
             loss
         };
