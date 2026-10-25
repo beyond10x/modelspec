@@ -1,0 +1,13 @@
+{
+  "at": "2026-10-25T15:46:21Z",
+  "actor": "human:timo",
+  "artifact": "story:bert-vulkan-kernels-rowwise",
+  "kind": "story",
+  "revision": 6,
+  "change": {
+    "change": "evidence",
+    "kind": "test_result",
+    "source": "task ci",
+    "reference": "f3b65471a7250a0661db095ffa5bcaaf358b2034"
+  }
+}
