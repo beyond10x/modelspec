@@ -62,6 +62,21 @@
 //! file is read before the first step; one that cannot be used is refused with `E-DATA-007`,
 //! `E-DATA-008` or `E-DATA-009` and no `step` line is printed.
 //!
+//! A `--data` directory that holds `binding.json` is a packed masked-language-model directory of
+//! `modelspec data pack` instead ([`data::source`], [`data::packed`]; story:bert-train-data-binding,
+//! coordinator decision D48): each `input` and `target` declaration names a tensor of the batch
+//! (`ids`, `positions`, `key_mask`, `labels`, `weights`), step `k` feeds the `Train` batch of
+//! step `k` drawn with the run seed, and stdout starts with one line `data dataset <dataset_id>
+//! tokenizer <tokenizer_id> seq_len <S> masking <selection>/<mask>/<random>/<keep> binding
+//! <binding_id>` before the first `init` line. The binding is read before anything is served,
+//! recorded or run and its id is the `data_binding_id` of `RunStarted`; a declaration that names
+//! no batch tensor is refused with `E-DATA-005`, one of another dtype or shape with `E-DATA-006`,
+//! and a packed directory that cannot be read is reported on one line naming the file, each
+//! before the first step. A directory without `binding.json` is dense even when every
+//! declaration names a batch tensor; its refusal then follows one line naming the directory and
+//! `binding.json` ([`data::read_as_dense`]), and `--eval` beside a packed `--data` is a usage
+//! error (coordinator decision D56).
+//!
 //! `--steps <n>` runs `n` steps instead of the block's. `--checkpoint <path>` writes the state
 //! after the last step as a `.msckpt` file ([`checkpoint`]; DESIGN.md § 6.2), and
 //! `--checkpoint-every <n>` also writes `<stem>-<k>.msckpt` beside it at every step `k` after the
@@ -124,11 +139,12 @@ use modelspec_observatory::{
     Server, StatisticsSubject, StepCompleted, TrainingRunId, Ui,
 };
 use modelspec_runtime::cpu::HostTensor;
+use modelspec_runtime::dataset::mlm::TrainingDataBinding;
 use modelspec_runtime::train::checkpoint::{self, Checkpoint, CheckpointError};
-use modelspec_runtime::train::data::{self, DataError, DenseData};
+use modelspec_runtime::train::data::{self, DataError, DataSource, DenseData, PackedData};
 use modelspec_runtime::train::init;
 use modelspec_runtime::train::optimizer::ParamState;
-use modelspec_runtime::train::runner::{self, Diverged, Eval, Observed, Run, RunError};
+use modelspec_runtime::train::runner::{self, Data, Diverged, Eval, Observed, Run, RunError};
 
 /// The selected backend is not available: `--backend vulkan` of `train` or `infer` in a build
 /// without the `vulkan` feature.
@@ -162,17 +178,21 @@ pub struct Args {
     /// http://ADDR/; the directory is read whole before ADDR is bound.
     #[arg(long, value_name = "DIR", requires = "serve")]
     pub ui: Option<PathBuf>,
-    /// Train on the dense f32 files of DIR instead of synthetic data: NAME.f32 for the input and
-    /// the target declaration NAME, row-major little-endian, and an optional order.u32 of sample
-    /// indices.
+    /// Train on the data of DIR instead of synthetic data. A DIR that holds binding.json is a
+    /// packed directory of `modelspec data pack`: each input and target declaration names a
+    /// tensor of the masked-language-model batch (ids, positions, key_mask, labels, weights),
+    /// declared [B, S] or [B*S], and step K feeds the Train batch of step K. Any other DIR holds
+    /// dense f32 files: NAME.f32 for the input and the target declaration NAME, row-major
+    /// little-endian, and an optional order.u32 of sample indices.
     #[arg(long, value_name = "DIR")]
     pub data: Option<PathBuf>,
     /// Start each parameter that has a file DIR/P.f32, P its path without the model name, from
     /// that file instead of its initializer.
     #[arg(long, value_name = "DIR")]
     pub init: Option<PathBuf>,
-    /// After the last step, run the forward program over every sample of DIR, laid out as for
-    /// --data, and print `eval loss=<mean loss> accuracy=<fraction>`.
+    /// After the last step, run the forward program over every sample of DIR, dense f32 files
+    /// laid out as for a dense --data, and print `eval loss=<mean loss> accuracy=<fraction>`;
+    /// beside a packed --data directory it is a usage error.
     #[arg(long, value_name = "DIR")]
     pub eval: Option<PathBuf>,
     /// Run N steps instead of the steps of the file's train block; a resumed run ends at its
@@ -297,6 +317,11 @@ impl From<RunError> for Failure {
 /// `--checkpoint` and `--checkpoint-every`.
 struct Files {
     data: Option<PathBuf>,
+    /// The binding of a packed `--data` directory, read before the server binds; `None` for
+    /// dense data and for a run without `--data`.
+    binding: Option<TrainingDataBinding>,
+    /// The line printed before a refusal of the dense `--data` directory ([`data::read_as_dense`]).
+    read_as_dense: Option<String>,
     init: Option<PathBuf>,
     eval: Option<PathBuf>,
     checkpoint: Option<PathBuf>,
@@ -307,9 +332,24 @@ struct Files {
 
 /// The files of a run, read before its first step.
 struct Loaded {
-    data: Option<DenseData>,
+    data: Option<TrainData>,
     init: BTreeMap<ParamId, HostTensor<f32>>,
     eval: Option<DenseData>,
+}
+
+/// The data of `--data`: dense files or a packed directory.
+enum TrainData {
+    Dense(DenseData),
+    Packed(PackedData),
+}
+
+impl TrainData {
+    fn as_data(&self) -> Data<'_> {
+        match self {
+            TrainData::Dense(dense) => Data::Dense(dense),
+            TrainData::Packed(packed) => Data::Packed(packed),
+        }
+    }
 }
 
 impl Files {
@@ -325,22 +365,31 @@ impl Files {
         Some(path.with_file_name(format!("{stem}-{k}.msckpt")))
     }
 
-    fn load(&self, compiled: &CompiledTraining) -> Result<Loaded, DataError> {
+    /// The files of the run, or why one cannot be used, with the line printed before it when
+    /// the dense `--data` directory was refused ([`Self::read_as_dense`]).
+    fn load(&self, compiled: &CompiledTraining) -> Result<Loaded, Box<(DataError, Option<&str>)>> {
         let forward = &compiled.forward;
         let mut config = compiled.config.clone();
         config.steps = config.steps.saturating_add(self.start());
         let config = &config;
-        let data = match &self.data {
-            Some(dir) => Some(data::dense(dir, config, forward)?),
-            None => None,
+        let plain = |error: DataError| Box::new((error, None));
+        let data = match (&self.data, &self.binding) {
+            (Some(dir), Some(binding)) => Some(TrainData::Packed(
+                data::packed(dir, binding.clone(), config, forward).map_err(plain)?,
+            )),
+            (Some(dir), None) => Some(TrainData::Dense(
+                data::dense(dir, config, forward)
+                    .map_err(|error| Box::new((error, self.read_as_dense.as_deref())))?,
+            )),
+            (None, _) => None,
         };
         let init = match (&self.init, &self.resume) {
             (_, Some((_, values))) => values.clone(),
-            (Some(dir), None) => init::read_params(dir, &forward.program)?,
+            (Some(dir), None) => init::read_params(dir, &forward.program).map_err(plain)?,
             (None, None) => BTreeMap::new(),
         };
         let eval = match &self.eval {
-            Some(dir) => Some(data::dense_eval(dir, config, forward)?),
+            Some(dir) => Some(data::dense_eval(dir, config, forward).map_err(plain)?),
             None => None,
         };
         Ok(Loaded { data, init, eval })
@@ -461,6 +510,30 @@ pub fn run(args: Args, stdout: &mut dyn Write, stderr: &mut dyn Write) -> u8 {
             }
         }
     };
+    let binding = match &args.data {
+        None => None,
+        Some(dir) => match data::source(dir, &compiled.config) {
+            Ok(DataSource::Dense) => None,
+            Ok(DataSource::Packed(binding)) => Some(binding),
+            Err(error) => {
+                let _ = writeln!(stderr, "modelspec train {file}: {error}");
+                return crate::EXIT_FAILURE;
+            }
+        },
+    };
+    if let (Some(dir), Some(_), Some(_)) = (&args.data, &binding, &args.eval) {
+        let _ = writeln!(
+            stderr,
+            "error: the argument '--eval' reads dense evaluation tensors, and the '--data' \
+             directory {} is a packed MLM directory",
+            dir.display()
+        );
+        return crate::EXIT_USAGE;
+    }
+    let read_as_dense = match (&args.data, &binding) {
+        (Some(dir), None) => data::read_as_dense(dir, &compiled.config),
+        _ => None,
+    };
     let ui = match &args.ui {
         None => None,
         Some(dir) => match Ui::read(dir) {
@@ -545,6 +618,8 @@ pub fn run(args: Args, stdout: &mut dyn Write, stderr: &mut dyn Write) -> u8 {
     };
     let files = Files {
         data: args.data,
+        binding,
+        read_as_dense,
         init: args.init,
         eval: args.eval,
         checkpoint: args.checkpoint,
@@ -554,6 +629,11 @@ pub fn run(args: Args, stdout: &mut dyn Write, stderr: &mut dyn Write) -> u8 {
     emit(RunEventBody::RunStarted(RunStarted {
         steps: compiled.config.steps,
         start_step: files.start(),
+        // `data::source` refuses a binding whose id is not the UUID of its fields.
+        data_binding_id: files
+            .binding
+            .as_ref()
+            .and_then(|binding| binding.binding_id.parse().ok()),
     }));
     let mut handler = None;
     let outcome = train(
@@ -742,7 +822,14 @@ fn train(
         };
         let loaded = match files.load(compiled) {
             Ok(loaded) => loaded,
-            Err(error) => break 'run Err(RunError::from(error).into()),
+            Err(failed) => {
+                let (error, before) = *failed;
+                if let Some(line) = before {
+                    end();
+                    let _ = writeln!(stderr, "modelspec train {file}: {line}");
+                }
+                break 'run Err(RunError::from(error).into());
+            }
         };
         let start = files.start();
         let end = start.saturating_add(compiled.config.steps);
@@ -763,9 +850,9 @@ fn train(
             };
             step_completed(o.step, o.loss, parameters);
         };
-        let run = match runner::run_from(
+        let run = match runner::run_on(
             compiled,
-            loaded.data.as_ref(),
+            loaded.data.as_ref().map(TrainData::as_data),
             &loaded.init,
             start,
             observe,
@@ -801,8 +888,9 @@ fn train(
         }
         Err(Failure::Diverged(diverged, counters)) => {
             let Diverged { diagnostic, run } = *diverged;
+            let printed = report(compiled, files.binding.as_ref(), &run, None, false);
             let _ = stdout
-                .write_all(report(compiled, &run, None, false).as_bytes())
+                .write_all(printed.as_bytes())
                 .and_then(|()| stdout.flush());
             end();
             let _ = writeln!(stderr, "{diagnostic}");
@@ -821,7 +909,7 @@ fn train(
             });
         }
     };
-    let printed = report(compiled, &run, eval, true);
+    let printed = report(compiled, files.binding.as_ref(), &run, eval, true);
     let body = printed.trim_end_matches('\n');
     let (head, last) = printed.split_at(body.rfind('\n').map_or(0, |i| i + 1));
     let written = stdout
@@ -906,10 +994,32 @@ fn device_parameters(
 }
 
 /// The stdout of a run: of a finished one, or without its `param` lines of one that stopped at
-/// its last loss (E-TRAIN-001).
-fn report(compiled: &CompiledTraining, run: &Run, eval: Option<Eval>, finished: bool) -> String {
+/// its last loss (E-TRAIN-001); a run on a packed directory starts with the `data` line of its
+/// `binding`.
+fn report(
+    compiled: &CompiledTraining,
+    binding: Option<&TrainingDataBinding>,
+    run: &Run,
+    eval: Option<Eval>,
+    finished: bool,
+) -> String {
     let params = paths(compiled);
     let mut out = String::new();
+    if let Some(binding) = binding {
+        let policy = &binding.masking_policy;
+        let _ = writeln!(
+            out,
+            "data dataset {} tokenizer {} seq_len {} masking {}/{}/{}/{} binding {}",
+            binding.dataset_id,
+            binding.tokenizer_id,
+            binding.seq_len,
+            policy.selection_rate,
+            policy.mask_fraction,
+            policy.random_fraction,
+            policy.keep_fraction,
+            binding.binding_id
+        );
+    }
     let tensors = |out: &mut String, label: &str, values: &BTreeMap<ParamId, HostTensor<f32>>| {
         for (&path, id) in &params {
             let ty = &compiled.forward.program.params[id].ty;

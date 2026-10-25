@@ -20,10 +20,22 @@
 //! program could not take a value for it; it is refused at its declaration ([`E_DATA_003`])
 //! before anything runs. Neither source supplies `i32` row ids: an `i32` declaration is refused
 //! at its declaration too ([`E_DATA_004`]).
+//!
+//! Packed masked-language-model data ([`source`], [`packed`]; story:bert-train-data-binding,
+//! coordinator decision D48): a `--data` directory that holds [`BINDING_FILE`] is a directory
+//! `modelspec data pack` wrote. Each `input` and `target` declaration names one tensor of the
+//! [`MlmBatch`] (`ids`, `positions`, `key_mask`, `labels`, `weights`), declared `[B, S]` or
+//! `[B·S]` with `S` the packed sequence length, and training step `k` feeds the tensors of
+//! [`mlm_batch`] of the `Train` split at step `k` with the run seed and the policy of the
+//! binding. A declaration that names no batch tensor is [`E_DATA_005`] and one of another dtype
+//! or shape [`E_DATA_006`], both before any file but the binding is read; E-DATA-001, E-DATA-002
+//! and E-DATA-004 do not apply, and E-DATA-003 does. A directory without [`BINDING_FILE`] stays
+//! dense, and when every declaration names a batch tensor its dense refusal follows the line of
+//! [`read_as_dense`] (coordinator decision D56).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::ErrorKind;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use modelspec_core::diag::{Code, Diagnostic};
 use modelspec_core::hir::DataRole;
@@ -34,8 +46,14 @@ use thiserror::Error;
 
 use super::init::{InitError, Stream, initialize, standard_normal};
 use crate::cpu::{HostTensor, RuntimeError, evaluate_all};
+use crate::dataset::SplitRole;
+use crate::dataset::mlm::{
+    self, BINDING_FILE, MlmBatch, Packed, TrainingDataBinding, binding_id, mlm_batch,
+};
 
-/// The `train` block does not declare exactly one `input` and one `target`.
+/// The `train` block does not declare exactly one `input` and one `target`. On a `--data`
+/// directory without `binding.json`, read as dense, under declarations that all name batch
+/// tensors, `train` prints a line naming the directory and `binding.json` before it.
 pub const E_DATA_001: Code = Code::new("E-DATA-001");
 /// The `target` is not of the model output type.
 pub const E_DATA_002: Code = Code::new("E-DATA-002");
@@ -44,6 +62,15 @@ pub const E_DATA_003: Code = Code::new("E-DATA-003");
 /// A declared `input` or `target` is `i32`: synthetic data draws `f32` values and dense files
 /// hold `f32`, so neither can supply row ids.
 pub const E_DATA_004: Code = Code::new("E-DATA-004");
+/// A declared `input` or `target` of a run on a packed `--data` directory names no tensor of the
+/// masked-language-model batch (`ids`, `positions`, `key_mask`, `labels`, `weights`), or the
+/// `train` block of such a run declares none.
+pub const E_DATA_005: Code = Code::new("E-DATA-005");
+/// A declared `input` or `target` of a run on a packed `--data` directory is not of the type of
+/// its batch tensor: `i32` for `ids`, `positions` and `labels`, `f32` for `key_mask` and
+/// `weights`, of shape `[B, S]` or `[B·S]` with `S` the packed sequence length and one `B` for
+/// every declaration.
+pub const E_DATA_006: Code = Code::new("E-DATA-006");
 /// A data, order or `--init` file is missing, unreadable, or not a whole number of samples (for
 /// `--init`, not the parameter's size), or a data or `--init` file holds a NaN or an infinity, or
 /// the data files differ in sample count, or the `input` and `target` do not share a leading
@@ -76,6 +103,10 @@ pub enum DataError {
     Init(#[from] InitError),
     #[error(transparent)]
     Runtime(#[from] RuntimeError),
+    /// The packed directory `dir` cannot be read or holds no batch of the run: `reason` is the
+    /// reader's error, which names the file it concerns.
+    #[error("cannot read the packed directory {}: {reason}", dir.display())]
+    Packed { dir: PathBuf, reason: String },
 }
 
 /// The synthetic data of `config` for the forward program `lowered`, whose value
@@ -152,6 +183,14 @@ fn declarations<'c>(
                 .with("model output", output.to_string()),
         ));
     }
+    refuse_unread(lowered)?;
+    Ok((input, target))
+}
+
+/// [`E_DATA_003`] at the first declaration of `lowered.declared_inputs` the program has no
+/// `Input` node for.
+fn refuse_unread(lowered: &LoweredProgram) -> Result<(), DataError> {
+    let forward = &lowered.program;
     let read: BTreeSet<&str> = forward
         .inputs
         .iter()
@@ -178,7 +217,7 @@ fn declarations<'c>(
             .with(role, unread.name.clone()),
         ));
     }
-    Ok((input, target))
+    Ok(())
 }
 
 /// Dense data read from a directory: a value of every sample of the `input` and the `target`,
@@ -503,6 +542,404 @@ pub(crate) fn unreadable(what: &str, path: &Path, error: &std::io::Error) -> Dat
         Diagnostic::new(E_DATA_007, format!("cannot read {what}"))
             .with("file", path.display().to_string())
             .with("error", error.to_string()),
+    )
+}
+
+/// A tensor of the masked-language-model batch, the field of [`MlmBatch`] a declaration names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BatchTensor {
+    Ids,
+    Positions,
+    KeyMask,
+    Labels,
+    Weights,
+}
+
+impl BatchTensor {
+    /// Every batch tensor, in the order `B` is read from the declarations (coordinator decision
+    /// D48).
+    const ALL: [BatchTensor; 5] = [
+        BatchTensor::Ids,
+        BatchTensor::Positions,
+        BatchTensor::KeyMask,
+        BatchTensor::Labels,
+        BatchTensor::Weights,
+    ];
+
+    fn name(self) -> &'static str {
+        match self {
+            BatchTensor::Ids => "ids",
+            BatchTensor::Positions => "positions",
+            BatchTensor::KeyMask => "key_mask",
+            BatchTensor::Labels => "labels",
+            BatchTensor::Weights => "weights",
+        }
+    }
+
+    fn dtype(self) -> DType {
+        match self {
+            BatchTensor::Ids | BatchTensor::Positions | BatchTensor::Labels => DType::I32,
+            BatchTensor::KeyMask | BatchTensor::Weights => DType::F32,
+        }
+    }
+
+    fn of(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|t| t.name() == name)
+    }
+}
+
+/// What the directory of `--data` holds.
+#[derive(Clone, Debug, PartialEq)]
+pub enum DataSource {
+    /// Dense `f32` files ([`dense`]).
+    Dense,
+    /// A packed masked-language-model directory and its binding, read from [`BINDING_FILE`]
+    /// ([`packed`]).
+    Packed(TrainingDataBinding),
+}
+
+/// The `input` and `target` declarations of `config`, in source order, each with its role.
+fn in_source_order(config: &TrainConfig) -> Vec<(&DataDecl, &'static str)> {
+    let mut decls: Vec<(&DataDecl, &'static str)> = config
+        .inputs
+        .iter()
+        .map(|d| (d, "input"))
+        .chain(config.targets.iter().map(|d| (d, "target")))
+        .collect();
+    decls.sort_by_key(|(d, _)| (d.span.line, d.span.column));
+    decls
+}
+
+/// Whether `config` declares an `input` or `target` and every one names a batch tensor.
+fn batch_only(config: &TrainConfig) -> bool {
+    let decls = in_source_order(config);
+    !decls.is_empty()
+        && decls
+            .iter()
+            .all(|(d, _)| BatchTensor::of(&d.name).is_some())
+}
+
+/// The line `train` prints before the dense refusal of `dir` when `dir` holds no
+/// [`BINDING_FILE`], so it is read as a dense directory, although every `input` and `target`
+/// declaration of `config` names a batch tensor: `<dir> holds no binding.json, so it is read as a
+/// dense directory` (coordinator decision D56). `None` when `dir` holds the file or a
+/// declaration names no batch tensor.
+pub fn read_as_dense(dir: &Path, config: &TrainConfig) -> Option<String> {
+    let absent = std::fs::metadata(dir.join(BINDING_FILE)).is_err();
+    (absent && batch_only(config)).then(|| {
+        format!(
+            "{} holds no {BINDING_FILE}, so it is read as a dense directory",
+            dir.display()
+        )
+    })
+}
+
+/// What `dir` holds: a packed directory when it holds [`BINDING_FILE`], whose binding is read and
+/// checked here and is the only file read, and dense files otherwise (coordinator decision D48).
+/// A directory that does not exist is read as packed when the `train` block declares batch
+/// tensors only, so that its run is refused naming the directory, and as dense otherwise, whose
+/// refusals do not change ([`read_as_dense`] is the line `train` prints before them). A binding that cannot be read, or whose `binding_id` is not the id of
+/// its fields, is [`DataError::Packed`].
+pub fn source(dir: &Path, config: &TrainConfig) -> Result<DataSource, DataError> {
+    let file = dir.join(BINDING_FILE);
+    let unreadable = |reason: String| DataError::Packed {
+        dir: dir.to_path_buf(),
+        reason: format!("{}: {reason}", file.display()),
+    };
+    if std::fs::metadata(&file).is_err() {
+        return match std::fs::metadata(dir) {
+            Err(error) if error.kind() == ErrorKind::NotFound && batch_only(config) => {
+                Err(DataError::Packed {
+                    dir: dir.to_path_buf(),
+                    reason: error.to_string(),
+                })
+            }
+            _ => Ok(DataSource::Dense),
+        };
+    }
+    let text = std::fs::read_to_string(&file).map_err(|e| unreadable(e.to_string()))?;
+    let binding: TrainingDataBinding =
+        serde_json::from_str(&text).map_err(|e| unreadable(e.to_string()))?;
+    let id = binding_id(
+        &binding.dataset_id,
+        &binding.tokenizer_id,
+        binding.seq_len,
+        &binding.masking_policy,
+    );
+    if binding.seq_len == 0 || id.as_deref() != Some(binding.binding_id.as_str()) {
+        return Err(unreadable(format!(
+            "binding_id {} is not the id of its dataset, tokenizer, seq_len and masking policy",
+            binding.binding_id
+        )));
+    }
+    Ok(DataSource::Packed(binding))
+}
+
+/// The training data of a packed `--data` directory: the packed sequences, the binding they are
+/// drawn with, and the declaration each batch tensor feeds.
+pub struct PackedData {
+    dir: PathBuf,
+    binding: TrainingDataBinding,
+    packed: Packed,
+    /// The batch dimension `B`, sequences per step.
+    batch: usize,
+    seed: u64,
+    /// Each declaration's batch tensor, name and shape, in source order.
+    bound: Vec<(BatchTensor, String, Vec<u64>)>,
+}
+
+/// The inputs of one training step of a [`PackedData`]: its `f32` tensors and its `i32` tensors,
+/// by declaration name, as the interpreter takes them ([`crate::cpu::evaluate_with_ids`]).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PackedBatch {
+    inputs: BTreeMap<String, HostTensor<f32>>,
+    ids: BTreeMap<String, HostTensor<i32>>,
+}
+
+impl PackedBatch {
+    /// The `f32` tensors, `key_mask` and `weights`, by name.
+    pub fn inputs(&self) -> &BTreeMap<String, HostTensor<f32>> {
+        &self.inputs
+    }
+
+    /// The `i32` tensors, `ids`, `positions` and `labels`, by name.
+    pub fn ids(&self) -> &BTreeMap<String, HostTensor<i32>> {
+        &self.ids
+    }
+}
+
+impl PackedData {
+    /// The binding the batches are drawn with.
+    pub fn binding(&self) -> &TrainingDataBinding {
+        &self.binding
+    }
+
+    /// The batch dimension `B`.
+    pub fn batch(&self) -> usize {
+        self.batch
+    }
+
+    /// The inputs of training step `k`: the declared tensors of [`mlm_batch`] of the `Train`
+    /// split at step `k`, with the run seed and the binding's masking policy. A new batch each
+    /// call; the training loop refills one with [`Self::fill_step`].
+    pub fn step(&self, k: u64) -> Result<PackedBatch, DataError> {
+        let mut batch = PackedBatch::default();
+        self.fill_step(k, &mut batch)?;
+        Ok(batch)
+    }
+
+    /// Replaces the tensors of `batch` with the inputs of training step `k` ([`Self::step`]).
+    pub fn fill_step(&self, k: u64, batch: &mut PackedBatch) -> Result<(), DataError> {
+        let policy = &self.binding.masking_policy;
+        let mut drawn = mlm_batch(
+            &self.packed,
+            SplitRole::Train,
+            policy,
+            self.seed,
+            k,
+            self.batch,
+        )
+        .map_err(|e| DataError::Packed {
+            dir: self.dir.clone(),
+            reason: e.to_string(),
+        })?;
+        let MlmBatch {
+            ids,
+            positions,
+            key_mask,
+            labels,
+            weights,
+        } = &mut drawn;
+        for (tensor, name, shape) in &self.bound {
+            let shape = shape.clone();
+            match tensor {
+                BatchTensor::Ids | BatchTensor::Positions | BatchTensor::Labels => {
+                    let data = match tensor {
+                        BatchTensor::Ids => std::mem::take(ids),
+                        BatchTensor::Positions => std::mem::take(positions),
+                        _ => std::mem::take(labels),
+                    };
+                    batch
+                        .ids
+                        .insert(name.clone(), HostTensor::from_parts(shape, data));
+                }
+                BatchTensor::KeyMask | BatchTensor::Weights => {
+                    let data = match tensor {
+                        BatchTensor::KeyMask => std::mem::take(key_mask),
+                        _ => std::mem::take(weights),
+                    };
+                    batch
+                        .inputs
+                        .insert(name.clone(), HostTensor::from_parts(shape, data));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The training data of the packed directory `dir`, whose binding [`source`] read: refused with
+/// [`E_DATA_005`], [`E_DATA_006`] and [`E_DATA_003`] as [`bind`] refuses, before any packed file
+/// is read; then the packed files are read once ([`mlm::load`]), and a directory whose record
+/// does not belong to the binding or holds fewer `Train` sequences than `B` is
+/// [`DataError::Packed`].
+pub fn packed(
+    dir: &Path,
+    binding: TrainingDataBinding,
+    config: &TrainConfig,
+    lowered: &LoweredProgram,
+) -> Result<PackedData, DataError> {
+    let (batch, bound) = bind(&binding, config, lowered)?;
+    let failed = |reason: String| DataError::Packed {
+        dir: dir.to_path_buf(),
+        reason,
+    };
+    let packed = mlm::load(dir).map_err(|e| failed(e.to_string()))?;
+    if packed.record.binding_id != binding.binding_id || packed.record.seq_len != binding.seq_len {
+        return Err(failed(format!(
+            "{}: binding_id {} and seq_len {} are not those of {BINDING_FILE}",
+            dir.join(mlm::PACKED_FILE).display(),
+            packed.record.binding_id,
+            packed.record.seq_len
+        )));
+    }
+    let sequences = packed.sequence_count(SplitRole::Train);
+    if batch > sequences {
+        return Err(failed(format!(
+            "a batch of {batch} sequences, more than the {sequences} of the Train split"
+        )));
+    }
+    Ok(PackedData {
+        dir: dir.to_path_buf(),
+        binding,
+        packed,
+        batch,
+        seed: config.seed,
+        bound,
+    })
+}
+
+/// The batch dimension of `config`'s declarations and the batch tensor each one names, for the
+/// sequence length of `binding` (coordinator decision D48). Refused, in this order: with
+/// [`E_DATA_005`] at the first declaration in source order that names no batch tensor, or at the
+/// block when it declares none; with [`E_DATA_006`] at the first declaration in the order `ids`,
+/// `positions`, `key_mask`, `labels`, `weights` when its shape gives no `B` (`[B, S]` gives `B`,
+/// `[N]` gives `N / S` when `S` divides `N`); with [`E_DATA_006`] at the first declaration in
+/// source order whose dtype is not its tensor's or whose shape is neither `[B, S]` nor `[B·S]`;
+/// with [`E_DATA_003`] at a declaration the loss does not read.
+#[allow(clippy::type_complexity)]
+fn bind(
+    binding: &TrainingDataBinding,
+    config: &TrainConfig,
+    lowered: &LoweredProgram,
+) -> Result<(usize, Vec<(BatchTensor, String, Vec<u64>)>), DataError> {
+    let seq_len = binding.seq_len;
+    let decls = in_source_order(config);
+    if decls.is_empty() {
+        return Err(DataError::Refused(
+            Diagnostic::new(
+                E_DATA_005,
+                "a run on a packed directory declares no batch tensor",
+            )
+            .at(config.span.clone())
+            .with("batch tensors", batch_tensor_names()),
+        ));
+    }
+    let mut named = Vec::new();
+    for &(decl, role) in &decls {
+        let Some(tensor) = BatchTensor::of(&decl.name) else {
+            return Err(DataError::Refused(
+                Diagnostic::new(
+                    E_DATA_005,
+                    format!(
+                        "the {role} `{}` names no tensor of the masked-language-model batch",
+                        decl.name
+                    ),
+                )
+                .at(decl.span.clone())
+                .with(role, decl.name.clone())
+                .with("batch tensors", batch_tensor_names()),
+            ));
+        };
+        named.push((tensor, decl, role));
+    }
+    let static_shape = |decl: &DataDecl| -> Option<Vec<u64>> {
+        decl.ty
+            .shape
+            .iter()
+            .map(|dim| match *dim {
+                Dim::Static(n) if n > 0 => Some(n),
+                _ => None,
+            })
+            .collect()
+    };
+    let (_, first, role) = BatchTensor::ALL
+        .iter()
+        .find_map(|&t| named.iter().find(|(n, _, _)| *n == t))
+        .copied()
+        .expect("every declaration names a batch tensor");
+    let batch = match static_shape(first).as_deref() {
+        Some(&[b, s]) if s == seq_len => Some(b),
+        Some(&[n]) if n.is_multiple_of(seq_len) => Some(n / seq_len),
+        _ => None,
+    };
+    let Some(batch) = batch else {
+        let dtype = BatchTensor::of(&first.name).expect("named").dtype();
+        return Err(mismatch(
+            first,
+            role,
+            format!("Tensor<{dtype}, [B, {seq_len}]> or Tensor<{dtype}, [B·{seq_len}]>"),
+        ));
+    };
+    let rows = batch.checked_mul(seq_len);
+    let mut bound = Vec::new();
+    for (tensor, decl, role) in named {
+        let dtype = tensor.dtype();
+        let shape = static_shape(decl);
+        let fits = decl.ty.dtype == dtype
+            && match shape.as_deref() {
+                Some(&[b, s]) => b == batch && s == seq_len,
+                Some(&[n]) => Some(n) == rows,
+                _ => false,
+            };
+        let shape = match (fits, shape) {
+            (true, Some(shape)) => shape,
+            _ => {
+                let rows = rows.map_or_else(|| format!("{batch}·{seq_len}"), |n| n.to_string());
+                return Err(mismatch(
+                    decl,
+                    role,
+                    format!("Tensor<{dtype}, [{batch}, {seq_len}]> or Tensor<{dtype}, [{rows}]>"),
+                ));
+            }
+        };
+        bound.push((tensor, decl.name.clone(), shape));
+    }
+    refuse_unread(lowered)?;
+    let batch = usize::try_from(batch).map_err(|_| InitError::Shape {
+        path: first.name.clone(),
+    })?;
+    Ok((batch, bound))
+}
+
+/// The names of the batch tensors, for a diagnostic.
+fn batch_tensor_names() -> String {
+    BatchTensor::ALL.map(BatchTensor::name).join(", ")
+}
+
+/// [`E_DATA_006`] at `decl`, whose batch tensor has the type `expected`.
+fn mismatch(decl: &DataDecl, role: &str, expected: String) -> DataError {
+    DataError::Refused(
+        Diagnostic::new(
+            E_DATA_006,
+            format!(
+                "the {role} `{}` is not of the type of the batch tensor `{}`",
+                decl.name, decl.name
+            ),
+        )
+        .at(decl.span.clone())
+        .with(role, decl.ty.to_string())
+        .with("expected", expected),
     )
 }
 

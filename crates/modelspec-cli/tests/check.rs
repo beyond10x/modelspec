@@ -190,6 +190,7 @@ fixtures! {
     e_type_019_heads_not_a_literal => "E-TYPE-019-heads-not-a-literal.mspec",
     e_type_020_heads_not_dividing_width => "E-TYPE-020-heads-not-dividing-width.mspec",
     e_type_021_key_mask_reads_parameter => "E-TYPE-021-key-mask-reads-parameter.mspec",
+    e_type_022_dropout_rate_outside_0_1 => "E-TYPE-022-dropout-rate-outside-0-1.mspec",
     rule_seed_fits_u64 => "rule-seed-fits-u64.mspec",
     rule_optimizer_is_sgd => "rule-optimizer-is-sgd.mspec",
     rule_learning_rate_finite => "rule-learning-rate-finite.mspec",

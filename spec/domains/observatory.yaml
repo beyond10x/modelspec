@@ -126,7 +126,7 @@ types:
   - name: modelspec.observatory.RunStarted
     kind: struct
     naming:
-      summary: The event of a run starting, the first of its stream (RunEventBody). It carries the two TrainingRun fields that say which steps follow, start_step through start_step + steps (DESIGN.md § 6); the other record fields are the run's artifact and record, which M0 does not write (story:m0-cpu-sgd-training, Out of scope).
+      summary: The event of a run starting, the first of its stream (RunEventBody). It carries the two TrainingRun fields that say which steps follow, start_step through start_step + steps (DESIGN.md § 6), and the TrainingRun field that says what a masked-language-model run trains on, data_binding_id; the other record fields are the run's artifact and record, which M0 does not write (story:m0-cpu-sgd-training, Out of scope).
     fields:
       - name: steps
         type: Integer
@@ -134,6 +134,9 @@ types:
       - name: start_step
         type: Integer
         summary: TrainingRun.start_step, the step of the first StepCompleted.
+      - name: data_binding_id
+        type: Optional<modelspec.data.TrainingDataBindingId>
+        summary: TrainingRun.data_binding_id, the binding_id of the `binding.json` of the packed directory `modelspec train --data` trains on; absent for a run on synthetic or dense data (story:bert-train-data-binding, coordinator decision D48, 2026-10-25, `.engineering/waves/bert-1.md`).
     invariants:
       - steps >= 0
       - start_step >= 0
@@ -197,8 +200,8 @@ types:
   - name: modelspec.observatory.TensorOperator
     kind: enum
     naming:
-      summary: The Tensor IR operations, ReluGrad, BroadcastScalar, EmbeddingGrad, SumRows, GeluGrad, LayerNormGradX, LayerNormGradGamma, SoftmaxGrad, AttentionGradQ, AttentionGradK, AttentionGradV and CrossEntropyGrad being internal gradient ops (DESIGN.md § 3.1, § 4; `TensorOp` in `modelspec-core/src/ir/tensor.rs`). The operators of epic:bert-from-scratch join as the compiler gains them.
-    variants: [Input, ParamRead, Scalar, Add, Sub, Mul, MatMul, Relu, Transpose, ReduceSum, ReduceMean, Mse, ReluGrad, BroadcastScalar, Embedding, EmbeddingGrad, AddRows, SumRows, Gelu, GeluGrad, LayerNorm, LayerNormGradX, LayerNormGradGamma, Softmax, SoftmaxGrad, Attention, AttentionGradQ, AttentionGradK, AttentionGradV, CrossEntropy, CrossEntropyGrad]
+      summary: The Tensor IR operations, ReluGrad, BroadcastScalar, EmbeddingGrad, SumRows, GeluGrad, LayerNormGradX, LayerNormGradGamma, SoftmaxGrad, AttentionGradQ, AttentionGradK, AttentionGradV, CrossEntropyGrad and DropoutGrad being internal gradient ops (DESIGN.md § 3.1, § 4; `TensorOp` in `modelspec-core/src/ir/tensor.rs`). The operators of epic:bert-from-scratch join as the compiler gains them.
+    variants: [Input, ParamRead, Scalar, Add, Sub, Mul, MatMul, Relu, Transpose, ReduceSum, ReduceMean, Mse, ReluGrad, BroadcastScalar, Embedding, EmbeddingGrad, AddRows, SumRows, Gelu, GeluGrad, LayerNorm, LayerNormGradX, LayerNormGradGamma, Softmax, SoftmaxGrad, Attention, AttentionGradQ, AttentionGradK, AttentionGradV, CrossEntropy, CrossEntropyGrad, Dropout, DropoutGrad]
 
   - name: modelspec.observatory.Subgraph
     kind: enum

@@ -771,6 +771,19 @@ impl<'s> Parser<'s> {
         }
     }
 
+    /// `-` then a float literal, the value of a named argument such as `p = -0.1`, so the checker
+    /// can name the value it refuses (`E-TYPE-022`). Nowhere else is `-` a sign: an integer
+    /// literal after it, as in `heads = -1`, stays E-SYNTAX-009.
+    fn negative_float(&mut self) -> PResult<Expr> {
+        let span = self.span();
+        self.bump();
+        let value = self.float()?;
+        Ok(Expr {
+            kind: ExprKind::Float(-value),
+            span,
+        })
+    }
+
     /// An expression. An operator before or after it is reported as E-SYNTAX-009 by
     /// [`Parser::unexpected`] when the caller expects the next token.
     fn expr(&mut self) -> PResult<Expr> {
@@ -850,7 +863,14 @@ impl<'s> Parser<'s> {
             } else {
                 None
             };
-            let value = self.expr()?;
+            let value = if name.is_some()
+                && self.peek() == Some(Token::Minus)
+                && self.peek_at(1) == Some(Token::Float)
+            {
+                self.negative_float()?
+            } else {
+                self.expr()?
+            };
             args.push(Arg { name, value, span });
             match self.peek() {
                 Some(Token::Comma) => self.bump(),

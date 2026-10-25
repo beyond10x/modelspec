@@ -1,0 +1,13 @@
+{
+  "at": "2026-10-25T08:37:17Z",
+  "actor": "human:timo",
+  "artifact": "story:bert-dropout",
+  "kind": "story",
+  "revision": 8,
+  "change": {
+    "change": "evidence",
+    "kind": "test_result",
+    "source": "task ci",
+    "reference": "1ef1562a50e3a3c24aa3302e463ead6e39f970cd"
+  }
+}

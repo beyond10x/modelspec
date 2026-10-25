@@ -2,7 +2,7 @@
 format: aep.planning-md/3
 id: story:bert-train-data-binding
 kind: story
-status: draft
+status: implemented
 title: 'Train on packed MLM batches: modelspec train --data binds batch tensors by name'
 summary: modelspec train --backend cpu --data binds train-block declarations to MlmBatch tensors by name, with E-DATA-005 and E-DATA-006, and writes the run record whose type story:bert-mlm-batches declares.
 relations:
@@ -31,7 +31,11 @@ scope:
   path: website/docs/reference/cli.md
 - confidence: cited
   path: website/docs/reference/diagnostics.md
-revision: 4
+revision: 7
+transitions:
+- {from: "draft", to: "proposed", at: "2026-10-25T07:27:03Z", actor: "human:timo", revision: 5}
+- {from: "proposed", to: "active", at: "2026-10-25T07:27:03Z", actor: "human:timo", revision: 6}
+- {from: "active", to: "implemented", at: "2026-10-25T09:31:08Z", actor: "human:timo", revision: 7, decided_on: {"recorded":{"test_result":1,"review_outcome":1}}}
 ---
 # Train on packed MLM batches: modelspec train --data binds batch tensors by name
 
