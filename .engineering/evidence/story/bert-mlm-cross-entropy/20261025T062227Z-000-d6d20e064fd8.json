@@ -1,0 +1,13 @@
+{
+  "at": "2026-10-25T06:22:27Z",
+  "actor": "human:timo",
+  "artifact": "story:bert-mlm-cross-entropy",
+  "kind": "story",
+  "revision": 6,
+  "change": {
+    "change": "evidence",
+    "kind": "test_result",
+    "source": "task ci",
+    "reference": "84cd4c53d97972ca99fc4feb29690f1c893b2e47"
+  }
+}
