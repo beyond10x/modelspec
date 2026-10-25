@@ -2,7 +2,7 @@
 format: aep.planning-md/3
 id: story:bert-layer-norm-softmax
 kind: story
-status: active
+status: implemented
 title: Layer norm and softmax over the last axis, gradient-checked on the CPU
 summary: Adds layer_norm (eps 1e-12) and a max-subtracted softmax with their internal gradient ops on the CPU interpreter, each with an f64 finite-difference check.
 relations:
@@ -46,10 +46,11 @@ scope:
   path: ui/src/generated/
 - confidence: cited
   path: website/docs/reference/operators.md
-revision: 5
+revision: 6
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-25T00:34:50Z", actor: "human:timo", revision: 4}
 - {from: "proposed", to: "active", at: "2026-10-25T00:34:50Z", actor: "human:timo", revision: 5}
+- {from: "active", to: "implemented", at: "2026-10-25T02:29:32Z", actor: "human:timo", revision: 6, decided_on: {"recorded":{"test_result":1,"review_outcome":1}}}
 ---
 # Layer norm and softmax over the last axis, gradient-checked on the CPU
 

@@ -1,0 +1,13 @@
+{
+  "at": "2026-10-25T02:29:32Z",
+  "actor": "human:timo",
+  "artifact": "story:bert-layer-norm-softmax",
+  "kind": "story",
+  "revision": 5,
+  "change": {
+    "change": "evidence",
+    "kind": "test_result",
+    "source": "task ci",
+    "reference": "1876714cdbbe3fd7d0a14f2a13316e0c79e90ad6"
+  }
+}
