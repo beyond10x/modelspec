@@ -1,0 +1,13 @@
+{
+  "at": "2026-10-25T05:43:28Z",
+  "actor": "human:timo",
+  "artifact": "story:sweep-run-starts-busy",
+  "kind": "story",
+  "revision": 4,
+  "change": {
+    "change": "evidence",
+    "kind": "test_result",
+    "source": "task ci",
+    "reference": "fb9caedd935b868d4dfe347d806393eabdcbd5b2"
+  }
+}

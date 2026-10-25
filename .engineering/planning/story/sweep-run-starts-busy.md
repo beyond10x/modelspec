@@ -2,15 +2,16 @@
 format: aep.planning-md/3
 id: story:sweep-run-starts-busy
 kind: story
-status: active
+status: implemented
 title: 'A timed sweep run starts busy: no GPU idle at the start of a run'
 relations:
 - serves: vision:modelspec
 - depends_on: story:fuse-elementwise-chains-and-gradient-sums
-revision: 4
+revision: 5
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-25T04:08:55Z", actor: "human:timo", revision: 2}
 - {from: "proposed", to: "active", at: "2026-10-25T04:08:55Z", actor: "human:timo", revision: 3}
+- {from: "active", to: "implemented", at: "2026-10-25T05:43:29Z", actor: "human:timo", revision: 5, decided_on: {"recorded":{"test_result":1,"review_outcome":1}}}
 ---
 # A timed sweep run starts busy: no GPU idle at the start of a run
 
