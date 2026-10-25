@@ -149,8 +149,10 @@ fn profile_is_a_usage_error_on_the_cpu() {
 /// A Dispatch step of the step plan: `(position, kernel module id)`.
 type Site = (usize, String);
 
-/// The Dispatch steps of the step plan, and of them those up to the last that writes the loss,
-/// as `modelspec ir --stage kernel` prints the plan.
+/// The Dispatch steps of the step plan, as `modelspec ir --stage kernel` prints the plan, and of
+/// them those the final loss evaluation records: the steps the loss is computed from
+/// (`ExecutionPlan::loss_steps`, story:step-sites-beat-pytorch), no longer every step up to the
+/// last that writes the loss.
 fn dispatch_sites(file: &str) -> (Vec<Site>, Vec<Site>) {
     let ir = modelspec(&["ir", file, "--stage", "kernel"], None);
     assert_eq!(ir.status.code(), Some(0), "{}", text(&ir.stderr));
@@ -166,14 +168,7 @@ fn dispatch_sites(file: &str) -> (Vec<Site>, Vec<Site>) {
             )
         })
         .collect();
-    let loss = ir
-        .lines()
-        .find_map(|l| l.strip_prefix("loss "))
-        .and_then(|view| view.split('[').next())
-        .expect("the plan names the loss view")
-        .to_owned();
     let mut sites = Vec::new();
-    let mut loss_at = None;
     for line in ir
         .lines()
         .skip_while(|l| *l != "plan step")
@@ -186,20 +181,22 @@ fn dispatch_sites(file: &str) -> (Vec<Site>, Vec<Site>) {
             let kernel = rest.split(' ').next().unwrap();
             sites.push((at, kernels[kernel].clone()));
         }
-        if step
-            .split_once(" writes ")
-            .is_some_and(|(_, w)| w.starts_with(&format!("{loss}[")))
-        {
-            loss_at = Some(at);
-        }
     }
-    let loss_at = loss_at.expect("a step writes the loss");
-    let up_to_loss = sites
+    let source = std::fs::read_to_string(repo_root().join(file)).expect("the example reads");
+    let artifact = modelspec_core::compile::compile_artifact(
+        file,
+        &source,
+        modelspec_core::artifact::Backend::Vulkan,
+    )
+    .expect("the example compiles");
+    let loss_steps = artifact.execution.loss_steps();
+    assert!(!loss_steps.is_empty(), "a step writes the loss");
+    let evaluated = sites
         .iter()
-        .filter(|(at, _)| *at <= loss_at)
+        .filter(|(at, _)| loss_steps.contains(at))
         .cloned()
         .collect();
-    (sites, up_to_loss)
+    (sites, evaluated)
 }
 
 #[test]

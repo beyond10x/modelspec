@@ -1,0 +1,6 @@
+2026-10-25T10:29:10Z r1-modelspec gpu-apps-before []
+2026-10-25T10:30:03Z r1-pytorch-eager gpu-apps-before []
+2026-10-25T10:31:59Z r2-modelspec gpu-apps-before []
+2026-10-25T10:32:38Z r2-pytorch-eager gpu-apps-before []
+2026-10-25T10:33:12Z r3-modelspec gpu-apps-before []
+2026-10-25T10:33:43Z r3-pytorch-eager gpu-apps-before []

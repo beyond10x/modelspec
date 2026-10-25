@@ -13,8 +13,9 @@
 //! The CPU side is `cpu::matmul` with the kernel this CPU runs, checked at sampled elements
 //! against the written-out reference (`a[i, 0] * b[0, j]`, then `mul_add` per later `k`), and
 //! the interpreter's `mse` against the same reference over the terms. A `relu` epilogue's
-//! result is the compare and select of the CPU sum. The guard words after each view stay
-//! unchanged.
+//! result is the compare and select of the CPU sum, and a `ReluGrad` epilogue's the compare of a
+//! drawn pre-activation and the select of the CPU sum (story:step-sites-beat-pytorch). The guard
+//! words after each view stay unchanged.
 //!
 //! Ignored by default: it creates a Vulkan instance, which `task ci` never does. Run it with
 //! `MODELSPEC_VK_VALIDATION=1 cargo test --release -p modelspec-runtime --features vulkan --test vulkan_fma_oracle -- --ignored`.
@@ -175,7 +176,7 @@ fn run(
     device: &Device<'_>,
     kernel: &Kernel,
     spirv: &[u32],
-    inputs: [&[f32]; 2],
+    inputs: &[&[f32]],
     count: usize,
 ) -> Vec<Vec<f32>> {
     let uploads: Vec<Vec<f32>> = inputs
@@ -214,7 +215,7 @@ fn run(
         .dispatch_kernel(&pipeline, kernel, &bound)
         .expect("the dispatch is recorded");
     recording.barrier(Barrier::ComputeToTransfer);
-    for at in 2..buffers.len() {
+    for at in inputs.len()..buffers.len() {
         recording
             .copy(&buffers[at], &staging[at])
             .expect("the download is recorded");
@@ -226,7 +227,7 @@ fn run(
         .expect("submitted")
         .wait()
         .expect("the device finishes");
-    staging[2..]
+    staging[inputs.len()..]
         .iter_mut()
         .map(|buffer| buffer.read_f32().expect("the output reads"))
         .collect()
@@ -246,10 +247,17 @@ fn relu(x: f32) -> f32 {
     if x > 0.0 { x } else { 0.0 }
 }
 
-/// The views `kernel` writes from the sum `sum`, in binding order.
-fn expected_views(kernel: &Kernel, sum: &[f32]) -> Vec<Vec<f32>> {
+/// The views `kernel` writes from the sum `sum`, in binding order; a `ReluGrad` epilogue
+/// (story:step-sites-beat-pytorch) writes `x > 0 ? sum : 0.0` of its pre-activation `x`.
+fn expected_views(kernel: &Kernel, sum: &[f32], x: &[f32]) -> Vec<Vec<f32>> {
     match kernel.epilogue {
         None => vec![sum.to_vec()],
+        Some(Epilogue::ReluGrad) => vec![
+            sum.iter()
+                .zip(x)
+                .map(|(&s, &x)| if x > 0.0 { s } else { 0.0 })
+                .collect(),
+        ],
         Some(Epilogue::Relu {
             writes_pre_activation,
         }) => {
@@ -356,13 +364,19 @@ fn every_matmul_and_loss_sum_of_the_step_plans_gives_the_cpu_oracle_bits() {
                 let b_bound = if tb { transpose(&b, k, n) } else { b.clone() };
                 let module = emit_module(kernel, &profile).expect("the kernel emits");
                 let count = (m * n) as usize;
-                let views = run(&device, kernel, &module.spirv, [&a_bound, &b_bound], count);
+                let x = values(seed_of(&name, site, 3), m * n);
+                let inputs: Vec<&[f32]> = match kernel.epilogue {
+                    Some(Epilogue::ReluGrad) => vec![&a_bound, &b_bound, &x],
+                    _ => vec![&a_bound, &b_bound],
+                };
+                let views = run(&device, kernel, &module.spirv, &inputs, count);
                 let case = format!(
                     "{name} {schedule} matmul {site} [{m}, {k}] x [{k}, {n}] {:?} {:?} wg {}",
                     kernel.epilogue, kernel.transposed, kernel.workgroup_size
                 );
-                for (at, (view, want)) in views.iter().zip(expected_views(kernel, &sum)).enumerate()
-                {
+                let expected = expected_views(kernel, &sum, &x);
+                assert_eq!(views.len(), expected.len(), "{case}: one view per write");
+                for (at, (view, want)) in views.iter().zip(expected).enumerate() {
                     let changed = (0..GUARD_WORDS)
                         .filter(|&i| view[count + i].to_bits() != guard(i))
                         .count();
@@ -420,7 +434,7 @@ fn every_matmul_and_loss_sum_of_the_step_plans_gives_the_cpu_oracle_bits() {
                     ));
                 }
                 let module = emit_loss_sum_undivided(kernel, &profile).expect("the sum emits");
-                let views = run(&device, kernel, &module.spirv, [&a, &b], 1);
+                let views = run(&device, kernel, &module.spirv, &[&a, &b], 1);
                 let got = views[0][0];
                 if got.to_bits() != want.to_bits() {
                     wrong.push(format!(

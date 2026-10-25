@@ -1,0 +1,78 @@
+profile dispatch step 0 6bd32d9c-1c0c-8fd4-96b2-46d2c722adc9 main calls 72000 total_us 632430.304 mean_us 8.784 flop 10035200 bytes 565504 gflop_per_s 1142.473 gb_per_s 64.381
+profile dispatch step 2 b2b11a63-ac18-8b96-9ec3-1751b6ebc039 main calls 72000 total_us 175787.104 mean_us 2.441 flop 128000 bytes 32160 gflop_per_s 52.427 gb_per_s 13.172
+profile dispatch step 4 09cd7ac3-53f2-8dbf-9ba7-b3ae566b111b main calls 72000 total_us 142382.048 mean_us 1.978 flop 2000 bytes 12000 gflop_per_s 1.011 gb_per_s 6.068
+profile dispatch step 6 c1e95316-e8c9-8cc8-94f9-54a54e03fd10 main calls 72000 total_us 165982.048 mean_us 2.305 flop 128000 bytes 57760 gflop_per_s 55.524 gb_per_s 25.055
+profile dispatch step 7 41241727-be45-83a9-81e8-662471eaedc9 main calls 72000 total_us 190710.400 mean_us 2.649 flop 128000 bytes 32160 gflop_per_s 48.325 gb_per_s 12.142
+profile dispatch step 9 c2dc253f-25aa-8b18-8282-fcea6ad8f491 main calls 72000 total_us 353905.600 mean_us 4.915 flop 10035200 bytes 539904 gflop_per_s 2041.602 gb_per_s 109.840
+profile dispatch step 10 d588cbc2-b3eb-8bf1-93a1-29d8680aba58 main calls 72000 total_us 294774.720 mean_us 4.094 flop 2000 bytes 8004 gflop_per_s 0.489 gb_per_s 1.955
+profile dispatch step 12 88daaa23-8dc9-8bc4-ab05-dc5ecc946d99 main calls 72000 total_us 184503.424 mean_us 2.563 flop 100352 bytes 602112 gflop_per_s 39.161 gb_per_s 234.966
+profile dispatch step 13 f509ed52-1817-8bb7-91f5-a998f93b9005 main calls 72000 total_us 141690.176 mean_us 1.968 flop 1280 bytes 7680 gflop_per_s 0.650 gb_per_s 3.903
+profile dispatch final 0 6bd32d9c-1c0c-8fd4-96b2-46d2c722adc9 main calls 1 total_us 7.296 mean_us 7.296 flop 10035200 bytes 565504 gflop_per_s 1375.439 gb_per_s 77.509
+profile dispatch final 2 b2b11a63-ac18-8b96-9ec3-1751b6ebc039 main calls 1 total_us 2.048 mean_us 2.048 flop 128000 bytes 32160 gflop_per_s 62.500 gb_per_s 15.703
+profile dispatch final 10 d588cbc2-b3eb-8bf1-93a1-29d8680aba58 main calls 1 total_us 3.072 mean_us 3.072 flop 2000 bytes 8004 gflop_per_s 0.651 gb_per_s 2.605
+profile pipeline 6bd32d9c-1c0c-8fd4-96b2-46d2c722adc9 executable 0 name "CS" subgroup_size 32 description "Compute Shader"
+profile pipeline 6bd32d9c-1c0c-8fd4-96b2-46d2c722adc9 executable 0 statistic "Register Count" 126 description "Number of temporary registers used by this shader stage"
+profile pipeline 6bd32d9c-1c0c-8fd4-96b2-46d2c722adc9 executable 0 statistic "Binary Size" 31232 description "Size in bytes of the executable for this stage"
+profile pipeline 6bd32d9c-1c0c-8fd4-96b2-46d2c722adc9 executable 0 statistic "Stack Size" 0 description "Size in bytes required for the shader stack"
+profile pipeline 6bd32d9c-1c0c-8fd4-96b2-46d2c722adc9 executable 0 statistic "Local Memory Size" 68719476736 description "Size in bytes required per-thread for local memory"
+profile pipeline 6bd32d9c-1c0c-8fd4-96b2-46d2c722adc9 executable 0 statistic "Shared Memory Size" 12800 description "Size in bytes used for shared memory"
+profile pipeline b2b11a63-ac18-8b96-9ec3-1751b6ebc039 executable 0 name "CS" subgroup_size 32 description "Compute Shader"
+profile pipeline b2b11a63-ac18-8b96-9ec3-1751b6ebc039 executable 0 statistic "Register Count" 39 description "Number of temporary registers used by this shader stage"
+profile pipeline b2b11a63-ac18-8b96-9ec3-1751b6ebc039 executable 0 statistic "Binary Size" 3968 description "Size in bytes of the executable for this stage"
+profile pipeline b2b11a63-ac18-8b96-9ec3-1751b6ebc039 executable 0 statistic "Stack Size" 0 description "Size in bytes required for the shader stack"
+profile pipeline b2b11a63-ac18-8b96-9ec3-1751b6ebc039 executable 0 statistic "Local Memory Size" 68719476736 description "Size in bytes required per-thread for local memory"
+profile pipeline b2b11a63-ac18-8b96-9ec3-1751b6ebc039 executable 0 statistic "Shared Memory Size" 6400 description "Size in bytes used for shared memory"
+profile pipeline 09cd7ac3-53f2-8dbf-9ba7-b3ae566b111b executable 0 name "CS" subgroup_size 32 description "Compute Shader"
+profile pipeline 09cd7ac3-53f2-8dbf-9ba7-b3ae566b111b executable 0 statistic "Register Count" 16 description "Number of temporary registers used by this shader stage"
+profile pipeline 09cd7ac3-53f2-8dbf-9ba7-b3ae566b111b executable 0 statistic "Binary Size" 640 description "Size in bytes of the executable for this stage"
+profile pipeline 09cd7ac3-53f2-8dbf-9ba7-b3ae566b111b executable 0 statistic "Stack Size" 0 description "Size in bytes required for the shader stack"
+profile pipeline 09cd7ac3-53f2-8dbf-9ba7-b3ae566b111b executable 0 statistic "Local Memory Size" 68719476736 description "Size in bytes required per-thread for local memory"
+profile pipeline 09cd7ac3-53f2-8dbf-9ba7-b3ae566b111b executable 0 statistic "Shared Memory Size" 0 description "Size in bytes used for shared memory"
+profile pipeline c1e95316-e8c9-8cc8-94f9-54a54e03fd10 executable 0 name "CS" subgroup_size 32 description "Compute Shader"
+profile pipeline c1e95316-e8c9-8cc8-94f9-54a54e03fd10 executable 0 statistic "Register Count" 26 description "Number of temporary registers used by this shader stage"
+profile pipeline c1e95316-e8c9-8cc8-94f9-54a54e03fd10 executable 0 statistic "Binary Size" 1664 description "Size in bytes of the executable for this stage"
+profile pipeline c1e95316-e8c9-8cc8-94f9-54a54e03fd10 executable 0 statistic "Stack Size" 0 description "Size in bytes required for the shader stack"
+profile pipeline c1e95316-e8c9-8cc8-94f9-54a54e03fd10 executable 0 statistic "Local Memory Size" 68719476736 description "Size in bytes required per-thread for local memory"
+profile pipeline c1e95316-e8c9-8cc8-94f9-54a54e03fd10 executable 0 statistic "Shared Memory Size" 1344 description "Size in bytes used for shared memory"
+profile pipeline 41241727-be45-83a9-81e8-662471eaedc9 executable 0 name "CS" subgroup_size 32 description "Compute Shader"
+profile pipeline 41241727-be45-83a9-81e8-662471eaedc9 executable 0 statistic "Register Count" 64 description "Number of temporary registers used by this shader stage"
+profile pipeline 41241727-be45-83a9-81e8-662471eaedc9 executable 0 statistic "Binary Size" 5632 description "Size in bytes of the executable for this stage"
+profile pipeline 41241727-be45-83a9-81e8-662471eaedc9 executable 0 statistic "Stack Size" 0 description "Size in bytes required for the shader stack"
+profile pipeline 41241727-be45-83a9-81e8-662471eaedc9 executable 0 statistic "Local Memory Size" 68719476736 description "Size in bytes required per-thread for local memory"
+profile pipeline 41241727-be45-83a9-81e8-662471eaedc9 executable 0 statistic "Shared Memory Size" 13056 description "Size in bytes used for shared memory"
+profile pipeline c2dc253f-25aa-8b18-8282-fcea6ad8f491 executable 0 name "CS" subgroup_size 32 description "Compute Shader"
+profile pipeline c2dc253f-25aa-8b18-8282-fcea6ad8f491 executable 0 statistic "Register Count" 49 description "Number of temporary registers used by this shader stage"
+profile pipeline c2dc253f-25aa-8b18-8282-fcea6ad8f491 executable 0 statistic "Binary Size" 7808 description "Size in bytes of the executable for this stage"
+profile pipeline c2dc253f-25aa-8b18-8282-fcea6ad8f491 executable 0 statistic "Stack Size" 0 description "Size in bytes required for the shader stack"
+profile pipeline c2dc253f-25aa-8b18-8282-fcea6ad8f491 executable 0 statistic "Local Memory Size" 68719476736 description "Size in bytes required per-thread for local memory"
+profile pipeline c2dc253f-25aa-8b18-8282-fcea6ad8f491 executable 0 statistic "Shared Memory Size" 5120 description "Size in bytes used for shared memory"
+profile pipeline d588cbc2-b3eb-8bf1-93a1-29d8680aba58 executable 0 name "CS" subgroup_size 32 description "Compute Shader"
+profile pipeline d588cbc2-b3eb-8bf1-93a1-29d8680aba58 executable 0 statistic "Register Count" 40 description "Number of temporary registers used by this shader stage"
+profile pipeline d588cbc2-b3eb-8bf1-93a1-29d8680aba58 executable 0 statistic "Binary Size" 22272 description "Size in bytes of the executable for this stage"
+profile pipeline d588cbc2-b3eb-8bf1-93a1-29d8680aba58 executable 0 statistic "Stack Size" 0 description "Size in bytes required for the shader stack"
+profile pipeline d588cbc2-b3eb-8bf1-93a1-29d8680aba58 executable 0 statistic "Local Memory Size" 68719476736 description "Size in bytes required per-thread for local memory"
+profile pipeline d588cbc2-b3eb-8bf1-93a1-29d8680aba58 executable 0 statistic "Shared Memory Size" 4000 description "Size in bytes used for shared memory"
+profile pipeline 88daaa23-8dc9-8bc4-ab05-dc5ecc946d99 executable 0 name "CS" subgroup_size 32 description "Compute Shader"
+profile pipeline 88daaa23-8dc9-8bc4-ab05-dc5ecc946d99 executable 0 statistic "Register Count" 16 description "Number of temporary registers used by this shader stage"
+profile pipeline 88daaa23-8dc9-8bc4-ab05-dc5ecc946d99 executable 0 statistic "Binary Size" 640 description "Size in bytes of the executable for this stage"
+profile pipeline 88daaa23-8dc9-8bc4-ab05-dc5ecc946d99 executable 0 statistic "Stack Size" 0 description "Size in bytes required for the shader stack"
+profile pipeline 88daaa23-8dc9-8bc4-ab05-dc5ecc946d99 executable 0 statistic "Local Memory Size" 68719476736 description "Size in bytes required per-thread for local memory"
+profile pipeline 88daaa23-8dc9-8bc4-ab05-dc5ecc946d99 executable 0 statistic "Shared Memory Size" 0 description "Size in bytes used for shared memory"
+profile pipeline f509ed52-1817-8bb7-91f5-a998f93b9005 executable 0 name "CS" subgroup_size 32 description "Compute Shader"
+profile pipeline f509ed52-1817-8bb7-91f5-a998f93b9005 executable 0 statistic "Register Count" 16 description "Number of temporary registers used by this shader stage"
+profile pipeline f509ed52-1817-8bb7-91f5-a998f93b9005 executable 0 statistic "Binary Size" 640 description "Size in bytes of the executable for this stage"
+profile pipeline f509ed52-1817-8bb7-91f5-a998f93b9005 executable 0 statistic "Stack Size" 0 description "Size in bytes required for the shader stack"
+profile pipeline f509ed52-1817-8bb7-91f5-a998f93b9005 executable 0 statistic "Local Memory Size" 68719476736 description "Size in bytes required per-thread for local memory"
+profile pipeline f509ed52-1817-8bb7-91f5-a998f93b9005 executable 0 statistic "Shared Memory Size" 0 description "Size in bytes used for shared memory"
+profile dispatches 648003
+profile submits 282
+profile host_waits 1
+profile barriers_per_step 8
+profile bytes_uploaded 520864
+profile bytes_downloaded 491268
+profile device_allocations 15
+profile peak_device_bytes 2109104
+profile pipeline_creation_us 2709.336
+profile compile_us 50937.662
+profile steady_us_per_step 34.789
+profile step_total flop 20560032 bytes 1857284 gflop_per_s 590.991 gb_per_s 53.387 uncounted_sites 0

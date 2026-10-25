@@ -7,11 +7,11 @@
 //! plan's `Allocate` steps run here, once), copies the parameters and the batch up once, and
 //! binds every dispatch of the step plan once. Step `k` records the step plan, then copies the
 //! loss view into slot `k` of a device-local loss buffer; after the last step the steps of the
-//! step plan up to the loss evaluate the loss of the final parameters into slot `steps`. Up to
-//! [`CHUNK_STEPS`] steps go into one command buffer; the command buffers are submitted one after
-//! the other without waiting, the last behind a fence, and the host waits once, then reads the
-//! parameters and the `steps + 1` losses back. The result is a [`Run`] the CPU run can be
-//! compared with, and the [`RunStats`] of the device.
+//! step plan the loss is computed from ([`ExecutionPlan::loss_steps`]) evaluate the loss of the
+//! final parameters into slot `steps`. Up to [`CHUNK_STEPS`] steps go into one command buffer;
+//! the command buffers are submitted one after the other without waiting, the last behind a
+//! fence, and the host waits once, then reads the parameters and the `steps + 1` losses back. The
+//! result is a [`Run`] the CPU run can be compared with, and the [`RunStats`] of the device.
 //!
 //! [`train_with`] starts the run at a checkpoint's step and parameters ([`RunOptions::start`],
 //! [`RunOptions::init`]) and writes checkpoints on the way ([`Checkpoints`], DESIGN.md § 6.2): the
@@ -34,8 +34,9 @@
 //! A run reads `fast_math` from its artifact: its modules are emitted under it and the
 //! [`RunStats::class`] of a `fast_math` run is `tolerance` (DESIGN.md § 5.4, § 12 ADR-008).
 //!
-//! [`infer`] runs the steps of the step plan up to the loss once on a checkpoint's parameters and
-//! the synthetic batch, with one host wait, and reads the prediction and the loss back.
+//! [`infer`] runs the steps of the step plan the loss is computed from once on a checkpoint's
+//! parameters and the synthetic batch, with one host wait, and reads the prediction and the loss
+//! back.
 //!
 //! [`train_profiled`] runs the same recording with a timestamp before and after each dispatch,
 //! written into one query pool per command buffer and read after the one wait, and returns a
@@ -419,9 +420,10 @@ pub fn train_repeatedly(
 
 /// The forward program of `compiled` on `device` with the parameter values `params` (a
 /// checkpoint's, [`crate::train::checkpoint::Checkpoint::parameters_for`]) and the synthetic batch
-/// of the file's `train` block: the steps of the step plan up to the loss, recorded once, with one
-/// host wait, and the prediction and the loss read back. A parameter `params` does not name keeps
-/// its initializer draw. The [`RunStats`] count 0 steps.
+/// of the file's `train` block: the steps of the step plan the loss is computed from
+/// ([`ExecutionPlan::loss_steps`]), recorded once, with one host wait, and the prediction and the
+/// loss read back. A parameter `params` does not name keeps its initializer draw. The
+/// [`RunStats`] count 0 steps.
 pub fn infer(
     device: &Device<'_>,
     profile: &DeviceProfile,
@@ -660,7 +662,7 @@ fn execute_runs(
         .count();
     let arena =
         device.descriptor_arena(count_u32(dispatch_steps)?, count_u32(descriptors(plan))?)?;
-    let (actions, loss_end) = actions(plan, &arena, &pipelines, &buffers)?;
+    let (actions, loss_actions) = actions(plan, &arena, &pipelines, &buffers)?;
 
     // The dispatch sites a profile times, and one timestamp pool per chunk of `CHUNK_STEPS`
     // steps: two queries per dispatch it records.
@@ -681,8 +683,9 @@ fn execute_runs(
         .iter()
         .filter_map(|action| site(PlanName::Step, action))
         .collect();
-    let final_sites: Vec<Site> = actions[..loss_end]
+    let final_sites: Vec<Site> = loss_actions
         .iter()
+        .map(|&at| &actions[at])
         .filter_map(|action| site(PlanName::Final, action))
         .collect();
     let clock = device
@@ -857,7 +860,7 @@ fn execute_runs(
                 if last {
                     record(
                         &mut recording,
-                        &actions[..loss_end],
+                        loss_actions.iter().map(|&at| &actions[at]),
                         &buffers,
                         stamps.as_mut(),
                     )?;
@@ -1097,24 +1100,27 @@ fn count_u32(count: usize) -> Result<u32, VulkanRunError> {
         .map_err(|_| VulkanRunError::Plan(format!("{count} descriptors do not fit u32")))
 }
 
-/// The recorded commands of the step plan, every dispatch bound once in `arena`, and how many
-/// of them evaluate the loss: the steps up to the last that writes the loss view, none of
-/// which writes a parameter.
+/// The recorded commands of the step plan, every dispatch bound once in `arena`, and the
+/// positions among them of the ones that evaluate the loss: the steps of
+/// [`ExecutionPlan::loss_steps`], in plan order. No step up to the last that writes the loss view
+/// writes a parameter.
 fn actions<'a>(
     plan: &ExecutionPlan,
     arena: &'a DescriptorArena<'_>,
     pipelines: &'a [Pipeline<'_>],
     buffers: &'a [Buffer<'_>],
-) -> Result<(Vec<Action<'a>>, usize), VulkanRunError> {
+) -> Result<(Vec<Action<'a>>, Vec<usize>), VulkanRunError> {
     let parameters: BTreeSet<u32> = plan
         .parameters
         .iter()
         .flat_map(|p| p.views.iter().map(|view| view.buffer))
         .collect();
     let mut actions = Vec::new();
-    let mut loss_end = None;
+    let mut action_of = Vec::with_capacity(plan.step.len());
+    let mut loss_at = None;
     let mut writes_parameter = None;
     for (at, step) in plan.step.iter().enumerate() {
+        action_of.push(actions.len());
         match step.op {
             PlanOp::Allocate => continue,
             PlanOp::Barrier => actions.push(Action::Barrier),
@@ -1170,11 +1176,10 @@ fn actions<'a>(
             .iter()
             .any(|view| view.buffer == plan.loss_view.buffer)
         {
-            loss_end = Some((at, actions.len()));
+            loss_at = Some(at);
         }
     }
-    let (loss_at, loss_end) =
-        loss_end.ok_or_else(|| VulkanRunError::Plan("no step writes the loss".into()))?;
+    let loss_at = loss_at.ok_or_else(|| VulkanRunError::Plan("no step writes the loss".into()))?;
     if let Some(at) = writes_parameter.filter(|&at| at < loss_at) {
         return Err(unexpected(
             at,
@@ -1182,7 +1187,15 @@ fn actions<'a>(
             "a parameter is written before the loss",
         ));
     }
-    Ok((actions, loss_end))
+    let loss = plan
+        .loss_steps()
+        .into_iter()
+        .map(|at| match plan.step[at].op {
+            PlanOp::Allocate => Err(unexpected(at, &plan.step[at], "a loss step allocates")),
+            _ => Ok(action_of[at]),
+        })
+        .collect::<Result<Vec<usize>, _>>()?;
+    Ok((actions, loss))
 }
 
 fn unexpected(at: usize, step: &PlanStep, reason: &str) -> VulkanRunError {
@@ -1192,9 +1205,9 @@ fn unexpected(at: usize, step: &PlanStep, reason: &str) -> VulkanRunError {
 /// Records `actions`: a plan barrier as a compute-to-compute barrier, a plan copy between the
 /// barriers that order it after the dispatches before it and before the ones after it. With
 /// `stamps`, a timestamp before and after each dispatch into its next two queries.
-fn record<'r>(
+fn record<'r, 'a: 'r>(
     recording: &mut Recording<'r>,
-    actions: &'r [Action<'_>],
+    actions: impl IntoIterator<Item = &'r Action<'a>>,
     buffers: &'r [Buffer<'_>],
     mut stamps: Option<&mut Stamps<'r>>,
 ) -> Result<(), VulkanRunError> {
@@ -1320,8 +1333,9 @@ mod tests {
         }
     }
 
-    /// The pool holds one descriptor per view each set binds: 10 dispatches of `mnist_mlp`
-    /// bind 31, the fused matmul and ReLU of step 0 two reads and two writes
+    /// The pool holds one descriptor per view each set binds: 9 dispatches of `mnist_mlp`
+    /// bind 29, the fused matmul and ReLU of step 0 two reads and two writes, the hidden gradient
+    /// matmul with its `ReluGrad` epilogue three reads and one write (story:step-sites-beat-pytorch)
     /// (`crates/modelspec-cli/tests/golden/mnist_mlp.kernel.ir`).
     #[test]
     fn the_pool_counts_every_read_and_write_of_the_mnist_plan() {
@@ -1332,11 +1346,11 @@ mod tests {
         let first = &plan.step[0];
         assert_eq!(first.op, PlanOp::Dispatch);
         assert_eq!((first.reads.len(), first.writes.len()), (2, 2));
-        assert_eq!(descriptors(&plan), 31);
+        assert_eq!(descriptors(&plan), 29);
     }
 
     /// The sets of the MNIST plan's dispatches, taken in plan order from a pool's room as the
-    /// arena binds them: a pool one descriptor short, 30, refuses the last set by name,
+    /// arena binds them: a pool one descriptor short, 28, refuses the last set by name,
     /// the pool of [`descriptors`] holds them all.
     #[test]
     fn a_pool_short_of_the_mnist_plan_refuses_its_last_set() {
@@ -1353,25 +1367,25 @@ mod tests {
             .filter(|step| step.op == PlanOp::Dispatch)
             .map(|step| step.reads.len() + step.writes.len())
             .collect();
-        assert_eq!(sets.len(), 10);
+        assert_eq!(sets.len(), 9);
         let take_all = |room: &PoolRoom| {
             sets.iter()
                 .try_for_each(|&needed| admit(room, needed).map(drop))
         };
 
-        let short = PoolRoom::new(10, 30);
+        let short = PoolRoom::new(9, 28);
         match take_all(&short) {
             Err(ExecError::DescriptorPoolFull {
-                sets: 10,
-                descriptors: 30,
-                bound_sets: 9,
-                bound: 28,
+                sets: 9,
+                descriptors: 28,
+                bound_sets: 8,
+                bound: 26,
                 needed: 3,
             }) => {}
-            other => panic!("the pool of 30 refuses the 10th set of 3, got {other:?}"),
+            other => panic!("the pool of 28 refuses the 9th set of 3, got {other:?}"),
         }
-        let sized = PoolRoom::new(10, count_u32(descriptors(&plan)).unwrap());
-        take_all(&sized).expect("the pool of 31 holds every set");
+        let sized = PoolRoom::new(9, count_u32(descriptors(&plan)).unwrap());
+        take_all(&sized).expect("the pool of 29 holds every set");
     }
 
     /// The 5 dispatches of `linear_regression` bind 15 views, each writing one; a second write on

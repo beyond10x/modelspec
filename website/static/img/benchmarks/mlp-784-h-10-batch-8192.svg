@@ -23,16 +23,16 @@
 <text x="758.8" y="407.0" text-anchor="middle" fill="#374151">4096</text>
 <text x="467.0" y="428.0" text-anchor="middle" fill="#111827">hidden width H</text>
 <text transform="translate(18 218.0) rotate(-90)" text-anchor="middle" fill="#111827">µs per step, log scale</text>
-<polyline points="175.2,257.1 369.8,201.9 564.2,153.8 758.8,72.0" fill="none" stroke="#1d4ed8" stroke-width="2.5"/>
+<polyline points="175.2,257.1 369.8,201.9 564.2,153.8 758.8,75.8" fill="none" stroke="#1d4ed8" stroke-width="2.5"/>
 <circle cx="175.2" cy="257.1" r="4.5" fill="#1d4ed8"/>
 <circle cx="369.8" cy="201.9" r="4.5" fill="#1d4ed8"/>
 <circle cx="564.2" cy="153.8" r="4.5" fill="#1d4ed8"/>
-<circle cx="758.8" cy="72.0" r="4.5" fill="#1d4ed8"/>
-<polyline points="175.2,281.3 369.8,264.7 564.2,175.7 758.8,76.0" fill="none" stroke="#dc2626" stroke-width="1.8" stroke-dasharray="6 4"/>
+<circle cx="758.8" cy="75.8" r="4.5" fill="#1d4ed8"/>
+<polyline points="175.2,281.3 369.8,264.7 564.2,175.7 758.8,79.0" fill="none" stroke="#dc2626" stroke-width="1.8" stroke-dasharray="6 4"/>
 <rect x="171.2" y="277.3" width="8" height="8" fill="#ffffff" stroke="#dc2626" stroke-width="2"/>
 <rect x="365.8" y="260.7" width="8" height="8" fill="#ffffff" stroke="#dc2626" stroke-width="2"/>
 <rect x="560.2" y="171.7" width="8" height="8" fill="#ffffff" stroke="#dc2626" stroke-width="2"/>
-<rect x="754.8" y="72.0" width="8" height="8" fill="#ffffff" stroke="#dc2626" stroke-width="2"/>
+<rect x="754.8" y="75.0" width="8" height="8" fill="#ffffff" stroke="#dc2626" stroke-width="2"/>
 <polyline points="175.2,266.2 369.8,265.2 564.2,173.4 758.8,76.7" fill="none" stroke="#ea580c" stroke-width="1.8" stroke-dasharray="6 4"/>
 <rect x="171.2" y="262.2" width="8" height="8" fill="#ffffff" stroke="#ea580c" stroke-width="2"/>
 <rect x="365.8" y="261.2" width="8" height="8" fill="#ffffff" stroke="#ea580c" stroke-width="2"/>

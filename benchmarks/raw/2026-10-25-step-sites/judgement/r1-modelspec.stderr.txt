@@ -1,0 +1,8 @@
+mlp_sweep: warning: not a clean checkout: Build { version: Some("0.10.0"), commit: Some("3ef38aa2795371c8564b0100e0d4e200f870e4e7"), dirty: Some(true) }
+mlp_sweep: batch 8192 hidden 4096: 107239964672 FLOP per step
+mlp_sweep:   calibration: 276 steps in 2.841 s
+mlp_sweep:   calibration: 700 steps in 4.794 s
+mlp_sweep:   calibration: 1052 steps in 7.144 s
+mlp_sweep:   timed: 1052 steps in 7.932 s, 7540.324 us per step
+mlp_sweep:   timed: 1052 steps in 7.462 s, 7093.558 us per step
+mlp_sweep:   timed: 1052 steps in 7.136 s, 6783.395 us per step

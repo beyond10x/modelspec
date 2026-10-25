@@ -1,16 +1,17 @@
 //! The fixed safe schedule of M1 (DESIGN.md § 5.2, § 5.3): a verified training step to Kernel IR
 //! and its execution plans.
 //!
-//! Ops run in Training IR order. Each elementwise, broadcast, transpose and SGD op is one
-//! Dispatch, one invocation per output element; a matmul is one Dispatch of the workgroups of its
-//! [`MatMulTile`]; the `mse` loss is one Dispatch of one workgroup
-//! (DESIGN.md § 5.4); every other reduce is four consecutive steps: an `Allocate` of its partials
-//! buffer, a stage-1 Dispatch that writes one partial per workgroup into it, a `Barrier`, and a
-//! stage-2 Dispatch of one workgroup that reads the partials. `Input`, `ParamRead` and `Scalar`
-//! dispatch nothing: inputs and parameters are bound views, and a scalar is compiled into the
-//! kernels that read it.
+//! Ops run in Training IR order, except that the step plan records the `mse` loss sum right
+//! after the largest matmul it can share a barrier interval with ([`step_order`]). Each
+//! elementwise, broadcast, transpose and SGD op is one Dispatch, one invocation per output
+//! element; a matmul is one Dispatch of the workgroups of its [`MatMulTile`]; the `mse` loss is
+//! one Dispatch of one workgroup (DESIGN.md § 5.4); every other reduce is four consecutive steps:
+//! an `Allocate` of its partials buffer, a stage-1 Dispatch that writes one partial per workgroup
+//! into it, a `Barrier`, and a stage-2 Dispatch of one workgroup that reads the partials. `Input`,
+//! `ParamRead` and `Scalar` dispatch nothing: inputs and parameters are bound views, and a scalar
+//! is compiled into the kernels that read it.
 //!
-//! Three exceptions, and the elementwise chains below, remove dispatches without changing a bit
+//! Four exceptions, and the elementwise chains below, remove dispatches without changing a bit
 //! of any result (DESIGN.md § 3.1,
 //! § 5.4). An `Add`, `Sub` or `Mul` of rank 0 whose operands are all compile-time scalars is
 //! folded: the host computes it as one round-to-nearest-even `f32` operation, and every reader
@@ -20,6 +21,11 @@
 //! whose operands are immediates. The first `Relu`
 //! that reads a `MatMul` output is the matmul kernel's [`Epilogue`]: the kernel writes the
 //! activation, and also the pre-activation when another op, the loss or the prediction reads it.
+//! A `ReluGrad(x, g)` whose `g` is a `MatMul` output that nothing else reads, and that is neither
+//! the loss, the prediction nor an update, is that matmul's `ReluGrad` [`Epilogue`] when `x` is
+//! stored before the matmul and no parameter `x` is updated before it: the kernel reads `x` as a
+//! third operand and writes `x > 0 ? sum : 0.0`, and `g` has no buffer
+//! (story:step-sites-beat-pytorch).
 //! An SGD update `p - m` whose `m` is `lr * g`, with one scalar factor and no other reader, is
 //! one `SgdUpdate` dispatch over `(p, lr, g)` in the factors' order, and `m` has no buffer.
 //!
@@ -44,7 +50,8 @@
 //! There is no buffer reuse: every stored value has its own buffer, except that each SGD update
 //! writes its parameter's one view in place, a folded scalar is an immediate, the `lr * g` of a
 //! fused update has no buffer, a pre-activation that nothing but its epilogue `Relu` reads
-//! has none either, and neither has a folded transpose nor a value inside an elementwise chain. A `Barrier` precedes any Dispatch that
+//! has none either, nor has a matmul output whose `ReluGrad` is its epilogue, and neither has a
+//! folded transpose nor a value inside an elementwise chain. A `Barrier` precedes any Dispatch that
 //! reads a buffer an earlier Dispatch wrote since the last barrier, or writes one an earlier
 //! Dispatch read or wrote since then; it depends on the previous barrier and on every Dispatch
 //! since, so a step after it is ordered after everything before it. Each plan ends with its one
@@ -154,6 +161,8 @@ struct Fusions {
     folded: BTreeMap<ValueId, f32>,
     /// Each matmul with a `relu` epilogue: the `relu`, and whether the pre-activation is written.
     relu_of: BTreeMap<ValueId, (ValueId, bool)>,
+    /// Each matmul with a `ReluGrad` epilogue: the `ReluGrad`, and the pre-activation it reads.
+    relu_grad_of: BTreeMap<ValueId, (ValueId, ValueId)>,
     /// Each fused SGD update: its `lr * g`.
     scaled: BTreeMap<ValueId, ValueId>,
     /// The ops computed inside another op's kernel.
@@ -339,11 +348,6 @@ fn fusions(
         transposed.insert(node.id, operand);
     }
 
-    // Elementwise chains, in node order: an op extends the chain of its first operand, by
-    // position, that it alone reads, once, at its own type, while the chain's buffer leaves stay
-    // within MAX_CHAIN_READS and no parameter leaf is updated before the op; else it starts one.
-    let fused_before = absorbed.clone();
-    let ty_of: BTreeMap<ValueId, &TensorType> = nodes.iter().map(|n| (n.id, &n.ty)).collect();
     let updated_before = |leaf: ValueId, at: usize| match op_of(leaf) {
         Some(TensorOp::ParamRead { param }) => update_of
             .get(param)
@@ -351,6 +355,40 @@ fn fusions(
             .is_some_and(|&updated| updated < at),
         _ => false,
     };
+
+    // A `ReluGrad(x, g)` whose adjoint `g` is a matmul output that it alone reads is that
+    // matmul's epilogue, when `x` has a buffer before the matmul runs.
+    let mut relu_grad_of = BTreeMap::new();
+    for node in nodes {
+        let [x, g] = node.operands[..] else {
+            continue;
+        };
+        let at = position[&node.id];
+        let fits = node.op == TensorOp::ReluGrad
+            && x != g
+            && op_of(g) == Some(&TensorOp::MatMul)
+            && matches!(readers_of(g), [r] if r.id == node.id)
+            && !relu_of.contains_key(&g)
+            && !bound.contains(&g)
+            && !updates.contains_key(&g)
+            && !updates.contains_key(&node.id)
+            && !folded.contains_key(&node.id)
+            && !constants.contains_key(&x)
+            && !transposed.contains_key(&x)
+            && !absorbed.contains(&x)
+            && position.get(&x).is_some_and(|&p| p < position[&g])
+            && !updated_before(x, at);
+        if fits {
+            relu_grad_of.insert(g, (node.id, x));
+            absorbed.insert(node.id);
+        }
+    }
+
+    // Elementwise chains, in node order: an op extends the chain of its first operand, by
+    // position, that it alone reads, once, at its own type, while the chain's buffer leaves stay
+    // within MAX_CHAIN_READS and no parameter leaf is updated before the op; else it starts one.
+    let fused_before = absorbed.clone();
+    let ty_of: BTreeMap<ValueId, &TensorType> = nodes.iter().map(|n| (n.id, &n.ty)).collect();
     let buffers = |values: &[ValueId]| values.iter().filter(|v| !constants.contains_key(v)).count();
     let mut open: BTreeMap<ValueId, OpenChain> = BTreeMap::new();
     for node in nodes {
@@ -425,6 +463,7 @@ fn fusions(
     Fusions {
         folded,
         relu_of,
+        relu_grad_of,
         scaled,
         absorbed,
         transposed,
@@ -623,7 +662,8 @@ fn schedule_with(
 
         let scaled = fused.scaled.get(&node.id).copied();
         let chain = fused.chains.get(&node.id);
-        let sources = match scaled {
+        let relu_grad = fused.relu_grad_of.get(&node.id).copied();
+        let mut sources = match scaled {
             Some(product) => {
                 let mul = program
                     .node(product)
@@ -640,6 +680,7 @@ fn schedule_with(
                 None => node.operands.clone(),
             },
         };
+        sources.extend(relu_grad.map(|(_, pre_activation)| pre_activation));
         let mut operands = Vec::new();
         let mut reads = Vec::new();
         let mut transposed = [false, false];
@@ -698,12 +739,23 @@ fn schedule_with(
             }
             (None, None) => {
                 writes.push(allocate(&mut buffers, &node.ty).ok_or_else(shape_error)?);
-                places.insert(node.id, Place::View(writes[0]));
+                let computed = match relu_grad {
+                    Some((gradient, _)) => {
+                        values.push(gradient);
+                        gradient
+                    }
+                    None => node.id,
+                };
+                places.insert(computed, Place::View(writes[0]));
             }
         }
-        let epilogue = relu.map(|(_, pre_activation)| Epilogue::Relu {
-            writes_pre_activation: pre_activation,
-        });
+        let epilogue = match (relu, relu_grad) {
+            (Some((_, pre_activation)), _) => Some(Epilogue::Relu {
+                writes_pre_activation: pre_activation,
+            }),
+            (None, Some(_)) => Some(Epilogue::ReluGrad),
+            (None, None) => None,
+        };
 
         let output = elements(&node.ty).ok_or_else(shape_error)?;
         let one = |kind: KernelKind, operands: Vec<Operand>| -> Result<Kernel, ScheduleError> {
@@ -850,7 +902,8 @@ fn schedule_with(
         }
     }
 
-    let step_plan = record(works.iter());
+    let order = step_order(&works);
+    let step_plan = record(order.iter().map(|&at| &works[at]));
     let ancestors = ancestors(&program.nodes, prediction);
     let forward_plan = record(
         works
@@ -859,7 +912,7 @@ fn schedule_with(
     );
 
     let mut kernels: Vec<Kernel> = Vec::new();
-    for kernel in works.iter().flat_map(|w| &w.kernels) {
+    for kernel in order.iter().flat_map(|&at| &works[at].kernels) {
         if !kernels.iter().any(|k| k.id == kernel.id) {
             kernels.push(kernel.clone());
         }
@@ -994,6 +1047,48 @@ fn ancestors(nodes: &[TensorNode], prediction: ValueId) -> BTreeSet<ValueId> {
         }
     }
     reached
+}
+
+/// The order the step plan records `works` in: their order, except that the `mse` loss sum
+/// moves to right after the matmul with the most FLOP, the first of equals, among the works
+/// after it up to the first that writes a buffer the loss sum reads or reads or writes the one
+/// it writes. No op of the step reads the loss, so the one-workgroup sum then shares that
+/// matmul's barrier interval instead of holding one of its own (DESIGN.md § 3.1). Without such
+/// a matmul the order is unchanged.
+fn step_order(works: &[Work]) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..works.len()).collect();
+    let Some(loss) = works
+        .iter()
+        .position(|w| matches!(&w.kernels[..], [k] if k.kind == KernelKind::LossSum))
+    else {
+        return order;
+    };
+    let buffers = |views: &[BufferView]| views.iter().map(|v| v.buffer).collect::<BTreeSet<u32>>();
+    let (reads, writes) = (buffers(&works[loss].reads), buffers(&works[loss].writes));
+    let mut beside: Option<(u64, usize)> = None;
+    for (at, work) in works.iter().enumerate().skip(loss + 1) {
+        let (r, w) = (buffers(&work.reads), buffers(&work.writes));
+        let partials = work.partials.map(|p| p.buffer);
+        if !w.is_disjoint(&reads)
+            || !w.is_disjoint(&writes)
+            || !r.is_disjoint(&writes)
+            || partials.is_some_and(|p| reads.contains(&p) || writes.contains(&p))
+        {
+            break;
+        }
+        if let [kernel] = &work.kernels[..]
+            && kernel.kind == KernelKind::MatMul
+            && let Some(flop) = kernel.flop()
+            && beside.is_none_or(|(most, _)| flop > most)
+        {
+            beside = Some((flop, at));
+        }
+    }
+    if let Some((_, at)) = beside {
+        let moved = order.remove(loss);
+        order.insert(at, moved);
+    }
+    order
 }
 
 /// The plan steps of `works` in order, with the barriers the schedule needs.

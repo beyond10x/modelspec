@@ -240,6 +240,7 @@ fn compare(label: &str, shapes: Vec<((u64, u64, u64), bool)>) {
                 Some(Epilogue::Relu {
                     writes_pre_activation: true,
                 }) => vec![&sum, &activation],
+                Some(Epilogue::ReluGrad) => unreachable!("no case here has a ReluGrad epilogue"),
             };
             assert_eq!(first.len(), expected.len(), "{name}: one view per write");
             for (view, (got, want)) in first.iter().zip(&expected).enumerate() {

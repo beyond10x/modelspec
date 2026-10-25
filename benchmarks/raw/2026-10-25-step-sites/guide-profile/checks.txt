@@ -1,0 +1,3 @@
+apps-check warm: ''
+apps-check profile: ''
+EXIT=0

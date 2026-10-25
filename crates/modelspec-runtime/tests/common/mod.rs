@@ -503,18 +503,23 @@ pub fn matmul_kernel(m: u64, k: u64, n: u64) -> Kernel {
     matmul_kernel_with(m, k, n, None)
 }
 
-/// [`matmul_kernel`] with `epilogue`.
+/// [`matmul_kernel`] with `epilogue`; a `ReluGrad` epilogue reads the pre-activation `[m, n]` as
+/// a third operand (story:step-sites-beat-pytorch).
 pub fn matmul_kernel_with(m: u64, k: u64, n: u64, epilogue: Option<Epilogue>) -> Kernel {
     let tile = MatMulTile::of(m, k, n);
+    let mut operands = vec![
+        Operand::Buffer(TensorType::f32(&[m, k])),
+        Operand::Buffer(TensorType::f32(&[k, n])),
+    ];
+    if epilogue == Some(Epilogue::ReluGrad) {
+        operands.push(Operand::Buffer(TensorType::f32(&[m, n])));
+    }
     finish(Kernel {
         id: KernelModuleId([0; 16]),
         kind: KernelKind::MatMul,
         op: "MatMul",
         dtype: DType::F32,
-        operands: vec![
-            Operand::Buffer(TensorType::f32(&[m, k])),
-            Operand::Buffer(TensorType::f32(&[k, n])),
-        ],
+        operands,
         result: TensorType::f32(&[m, n]),
         reduces: None,
         epilogue,

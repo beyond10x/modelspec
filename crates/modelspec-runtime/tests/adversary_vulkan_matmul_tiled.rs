@@ -178,6 +178,7 @@ fn compare(
         Some(Epilogue::Relu {
             writes_pre_activation: true,
         }) => vec![sum, activation],
+        Some(Epilogue::ReluGrad) => unreachable!("no case here has a ReluGrad epilogue"),
     };
     for (view, (got, want)) in got.iter().zip(&expected).enumerate() {
         let bad: Vec<usize> = (0..want.len())

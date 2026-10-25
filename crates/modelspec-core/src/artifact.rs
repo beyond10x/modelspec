@@ -1139,6 +1139,7 @@ enum WireOperand {
 enum WireEpilogue {
     Relu,
     ReluWritesPreActivation,
+    ReluGrad,
 }
 
 /// One kernel of the artifact: its module's entry and its Kernel IR.
@@ -1325,6 +1326,7 @@ impl WireKernel {
                 Epilogue::Relu {
                     writes_pre_activation: true,
                 } => WireEpilogue::ReluWritesPreActivation,
+                Epilogue::ReluGrad => WireEpilogue::ReluGrad,
             }),
             transposed: kernel.transposed,
             workgroup_size: kernel.workgroup_size,
@@ -1369,8 +1371,14 @@ impl WireKernel {
                 .collect(),
             result: self.result.ty(),
             reduces: self.reduces.as_ref().map(WireType::ty),
-            epilogue: self.epilogue.map(|epilogue| Epilogue::Relu {
-                writes_pre_activation: epilogue == WireEpilogue::ReluWritesPreActivation,
+            epilogue: self.epilogue.map(|epilogue| match epilogue {
+                WireEpilogue::Relu => Epilogue::Relu {
+                    writes_pre_activation: false,
+                },
+                WireEpilogue::ReluWritesPreActivation => Epilogue::Relu {
+                    writes_pre_activation: true,
+                },
+                WireEpilogue::ReluGrad => Epilogue::ReluGrad,
             }),
             transposed: self.transposed,
             workgroup_size: self.workgroup_size,

@@ -2190,3 +2190,49 @@ runs:
     sm_clock: "SM MHz 1530–1590 (median 1560, n=178) in the 3 timed spans"
     source: verification-report:mlp-size-sweep-2026-10-25, raw records benchmarks/raw/2026-10-25-sweep-0.10.0/pytorch.jsonl
     state: Recorded
+  - run_id: sweep-b8192-h4096-modelspec-vulkan-step-sites
+    date: "2026-10-25"
+    workload: mlp-784-H-10
+    side: ModelSpecVulkan
+    modelspec_version: "0.10.0"
+    commit: 3ef38aa2795371c8564b0100e0d4e200f870e4e7
+    mode: Timed
+    batch: 8192
+    hidden: 4096
+    flop_per_step: 107239964672
+    flop_rule: MatmulOnly
+    timed_steps: 1056
+    repeat_count: 3
+    repeats_us_per_step:
+      - 6832.17868939394
+      - 6877.90284469697
+      - 6858.914422348485
+    median_us_per_step: 6858.914422348485
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1650–1725 (median 1665, n=187) in the 3 timed spans"
+    source: story:step-sites-beat-pytorch judgement session, the median of 3 back-to-back runs on the uncommitted tree over 3ef38aa, raw records benchmarks/raw/2026-10-25-step-sites/judgement/r2-modelspec.jsonl
+    state: Recorded
+  - run_id: sweep-b8192-h4096-pytorch-cuda-eager-step-sites
+    date: "2026-10-25"
+    workload: mlp-784-H-10
+    side: PyTorchCudaEager
+    commit: 3ef38aa2795371c8564b0100e0d4e200f870e4e7
+    opponent_version: torch 2.14.1+cu130, CUDA 13.0
+    mode: Timed
+    batch: 8192
+    hidden: 4096
+    flop_per_step: 107239964672
+    flop_rule: MatmulOnly
+    timed_steps: 933
+    repeat_count: 3
+    repeats_us_per_step:
+      - 6490.813445455583
+      - 6568.501164911101
+      - 6639.36015424126
+    median_us_per_step: 6568.501164911101
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1575–1650 (median 1605, n=151) in the 3 timed spans"
+    source: story:step-sites-beat-pytorch judgement session, the median of 3 back-to-back runs, raw records benchmarks/raw/2026-10-25-step-sites/judgement/r3-pytorch-eager.jsonl
+    state: Recorded

@@ -244,8 +244,8 @@ fn the_mnist_loss_gradient_is_one_sub_mul_dispatch_with_no_buffer_for_the_differ
             count(&plan.step, PlanOp::Dispatch),
             count(&plan.step, PlanOp::Barrier)
         ),
-        (10, 7),
-        "{}",
+        (9, 6),
+        "the relu gradient is the epilogue of the matmul that produces its adjoint (story:step-sites-beat-pytorch), so 9 and 6, not 10 and 7\n{}",
         print_kernel(plan)
     );
 }
@@ -511,7 +511,9 @@ fn every_chain_binds_at_most_four_buffers_and_every_plan_is_hazard_free() {
 
 /// The intermediates of every chain have no buffer: the plan has one buffer fewer per absorbed
 /// op than the same plan with every elementwise op its own dispatch would need. Checked on the
-/// MNIST example, whose one chain absorbs the `Sub`.
+/// MNIST example, whose one chain absorbs the `Sub`, and whose hidden-gradient matmul has no
+/// buffer since its `ReluGrad` is that matmul's epilogue (story:step-sites-beat-pytorch): 12,
+/// one fewer than the 13 before that epilogue.
 #[test]
 fn the_mnist_plan_has_one_buffer_fewer_than_before_the_fusion() {
     let source = std::fs::read_to_string(
@@ -519,7 +521,7 @@ fn the_mnist_plan_has_one_buffer_fewer_than_before_the_fusion() {
     )
     .expect("the example reads");
     let plan = artifact(&source).execution;
-    assert_eq!(plan.buffers.len(), 13, "{}", print_kernel(&plan));
+    assert_eq!(plan.buffers.len(), 12, "{}", print_kernel(&plan));
     let written: BTreeMap<u32, usize> =
         dispatches(&plan.step)
             .flat_map(|s| &s.writes)

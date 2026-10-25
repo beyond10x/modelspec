@@ -326,9 +326,11 @@ fn no_barrier_group_holds_a_hazard_on_any_model() {
 }
 
 /// `spec/domains/artifact.yaml`, `ExecutionPlan.buffers`: "In M1 each stored value has its own
-/// buffer, with six exceptions": an SGD update writes its parameter's buffer in place, a folded
+/// buffer, with seven exceptions": an SGD update writes its parameter's buffer in place, a folded
 /// scalar has no buffer, the `lr * g` of a fused update has none, a matmul pre-activation that
-/// no op but its ReLU epilogue reads, and that is not the loss or the prediction, has none, and a
+/// no op but its ReLU epilogue reads, and that is not the loss or the prediction, has none, a matmul
+/// output that no op but the `ReluGrad` it gates reads has none, that `ReluGrad` the matmul's
+/// epilogue (story:step-sites-beat-pytorch), and a
 /// transpose that no op but matmuls reads, and that is not the loss or the prediction, has none
 /// (no MNIST transpose reads a parameter after its update), and each value of an elementwise
 /// chain but its last has none (story:fuse-elementwise-chains-and-gradient-sums). So the
@@ -339,7 +341,7 @@ fn every_value_has_its_own_buffer_as_the_artifact_spec_states() {
     let spec = std::fs::read_to_string(repo_root().join("spec/domains/artifact.yaml"))
         .expect("the spec reads");
     assert!(
-        spec.contains("In M1 each stored value has its own buffer, with six exceptions."),
+        spec.contains("In M1 each stored value has its own buffer, with seven exceptions."),
         "the sentence this case drives from is in the spec"
     );
     let source = std::fs::read_to_string(repo_root().join("examples/mnist_mlp.mspec"))
@@ -373,7 +375,8 @@ fn every_value_has_its_own_buffer_as_the_artifact_spec_states() {
     let epilogue_only = |n: &TensorNode| {
         n.op == TensorOp::MatMul
             && !bound.contains(&n.id)
-            && matches!(readers(n.id)[..], [r] if r.op == TensorOp::Relu)
+            && matches!(readers(n.id)[..], [r] if r.op == TensorOp::Relu
+                || (r.op == TensorOp::ReluGrad && r.operands.get(1) == Some(&n.id)))
     };
     let folded_transpose = |n: &TensorNode| {
         let readers = readers(n.id);

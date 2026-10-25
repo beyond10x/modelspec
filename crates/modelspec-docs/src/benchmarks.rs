@@ -1206,7 +1206,7 @@ mod tests {
             .iter()
             .filter(|run| run.workload == "mlp-784-H-10")
             .collect();
-        assert_eq!(sweep.len(), 84);
+        assert_eq!(sweep.len(), 86);
         let mut used = std::collections::BTreeSet::new();
         for run in sweep {
             let (_, path) = run
@@ -1269,7 +1269,7 @@ mod tests {
                 run.run_id
             );
         }
-        assert_eq!(used.len(), 84, "every raw record is cited once");
+        assert_eq!(used.len(), 86, "every raw record is cited once");
     }
 
     #[test]

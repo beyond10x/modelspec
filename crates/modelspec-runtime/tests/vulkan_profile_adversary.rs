@@ -6,7 +6,7 @@
 
 use modelspec_core::artifact::Backend;
 use modelspec_core::compile::{compile_artifact, compile_training};
-use modelspec_core::ir::kernel::PlanOp;
+use modelspec_core::ir::kernel::{KernelKind, PlanOp};
 use modelspec_runtime::vulkan::negotiate::negotiate;
 use modelspec_runtime::vulkan::profile::PlanName;
 use modelspec_runtime::vulkan::runner::{train, train_profiled};
@@ -104,12 +104,13 @@ fn the_step_sites_do_not_count_one_interval_twice() {
     assert!(sum <= steady, "{sum} > {steady}");
 }
 
-/// Acceptance 1 and 3 of the story: one `final` line per Dispatch step of the step plan up to and
-/// including the one that writes the loss view, named by its step-plan position, and dispatches
-/// 1,800 times the step plan's plus that count.
+/// Acceptance 1 and 3 of the story: one `final` line per Dispatch step of the step plan the loss
+/// is computed from (`ExecutionPlan::loss_steps`, since `story:step-sites-beat-pytorch` records
+/// the loss sum after the gradients that do not feed it), named by its step-plan position, and
+/// dispatches 1,800 times the step plan's plus that count.
 #[test]
 #[ignore = "needs a Vulkan device"]
-fn the_final_lines_are_the_step_plan_dispatches_up_to_the_loss() {
+fn the_final_lines_are_the_step_plan_dispatches_the_loss_is_computed_from() {
     let source = source();
     let artifact = compile_artifact(MNIST_MLP, &source, Backend::Vulkan).expect("compiles");
     let compiled = compile_training(MNIST_MLP, &source).expect("compiles");
@@ -128,12 +129,31 @@ fn the_final_lines_are_the_step_plan_dispatches_up_to_the_loss() {
         .iter()
         .position(|s| s.op == PlanOp::Dispatch && s.writes.contains(&plan.loss_view))
         .expect("a dispatch writes the loss view");
-    let up_to_loss: Vec<usize> = step_plan
-        .iter()
-        .copied()
-        .filter(|&at| at <= loss_at)
+    let loss_steps: Vec<usize> = plan
+        .loss_steps()
+        .into_iter()
+        .filter(|&at| plan.step[at].op == PlanOp::Dispatch)
         .collect();
-    assert!(!up_to_loss.is_empty() && up_to_loss.len() < step_plan.len());
+    let kinds: Vec<KernelKind> = loss_steps
+        .iter()
+        .map(|&at| {
+            let id = plan.step[at]
+                .kernel_module_id
+                .expect("a dispatch names a kernel");
+            plan.kernels
+                .iter()
+                .find(|k| k.id == id)
+                .expect("the plan holds the kernel")
+                .kind
+        })
+        .collect();
+    assert_eq!(
+        kinds,
+        [KernelKind::MatMul, KernelKind::MatMul, KernelKind::LossSum],
+        "the two forward matmuls, then the loss sum"
+    );
+    assert_eq!(loss_steps.last(), Some(&loss_at));
+    assert!(loss_steps.len() < step_plan.len());
     let vulkan = Vulkan::load().expect("the Vulkan loader opens");
     let candidates = vulkan.candidates().expect("the devices are probed");
     let device_profile = candidates[0].profile.clone();
@@ -154,11 +174,11 @@ fn the_final_lines_are_the_step_plan_dispatches_up_to_the_loss() {
         .map(|s| s.site.position)
         .collect();
     assert_eq!(
-        final_lines, up_to_loss,
-        "the final lines name the step plan's Dispatch steps up to the loss"
+        final_lines, loss_steps,
+        "the final lines name the step plan's Dispatch steps the loss is computed from"
     );
     assert_eq!(
         stats.dispatches,
-        1800 * step_plan.len() as u64 + up_to_loss.len() as u64
+        1800 * step_plan.len() as u64 + loss_steps.len() as u64
     );
 }
