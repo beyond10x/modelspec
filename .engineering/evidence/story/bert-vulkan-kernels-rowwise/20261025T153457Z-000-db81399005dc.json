@@ -1,0 +1,15 @@
+{
+  "at": "2026-10-25T15:34:57Z",
+  "actor": "human:timo",
+  "artifact": "story:bert-vulkan-kernels-rowwise",
+  "kind": "story",
+  "revision": 6,
+  "change": {
+    "change": "evidence",
+    "kind": "review_outcome",
+    "source": "fix pass 1, D66",
+    "reference": "89c7a5fb97f5ad395f0248e8a989745b081265a4",
+    "review": "review-result:adversary-rowwise-pass-1",
+    "outcome": "fixed"
+  }
+}

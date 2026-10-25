@@ -7,7 +7,7 @@ import status from '@site/data/status.json';
 
 # Status
 
-0.12.0 is the latest release; each release carries a prebuilt binary for Linux x86_64
+0.13.0 is the latest release; each release carries a prebuilt binary for Linux x86_64
 ([changelog](https://github.com/beyond10x/modelspec/blob/main/CHANGELOG.md)). 0.1.0 was
 milestone M0, the semantic core. `modelspec train --backend vulkan` trains on one Vulkan device
 within the GPU tolerance of the CPU reference since 0.4.0, and since 0.6.0 it writes and resumes
@@ -25,6 +25,7 @@ replays a run. A binary built without the `vulkan` feature refuses that backend 
 | 0.10.0 | `i32` row ids and the operators `embedding`, `add_rows`, `gelu`, `layer_norm`, `softmax` and `attention` on the CPU interpreter; `zeros()` and `ones()`; deterministic fused multiply-adds in every reduction; scheduling for a device profile; elementwise chains as one dispatch; pipeline statistics under `--profile`; `modelspec data prepare`, `data tokenizer` and `data pack` |
 | 0.11.0 | `cross_entropy` and `dropout` on the CPU interpreter; `train --backend cpu --data` on a packed directory; held-out evaluation during training with `--eval-every`; the observatory UI loop's gates and ratchet in `task ui-ux` |
 | 0.12.0 | `optimizer = adamw(...)` on the CPU interpreter, with decoupled weight decay and a learning rate warming up linearly from 0 and decaying linearly to 0 at the last step; `E-TYPE-023` and `E-TYPE-024` for out-of-range arguments; `E-TRAIN-001` on a non-finite moment; a resumed AdamW run refused |
+| 0.13.0 | a `relu_grad` whose gradient operand is a matmul output nothing else reads is an epilogue of that matmul in the Vulkan plan (`epilogue ReluGrad`), so the MNIST step plan has 9 dispatches, 6 barriers and 12 buffers; the `mse` loss sum is recorded beside the largest matmul it can share a barrier interval with; every bit of the losses, parameters, checkpoints and predictions is unchanged |
 
 The rows of the table below that start with "Since" name the release that added them, and those
 that start with "Not yet released" are on `main` only.
@@ -32,7 +33,7 @@ that start with "Not yet released" are on `main` only.
 | milestone | state |
 |---|---|
 | M0 semantic core | done: released as 0.1.0 |
-| M1 native Vulkan execution | in progress: Vulkan training since 0.4.0; `compile`, Vulkan checkpoints and Vulkan `infer` since 0.6.0; the observatory UI and Vulkan non-finite loss refusal since 0.7.0; per-dispatch FLOP and byte counts since 0.7.1; per-step device counters since 0.8.0; register blocking, in-place transposed operands and `--fast-math` since 0.9.0; device-profile scheduling and chain fusion since 0.10.0 |
+| M1 native Vulkan execution | in progress: Vulkan training since 0.4.0; `compile`, Vulkan checkpoints and Vulkan `infer` since 0.6.0; the observatory UI and Vulkan non-finite loss refusal since 0.7.0; per-dispatch FLOP and byte counts since 0.7.1; per-step device counters since 0.8.0; register blocking, in-place transposed operands and `--fast-math` since 0.9.0; device-profile scheduling and chain fusion since 0.10.0; the `relu_grad` matmul epilogue and the loss sum beside the largest matmul since 0.13.0 |
 | M2 optimizing compiler | partly done early, in M1: elementwise fusion and per-dispatch profiling since 0.4.0, the tiled shared-memory matmul since 0.5.0; the rest is design |
 | M3 neural-network essentials | in progress on the CPU reference: the BERT operators since 0.10.0, `cross_entropy`, `dropout`, packed training data and held-out evaluation since 0.11.0, AdamW since 0.12.0; their Vulkan kernels are planned |
 | M4 device specialization | designed in DESIGN.md § 1; not built |

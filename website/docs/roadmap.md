@@ -6,7 +6,7 @@ description: Milestones M0 to M4 from DESIGN.md § 1. M0 is built; M1, GPU execu
 # Roadmap
 
 The milestones are those of [DESIGN.md § 1](https://github.com/beyond10x/modelspec/blob/main/DESIGN.md#1-scope-and-milestones).
-M0 is built and released as 0.1.0. M1 is in progress; the latest release is 0.12.0. Some M2 items
+M0 is built and released as 0.1.0. M1 is in progress; the latest release is 0.13.0. Some M2 items
 were done early, in M1. The current milestone is a small BERT, pre-trained from scratch, which is
 one of the two proof models of M3: its operators run on the CPU reference interpreter, and their
 Vulkan kernels are planned. M4 is design.
@@ -37,6 +37,7 @@ reference interpreter, and `modelspec check`, `ir` and `train --backend cpu`.
 | 0.10.0 | deterministic fused multiply-adds in every reduction, on the CPU and the GPU; scheduling for a device profile; elementwise chains as one dispatch; the driver's pipeline statistics under `--profile` |
 | 0.11.0 | no change to the Vulkan backend; the observatory UI's layout, accessibility and screen-reading gates with a ratchet, in `task ui-ux` on every merge |
 | 0.12.0 | no change to the Vulkan backend; AdamW trains on the CPU reference only |
+| 0.13.0 | a `relu_grad` whose gradient operand is a matmul output nothing else reads is an epilogue of that matmul, and the `mse` loss sum shares a barrier interval with the largest matmul; the same bits, and the `mlp_sweep` b8192 h4096 step on the RTX 3090 at 1.044 of PyTorch eager (was 1.111) |
 
 The 9 acceptance boxes of DESIGN.md § 9 are not ticked.
 
