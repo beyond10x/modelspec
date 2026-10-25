@@ -29,7 +29,7 @@ use modelspec_core::artifact::{ContentHash, schema_hash};
 use modelspec_core::compile::CompiledTraining;
 use modelspec_core::diag::{Code, Diagnostic};
 use modelspec_core::ir::tensor::{DType, Dim, ParamId, TensorType};
-use modelspec_core::ir::training::OptimizerRule;
+use modelspec_core::ir::training::{AdamW, OptimizerRule};
 use serde::de::{DeserializeSeed, Deserializer, IgnoredAny, SeqAccess, Visitor};
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
@@ -70,6 +70,17 @@ const CHECKSUM: std::ops::Range<usize> = 24..56;
 pub enum OptimizerKind {
     Sgd,
     AdamW,
+    Muon,
+}
+
+/// The hyperparameters of a Muon run besides those it shares with AdamW
+/// (`modelspec.training.MuonConfig`).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MuonConfig {
+    pub momentum: f64,
+    pub ns_steps: u64,
+    pub adam_learning_rate: f64,
 }
 
 /// A learning-rate schedule (`modelspec.training.LearningRateSchedule`): the linear warmup of an
@@ -96,47 +107,65 @@ pub struct OptimizerConfig {
     pub epsilon: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schedule: Option<LearningRateSchedule>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub muon: Option<MuonConfig>,
 }
 
 impl OptimizerConfig {
-    /// The optimizer of `compiled`: SGD at its learning rate with no schedule, or AdamW at its
-    /// peak rate with its weight decay, betas, epsilon and warmup schedule.
+    /// The optimizer of `compiled`: SGD at its learning rate with no schedule, AdamW at its
+    /// peak rate with its weight decay, betas, epsilon and warmup schedule, or Muon at its peak
+    /// rate with the AdamW fields of its other parameters and its own ([`MuonConfig`]).
     pub fn of(compiled: &CompiledTraining) -> Self {
         let learning_rate = f64::from(compiled.config.lr);
+        let sgd = Self {
+            kind: OptimizerKind::Sgd,
+            learning_rate,
+            weight_decay: None,
+            beta1: None,
+            beta2: None,
+            epsilon: None,
+            schedule: None,
+            muon: None,
+        };
+        let with_adamw = |kind, adamw: AdamW| Self {
+            kind,
+            weight_decay: Some(f64::from(adamw.weight_decay)),
+            beta1: Some(f64::from(adamw.beta1)),
+            beta2: Some(f64::from(adamw.beta2)),
+            epsilon: Some(f64::from(adamw.eps)),
+            schedule: Some(LearningRateSchedule {
+                warmup_steps: adamw.warmup_steps,
+            }),
+            ..sgd
+        };
         match compiled.training.optimizer.rule {
-            OptimizerRule::Sgd => Self {
-                kind: OptimizerKind::Sgd,
-                learning_rate,
-                weight_decay: None,
-                beta1: None,
-                beta2: None,
-                epsilon: None,
-                schedule: None,
-            },
-            OptimizerRule::AdamW(adamw) => Self {
-                kind: OptimizerKind::AdamW,
-                learning_rate,
-                weight_decay: Some(f64::from(adamw.weight_decay)),
-                beta1: Some(f64::from(adamw.beta1)),
-                beta2: Some(f64::from(adamw.beta2)),
-                epsilon: Some(f64::from(adamw.eps)),
-                schedule: Some(LearningRateSchedule {
-                    warmup_steps: adamw.warmup_steps,
+            OptimizerRule::Sgd => sgd,
+            OptimizerRule::AdamW(adamw) => with_adamw(OptimizerKind::AdamW, adamw),
+            OptimizerRule::Muon(muon) => Self {
+                muon: Some(MuonConfig {
+                    momentum: f64::from(muon.momentum),
+                    ns_steps: u64::from(muon.ns_steps),
+                    adam_learning_rate: f64::from(muon.adam_lr),
                 }),
+                ..with_adamw(OptimizerKind::Muon, muon.adamw)
             },
         }
     }
 
     /// The invariant of `OptimizerConfig`: the AdamW fields and the schedule are present exactly
-    /// for AdamW.
+    /// for AdamW and Muon, and the Muon fields exactly for Muon.
     fn is_valid(&self) -> bool {
         let adamw = [self.weight_decay, self.beta1, self.beta2, self.epsilon];
+        let with_adamw = adamw.iter().all(Option::is_some) && self.schedule.is_some();
         self.learning_rate.is_finite()
             && match self.kind {
-                OptimizerKind::Sgd => adamw.iter().all(Option::is_none) && self.schedule.is_none(),
-                OptimizerKind::AdamW => {
-                    adamw.iter().all(Option::is_some) && self.schedule.is_some()
+                OptimizerKind::Sgd => {
+                    adamw.iter().all(Option::is_none)
+                        && self.schedule.is_none()
+                        && self.muon.is_none()
                 }
+                OptimizerKind::AdamW => with_adamw && self.muon.is_none(),
+                OptimizerKind::Muon => with_adamw && self.muon.is_some(),
             }
     }
 }

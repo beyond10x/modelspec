@@ -9,6 +9,10 @@ history.
 
 ## [Unreleased]
 
+### Added
+
+- The `muon` optimizer on the CPU reference: `muon(lr, momentum, weight_decay, ns_steps, warmup_steps, adam_lr, beta1, beta2, eps)` trains each rank-2 parameter that no `embedding` reads as its table with Nesterov momentum orthogonalized by quintic Newton–Schulz steps, and every other parameter with AdamW at `adam_lr`; `E-TYPE-025` refuses a `momentum` outside [0, 1) and an `ns_steps` outside [1, 10], and `train --checkpoint` and `--resume` refuse a Muon run (DESIGN.md revision 0.51, story:muon-optimizer).
+
 ## [0.14.0] - 2026-10-25
 
 Vulkan kernels for the row-wise BERT operators: `embedding`, `add_rows`, `gelu`, `dropout`, `layer_norm`, `softmax` and their gradients run on the device as one dispatch each, every sum in the CPU interpreter's order; `EmbeddingGrad` adds without atomics, so two runs give the same bits; and the `dropout` mask is computed on the device bit-equal to the CPU's. `train --backend vulkan` trains a model of a matmul, `add_rows` and `gelu` within the GPU tolerance of the CPU run; a device run of a model with `dropout` is still refused with E-TARGET-011, because the device run supplies no RNG token per step.

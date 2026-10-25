@@ -12,7 +12,9 @@
 //! scheduled learning rate and the two bias corrections, which [`PreparedStep::schedule`] sets
 //! from the step number before each evaluation. The moments start at 0 ([`ParamState::new`]). An
 //! AdamW step whose loss reads no parameter has no update, no moment and no host scalar, and is
-//! given none.
+//! given none. A Muon step (story:muon-optimizer) reads and writes the momentum buffer `b` of
+//! each parameter Muon updates the same way, starting at 0, and takes the scheduled Muon rate
+//! beside the AdamW scalars of its other parameters.
 //!
 //! [`evaluate_step`] is the evaluation alone: it returns the loss, the gradients and the updates
 //! of the old values and changes nothing, and [`Evaluated::apply`] writes the updates. Between
@@ -28,8 +30,8 @@ use std::collections::BTreeMap;
 
 use modelspec_core::ir::tensor::ParamId;
 use modelspec_core::ir::training::{
-    AdamW, C1_INPUT, C2_INPUT, LR_T_INPUT, Moment, OptimizerRule, StateVersion, StepScalars,
-    TrainConfig, TrainingStep, moment_input,
+    AdamW, C1_INPUT, C2_INPUT, LR_T_INPUT, MUON_LR_T_INPUT, Moment, Muon, OptimizerRule,
+    StateVersion, StepScalars, TrainConfig, TrainingStep, moment_input,
 };
 use modelspec_core::ir::verify::{TrainingVerifyError, verify_step_writes};
 use thiserror::Error;
@@ -57,31 +59,30 @@ impl SgdConfig {
 }
 
 /// The persistent parameter state of a run: each declared parameter's value and version, and
-/// under AdamW the two moments of each parameter with an update.
+/// under AdamW the two moments of each parameter with an update, under Muon the moments or the
+/// buffer of each.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ParamState {
     pub values: BTreeMap<ParamId, HostTensor<f32>>,
     pub versions: BTreeMap<ParamId, StateVersion>,
-    /// Each moment of each parameter with an AdamW update, at the parameter's version; empty
-    /// under SGD.
+    /// Each moment of each parameter with an AdamW update and the buffer `b`
+    /// ([`Moment::Momentum`]) of each parameter with a Muon update, at the parameter's version;
+    /// empty under SGD.
     pub moments: BTreeMap<(ParamId, Moment), HostTensor<f32>>,
 }
 
 impl ParamState {
     /// The state before the first step: `values` at the versions `step` is compiled against, and
-    /// every AdamW moment 0 in the shape of its parameter's value.
+    /// every AdamW moment and Muon buffer 0 in the shape of its parameter's value.
     pub fn new(step: &TrainingStep, values: BTreeMap<ParamId, HostTensor<f32>>) -> Self {
         let moments = step
             .optimizer
-            .moments
-            .keys()
-            .filter_map(|param| values.get(param).map(|value| (*param, value)))
-            .flat_map(|(param, value)| {
-                Moment::BOTH.map(|moment| {
-                    let zeros =
-                        HostTensor::from_parts(value.shape().to_vec(), vec![0.0; value.len()]);
-                    ((param, moment), zeros)
-                })
+            .state_slots()
+            .into_iter()
+            .filter_map(|slot| {
+                let value = values.get(&slot.param)?;
+                let zeros = HostTensor::from_parts(value.shape().to_vec(), vec![0.0; value.len()]);
+                Some(((slot.param, slot.moment), zeros))
             })
             .collect();
         Self {
@@ -105,8 +106,9 @@ pub enum StepError {
         param: ParamId,
         current: StateVersion,
     },
-    /// An AdamW step was evaluated before [`PreparedStep::schedule`] gave it its step number.
-    #[error("an AdamW step needs its step number and the run's length before it runs")]
+    /// An AdamW or Muon step was evaluated before [`PreparedStep::schedule`] gave it its step
+    /// number.
+    #[error("an AdamW or Muon step needs its step number and the run's length before it runs")]
     Unscheduled,
 }
 
@@ -238,13 +240,21 @@ pub struct PreparedStep<'s> {
     /// The step's peak or constant learning rate and, under AdamW, its hyperparameters.
     lr: f32,
     adamw: Option<AdamW>,
+    /// Under Muon, its hyperparameters.
+    muon: Option<Muon>,
     /// Whether the program declares the AdamW host scalars ([`TrainingStep`]'s `step_inputs`):
-    /// an AdamW step with no update has none, and is given none.
+    /// an AdamW step with no update has none, and is given none, nor has a Muon step whose every
+    /// update is Muon's.
     host_scalars: bool,
+    /// Whether the program declares the Muon rate [`MUON_LR_T_INPUT`].
+    muon_rate: bool,
     /// The host scalars of the next AdamW evaluation, set by [`PreparedStep::schedule`].
     scalars: Option<StepScalars>,
-    /// Each AdamW moment, the output position of its next value and the name of the input that
-    /// reads it, in parameter order, the first moment before the second.
+    /// The Muon rate of the next evaluation, set by [`PreparedStep::schedule`].
+    muon_lr_t: Option<f32>,
+    /// Each AdamW moment and Muon buffer, the output position of its next value and the name of
+    /// the input that reads it, in the order of `state_slots`: parameter order, the first moment
+    /// before the second.
     moments: Vec<((ParamId, Moment), usize)>,
     moment_names: Vec<String>,
     /// The next moments of the last evaluation not yet applied, by index of
@@ -292,26 +302,21 @@ impl<'s> PreparedStep<'s> {
         let first_moment = 1 + gradients.len() + step.optimizer.updates.len();
         let mut moments = Vec::new();
         let mut moment_names = Vec::new();
-        for (k, (&param, values)) in step.optimizer.moments.iter().enumerate() {
-            for (j, moment) in Moment::BOTH.into_iter().enumerate() {
-                let at = first_moment + 2 * k + j;
-                debug_assert_eq!(
-                    program.outputs[at],
-                    values.next(moment),
-                    "the verified layout"
-                );
-                roles[at] = Some(Role::Moment(moments.len()));
-                moments.push(((param, moment), at));
-                moment_names.push(moment_input(moment, &program.params[&param].path));
-            }
+        for (k, slot) in step.optimizer.state_slots().into_iter().enumerate() {
+            let at = first_moment + k;
+            debug_assert_eq!(program.outputs[at], slot.next, "the verified layout");
+            roles[at] = Some(Role::Moment(moments.len()));
+            moments.push(((slot.param, slot.moment), at));
+            moment_names.push(moment_input(slot.moment, &program.params[&slot.param].path));
         }
         let roles = roles
             .into_iter()
             .map(|role| role.expect("the verified layout gives every output a role"))
             .collect();
-        let adamw = match step.optimizer.rule {
-            OptimizerRule::Sgd => None,
-            OptimizerRule::AdamW(adamw) => Some(adamw),
+        let (adamw, muon) = match step.optimizer.rule {
+            OptimizerRule::Sgd => (None, None),
+            OptimizerRule::AdamW(adamw) => (Some(adamw), None),
+            OptimizerRule::Muon(muon) => (None, Some(muon)),
         };
         Ok(Self {
             program: Prepared::verified(program),
@@ -322,8 +327,11 @@ impl<'s> PreparedStep<'s> {
             gradients: BTreeMap::new(),
             lr: step.optimizer.lr,
             adamw,
+            muon,
             host_scalars: step.optimizer.step_inputs.is_some(),
+            muon_rate: step.optimizer.muon_lr_t.is_some(),
             scalars: None,
+            muon_lr_t: None,
             pending_moments: vec![None; moments.len()],
             moments,
             moment_names,
@@ -333,8 +341,16 @@ impl<'s> PreparedStep<'s> {
 
     /// Makes the next evaluation step `t` of a run of `steps` steps, `t` counted from 1, and
     /// returns the learning rate its update applies: the constant rate under SGD, and under AdamW
-    /// the scheduled rate, whose bias corrections it sets beside it ([`AdamW::scalars`]).
+    /// the scheduled rate, whose bias corrections it sets beside it ([`AdamW::scalars`]); under
+    /// Muon the scheduled rate of `lr`, which the Muon parameters apply, beside the scalars of
+    /// the AdamW parameters on the schedule of `adam_lr` ([`Muon::scalars`]).
     pub fn schedule(&mut self, t: u64, steps: u64) -> f32 {
+        if let Some(muon) = self.muon {
+            let scalars = muon.scalars(self.lr, t, steps);
+            self.scalars = Some(scalars.adamw);
+            self.muon_lr_t = Some(scalars.lr_t);
+            return scalars.lr_t;
+        }
         match self.adamw {
             None => self.lr,
             Some(adamw) => {
@@ -420,20 +436,27 @@ impl<'s> PreparedStep<'s> {
         }
         // The host scalars and the moments go only to a program that declares them: SGD has
         // none, nor has an AdamW step whose loss reads no parameter.
-        let inputs = if self.host_scalars {
-            let scalars = self.scalars.ok_or(StepError::Unscheduled)?;
+        let inputs = if self.host_scalars || self.muon_rate {
             self.host.clear();
             self.host.extend(
                 inputs
                     .iter()
                     .map(|(name, value)| (name.clone(), value.clone())),
             );
-            for (name, value) in [
-                (LR_T_INPUT, scalars.lr_t),
-                (C1_INPUT, scalars.c1),
-                (C2_INPUT, scalars.c2),
-            ] {
-                self.host.insert(name.to_owned(), HostTensor::scalar(value));
+            if self.host_scalars {
+                let scalars = self.scalars.ok_or(StepError::Unscheduled)?;
+                for (name, value) in [
+                    (LR_T_INPUT, scalars.lr_t),
+                    (C1_INPUT, scalars.c1),
+                    (C2_INPUT, scalars.c2),
+                ] {
+                    self.host.insert(name.to_owned(), HostTensor::scalar(value));
+                }
+            }
+            if self.muon_rate {
+                let rate = self.muon_lr_t.ok_or(StepError::Unscheduled)?;
+                self.host
+                    .insert(MUON_LR_T_INPUT.to_owned(), HostTensor::scalar(rate));
             }
             // A moment missing from the state is left out, and the interpreter refuses the
             // run for the input it lacks.

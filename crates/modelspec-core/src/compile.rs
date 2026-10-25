@@ -42,9 +42,9 @@ pub mod codes {
 
     /// An operator of the training step has no Vulkan kernel yet: `attention` and
     /// `cross_entropy`, which with their gradients run on the CPU interpreter only, or the
-    /// optimizer `adamw`, whose step runs there too and is reported at the `train` block; and,
-    /// refused by the device run rather than the schedule, `dropout`, whose kernels need an RNG
-    /// token per step the run does not supply (DESIGN.md § 8.1). The file checks; use
+    /// optimizers `adamw` and `muon`, whose steps run there too and are reported at the `train`
+    /// block; and, refused by the device run rather than the schedule, `dropout`, whose kernels
+    /// need an RNG token per step the run does not supply (DESIGN.md § 8.1). The file checks; use
     /// `--backend cpu`.
     pub const NO_KERNEL: Code = Code::new("E-TARGET-011");
 }
@@ -65,8 +65,8 @@ pub struct CompiledTraining {
 }
 
 /// [`compile_tensor`], then [`differentiate`] of its loss, [`attach`] of the `train` block's
-/// optimizer, `sgd` or `adamw`, and [`verify_step`]. The step keeps every dropout; the forward
-/// program is the same Tensor IR with each dropout the identity, verified.
+/// optimizer, `sgd`, `adamw` or `muon`, and [`verify_step`]. The step keeps every dropout; the
+/// forward program is the same Tensor IR with each dropout the identity, verified.
 pub fn compile_training(path: &str, source: &str) -> Result<CompiledTraining, Vec<Diagnostic>> {
     let hir = compile_hir(path, source)?;
     let config = TrainConfig::from_hir(&hir.train);
@@ -90,7 +90,7 @@ pub fn compile_training(path: &str, source: &str) -> Result<CompiledTraining, Ve
 /// [`verify_plan`]: Kernel IR, the step plan and the forward plan, in an artifact for `backend`.
 /// A Cpu artifact keeps the views and has no kernels and empty plans: it takes the views of
 /// [`schedule::schedule_views`], so an op with no Vulkan kernel does not refuse it. For Vulkan,
-/// such an op is [`codes::NO_KERNEL`] at the op's source span, and an `adamw` step is
+/// such an op is [`codes::NO_KERNEL`] at the op's source span, and an `adamw` or `muon` step is
 /// [`codes::NO_KERNEL`] at the `train` block before anything is scheduled.
 pub fn compile_artifact(
     path: &str,
@@ -114,13 +114,18 @@ pub fn compile_artifact_for(
     profile: Option<&DeviceProfile>,
 ) -> Result<CompiledArtifact, Vec<Diagnostic>> {
     let compiled = compile_training(path, source)?;
+    let unsupported = match compiled.training.optimizer.rule {
+        OptimizerRule::Sgd => None,
+        OptimizerRule::AdamW(_) => Some("adamw"),
+        OptimizerRule::Muon(_) => Some("muon"),
+    };
     if backend == Backend::Vulkan
-        && let OptimizerRule::AdamW(_) = compiled.training.optimizer.rule
+        && let Some(name) = unsupported
     {
         return Err(vec![
             Diagnostic::new(
                 codes::NO_KERNEL,
-                "optimizer `adamw` has no Vulkan kernel yet",
+                format!("optimizer `{name}` has no Vulkan kernel yet"),
             )
             .note("compile and train it with `--backend cpu`")
             .at(compiled.config.span.clone()),

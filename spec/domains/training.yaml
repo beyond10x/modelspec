@@ -10,8 +10,29 @@ types:
   - name: modelspec.training.OptimizerKind
     kind: enum
     naming:
-      summary: SGD from M0; AdamW with decoupled weight decay and a warmup schedule from M3, written `adamw(lr = F, weight_decay = F, beta1 = F, beta2 = F, eps = F, warmup_steps = N)` (DESIGN.md § 1, § 2.1, § 11 iteration 4; epic:bert-from-scratch).
-    variants: [Sgd, AdamW]
+      summary: SGD from M0; AdamW with decoupled weight decay and a warmup schedule from M3, written `adamw(lr = F, weight_decay = F, beta1 = F, beta2 = F, eps = F, warmup_steps = N)` (DESIGN.md § 1, § 2.1, § 11 iteration 4; epic:bert-from-scratch); Muon, orthogonalized momentum for the matrix parameters no embedding reads and AdamW for the others, written `muon(lr = F, momentum = F, weight_decay = F, ns_steps = N, warmup_steps = N, adam_lr = F, beta1 = F, beta2 = F, eps = F)` (DESIGN.md § 2.1, revision 0.51; story:muon-optimizer).
+    variants: [Sgd, AdamW, Muon]
+
+  - name: modelspec.training.MuonConfig
+    kind: struct
+    naming:
+      summary: The hyperparameters of a Muon run besides those it shares with AdamW, settled by coordinator decision D67 of 2026-10-25 (DESIGN.md § 2.1). A matrix parameter no embedding reads takes the Muon update at OptimizerConfig.learning_rate; every other parameter takes AdamW at adam_learning_rate with the betas and epsilon of OptimizerConfig; both share its weight decay and schedule. The momentum buffer of each Muon parameter is not checkpointed, so a Muon run is neither checkpointed nor resumed.
+    fields:
+      - name: momentum
+        type: Binary64
+        summary: The momentum of the Nesterov buffer, in [0, 1).
+      - name: ns_steps
+        type: Integer
+        summary: The Newton-Schulz steps that orthogonalize each update, in [1, 10].
+      - name: adam_learning_rate
+        type: Binary64
+        summary: The peak learning rate of the parameters AdamW updates.
+    invariants:
+      - momentum >= 0
+      - momentum < 1
+      - ns_steps >= 1
+      - ns_steps <= 10
+      - adam_learning_rate > 0
 
   - name: modelspec.training.LearningRateSchedule
     kind: struct
@@ -26,7 +47,7 @@ types:
   - name: modelspec.training.OptimizerConfig
     kind: struct
     naming:
-      summary: Optimizer hyperparameters, recorded for reproducibility (DESIGN.md § 6.1). The AdamW fields are present exactly when kind is AdamW (Loshchilov and Hutter, decoupled weight decay); its first and second moments are a checkpoint's optimizer slots (DESIGN.md § 6.2).
+      summary: Optimizer hyperparameters, recorded for reproducibility (DESIGN.md § 6.1). The AdamW fields are present exactly when kind is AdamW or Muon (Loshchilov and Hutter, decoupled weight decay), and muon exactly when kind is Muon; the AdamW first and second moments are a checkpoint's optimizer slots (DESIGN.md § 6.2).
     fields:
       - name: kind
         type: modelspec.training.OptimizerKind
@@ -47,7 +68,10 @@ types:
         summary: AdamW denominator term.
       - name: schedule
         type: Optional<modelspec.training.LearningRateSchedule>
-        summary: Present exactly when kind is AdamW, settled by coordinator decision D50 of 2026-10-25; SGD keeps its constant learning rate, as M0 has.
+        summary: Present exactly when kind is AdamW or Muon, settled by coordinator decision D50 of 2026-10-25; SGD keeps its constant learning rate, as M0 has.
+      - name: muon
+        type: Optional<modelspec.training.MuonConfig>
+        summary: Present exactly when kind is Muon, whose AdamW fields and schedule are present too (coordinator decision D67 of 2026-10-25).
     invariants:
       - any:
           - all:
@@ -57,6 +81,7 @@ types:
               - not defined(beta2)
               - not defined(epsilon)
               - not defined(schedule)
+              - not defined(muon)
           - all:
               - kind == AdamW
               - defined(weight_decay)
@@ -64,6 +89,15 @@ types:
               - defined(beta2)
               - defined(epsilon)
               - defined(schedule)
+              - not defined(muon)
+          - all:
+              - kind == Muon
+              - defined(weight_decay)
+              - defined(beta1)
+              - defined(beta2)
+              - defined(epsilon)
+              - defined(schedule)
+              - defined(muon)
 
   - name: modelspec.training.RngAlgorithm
     kind: enum

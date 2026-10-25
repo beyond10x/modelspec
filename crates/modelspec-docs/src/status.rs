@@ -540,6 +540,13 @@ pub const CAPABILITIES: &[Capability] = &[
         Evidence::Test("crates/modelspec-runtime/tests/adamw.rs::one_step"),
         "/docs/concepts/language",
     ),
+    shipped(
+        "Training",
+        "Muon optimizer on the CPU",
+        "`optimizer = muon(...)` trains each matrix parameter no `embedding` reads with Muon, Nesterov momentum orthogonalized by Newton-Schulz in the training step, and every other parameter with AdamW, both on the warm-up schedule; one step matches an `f32` reference bit for bit.",
+        Evidence::Test("crates/modelspec-runtime/tests/muon.rs::one_step"),
+        "/docs/concepts/training",
+    ),
     planned(
         "GPU",
         "Vulkan kernels for attention, cross-entropy and AdamW",

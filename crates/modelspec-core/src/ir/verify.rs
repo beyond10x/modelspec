@@ -14,8 +14,9 @@ use crate::ir::kernel::{
 };
 use crate::ir::tensor::{DType, Dim, ParamId, TensorOp, TensorProgram, TensorType, ValueId};
 use crate::ir::training::{
-    Access, C1_INPUT, C2_INPUT, Effect, EffectToken, LR_T_INPUT, Moment, OptimizerRule,
-    StateVersion, Subgraph, TrainingProgram, TrainingStep, moment_input,
+    Access, C1_INPUT, C2_INPUT, Effect, EffectToken, LR_T_INPUT, MUON_LR_T_INPUT, Moment, Muon,
+    OptimizerRule, StateVersion, Subgraph, TrainingProgram, TrainingStep, moment_input,
+    muon_params,
 };
 use crate::ops::{self, OpError};
 use crate::schedule::MAX_WORKGROUPS_PER_DIMENSION;
@@ -432,8 +433,20 @@ pub enum TrainingVerifyError {
          type"
     )]
     StepInput { name: String, value: ValueId },
-    #[error("parameter {param} has an update but no moments")]
+    #[error("a step that is not Muon carries Muon state: {what}")]
+    MuonStateOutsideMuon { what: &'static str },
+    #[error("a Muon step with a Muon update has no host input `muon_lr_t`")]
+    MissingMuonRate,
+    #[error("parameter {param} has an update but no moments or buffer for its rule")]
     MissingMoments { param: ParamId },
+    #[error("parameter {param} carries the state of the other rule of the Muon split")]
+    StateOfTheOtherRule { param: ParamId },
+    #[error(
+        "optimizer {node} is Scalar {}; a Muon constant is momentum, 1e-7, a Newton-Schulz \
+         coefficient, weight_decay, a parameter's scale or an AdamW constant",
+        f32::from_bits(*node_bits)
+    )]
+    MuonConstant { node: ValueId, node_bits: u32 },
     #[error("moments are given for parameter {param}, which has no update")]
     MomentsWithoutUpdate { param: ParamId },
     #[error(
@@ -641,12 +654,7 @@ pub fn verify_step_writes(
     let mut expected = vec![training.loss];
     expected.extend(training.gradients.values());
     expected.extend(optimizer.updates.values());
-    expected.extend(
-        optimizer
-            .moments
-            .values()
-            .flat_map(|m| [m.m_next, m.v_next]),
-    );
+    expected.extend(optimizer.state_slots().iter().map(|s| s.next));
     check_outputs(program, expected)?;
 
     let tag = |v: ValueId| training.subgraphs[&v];
@@ -726,6 +734,24 @@ pub fn verify_step_writes(
     if !(optimizer.lr.is_finite() && optimizer.lr > 0.0) {
         return Err(TrainingVerifyError::LearningRate { lr_bits });
     }
+    let muon_constants: BTreeSet<u32> = match optimizer.rule {
+        OptimizerRule::Muon(muon) => {
+            let scales =
+                optimizer.buffers.keys().filter_map(
+                    |p| match program.params.get(p)?.ty.shape[..] {
+                        [Dim::Static(rows), Dim::Static(cols)] => Some(Muon::scale(rows, cols)),
+                        _ => None,
+                    },
+                );
+            muon.constants()
+                .into_iter()
+                .chain(muon.adamw.constants())
+                .chain(scales)
+                .map(f32::to_bits)
+                .collect()
+        }
+        _ => BTreeSet::new(),
+    };
     for node in &program.nodes {
         let TensorOp::Scalar(value) = node.op else {
             continue;
@@ -750,6 +776,12 @@ pub fn verify_step_writes(
                     node_bits,
                 });
             }
+            OptimizerRule::Muon(_) if !muon_constants.contains(&node_bits) => {
+                return Err(TrainingVerifyError::MuonConstant {
+                    node: node.id,
+                    node_bits,
+                });
+            }
             _ => {}
         }
     }
@@ -760,21 +792,27 @@ pub fn verify_step_writes(
 }
 
 /// The optimizer state of a step against its rule, before its output layout is checked. Under
-/// SGD there are no host inputs, moments or moment effects. Under AdamW the hyperparameters are
-/// in range; a step with updates has its three host inputs, each an optimizer-tagged rank-0
-/// `f32` `Input` of its name; and each parameter with an update, and only those, has moments
-/// whose inputs are optimizer-tagged `Input`s of the parameter's type named for the moment and
-/// the parameter's path, and whose next values are optimizer values of that type.
+/// SGD there are no host inputs, moments, buffers or state effects. Under AdamW there is no Muon
+/// state, the hyperparameters are in range; a step with updates has its three host inputs, each an
+/// optimizer-tagged rank-0 `f32` `Input` of its name; and each parameter with an update, and only
+/// those, has moments whose inputs are optimizer-tagged `Input`s of the parameter's type named for
+/// the moment and the parameter's path, and whose next values are optimizer values of that type.
+/// Under Muon the hyperparameters are in range; each parameter of [`muon_params`] with an update
+/// has a buffer, as a moment is checked, and no moments; each other parameter with an update has
+/// moments and no buffer; the three host inputs are there when some parameter has moments, and the
+/// Muon rate [`MUON_LR_T_INPUT`] when some parameter has a buffer.
 fn check_optimizer_state(step: &TrainingStep) -> Result<(), TrainingVerifyError> {
     let training = &step.training;
     let program = &training.program;
     let optimizer = &step.optimizer;
-    let adamw = match optimizer.rule {
+    let (in_range, muon) = match optimizer.rule {
         OptimizerRule::Sgd => {
-            let what = if optimizer.step_inputs.is_some() {
+            let what = if optimizer.step_inputs.is_some() || optimizer.muon_lr_t.is_some() {
                 "host inputs"
             } else if !optimizer.moments.is_empty() {
                 "moments"
+            } else if !optimizer.buffers.is_empty() {
+                "buffers"
             } else if !optimizer.moment_effects.is_empty() {
                 "moment effects"
             } else {
@@ -782,11 +820,27 @@ fn check_optimizer_state(step: &TrainingStep) -> Result<(), TrainingVerifyError>
             };
             return Err(TrainingVerifyError::StateUnderSgd { what });
         }
-        OptimizerRule::AdamW(adamw) => adamw,
+        OptimizerRule::AdamW(adamw) => {
+            if optimizer.muon_lr_t.is_some() {
+                return Err(TrainingVerifyError::MuonStateOutsideMuon {
+                    what: "a Muon rate",
+                });
+            }
+            if !optimizer.buffers.is_empty() {
+                return Err(TrainingVerifyError::MuonStateOutsideMuon { what: "buffers" });
+            }
+            (adamw.in_range(), false)
+        }
+        OptimizerRule::Muon(muon) => (muon.in_range(), true),
     };
-    if !adamw.in_range() {
+    if !in_range {
         return Err(TrainingVerifyError::Hyperparameters);
     }
+    let split = if muon {
+        muon_params(training)
+    } else {
+        BTreeSet::new()
+    };
     let optimizer_value = |value: ValueId, ty: &TensorType| {
         program.node(value).is_some_and(|node| &node.ty == ty)
             && training.subgraphs.get(&value) == Some(&Subgraph::Optimizer)
@@ -796,13 +850,15 @@ fn check_optimizer_state(step: &TrainingStep) -> Result<(), TrainingVerifyError>
             .node(value)
             .is_some_and(|node| matches!(&node.op, TensorOp::Input { name: n } if n == name))
     };
+    let rank0 = TensorType::f32_scalar();
+    let adamw_updates = optimizer.updates.keys().any(|p| !split.contains(p));
+    let muon_updates = optimizer.updates.keys().any(|p| split.contains(p));
     match optimizer.step_inputs {
-        None if !optimizer.updates.is_empty() => {
+        None if adamw_updates => {
             return Err(TrainingVerifyError::MissingStepInputs);
         }
         None => {}
         Some(inputs) => {
-            let rank0 = TensorType::f32_scalar();
             for (value, name) in [
                 (inputs.lr_t, LR_T_INPUT),
                 (inputs.c1, C1_INPUT),
@@ -817,50 +873,70 @@ fn check_optimizer_state(step: &TrainingStep) -> Result<(), TrainingVerifyError>
             }
         }
     }
-    if let Some(&param) = optimizer
-        .updates
-        .keys()
-        .find(|p| !optimizer.moments.contains_key(p))
-    {
-        return Err(TrainingVerifyError::MissingMoments { param });
+    match optimizer.muon_lr_t {
+        None if muon_updates => return Err(TrainingVerifyError::MissingMuonRate),
+        Some(value) if !(optimizer_value(value, &rank0) && input_named(value, MUON_LR_T_INPUT)) => {
+            return Err(TrainingVerifyError::StepInput {
+                name: MUON_LR_T_INPUT.to_owned(),
+                value,
+            });
+        }
+        None | Some(_) => {}
     }
-    for (&param, moments) in &optimizer.moments {
+    for &param in optimizer.updates.keys() {
+        let (has, lacks) = if split.contains(&param) {
+            (
+                optimizer.buffers.contains_key(&param),
+                optimizer.moments.contains_key(&param),
+            )
+        } else {
+            (
+                optimizer.moments.contains_key(&param),
+                optimizer.buffers.contains_key(&param),
+            )
+        };
+        if !has {
+            return Err(TrainingVerifyError::MissingMoments { param });
+        }
+        if lacks {
+            return Err(TrainingVerifyError::StateOfTheOtherRule { param });
+        }
+    }
+    for slot in optimizer.state_slots() {
+        let param = slot.param;
         let decl = program
             .params
             .get(&param)
             .filter(|_| optimizer.updates.contains_key(&param))
             .ok_or(TrainingVerifyError::MomentsWithoutUpdate { param })?;
-        for moment in Moment::BOTH {
-            let input = moments.input(moment);
-            if !(optimizer_value(input, &decl.ty)
-                && input_named(input, &moment_input(moment, &decl.path)))
-            {
-                return Err(TrainingVerifyError::MomentValue {
-                    param,
-                    moment,
-                    role: "input",
-                    value: input,
-                });
-            }
-            let next = moments.next(moment);
-            if !optimizer_value(next, &decl.ty) {
-                return Err(TrainingVerifyError::MomentValue {
-                    param,
-                    moment,
-                    role: "next value",
-                    value: next,
-                });
-            }
+        let moment = slot.moment;
+        if !(optimizer_value(slot.input, &decl.ty)
+            && input_named(slot.input, &moment_input(moment, &decl.path)))
+        {
+            return Err(TrainingVerifyError::MomentValue {
+                param,
+                moment,
+                role: "input",
+                value: slot.input,
+            });
+        }
+        if !optimizer_value(slot.next, &decl.ty) {
+            return Err(TrainingVerifyError::MomentValue {
+                param,
+                moment,
+                role: "next value",
+                value: slot.next,
+            });
         }
     }
     Ok(())
 }
 
-/// The legal effects of the moments of an AdamW step, on a step whose parameter effects verify:
-/// every moment effect carried by a defined node and its token shared with no other effect;
-/// every moment's input carrying a read of that moment at its parameter's version, every next
-/// moment a write of the version after it, and no other moment effect; and each write ordered
-/// after its read.
+/// The legal effects of the moments of an AdamW step and the moments and buffers of a Muon step,
+/// on a step whose parameter effects verify: every moment effect carried by a defined node and
+/// its token shared with no other effect; every state's input carrying a read of that state at
+/// its parameter's version, every next state a write of the version after it, and no other
+/// moment effect; and each write ordered after its read.
 fn check_moment_effects(step: &TrainingStep) -> Result<(), TrainingVerifyError> {
     let program = &step.training.program;
     let optimizer = &step.optimizer;
@@ -887,40 +963,39 @@ fn check_moment_effects(step: &TrainingStep) -> Result<(), TrainingVerifyError> 
     }
 
     let mut carried = BTreeSet::new();
-    for (&param, moments) in &optimizer.moments {
+    for slot in optimizer.state_slots() {
+        let (param, moment) = (slot.param, slot.moment);
         let current = optimizer
             .versions
             .get(&param)
             .copied()
             .unwrap_or(StateVersion(0));
         let next = current.0.checked_add(1).map(StateVersion);
-        for moment in Moment::BOTH {
-            let mut token = |value: ValueId, access: Access, expected: Option<StateVersion>| {
-                carried.insert(value);
-                let effect = optimizer.moment_effects.get(&value);
-                match (effect, expected) {
-                    (Some(e), Some(version))
-                        if e.param == param
-                            && e.moment == moment
-                            && e.access == access
-                            && e.version == version =>
-                    {
-                        Ok(e.token)
-                    }
-                    _ => Err(TrainingVerifyError::MomentEffect {
-                        param,
-                        moment,
-                        access,
-                        value,
-                        expected: expected.unwrap_or(current),
-                    }),
+        let mut token = |value: ValueId, access: Access, expected: Option<StateVersion>| {
+            carried.insert(value);
+            let effect = optimizer.moment_effects.get(&value);
+            match (effect, expected) {
+                (Some(e), Some(version))
+                    if e.param == param
+                        && e.moment == moment
+                        && e.access == access
+                        && e.version == version =>
+                {
+                    Ok(e.token)
                 }
-            };
-            let read = token(moments.input(moment), Access::Read, Some(current))?;
-            let write = token(moments.next(moment), Access::Write, next)?;
-            if write < read {
-                return Err(TrainingVerifyError::MomentWriteBeforeRead { param, moment });
+                _ => Err(TrainingVerifyError::MomentEffect {
+                    param,
+                    moment,
+                    access,
+                    value,
+                    expected: expected.unwrap_or(current),
+                }),
             }
+        };
+        let read = token(slot.input, Access::Read, Some(current))?;
+        let write = token(slot.next, Access::Write, next)?;
+        if write < read {
+            return Err(TrainingVerifyError::MomentWriteBeforeRead { param, moment });
         }
     }
     if let Some(&value) = optimizer

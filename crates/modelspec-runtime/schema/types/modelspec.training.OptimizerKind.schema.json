@@ -4,20 +4,21 @@
   "x-ess-provenance": {
     "system": "modelspec",
     "specification_version": "v1",
-    "source_digest": "80bb780185d18b44ff5815ee205e78dceca36f978b470f1b877d14816ebbf329",
-    "contract_digest": "slice-sha256/2:4b1fe789941c1d0c0a4da7ee759d1173e7c9dba2a60a161990842ef29da94ed6",
+    "source_digest": "d594b677a3ce41f3a13954344cd7b7e24f2b98b3050de66c5bdbb9554060c669",
+    "contract_digest": "slice-sha256/2:b34b8861091fa30a77f3ebc11e3d3cb63f23aa2c78e31e323a9a3e8e6c1df66b",
     "regenerate": "ess generate"
   },
   "$defs": {
     "modelspec.training.OptimizerKind": {
       "title": "OptimizerKind",
-      "description": "SGD from M0; AdamW with decoupled weight decay and a warmup schedule from M3, written `adamw(lr = F, weight_decay = F, beta1 = F, beta2 = F, eps = F, warmup_steps = N)` (DESIGN.md § 1, § 2.1, § 11 iteration 4; epic:bert-from-scratch).",
+      "description": "SGD from M0; AdamW with decoupled weight decay and a warmup schedule from M3, written `adamw(lr = F, weight_decay = F, beta1 = F, beta2 = F, eps = F, warmup_steps = N)` (DESIGN.md § 1, § 2.1, § 11 iteration 4; epic:bert-from-scratch); Muon, orthogonalized momentum for the matrix parameters no embedding reads and AdamW for the others, written `muon(lr = F, momentum = F, weight_decay = F, ns_steps = N, warmup_steps = N, adam_lr = F, beta1 = F, beta2 = F, eps = F)` (DESIGN.md § 2.1, revision 0.51; story:muon-optimizer).",
       "x-ess-name": "modelspec.training.OptimizerKind",
       "x-ess-kind": "enum",
       "type": "string",
       "enum": [
         "Sgd",
-        "AdamW"
+        "AdamW",
+        "Muon"
       ]
     }
   }

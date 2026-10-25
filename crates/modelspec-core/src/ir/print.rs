@@ -12,7 +12,7 @@ use std::fmt::{self, Write};
 
 use crate::ir::kernel::{ExecutionPlan, PlanStep};
 use crate::ir::tensor::{ParamId, TensorNode, TensorOp, TensorProgram};
-use crate::ir::training::{Moment, Optimizer, OptimizerRule, TrainingProgram, TrainingStep};
+use crate::ir::training::{Optimizer, OptimizerRule, TrainingProgram, TrainingStep};
 
 /// The text form of `program`, one line each, newline-terminated.
 pub fn print(program: &TensorProgram) -> String {
@@ -31,8 +31,11 @@ pub fn print_training(training: &TrainingProgram) -> String {
 /// `optimizer sgd lr = <lr>` (or `optimizer adamw lr = <lr> weight_decay = ... warmup_steps = <n>`)
 /// after the parameters, each node that carries an effect followed by it
 /// (`{!0 read @LinearReg.w v0}`, `{!1 write @LinearReg.w v1}`, and for an AdamW moment
-/// `{!1 read m@LinearReg.w v0}`), each update output line `output %10 update @LinearReg.w` and
-/// each next-moment output line `output %31 moment v @LinearReg.w`.
+/// `{!1 read m@LinearReg.w v0}`, `b@` for a Muon buffer), each update output line
+/// `output %10 update @LinearReg.w`, under Muon followed by the parameter's rule, `muon` or
+/// `adamw`, and each next-state output line `output %31 moment v @LinearReg.w`. A Muon step's
+/// line is `optimizer muon lr = <lr> momentum = ... eps = <eps>`, its arguments in the order of
+/// `muon(...)`.
 pub fn print_step(step: &TrainingStep) -> String {
     step.to_string()
 }
@@ -75,6 +78,20 @@ fn write_training(
                  warmup_steps = {}",
                 optimizer.lr, a.weight_decay, a.beta1, a.beta2, a.eps, a.warmup_steps
             )?,
+            OptimizerRule::Muon(m) => writeln!(
+                f,
+                "optimizer muon lr = {:?} momentum = {:?} weight_decay = {:?} ns_steps = {} \
+                 warmup_steps = {} adam_lr = {:?} beta1 = {:?} beta2 = {:?} eps = {:?}",
+                optimizer.lr,
+                m.momentum,
+                m.adamw.weight_decay,
+                m.ns_steps,
+                m.adamw.warmup_steps,
+                m.adam_lr,
+                m.adamw.beta1,
+                m.adamw.beta2,
+                m.adamw.eps
+            )?,
         }
     }
     for node in &program.nodes {
@@ -115,15 +132,18 @@ fn write_training(
             optimizer.and_then(|o| o.updates.iter().find(|(_, v)| *v == output))
         {
             write!(f, " update {}", path(param))?;
-        } else if let Some((param, moment)) = optimizer.and_then(|o| {
-            o.moments.iter().find_map(|(param, m)| {
-                Moment::BOTH
-                    .into_iter()
-                    .find(|&k| m.next(k) == *output)
-                    .map(|k| (param, k))
-            })
-        }) {
-            write!(f, " moment {moment} {}", path(param))?;
+            if let Some(o) = optimizer.filter(|o| matches!(o.rule, OptimizerRule::Muon(_))) {
+                let rule = if o.buffers.contains_key(param) {
+                    "muon"
+                } else {
+                    "adamw"
+                };
+                write!(f, " {rule}")?;
+            }
+        } else if let Some(slot) =
+            optimizer.and_then(|o| o.state_slots().into_iter().find(|s| s.next == *output))
+        {
+            write!(f, " moment {} {}", slot.moment, path(&slot.param))?;
         }
         f.write_char('\n')?;
     }

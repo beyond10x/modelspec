@@ -205,6 +205,10 @@ pub enum Optimizer {
     /// requires to be `lr`, `weight_decay`, `beta1`, `beta2`, `eps` and `warmup_steps`, each
     /// once and named (DESIGN.md § 2.1).
     AdamW { args: Vec<Arg>, span: SourceSpan },
+    /// `muon(<args>)`, at `span`, the `muon` name: the arguments as written, which the checker
+    /// requires to be `lr`, `momentum`, `weight_decay`, `ns_steps`, `warmup_steps`, `adam_lr`,
+    /// `beta1`, `beta2` and `eps`, each once and named (DESIGN.md § 2.1).
+    Muon { args: Vec<Arg>, span: SourceSpan },
 }
 
 /// The execution device of a train block.
@@ -411,7 +415,7 @@ impl Erase for Optimizer {
     fn erase(&mut self) {
         match self {
             Optimizer::Sgd { lr_span, .. } => lr_span.erase(),
-            Optimizer::AdamW { args, span } => {
+            Optimizer::AdamW { args, span } | Optimizer::Muon { args, span } => {
                 args.erase();
                 span.erase();
             }

@@ -13,7 +13,7 @@
 //!           | "loss" "=" expr ";" | "optimizer" "=" optimizer ";"
 //!           | "steps" "=" INT ";" | "seed" "=" INT ";"
 //!           | "device" "=" ("cpu" | "vulkan" "(" INT ")") ";"
-//! optimizer := "sgd" "(" "lr" "=" FLOAT ")" | "adamw" "(" args ")"
+//! optimizer := "sgd" "(" "lr" "=" FLOAT ")" | ("adamw" | "muon") "(" args ")"
 //! type     := "Tensor" "<" ("f32" | "i32") "," "[" [INT ("," INT)*] "]" ">"
 //! expr     := INT | FLOAT | IDENT | call | (IDENT | "model") "." IDENT "(" args ")"
 //! call     := IDENT "(" args ")"
@@ -708,18 +708,23 @@ impl<'s> Parser<'s> {
         if self.peek() != Some(Token::Ident) {
             return Err(self.unexpected("an optimizer"));
         }
-        if self.text() == "adamw" {
+        if self.text() == "adamw" || self.text() == "muon" {
+            let muon = self.text() == "muon";
             let span = self.span();
             self.bump();
             self.expect(Token::LParen, "`(`")?;
             let args = self.args()?;
-            return Ok(Optimizer::AdamW { args, span });
+            return Ok(if muon {
+                Optimizer::Muon { args, span }
+            } else {
+                Optimizer::AdamW { args, span }
+            });
         }
         if self.text() != "sgd" {
             return Err(self.error(
                 codes::OPTIMIZER,
                 format!(
-                    "optimizer `{}` is not in the M0 subset; only `sgd` and `adamw` are",
+                    "optimizer `{}` is not in the M0 subset; only `sgd`, `adamw` and `muon` are",
                     self.text()
                 ),
             ));

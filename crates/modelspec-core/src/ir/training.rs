@@ -11,7 +11,10 @@
 //! [`attach_sgd`], one `p_next = p - lr * grad` output per loss-reachable parameter, after the
 //! gradients; or by [`attach_adamw`], the AdamW update of each such parameter, which also reads
 //! and writes its first and second moments `m` and `v` ([`Moments`]) and reads three rank-0
-//! inputs the training host supplies at every step ([`StepInputs`]). Its persistent-state effects
+//! inputs the training host supplies at every step ([`StepInputs`]); or by [`attach_muon`], the
+//! Muon update of each matrix parameter no `embedding` reads ([`muon_params`]), which reads and
+//! writes its momentum buffer `b` ([`Buffer`]) and orthogonalizes it by Newton–Schulz, and the
+//! AdamW update of every other one. Its persistent-state effects
 //! are metadata, not `TensorOp`s: every parameter carries a [`StateVersion`], and every
 //! `ParamRead` and every `p_next` carries an [`Effect`] with an ordered [`EffectToken`]; an update
 //! yields version `n + 1` from `n` (DESIGN.md § 3.1, § 4). A moment's read and write carry a
@@ -21,14 +24,14 @@
 //!
 //! The subgraph tags are for analysis and are not execution boundaries (DESIGN.md § 3.1).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use thiserror::Error;
 
 use crate::diag::SourceSpan;
 use crate::hir::{HirData, HirTrain};
-use crate::ir::tensor::{ParamId, TensorNode, TensorOp, TensorProgram, TensorType, ValueId};
+use crate::ir::tensor::{Dim, ParamId, TensorNode, TensorOp, TensorProgram, TensorType, ValueId};
 use crate::ir::verify::{TrainingVerifyError, verify_step, verify_training};
 use crate::ops::{self, OpError};
 
@@ -134,6 +137,9 @@ pub enum OptimizerRule {
     Sgd,
     /// `adamw(...)`: AdamW with decoupled weight decay and the linear warmup and decay schedule.
     AdamW(AdamW),
+    /// `muon(...)`: Muon, orthogonalized momentum, for each matrix parameter no `embedding` reads
+    /// ([`muon_params`]), and AdamW for every other parameter, both on the schedule of `adamw`.
+    Muon(Muon),
 }
 
 /// The hyperparameters of `adamw(...)` besides its peak learning rate `lr`, as the checker accepts
@@ -221,22 +227,106 @@ impl AdamW {
     }
 }
 
-/// The name of the host input of an AdamW step's learning rate.
+/// The largest `ns_steps` of `muon(...)` the checker accepts.
+pub const MUON_MAX_NS_STEPS: u32 = 10;
+
+/// The term added to the Frobenius norm of a Muon update before it divides the update.
+pub const MUON_NORM_EPS: f32 = 1e-7;
+
+/// The coefficients `a`, `b` and `c` of one Newton–Schulz step `x = a x + (b A + c A A) x`,
+/// `A = x xᵀ` (Jordan et al. 2024).
+pub const NEWTON_SCHULZ: [f32; 3] = [3.4445, -4.7750, 2.0315];
+
+/// The hyperparameters of `muon(...)` besides its peak learning rate `lr`, as the checker accepts
+/// them (DESIGN.md § 2.1, coordinator decision D67).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Muon {
+    /// The momentum of the buffer `b`, in `[0, 1)`.
+    pub momentum: f32,
+    /// The Newton–Schulz steps of each update, in `[1, MUON_MAX_NS_STEPS]`.
+    pub ns_steps: u32,
+    /// The peak learning rate of the parameters AdamW updates: positive and finite.
+    pub adam_lr: f32,
+    /// The AdamW hyperparameters of those parameters. Its `weight_decay` is also the decay of the
+    /// Muon parameters and its `warmup_steps` the warmup of both rates.
+    pub adamw: AdamW,
+}
+
+/// The rank-0 values the training host supplies to step `t` of a Muon run ([`Muon::scalars`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MuonScalars {
+    /// The learning rate of the Muon parameters at the step, by the schedule of `lr`.
+    pub lr_t: f32,
+    /// The host inputs of the AdamW parameters, the rate by the schedule of `adam_lr`.
+    pub adamw: StepScalars,
+}
+
+impl Muon {
+    /// Whether every hyperparameter is in range: `momentum` in `[0, 1)`, `ns_steps` in
+    /// `[1, MUON_MAX_NS_STEPS]`, `adam_lr` positive and finite and the AdamW ones in range.
+    pub fn in_range(&self) -> bool {
+        (0.0..1.0).contains(&self.momentum)
+            && (1..=MUON_MAX_NS_STEPS).contains(&self.ns_steps)
+            && self.adam_lr.is_finite()
+            && self.adam_lr > 0.0
+            && self.adamw.in_range()
+    }
+
+    /// The constants of a Muon update, in the order [`attach_muon`] adds their `Scalar` nodes:
+    /// `momentum`, [`MUON_NORM_EPS`], the three [`NEWTON_SCHULZ`] coefficients and
+    /// `weight_decay`. Each parameter's scale ([`Muon::scale`]) is a constant too.
+    pub fn constants(&self) -> [f32; 6] {
+        let [a, b, c] = NEWTON_SCHULZ;
+        [
+            self.momentum,
+            MUON_NORM_EPS,
+            a,
+            b,
+            c,
+            self.adamw.weight_decay,
+        ]
+    }
+
+    /// The scale `0.2 * sqrt(max(rows, cols))` of the update of a `[rows, cols]` parameter, which
+    /// gives it the RMS of an AdamW update (Liu et al. 2025), computed in `f64` and rounded once
+    /// to `f32`.
+    pub fn scale(rows: u64, cols: u64) -> f32 {
+        (0.2 * (rows.max(cols) as f64).sqrt()) as f32
+    }
+
+    /// The host inputs of step `t`, counted from 1, of a run of `steps` steps whose Muon peak rate
+    /// is `lr`: the schedule of [`AdamW::scalars`] applied to `lr` for the Muon parameters and to
+    /// `adam_lr` for the AdamW ones.
+    pub fn scalars(&self, lr: f32, t: u64, steps: u64) -> MuonScalars {
+        MuonScalars {
+            lr_t: self.adamw.scalars(lr, t, steps).lr_t,
+            adamw: self.adamw.scalars(self.adam_lr, t, steps),
+        }
+    }
+}
+
+/// The name of the host input of an AdamW step's learning rate, and under Muon of the rate of
+/// the parameters AdamW updates.
 pub const LR_T_INPUT: &str = "optimizer.lr_t";
+/// The name of the host input of a Muon step's learning rate for the parameters Muon updates.
+pub const MUON_LR_T_INPUT: &str = "optimizer.muon_lr_t";
 /// The name of the host input of an AdamW step's first-moment bias correction.
 pub const C1_INPUT: &str = "optimizer.c1";
 /// The name of the host input of an AdamW step's second-moment bias correction.
 pub const C2_INPUT: &str = "optimizer.c2";
 
-/// The first or the second moment of a parameter under AdamW, printed `m` and `v`.
+/// A per-parameter optimizer state: the first or the second moment of a parameter under AdamW,
+/// printed `m` and `v`, or the momentum buffer of a parameter under Muon, printed `b`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Moment {
     First,
     Second,
+    /// The momentum buffer `b` of a Muon parameter.
+    Momentum,
 }
 
 impl Moment {
-    /// Both moments, in the order a step reads and writes them.
+    /// Both AdamW moments, in the order a step reads and writes them.
     pub const BOTH: [Moment; 2] = [Moment::First, Moment::Second];
 }
 
@@ -245,12 +335,13 @@ impl fmt::Display for Moment {
         f.write_str(match self {
             Moment::First => "m",
             Moment::Second => "v",
+            Moment::Momentum => "b",
         })
     }
 }
 
 /// The name of the `Input` a step reads `moment` of the parameter at canonical `path` from:
-/// `optimizer.m@<path>` or `optimizer.v@<path>`.
+/// `optimizer.m@<path>`, `optimizer.v@<path>` or `optimizer.b@<path>`.
 pub fn moment_input(moment: Moment, path: &str) -> String {
     format!("optimizer.{moment}@{path}")
 }
@@ -275,11 +366,12 @@ pub struct Moments {
 }
 
 impl Moments {
-    /// The `Input` that reads `moment`.
+    /// The `Input` that reads `moment`, [`Moment::First`] or [`Moment::Second`].
     pub fn input(&self, moment: Moment) -> ValueId {
         match moment {
             Moment::First => self.m,
             Moment::Second => self.v,
+            Moment::Momentum => unreachable!("AdamW moments hold no momentum buffer"),
         }
     }
 
@@ -288,8 +380,27 @@ impl Moments {
         match moment {
             Moment::First => self.m_next,
             Moment::Second => self.v_next,
+            Moment::Momentum => unreachable!("AdamW moments hold no momentum buffer"),
         }
     }
+}
+
+/// The momentum buffer of one parameter in a Muon step: the `Input` the step reads it from, of the
+/// parameter's type, and its next value, an output of the step.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Buffer {
+    pub b: ValueId,
+    pub b_next: ValueId,
+}
+
+/// One per-parameter state of a step ([`Optimizer::state_slots`]): its parameter, which state it
+/// is, the `Input` the step reads it from and its next value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StateSlot {
+    pub param: ParamId,
+    pub moment: Moment,
+    pub input: ValueId,
+    pub next: ValueId,
 }
 
 /// One access to a moment of a parameter, carried by the value that performs it: the moment's
@@ -323,16 +434,56 @@ pub struct Optimizer {
     /// The effect of each value that accesses parameter state, keyed by that value: every
     /// `ParamRead` node and every update.
     pub effects: BTreeMap<ValueId, Effect>,
-    /// The host inputs of an AdamW step with at least one update; `None` under SGD.
+    /// The host inputs of an AdamW step with at least one update, or of a Muon step with at least
+    /// one parameter AdamW updates; `None` under SGD.
     pub step_inputs: Option<StepInputs>,
-    /// The moments of each parameter with an update under AdamW; empty under SGD.
+    /// The moments of each parameter AdamW updates, under AdamW or Muon; empty under SGD.
     pub moments: BTreeMap<ParamId, Moments>,
-    /// The effect of each value that accesses a moment, keyed by that value: every moment's
-    /// `Input` and every next moment. Its tokens and those of [`Self::effects`] are one order.
+    /// The host input [`MUON_LR_T_INPUT`] of a Muon step with at least one parameter Muon
+    /// updates; `None` otherwise.
+    pub muon_lr_t: Option<ValueId>,
+    /// The momentum buffer of each parameter Muon updates; empty unless the rule is Muon.
+    pub buffers: BTreeMap<ParamId, Buffer>,
+    /// The effect of each value that accesses a moment or a buffer, keyed by that value: every
+    /// state's `Input` and every next state. Its tokens and those of [`Self::effects`] are one
+    /// order.
     pub moment_effects: BTreeMap<ValueId, MomentEffect>,
 }
 
 impl Optimizer {
+    /// Every per-parameter state in `ParamId` order, a parameter's AdamW moments `m` then `v`,
+    /// or its Muon buffer `b`: the order of the step's state reads, writes and outputs.
+    pub fn state_slots(&self) -> Vec<StateSlot> {
+        let mut slots = Vec::new();
+        let params: BTreeSet<ParamId> = self
+            .moments
+            .keys()
+            .chain(self.buffers.keys())
+            .copied()
+            .collect();
+        for param in params {
+            if let Some(m) = self.moments.get(&param) {
+                for moment in Moment::BOTH {
+                    slots.push(StateSlot {
+                        param,
+                        moment,
+                        input: m.input(moment),
+                        next: m.next(moment),
+                    });
+                }
+            }
+            if let Some(b) = self.buffers.get(&param) {
+                slots.push(StateSlot {
+                    param,
+                    moment: Moment::Momentum,
+                    input: b.b,
+                    next: b.b_next,
+                });
+            }
+        }
+        slots
+    }
+
     /// The effects in token order.
     pub fn effects_in_order(&self) -> Vec<(ValueId, Effect)> {
         let mut effects: Vec<(ValueId, Effect)> =
@@ -342,14 +493,16 @@ impl Optimizer {
     }
 
     /// The `Input`s of the step the training host supplies beside the data and the dropout
-    /// tokens: the three step inputs and each moment's input under AdamW, none under SGD.
+    /// tokens: the three step inputs, the Muon rate and each state's input ([`Self::state_slots`]),
+    /// none under SGD.
     pub fn host_inputs(&self) -> Vec<ValueId> {
         let mut inputs: Vec<ValueId> = self
             .step_inputs
             .iter()
             .flat_map(|s| [s.lr_t, s.c1, s.c2])
             .collect();
-        inputs.extend(self.moments.values().flat_map(|m| [m.m, m.v]));
+        inputs.extend(self.muon_lr_t);
+        inputs.extend(self.state_slots().iter().map(|s| s.input));
         inputs
     }
 }
@@ -358,8 +511,8 @@ impl Optimizer {
 /// § 0 invariant 5).
 ///
 /// The outputs of `training.program` are the loss, then each gradient, then each of
-/// [`Optimizer::updates`], then, under AdamW, the next `m` and `v` of each entry of
-/// [`Optimizer::moments`], all in `ParamId` order. [`TrainingProgram::gradients`] and
+/// [`Optimizer::updates`], then, under AdamW or Muon, the next value of each state of
+/// [`Optimizer::state_slots`], all in `ParamId` order. [`TrainingProgram::gradients`] and
 /// [`TrainingProgram::loss`] keep their meaning.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TrainingStep {
@@ -513,7 +666,7 @@ fn initial_versions(training: &TrainingProgram) -> BTreeMap<ParamId, StateVersio
         .collect()
 }
 
-/// [`attach_sgd`] or [`attach_adamw`], as `rule` names.
+/// [`attach_sgd`], [`attach_adamw`] or [`attach_muon`], as `rule` names.
 pub fn attach(
     training: TrainingProgram,
     lr: f32,
@@ -522,6 +675,7 @@ pub fn attach(
     match rule {
         OptimizerRule::Sgd => attach_sgd(training, lr),
         OptimizerRule::AdamW(adamw) => attach_adamw(training, lr, adamw),
+        OptimizerRule::Muon(muon) => attach_muon(training, lr, muon),
     }
 }
 
@@ -588,6 +742,8 @@ pub fn attach_sgd(training: TrainingProgram, lr: f32) -> Result<TrainingStep, At
             effects,
             step_inputs: None,
             moments: BTreeMap::new(),
+            muon_lr_t: None,
+            buffers: BTreeMap::new(),
             moment_effects: BTreeMap::new(),
         },
     };
@@ -637,55 +793,12 @@ pub fn attach_adamw(
         training.gradients.iter().map(|(&p, &g)| (p, g)).collect();
     if let Some(&(first, _)) = gradients.first() {
         let t = &mut training;
-        let mut constants = Vec::new();
-        for value in adamw.constants() {
-            constants.push(append.op(t, first, TensorOp::Scalar(value), &[])?);
-        }
-        let [beta1, rest1, beta2, rest2, eps, decay] = constants[..] else {
-            unreachable!("six constants")
-        };
-        let rank0 = TensorType::f32_scalar();
-        let inputs = StepInputs {
-            lr_t: append.input(t, first, LR_T_INPUT.into(), &rank0)?,
-            c1: append.input(t, first, C1_INPUT.into(), &rank0)?,
-            c2: append.input(t, first, C2_INPUT.into(), &rank0)?,
-        };
+        let (constants, inputs) = adamw_prologue(&mut append, t, first, &adamw)?;
         step_inputs = Some(inputs);
         for (param, g) in gradients {
-            let decl = &t.program.params[&param];
-            let (ty, path) = (decl.ty.clone(), decl.path.clone());
-            let p = first_read(t, param);
-            let m = append.input(t, param, moment_input(Moment::First, &path), &ty)?;
-            let v = append.input(t, param, moment_input(Moment::Second, &path), &ty)?;
-            let mut op = |t: &mut TrainingProgram, op: TensorOp, operands: &[ValueId]| {
-                append.op(t, param, op, operands)
-            };
-            let decayed_m = op(t, TensorOp::Mul, &[beta1, m])?;
-            let new_m = op(t, TensorOp::Mul, &[rest1, g])?;
-            let m_next = op(t, TensorOp::Add, &[decayed_m, new_m])?;
-            let decayed_v = op(t, TensorOp::Mul, &[beta2, v])?;
-            let scaled_g = op(t, TensorOp::Mul, &[rest2, g])?;
-            let new_v = op(t, TensorOp::Mul, &[scaled_g, g])?;
-            let v_next = op(t, TensorOp::Add, &[decayed_v, new_v])?;
-            let m_hat = op(t, TensorOp::Mul, &[m_next, inputs.c1])?;
-            let v_hat = op(t, TensorOp::Mul, &[v_next, inputs.c2])?;
-            let root = op(t, TensorOp::Sqrt, &[v_hat])?;
-            let denominator = op(t, TensorOp::Add, &[root, eps])?;
-            let direction = op(t, TensorOp::Div, &[m_hat, denominator])?;
-            let shrink = op(t, TensorOp::Mul, &[decay, p])?;
-            let step = op(t, TensorOp::Add, &[direction, shrink])?;
-            let scaled = op(t, TensorOp::Mul, &[inputs.lr_t, step])?;
-            let update = op(t, TensorOp::Sub, &[p, scaled])?;
+            let (update, state) = adamw_update(&mut append, t, param, g, constants, inputs)?;
             updates.insert(param, update);
-            moments.insert(
-                param,
-                Moments {
-                    m,
-                    v,
-                    m_next,
-                    v_next,
-                },
-            );
+            moments.insert(param, state);
         }
     }
     training.program.outputs.extend(updates.values().copied());
@@ -747,11 +860,329 @@ pub fn attach_adamw(
             effects,
             step_inputs,
             moments,
+            muon_lr_t: None,
+            buffers: BTreeMap::new(),
             moment_effects,
         },
     };
     verify_step(&step)?;
     Ok(step)
+}
+
+/// Appends the `Scalar` of each of [`AdamW::constants`] in its order and the rank-0 `f32` inputs
+/// `lr_t`, `c1` and `c2`, attributed to `param`.
+fn adamw_prologue(
+    append: &mut Appender,
+    t: &mut TrainingProgram,
+    param: ParamId,
+    adamw: &AdamW,
+) -> Result<([ValueId; 6], StepInputs), AttachError> {
+    let mut constants = [ValueId(0); 6];
+    for (slot, value) in constants.iter_mut().zip(adamw.constants()) {
+        *slot = append.op(t, param, TensorOp::Scalar(value), &[])?;
+    }
+    let rank0 = TensorType::f32_scalar();
+    let inputs = StepInputs {
+        lr_t: append.input(t, param, LR_T_INPUT.into(), &rank0)?,
+        c1: append.input(t, param, C1_INPUT.into(), &rank0)?,
+        c2: append.input(t, param, C2_INPUT.into(), &rank0)?,
+    };
+    Ok((constants, inputs))
+}
+
+/// Appends the AdamW update of `param` with gradient `g` ([`attach_adamw`]) over the `constants`
+/// and `inputs` of [`adamw_prologue`]: its moment inputs, then each operation in order. Returns
+/// the update and the moments.
+fn adamw_update(
+    append: &mut Appender,
+    t: &mut TrainingProgram,
+    param: ParamId,
+    g: ValueId,
+    [beta1, rest1, beta2, rest2, eps, decay]: [ValueId; 6],
+    inputs: StepInputs,
+) -> Result<(ValueId, Moments), AttachError> {
+    let decl = &t.program.params[&param];
+    let (ty, path) = (decl.ty.clone(), decl.path.clone());
+    let p = first_read(t, param);
+    let m = append.input(t, param, moment_input(Moment::First, &path), &ty)?;
+    let v = append.input(t, param, moment_input(Moment::Second, &path), &ty)?;
+    let mut op = |t: &mut TrainingProgram, op: TensorOp, operands: &[ValueId]| {
+        append.op(t, param, op, operands)
+    };
+    let decayed_m = op(t, TensorOp::Mul, &[beta1, m])?;
+    let new_m = op(t, TensorOp::Mul, &[rest1, g])?;
+    let m_next = op(t, TensorOp::Add, &[decayed_m, new_m])?;
+    let decayed_v = op(t, TensorOp::Mul, &[beta2, v])?;
+    let scaled_g = op(t, TensorOp::Mul, &[rest2, g])?;
+    let new_v = op(t, TensorOp::Mul, &[scaled_g, g])?;
+    let v_next = op(t, TensorOp::Add, &[decayed_v, new_v])?;
+    let m_hat = op(t, TensorOp::Mul, &[m_next, inputs.c1])?;
+    let v_hat = op(t, TensorOp::Mul, &[v_next, inputs.c2])?;
+    let root = op(t, TensorOp::Sqrt, &[v_hat])?;
+    let denominator = op(t, TensorOp::Add, &[root, eps])?;
+    let direction = op(t, TensorOp::Div, &[m_hat, denominator])?;
+    let shrink = op(t, TensorOp::Mul, &[decay, p])?;
+    let step = op(t, TensorOp::Add, &[direction, shrink])?;
+    let scaled = op(t, TensorOp::Mul, &[inputs.lr_t, step])?;
+    let update = op(t, TensorOp::Sub, &[p, scaled])?;
+    let moments = Moments {
+        m,
+        v,
+        m_next,
+        v_next,
+    };
+    Ok((update, moments))
+}
+
+/// The static `[rows, cols]` of a rank-2 type, `None` for any other.
+fn matrix_shape(ty: &TensorType) -> Option<(u64, u64)> {
+    match ty.shape[..] {
+        [Dim::Static(rows), Dim::Static(cols)] => Some((rows, cols)),
+        _ => None,
+    }
+}
+
+/// The parameters `muon(...)` updates with Muon (DESIGN.md § 2.1, coordinator decision D67):
+/// each parameter with a gradient whose type is rank 2, of static shape, and that no
+/// `embedding` reads as its table, directly or through any chain of operands. A table tied to a
+/// decoder through `transpose` is such a parameter's exclusion too: the `embedding` reads it.
+/// Every other parameter with a gradient takes AdamW.
+pub fn muon_params(training: &TrainingProgram) -> BTreeSet<ParamId> {
+    let program = &training.program;
+    let nodes: BTreeMap<ValueId, &TensorNode> = program.nodes.iter().map(|n| (n.id, n)).collect();
+    let mut tables = BTreeSet::new();
+    let mut seen = BTreeSet::new();
+    let mut pending: Vec<ValueId> = program
+        .nodes
+        .iter()
+        .filter(|n| n.op == TensorOp::Embedding)
+        .filter_map(|n| n.operands.first().copied())
+        .collect();
+    while let Some(value) = pending.pop() {
+        if !seen.insert(value) {
+            continue;
+        }
+        let Some(node) = nodes.get(&value) else {
+            continue;
+        };
+        if let TensorOp::ParamRead { param } = node.op {
+            tables.insert(param);
+        }
+        pending.extend(node.operands.iter().copied());
+    }
+    training
+        .gradients
+        .keys()
+        .filter(|p| !tables.contains(p))
+        .filter(|p| matrix_shape(&program.params[p].ty).is_some())
+        .copied()
+        .collect()
+}
+
+/// Attaches the Muon step of `muon` at peak rate `lr` to `training` (DESIGN.md § 2.1, § 6, § 8,
+/// coordinator decision D67): Muon for each of [`muon_params`] and the AdamW update of
+/// [`attach_adamw`] at `adam_lr`, the shared `weight_decay` and the betas and `eps` of
+/// [`Muon::adamw`] for every other parameter with a gradient, in `ParamId` order.
+///
+/// `training` must pass [`crate::ir::verify::verify_training`], `lr` must be positive and finite
+/// and `muon` in range ([`Muon::in_range`]). The result appends, tagged [`Subgraph::Optimizer`]:
+/// when a parameter takes AdamW, the constants and the inputs `lr_t`, `c1` and `c2` of
+/// [`attach_adamw`], `lr_t` the schedule of `adam_lr`; when a parameter takes Muon, a `Scalar`
+/// for each of [`Muon::constants`] in its order and the rank-0 `f32` input
+/// [`MUON_LR_T_INPUT`]. Then for each parameter, in `ParamId` order, its AdamW update, or for a
+/// Muon parameter `p` of shape `[rows, cols]` with gradient `g` the input `b` of its type
+/// ([`moment_input`] of [`Moment::Momentum`]), the `Scalar` of its [`Muon::scale`], and, each
+/// one rounded `f32` operation or matmul in this order:
+///
+/// ```text
+/// b' = momentum * b + g
+/// u  = g + momentum * b'
+/// x  = u / (sqrt(sum(u * u)) + 1e-7)            transposed when rows > cols
+/// ns_steps times:
+///     a = matmul(x, transpose(x))
+///     x = 3.4445 * x + matmul(-4.7750 * a + 2.0315 * matmul(a, a), x)
+/// x transposed back when rows > cols
+/// p' = p - muon_lr_t * (scale * x + weight_decay * p)
+/// ```
+///
+/// Its outputs are those of `training`, then the updates, then the next value of each state of
+/// [`Optimizer::state_slots`]. Every declared parameter is at [`StateVersion`] 0. Effect tokens
+/// count from 0: a read for each `ParamRead` node in node order, a read of each state in
+/// [`Optimizer::state_slots`] order, a write for each update in `ParamId` order, then a write of
+/// each state in the same order; reads are of version 0, writes of version 1. The result passes
+/// [`crate::ir::verify::verify_step`].
+pub fn attach_muon(
+    training: TrainingProgram,
+    lr: f32,
+    muon: Muon,
+) -> Result<TrainingStep, AttachError> {
+    check_attach(&training, lr)?;
+    if !muon.in_range() {
+        return Err(AttachError::Hyperparameters);
+    }
+    let split = muon_params(&training);
+    let mut training = training;
+    let mut append = Appender::new(&training);
+
+    let gradients: Vec<(ParamId, ValueId)> =
+        training.gradients.iter().map(|(&p, &g)| (p, g)).collect();
+    let t = &mut training;
+    let mut adamw_prelude = None;
+    if let Some(&(first, _)) = gradients.iter().find(|(p, _)| !split.contains(p)) {
+        adamw_prelude = Some(adamw_prologue(&mut append, t, first, &muon.adamw)?);
+    }
+    let mut muon_prelude = None;
+    if let Some(&(first, _)) = gradients.iter().find(|(p, _)| split.contains(p)) {
+        let mut constants = [ValueId(0); 6];
+        for (slot, value) in constants.iter_mut().zip(muon.constants()) {
+            *slot = append.op(t, first, TensorOp::Scalar(value), &[])?;
+        }
+        let rate = append.input(t, first, MUON_LR_T_INPUT.into(), &TensorType::f32_scalar())?;
+        muon_prelude = Some((constants, rate));
+    }
+
+    let mut updates = BTreeMap::new();
+    let mut moments = BTreeMap::new();
+    let mut buffers = BTreeMap::new();
+    for (param, g) in gradients {
+        match (muon_prelude, adamw_prelude) {
+            (Some((constants, rate)), _) if split.contains(&param) => {
+                let (update, buffer) =
+                    muon_update(&mut append, t, param, g, &muon, constants, rate)?;
+                updates.insert(param, update);
+                buffers.insert(param, buffer);
+            }
+            (_, Some((constants, inputs))) => {
+                let (update, state) = adamw_update(&mut append, t, param, g, constants, inputs)?;
+                updates.insert(param, update);
+                moments.insert(param, state);
+            }
+            _ => unreachable!("each parameter's prelude is appended above"),
+        }
+    }
+
+    let mut optimizer = Optimizer {
+        lr,
+        rule: OptimizerRule::Muon(muon),
+        versions: initial_versions(&training),
+        updates,
+        effects: BTreeMap::new(),
+        step_inputs: adamw_prelude.map(|(_, inputs)| inputs),
+        moments,
+        muon_lr_t: muon_prelude.map(|(_, rate)| rate),
+        buffers,
+        moment_effects: BTreeMap::new(),
+    };
+    let slots = optimizer.state_slots();
+    training
+        .program
+        .outputs
+        .extend(optimizer.updates.values().copied());
+    training
+        .program
+        .outputs
+        .extend(slots.iter().map(|s| s.next));
+
+    let mut token = 0u32;
+    let mut next_token = || {
+        let current = EffectToken(token);
+        token += 1;
+        current
+    };
+    let effect = |token, param, access, version| Effect {
+        token,
+        param,
+        access,
+        version: StateVersion(version),
+    };
+    let moment_effect = |token, slot: &StateSlot, access, version| MomentEffect {
+        token,
+        param: slot.param,
+        moment: slot.moment,
+        access,
+        version: StateVersion(version),
+    };
+    for node in &training.program.nodes {
+        if let TensorOp::ParamRead { param } = node.op {
+            let read = effect(next_token(), param, Access::Read, 0);
+            optimizer.effects.insert(node.id, read);
+        }
+    }
+    for slot in &slots {
+        let read = moment_effect(next_token(), slot, Access::Read, 0);
+        optimizer.moment_effects.insert(slot.input, read);
+    }
+    for (&param, &update) in &optimizer.updates {
+        let write = effect(next_token(), param, Access::Write, 1);
+        optimizer.effects.insert(update, write);
+    }
+    for slot in &slots {
+        let write = moment_effect(next_token(), slot, Access::Write, 1);
+        optimizer.moment_effects.insert(slot.next, write);
+    }
+
+    let step = TrainingStep {
+        training,
+        optimizer,
+    };
+    verify_step(&step)?;
+    Ok(step)
+}
+
+/// Appends the Muon update of `param` with gradient `g` ([`attach_muon`]) over the `constants`
+/// of [`Muon::constants`] and the rate input `rate`: its buffer input, its scale, then each
+/// operation in order. Returns the update and the buffer.
+fn muon_update(
+    append: &mut Appender,
+    t: &mut TrainingProgram,
+    param: ParamId,
+    g: ValueId,
+    muon: &Muon,
+    [momentum, tiny, a, b, c, decay]: [ValueId; 6],
+    rate: ValueId,
+) -> Result<(ValueId, Buffer), AttachError> {
+    let decl = &t.program.params[&param];
+    let (ty, path) = (decl.ty.clone(), decl.path.clone());
+    let (rows, cols) = matrix_shape(&ty).expect("a Muon parameter is a static matrix");
+    let p = first_read(t, param);
+    let buffer = append.input(t, param, moment_input(Moment::Momentum, &path), &ty)?;
+    let scale = append.op(t, param, TensorOp::Scalar(Muon::scale(rows, cols)), &[])?;
+    let mut op = |t: &mut TrainingProgram, op: TensorOp, operands: &[ValueId]| {
+        append.op(t, param, op, operands)
+    };
+    let decayed = op(t, TensorOp::Mul, &[momentum, buffer])?;
+    let b_next = op(t, TensorOp::Add, &[decayed, g])?;
+    let ahead = op(t, TensorOp::Mul, &[momentum, b_next])?;
+    let u = op(t, TensorOp::Add, &[g, ahead])?;
+    let squares = op(t, TensorOp::Mul, &[u, u])?;
+    let sum = op(t, TensorOp::ReduceSum, &[squares])?;
+    let norm = op(t, TensorOp::Sqrt, &[sum])?;
+    let denominator = op(t, TensorOp::Add, &[norm, tiny])?;
+    let mut x = op(t, TensorOp::Div, &[u, denominator])?;
+    let transposed = rows > cols;
+    if transposed {
+        x = op(t, TensorOp::Transpose, &[x])?;
+    }
+    for _ in 0..muon.ns_steps {
+        let xt = op(t, TensorOp::Transpose, &[x])?;
+        let gram = op(t, TensorOp::MatMul, &[x, xt])?;
+        let square = op(t, TensorOp::MatMul, &[gram, gram])?;
+        let cubic = op(t, TensorOp::Mul, &[c, square])?;
+        let linear = op(t, TensorOp::Mul, &[b, gram])?;
+        let poly = op(t, TensorOp::Add, &[linear, cubic])?;
+        let applied = op(t, TensorOp::MatMul, &[poly, x])?;
+        let kept = op(t, TensorOp::Mul, &[a, x])?;
+        x = op(t, TensorOp::Add, &[kept, applied])?;
+    }
+    if transposed {
+        x = op(t, TensorOp::Transpose, &[x])?;
+    }
+    let scaled_x = op(t, TensorOp::Mul, &[scale, x])?;
+    let shrink = op(t, TensorOp::Mul, &[decay, p])?;
+    let step = op(t, TensorOp::Add, &[scaled_x, shrink])?;
+    let scaled = op(t, TensorOp::Mul, &[rate, step])?;
+    let update = op(t, TensorOp::Sub, &[p, scaled])?;
+    Ok((update, Buffer { b: buffer, b_next }))
 }
 
 /// One `input` or `target` declaration of a `train` block.

@@ -19,7 +19,10 @@
 //! shorter than that is refused before the first step ([`RunError::Schedule`]). The moments are
 //! not checkpointed yet, so an AdamW run from a step above 0 is refused before its first step
 //! ([`RunError::MomentsNotCheckpointed`]). A moment that is NaN or ±inf after an update stops the
-//! run with [`E_TRAIN_001`], as a non-finite loss or parameter does.
+//! run with [`E_TRAIN_001`], as a non-finite loss or parameter does. Under Muon the host hands the
+//! step the scheduled Muon rate too, the warmup is refused the same way, and a run from a step
+//! above 0 is refused ([`RunError::MuonStateNotCheckpointed`]); a momentum buffer that stops
+//! being finite is [`E_TRAIN_001`] as a moment is (story:muon-optimizer).
 //!
 //! [`run_with`] trains on dense data read from files instead, optionally from parameter values read
 //! from files, and [`evaluate_dense`] measures the trained parameters on an eval directory.
@@ -113,6 +116,12 @@ pub enum RunError {
         start.saturating_add(1)
     )]
     MomentsNotCheckpointed { start: u64 },
+    /// A Muon run from a step above 0: its momentum buffers and moments are not checkpointed.
+    #[error(
+        "a Muon run cannot resume at step {start}: its momentum buffers and moments are not \
+         checkpointed"
+    )]
+    MuonStateNotCheckpointed { start: u64 },
     /// The held-out split cannot be evaluated ([`super::eval`]).
     #[error(transparent)]
     Eval(Box<EvalError>),
@@ -325,9 +334,16 @@ pub fn run_checked(
         start,
         steps: config.steps,
     })?;
-    if let OptimizerRule::AdamW(adamw) = compiled.training.optimizer.rule {
+    let scheduled = match compiled.training.optimizer.rule {
+        OptimizerRule::Sgd => None,
+        OptimizerRule::AdamW(adamw) => Some((adamw, RunError::MomentsNotCheckpointed { start })),
+        OptimizerRule::Muon(muon) => {
+            Some((muon.adamw, RunError::MuonStateNotCheckpointed { start }))
+        }
+    };
+    if let Some((adamw, not_checkpointed)) = scheduled {
         if start > 0 {
-            return Err(RunError::MomentsNotCheckpointed { start });
+            return Err(not_checkpointed);
         }
         if config.steps > 0 && adamw.warmup_steps >= end {
             return Err(RunError::Schedule {

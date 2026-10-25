@@ -374,6 +374,13 @@
       "status": "shipped"
     },
     {
+      "area": "Training",
+      "detail": "`optimizer = muon(...)` trains each matrix parameter no `embedding` reads with Muon, Nesterov momentum orthogonalized by Newton-Schulz in the training step, and every other parameter with AdamW, both on the warm-up schedule; one step matches an `f32` reference bit for bit. Held by test one_step in crates/modelspec-runtime/tests/muon.rs.",
+      "href": "/docs/concepts/training",
+      "label": "Muon optimizer on the CPU",
+      "status": "shipped"
+    },
+    {
       "area": "GPU",
       "detail": "A full BERT training step on the GPU. Planned.",
       "href": "/docs/roadmap",

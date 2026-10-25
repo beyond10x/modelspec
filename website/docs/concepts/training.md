@@ -96,8 +96,8 @@ it. The final loss line, `--eval` and `modelspec infer` run the forward program 
 
 ## Optimizer
 
-There are two optimizers, and each update is part of the Training IR, not a step the runtime adds
-around it.
+There are three optimizers, and each update is part of the Training IR, not a step the runtime
+adds around it.
 
 - `sgd(lr = <float>)`, with a positive learning rate that fits `f32`, updates `w - lr * dL/dw`
   at a constant rate.
@@ -109,9 +109,19 @@ around it.
   arguments, `E-TRAIN-001` also stops the run when a moment is not finite, and `train
   --checkpoint` and `--resume` refuse an AdamW run because a checkpoint does not carry the moments
   yet.
+- `muon(lr = F, momentum = F, weight_decay = F, ns_steps = N, warmup_steps = N, adam_lr = F,
+  beta1 = F, beta2 = F, eps = F)` trains each parameter of rank 2 that no `embedding` reads with
+  Muon on the CPU reference, and every other parameter, a tied embedding table included, with
+  AdamW at `adam_lr`. A Muon parameter keeps a momentum buffer `b`, starting at 0 and versioned
+  with it; each step takes the Nesterov momentum `u = g + momentum * b`, divides it by its
+  Frobenius norm, orthogonalizes it with `ns_steps` Newton–Schulz steps and applies it scaled by
+  `0.2 * sqrt(max(rows, cols))`, with the decoupled weight decay. Both rates follow the warm-up
+  schedule of `adamw`. `ir --stage training` prints which update each parameter takes.
+  `E-TYPE-025` refuses a `momentum` outside `[0, 1)` and an `ns_steps` outside `[1, 10]`, and
+  `train --checkpoint` and `--resume` refuse a Muon run.
 
 :::caution[Planned]
 
-AdamW on a Vulkan device is planned; `--backend vulkan` answers `E-TARGET-011` for it.
+AdamW and Muon on a Vulkan device are planned; `--backend vulkan` answers `E-TARGET-011` for them.
 
 :::

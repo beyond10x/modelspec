@@ -102,8 +102,9 @@
 //! and its `step` lines start at `s`. A checkpoint that cannot be read or does not match the file
 //! and its optimizer is refused with its `E-CKPT` code before anything is served or run; a
 //! checkpoint that cannot be written fails the run on one line. A file whose optimizer is
-//! `adamw(...)` takes neither `--checkpoint` nor `--resume`, a usage error, since a checkpoint
-//! does not hold its moments yet (DESIGN.md § 6, coordinator decision D50).
+//! `adamw(...)` or `muon(...)` takes neither `--checkpoint` nor `--resume`, a usage error, since a
+//! checkpoint does not hold its moments or momentum buffers yet (DESIGN.md § 6, coordinator
+//! decisions D50 and D67).
 //!
 //! `--serve <addr>` also streams the run as `text/event-stream` at `http://<addr>/events`
 //! (`spec/domains/observatory.yaml`, `ServeAddress` and `StreamFrame`; [`modelspec_observatory`]).
@@ -530,7 +531,12 @@ pub fn run(args: Args, stdout: &mut dyn Write, stderr: &mut dyn Write) -> u8 {
     if let Some(steps) = args.steps {
         compiled.config.steps = steps;
     }
-    if let OptimizerRule::AdamW(_) = compiled.training.optimizer.rule {
+    let unsaved = match compiled.training.optimizer.rule {
+        OptimizerRule::Sgd => None,
+        OptimizerRule::AdamW(_) => Some(("adamw", "its first and second moments")),
+        OptimizerRule::Muon(_) => Some(("muon", "its momentum buffers and moments")),
+    };
+    if let Some((optimizer, state)) = unsaved {
         let flag = match (&args.checkpoint, &args.resume) {
             (Some(_), _) => Some("--checkpoint"),
             (None, Some(_)) => Some("--resume"),
@@ -539,8 +545,8 @@ pub fn run(args: Args, stdout: &mut dyn Write, stderr: &mut dyn Write) -> u8 {
         if let Some(flag) = flag {
             let _ = writeln!(
                 stderr,
-                "error: the argument '{flag}' cannot be used with the `adamw` optimizer of \
-                 {file}; a checkpoint does not hold its first and second moments yet"
+                "error: the argument '{flag}' cannot be used with the `{optimizer}` optimizer of \
+                 {file}; a checkpoint does not hold {state} yet"
             );
             return crate::EXIT_USAGE;
         }

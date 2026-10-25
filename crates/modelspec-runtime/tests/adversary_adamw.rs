@@ -443,6 +443,7 @@ fn adamw_checkpoint_optimizer_invariant_is_refused_on_read() {
             beta2: Some(0.999),
             epsilon: Some(1e-8),
             schedule: None,
+            muon: None,
         },
         OptimizerConfig {
             kind: OptimizerKind::Sgd,
@@ -452,6 +453,7 @@ fn adamw_checkpoint_optimizer_invariant_is_refused_on_read() {
             beta2: None,
             epsilon: None,
             schedule: Some(schedule),
+            muon: None,
         },
     ];
     for (k, optimizer) in configs.into_iter().enumerate() {
