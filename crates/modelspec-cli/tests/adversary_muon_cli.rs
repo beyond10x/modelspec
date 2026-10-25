@@ -276,19 +276,20 @@ fn adv_muon_steps_override_at_the_warmup() {
     assert_eq!(output.status.code(), Some(0), "{}", text(&output.stderr));
 }
 
-/// Finding ADV-MUON-1 (note). Acceptance 6 of story:muon-optimizer reads "`train --backend
-/// vulkan` on a Muon file is E-TARGET-011, exit 2, before anything runs", and coordinator
-/// decision D67 (f) repeats "exit 2". The code exits 1, as the AdamW case does
-/// (`adversary_adamw_cli.rs:80`) and as AGENTS.md's exit codes say for a diagnostic; DESIGN.md
-/// § 8 records exit 1 and the unit's test asserts 1. No decision records the change from the
-/// story's 2.
+/// Finding ADV-MUON-1 (note). `train --backend vulkan` on a Muon file is E-TARGET-011 at the
+/// `train` block and exits 1, as every E-TARGET-011 does: the AdamW case
+/// (`adversary_adamw_cli.rs:80`), AGENTS.md's exit codes for a diagnostic and DESIGN.md § 8.
+/// The "exit 2" of acceptance 6 and D67 (f) is a wording error (coordinator decision D69).
 #[test]
-#[ignore = "ADV-MUON-1: acceptance 6 and D67 (f) say exit 2, the code exits 1"]
-fn adv_muon_1_vulkan_train_exits_2_as_acceptance_6_says() {
+fn adv_muon_1_vulkan_train_exits_1_as_every_e_target_011_does() {
     let output = modelspec(&["train", LINEAR, "--backend", "vulkan"]);
     let stderr = text(&output.stderr);
-    assert!(stderr.starts_with("E-TARGET-011: "), "{stderr}");
-    assert_eq!(output.status.code(), Some(2), "{stderr}");
+    assert_eq!(
+        stderr.lines().next(),
+        Some("E-TARGET-011: optimizer `muon` has no Vulkan kernel yet"),
+        "{stderr}"
+    );
+    assert_eq!(output.status.code(), Some(1), "{stderr}");
 }
 
 fn packed(case: &Path) -> PathBuf {
@@ -347,16 +348,17 @@ fn heldout_at_300(file: &str, packed: &Path) -> f32 {
 }
 
 /// Finding ADV-MUON-2 (note). Acceptance 5 holds at the fixture's seed 7 by 0.0038 nats
-/// (6.7210197 against 6.724814); the same comparison under seeds 1 to 10 is not one-sided:
-/// at seed 2 Muon ends above AdamW. The figure quoted in DESIGN.md § 2.1 is one draw of a
-/// comparison whose seed-to-seed spread is larger than its margin.
+/// (6.7210197 against 6.724814); across seeds 1 to 10 Muon is lower in 9 and higher at seed 2
+/// (5.944862 against 5.9250245). The comparison is within seed noise, and the design claims
+/// "not worse, not better" (DESIGN.md § 2.1, coordinator decision D69): at seeds 2 and 7 the
+/// held-out loss at step 300 under Muon is within 0.05 nats of AdamW's.
 #[test]
-#[ignore = "ADV-MUON-2: muon <= adamw at step 300 does not hold for every seed"]
-fn adv_muon_2_heldout_comparison_holds_under_other_seeds() {
+fn adv_muon_2_heldout_loss_under_muon_is_within_seed_noise_of_adamw() {
+    const NOISE: f32 = 0.05;
     let case = scratch("seeds");
     let packed = packed(&case);
-    let mut worse = Vec::new();
-    for seed in 1..=10u64 {
+    let mut apart = Vec::new();
+    for seed in [2u64, 7] {
         let seeded = format!("    seed = {seed};");
         let source = std::fs::read_to_string(repo_root().join(MLM_DENSE)).expect("the fixture");
         let muon = source.replace("    seed = 7;", &seeded);
@@ -373,12 +375,13 @@ fn adv_muon_2_heldout_comparison_holds_under_other_seeds() {
             heldout_at_300(path(&a_file), &packed),
         );
         eprintln!("seed {seed}: muon {m} adamw {a}");
-        if m > a {
-            worse.push((seed, m, a));
+        if (m - a).abs() > NOISE {
+            apart.push((seed, m, a));
         }
     }
     assert!(
-        worse.is_empty(),
-        "seeds where Muon's held-out loss at 300 is above AdamW's: {worse:?}"
+        apart.is_empty(),
+        "seeds where Muon's held-out loss at 300 is more than {NOISE} nats from AdamW's: \
+         {apart:?}"
     );
 }

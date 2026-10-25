@@ -638,9 +638,9 @@ fn adv_muon_without_a_matrix_is_adamw_bit_for_bit() {
 
 /// Finding ADV-MUON-3 (note). With no parameter taking Muon, a `muon(...)` run reports the
 /// schedule of its Muon `lr` as the run's learning rate, a rate no parameter applies; the
-/// parameters move at `adam_lr`'s schedule.
+/// parameters move at `adam_lr`'s schedule. Since coordinator decision D69 the run reports the
+/// `adam_lr` rate when no parameter takes Muon.
 #[test]
-#[ignore = "ADV-MUON-3: the reported learning rate is one no parameter applies"]
 fn adv_muon_3_reported_rate_without_a_matrix_is_the_applied_one() {
     let muon = compiled(&bias_only(&muon_line(5, 2)));
     let (seen, _) = observe(&muon, &BTreeMap::new());
@@ -658,9 +658,9 @@ fn adv_muon_3_reported_rate_without_a_matrix_is_the_applied_one() {
 /// `1e30`) makes `sum(u * u)` infinite, so `x = u / inf = 0`: the weight moves by its decay
 /// alone at every step and the run finishes with no diagnostic, its buffer finite. The AdamW
 /// side of the same file stops with E-TRAIN-001 on its infinite second moment (adversary_adamw
-/// F4), so Muon is silent where AdamW is diagnosed.
+/// F4), so Muon was silent where AdamW is diagnosed. Since coordinator decision D69 the norm is
+/// E-TRAIN-001 at that step.
 #[test]
-#[ignore = "ADV-MUON-4: an overflowing Frobenius norm silently turns the Muon update off"]
 fn adv_muon_4_an_overflowing_norm_is_not_silent() {
     let (warmup, steps) = (1, 4);
     let c = compiled(&source(

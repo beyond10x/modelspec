@@ -503,9 +503,10 @@ impl<'p, T: Element> Prepared<'p, T> {
         Ok(Self::planned(program, Keep::Outputs, &[]))
     }
 
-    /// Plans the runs of `program`, which the caller has verified.
-    pub(crate) fn verified(program: &'p TensorProgram) -> Self {
-        Self::planned(program, Keep::Outputs, &[])
+    /// Plans the runs of `program`, which the caller has verified, keeping each value of `kept`
+    /// as [`Prepared::keeping`] does.
+    pub(crate) fn verified(program: &'p TensorProgram, kept: &[ValueId]) -> Self {
+        Self::planned(program, Keep::Outputs, kept)
     }
 
     /// Verifies `program` and plans its runs as [`Prepared::new`] does, except that each value

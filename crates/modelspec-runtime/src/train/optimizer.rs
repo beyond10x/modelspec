@@ -28,7 +28,7 @@
 
 use std::collections::BTreeMap;
 
-use modelspec_core::ir::tensor::ParamId;
+use modelspec_core::ir::tensor::{ParamId, ValueId};
 use modelspec_core::ir::training::{
     AdamW, C1_INPUT, C2_INPUT, LR_T_INPUT, MUON_LR_T_INPUT, Moment, Muon, OptimizerRule,
     StateVersion, StepScalars, TrainConfig, TrainingStep, moment_input,
@@ -262,6 +262,9 @@ pub struct PreparedStep<'s> {
     pending_moments: Vec<Option<HostTensor<f32>>>,
     /// The inputs of an AdamW run: the caller's, the host scalars and the moments, by name.
     host: BTreeMap<String, HostTensor<f32>>,
+    /// Each Muon parameter and the Frobenius norm of its update, which the plan keeps after a
+    /// run for [`PreparedStep::non_finite_norms`].
+    norms: Vec<(ParamId, ValueId)>,
 }
 
 impl<'s> PreparedStep<'s> {
@@ -318,8 +321,16 @@ impl<'s> PreparedStep<'s> {
             OptimizerRule::AdamW(adamw) => (Some(adamw), None),
             OptimizerRule::Muon(muon) => (None, Some(muon)),
         };
+        let norms: Vec<(ParamId, ValueId)> = step
+            .optimizer
+            .buffers
+            .iter()
+            .map(|(&param, buffer)| (param, buffer.norm))
+            .collect();
+        let kept: Vec<ValueId> = norms.iter().map(|&(_, norm)| norm).collect();
         Ok(Self {
-            program: Prepared::verified(program),
+            program: Prepared::verified(program, &kept),
+            norms,
             pending: vec![None; writes.len()],
             writes,
             roles,
@@ -342,14 +353,20 @@ impl<'s> PreparedStep<'s> {
     /// Makes the next evaluation step `t` of a run of `steps` steps, `t` counted from 1, and
     /// returns the learning rate its update applies: the constant rate under SGD, and under AdamW
     /// the scheduled rate, whose bias corrections it sets beside it ([`AdamW::scalars`]); under
-    /// Muon the scheduled rate of `lr`, which the Muon parameters apply, beside the scalars of
-    /// the AdamW parameters on the schedule of `adam_lr` ([`Muon::scalars`]).
+    /// Muon it sets the scheduled rate of `lr`, which the Muon parameters apply, beside the
+    /// scalars of the AdamW parameters on the schedule of `adam_lr` ([`Muon::scalars`]), and
+    /// returns the Muon rate when a parameter takes the Muon update, else the `adam_lr` rate, so
+    /// the rate it returns is one a parameter applies (coordinator decision D69).
     pub fn schedule(&mut self, t: u64, steps: u64) -> f32 {
         if let Some(muon) = self.muon {
             let scalars = muon.scalars(self.lr, t, steps);
             self.scalars = Some(scalars.adamw);
             self.muon_lr_t = Some(scalars.lr_t);
-            return scalars.lr_t;
+            return if self.muon_rate {
+                scalars.lr_t
+            } else {
+                scalars.adamw.lr_t
+            };
         }
         match self.adamw {
             None => self.lr,
@@ -392,6 +409,22 @@ impl<'s> PreparedStep<'s> {
     /// Sets the seed every later step keys its dropout masks with, the `train` block's seed.
     pub fn set_seed(&mut self, seed: u64) {
         self.program.set_seed(seed);
+    }
+
+    /// The Muon parameters whose Frobenius norm `sqrt(sum(u * u))` was NaN or ±inf in the last
+    /// evaluation, in parameter order: empty under SGD and AdamW and before the first evaluation.
+    /// Such a norm leaves the parameter and its buffer finite, the update `u / inf` being 0, so
+    /// the runner names it with [`super::runner::E_TRAIN_001`] as it names a non-finite moment.
+    pub fn non_finite_norms(&self) -> Vec<ParamId> {
+        self.norms
+            .iter()
+            .filter(|&&(_, norm)| {
+                self.program
+                    .kept(norm)
+                    .is_some_and(|n| n.data().iter().any(|v| !v.is_finite()))
+            })
+            .map(|&(param, _)| param)
+            .collect()
     }
 
     /// Evaluates one step and applies it; returns its loss.

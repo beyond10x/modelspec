@@ -22,7 +22,9 @@
 //! run with [`E_TRAIN_001`], as a non-finite loss or parameter does. Under Muon the host hands the
 //! step the scheduled Muon rate too, the warmup is refused the same way, and a run from a step
 //! above 0 is refused ([`RunError::MuonStateNotCheckpointed`]); a momentum buffer that stops
-//! being finite is [`E_TRAIN_001`] as a moment is (story:muon-optimizer).
+//! being finite is [`E_TRAIN_001`] as a moment is (story:muon-optimizer), and so is a Frobenius
+//! norm of a Muon update that is not finite, which leaves the parameter and its buffer finite
+//! ([`PreparedStep::non_finite_norms`], coordinator decision D69).
 //!
 //! [`run_with`] trains on dense data read from files instead, optionally from parameter values read
 //! from files, and [`evaluate_dense`] measures the trained parameters on an eval directory.
@@ -59,8 +61,9 @@ use crate::cpu::{HostTensor, RuntimeError, evaluate_all, evaluate_with_ids};
 /// No `i32` tensors, the step inputs of synthetic and dense data.
 static NO_IDS: BTreeMap<String, HostTensor<i32>> = BTreeMap::new();
 
-/// The loss of a training step, or a parameter or an AdamW moment after the update of a step, is
-/// NaN or ±inf: the run stops at the first such step and prints no final parameters.
+/// The loss of a training step, or a parameter, an AdamW moment or a Muon momentum buffer after
+/// the update of a step, or the Frobenius norm a Muon update divides by, is NaN or ±inf: the run
+/// stops at the first such step and prints no final parameters.
 pub const E_TRAIN_001: Code = Code::new("E-TRAIN-001");
 
 /// A finished run.
@@ -125,7 +128,8 @@ pub enum RunError {
     /// The held-out split cannot be evaluated ([`super::eval`]).
     #[error(transparent)]
     Eval(Box<EvalError>),
-    /// The loss, a parameter or an AdamW moment stopped being finite ([`E_TRAIN_001`]).
+    /// The loss, a parameter, an optimizer moment or buffer, or a Muon norm stopped being finite
+    /// ([`E_TRAIN_001`]).
     #[error("{}", .0.diagnostic)]
     NonFinite(Box<Diverged>),
 }
@@ -219,6 +223,38 @@ pub(crate) fn non_finite(
     )
 }
 
+/// The [`E_TRAIN_001`] diagnostic for step `step` with loss `loss` whose Muon update found the
+/// Frobenius norm of the parameters `params` NaN or ±inf ([`PreparedStep::non_finite_norms`]),
+/// or `None` when `params` is empty. [`non_finite`] is asked first: such a norm leaves the
+/// parameter and its buffer finite, so it is named only when nothing else is, each parameter by
+/// canonical path, in path order.
+fn non_finite_norm(
+    compiled: &CompiledTraining,
+    step: u64,
+    loss: f32,
+    params: &[ParamId],
+) -> Option<Diagnostic> {
+    let program = &compiled.forward.program;
+    let mut paths: Vec<&str> = params
+        .iter()
+        .filter_map(|id| program.params.get(id).map(|decl| decl.path.as_str()))
+        .collect();
+    if paths.is_empty() {
+        return None;
+    }
+    paths.sort_unstable();
+    let named: Vec<String> = paths.iter().map(|path| format!("@{path}")).collect();
+    Some(
+        Diagnostic::new(
+            E_TRAIN_001,
+            format!("the Muon update of step {step} has a Frobenius norm that is not finite"),
+        )
+        .with("step", step.to_string())
+        .with("loss", loss.to_string())
+        .with("norm", named.join(", ")),
+    )
+}
+
 /// Runs `compiled.config.steps` optimizer steps of `compiled.training` on synthetic data from
 /// `compiled.config.seed`.
 pub fn run(compiled: &CompiledTraining) -> Result<Run, RunError> {
@@ -251,7 +287,8 @@ pub struct Observed<'a> {
     /// this step's update applies; `None` for the last step, which makes no update.
     pub gradients: Option<&'a BTreeMap<ParamId, HostTensor<f32>>>,
     /// The learning rate this step's update applies: the constant rate of `sgd`, the scheduled
-    /// rate of `adamw`; `None` for the last step, which makes no update.
+    /// rate of `adamw`, the Muon rate of `muon` when a parameter takes it, else its `adam_lr`
+    /// rate; `None` for the last step, which makes no update.
     pub learning_rate: Option<f32>,
 }
 
@@ -372,6 +409,8 @@ pub fn run_checked(
     let sites = dropout_sites(&compiled.training.training.program);
     let mut losses = Vec::new();
     for step in start..=end {
+        // The Muon parameters whose norm this step's update found not finite.
+        let mut norms = Vec::new();
         let loss = if step < end {
             if prepared.is_none() {
                 let mut ready = PreparedStep::new(&compiled.training)
@@ -401,7 +440,9 @@ pub fn run_checked(
                 learning_rate: Some(learning_rate),
             })
             .map_err(|error| *error)?;
-            evaluated.apply(&mut state)
+            let loss = evaluated.apply(&mut state);
+            norms = prepared.non_finite_norms();
+            loss
         } else {
             let (inputs, ids) = feed.inputs(end)?;
             let loss = evaluate_with_ids(forward, inputs, ids, &state.values)?[0].data()[0];
@@ -416,7 +457,9 @@ pub fn run_checked(
             loss
         };
         losses.push(loss);
-        if let Some(diagnostic) = non_finite(compiled, step, loss, &state.values, &state.moments) {
+        let diverged = non_finite(compiled, step, loss, &state.values, &state.moments)
+            .or_else(|| non_finite_norm(compiled, step, loss, &norms));
+        if let Some(diagnostic) = diverged {
             return Err(RunError::NonFinite(Box::new(Diverged {
                 diagnostic,
                 run: Run {
@@ -745,6 +788,56 @@ mod tests {
         assert!(before.iter().all(|l| l.is_finite()), "{losses:?}");
         let expected: Vec<(u64, f32)> = (0..).zip(losses.iter().copied()).collect();
         assert_eq!(format!("{seen:?}"), format!("{expected:?}"));
+    }
+
+    /// A Muon step whose Frobenius norm overflows `f32` (a gradient near `1e30`, so its squares
+    /// pass `f32::MAX`) leaves its parameter and its buffer finite, and is E-TRAIN-001 at that
+    /// step naming the parameter, as a non-finite AdamW moment is (coordinator decision D69).
+    #[test]
+    fn a_non_finite_muon_norm_stops_the_run_naming_the_parameter() {
+        let source = EXAMPLE
+            .replace("return matmul(x, w);", "return mul(matmul(x, w), 1.0e15);")
+            .replace(
+                "sgd(lr = 0.1)",
+                "muon(lr = 0.02, momentum = 0.95, weight_decay = 0.1, ns_steps = 5, \
+                 warmup_steps = 1, adam_lr = 0.01, beta1 = 0.9, beta2 = 0.999, eps = 1e-8)",
+            );
+        let error = run(&compiled(&source, 4)).unwrap_err();
+        let RunError::NonFinite(diverged) = error else {
+            panic!("not E-TRAIN-001: {error:?}");
+        };
+        let d = &diverged.diagnostic;
+        assert_eq!(d.code, E_TRAIN_001);
+        assert_eq!(
+            d.message,
+            "the Muon update of step 0 has a Frobenius norm that is not finite"
+        );
+        let details: Vec<(Option<&str>, &str)> = d
+            .details
+            .iter()
+            .map(|detail| (detail.label.as_deref(), detail.text.as_str()))
+            .collect();
+        let loss = diverged.run.losses[0];
+        assert!(loss.is_finite(), "{loss}");
+        assert_eq!(
+            details,
+            [
+                (Some("step"), "0"),
+                (Some("loss"), loss.to_string().as_str()),
+                (Some("norm"), "@LinearReg.w"),
+            ]
+        );
+        assert_eq!(diverged.run.losses.len(), 1);
+        assert!(
+            diverged
+                .run
+                .state
+                .moments
+                .values()
+                .chain(diverged.run.state.values.values())
+                .all(|t| t.data().iter().all(|v| v.is_finite())),
+            "the norm, not the buffer or the parameter, is what is not finite"
+        );
     }
 
     #[test]

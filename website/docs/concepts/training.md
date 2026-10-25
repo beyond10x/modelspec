@@ -117,8 +117,9 @@ adds around it.
   Frobenius norm, orthogonalizes it with `ns_steps` Newton–Schulz steps and applies it scaled by
   `0.2 * sqrt(max(rows, cols))`, with the decoupled weight decay. Both rates follow the warm-up
   schedule of `adamw`. `ir --stage training` prints which update each parameter takes.
-  `E-TYPE-025` refuses a `momentum` outside `[0, 1)` and an `ns_steps` outside `[1, 10]`, and
-  `train --checkpoint` and `--resume` refuse a Muon run.
+  `E-TYPE-025` refuses a `momentum` outside `[0, 1)` and an `ns_steps` outside `[1, 10]`,
+  `E-TRAIN-001` also stops the run when a momentum buffer or the Frobenius norm of a step is not
+  finite, and `train --checkpoint` and `--resume` refuse a Muon run.
 
 :::caution[Planned]
 

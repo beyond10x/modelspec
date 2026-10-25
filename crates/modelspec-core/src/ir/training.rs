@@ -386,11 +386,14 @@ impl Moments {
 }
 
 /// The momentum buffer of one parameter in a Muon step: the `Input` the step reads it from, of the
-/// parameter's type, and its next value, an output of the step.
+/// parameter's type, its next value, an output of the step, and the Frobenius norm
+/// `sqrt(sum(u * u))` its step divides the Nesterov momentum by, which a runtime keeps to stop a
+/// step whose norm is not finite (coordinator decision D69).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Buffer {
     pub b: ValueId,
     pub b_next: ValueId,
+    pub norm: ValueId,
 }
 
 /// One per-parameter state of a step ([`Optimizer::state_slots`]): its parameter, which state it
@@ -1131,7 +1134,7 @@ pub fn attach_muon(
 
 /// Appends the Muon update of `param` with gradient `g` ([`attach_muon`]) over the `constants`
 /// of [`Muon::constants`] and the rate input `rate`: its buffer input, its scale, then each
-/// operation in order. Returns the update and the buffer.
+/// operation in order. Returns the update and the buffer, its norm beside it.
 fn muon_update(
     append: &mut Appender,
     t: &mut TrainingProgram,
@@ -1182,7 +1185,14 @@ fn muon_update(
     let step = op(t, TensorOp::Add, &[scaled_x, shrink])?;
     let scaled = op(t, TensorOp::Mul, &[rate, step])?;
     let update = op(t, TensorOp::Sub, &[p, scaled])?;
-    Ok((update, Buffer { b: buffer, b_next }))
+    Ok((
+        update,
+        Buffer {
+            b: buffer,
+            b_next,
+            norm,
+        },
+    ))
 }
 
 /// One `input` or `target` declaration of a `train` block.

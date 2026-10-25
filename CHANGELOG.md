@@ -11,7 +11,7 @@ history.
 
 ### Added
 
-- The `muon` optimizer on the CPU reference: `muon(lr, momentum, weight_decay, ns_steps, warmup_steps, adam_lr, beta1, beta2, eps)` trains each rank-2 parameter that no `embedding` reads as its table with Nesterov momentum orthogonalized by quintic Newton–Schulz steps, and every other parameter with AdamW at `adam_lr`; `E-TYPE-025` refuses a `momentum` outside [0, 1) and an `ns_steps` outside [1, 10], and `train --checkpoint` and `--resume` refuse a Muon run (DESIGN.md revision 0.51, story:muon-optimizer).
+- The `muon` optimizer on the CPU reference: `muon(lr, momentum, weight_decay, ns_steps, warmup_steps, adam_lr, beta1, beta2, eps)` trains each rank-2 parameter that no `embedding` reads as its table with Nesterov momentum orthogonalized by quintic Newton–Schulz steps, and every other parameter with AdamW at `adam_lr`; `E-TYPE-025` refuses a `momentum` outside [0, 1) and an `ns_steps` outside [1, 10], `train --checkpoint` and `--resume` refuse a Muon run, and a non-finite Newton-Schulz norm or buffer is E-TRAIN-001 (DESIGN.md revision 0.51, story:muon-optimizer).
 
 ## [0.14.0] - 2026-10-25
 
