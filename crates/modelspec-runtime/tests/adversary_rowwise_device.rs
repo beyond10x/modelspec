@@ -1,7 +1,8 @@
 //! Adversary pass 1 on story:bert-vulkan-kernels-rowwise, on a Vulkan device: the thirteen
 //! row-wise kernels on shapes, values and drop probabilities the unit's device suite does not
 //! run, against the CPU interpreter, with DESIGN.md § 9 gate 5's `within` and the bit claims of
-//! DESIGN.md revision 0.46 (copies, sums of single rounded adds and dropout masks bit for bit).
+//! DESIGN.md revision 0.50 (copies, sums of single rounded adds and dropout masks bit for bit,
+//! on a device that preserves subnormals when an operand or result is one).
 //!
 //! Ignored by default: they create a Vulkan instance. Run them with
 //! `cargo test -p modelspec-runtime --features vulkan --test adversary_rowwise_device -- --ignored`.
@@ -13,7 +14,7 @@ mod common;
 use std::collections::BTreeMap;
 use std::time::Instant;
 
-use common::{GPU_ATOL, GPU_RTOL, GUARD_WORDS, guard, guarded, within};
+use common::{GPU_ATOL, GPU_RTOL, GUARD_WORDS, flush_subnormals, guard, guarded, within};
 use modelspec_core::ir::kernel::{Kernel, Operand};
 use modelspec_core::ir::tensor::{Dim, TensorOp, TensorProgramBuilder, TensorType, ValueId};
 use modelspec_core::schedule::rowwise_kernel;
@@ -551,13 +552,16 @@ fn adv_rowwise_edge_values_agree_with_the_cpu() {
 }
 
 /// Finding ADV-ROWWISE-3: `AddRows`, `SumRows`, `Embedding`, `EmbeddingGrad`, `Dropout` and
-/// `DropoutGrad` over operands holding subnormals give the CPU interpreter's bits, as DESIGN.md
-/// revision 0.46 and § 5.2 state for them without a condition. On a device without
-/// `shaderDenormPreserveFloat32` (the RTX 3090) the arithmetic ones flush.
+/// `DropoutGrad` over operands holding subnormals meet the class of DESIGN.md § 5.4 that the
+/// device negotiates: the CPU interpreter's bits on a device that reports
+/// `shaderDenormPreserveFloat32`, else gate 5's tolerance against the CPU run on the operands
+/// with every subnormal flushed. The RTX 3090 does not report it, and flushes subnormal
+/// operands and results in the arithmetic ones.
 #[test]
-#[ignore = "needs a Vulkan device; red: ADV-ROWWISE-3"]
+#[ignore = "needs a Vulkan device"]
 fn adv_rowwise_3_bit_claims_hold_for_subnormal_operands() {
-    with_device(|_, device| {
+    with_device(|vulkan, device| {
+        let preserves = preserves_subnormals(vulkan);
         let (n, h, v) = (5_u64, 7_u64, 3_u64);
         let rows = TensorType::f32(&[n, h]);
         let row = TensorType::f32(&[h]);
@@ -619,11 +623,45 @@ fn adv_rowwise_3_bit_claims_hold_for_subnormal_operands() {
         let mut bad = Vec::new();
         for case in cases {
             let name = case.op.name();
-            let (found, _) = compare(name, &gpu(device, &case), &cpu(&case), true, 4);
+            let want = reference(&case, preserves);
+            let (found, _) = compare(name, &gpu(device, &case), &want, preserves, 4);
             bad.extend(found);
         }
         assert!(bad.is_empty(), "{bad:#?}");
     });
+}
+
+/// Whether device 0 reports `shaderDenormPreserveFloat32`, which puts the copies and single
+/// rounded adds and products of the row-wise kernels in the bit class of DESIGN.md § 5.4.
+fn preserves_subnormals(vulkan: &Vulkan) -> bool {
+    let candidates = vulkan.candidates().expect("the devices are probed");
+    candidates[0].profile.shader_denorm_preserve_f32 == Some(true)
+}
+
+/// The CPU interpreter's result of `case` as DESIGN.md § 9 gate 5 takes it: on the operands as
+/// they are on a device that preserves subnormals, else on the operands with every subnormal
+/// flushed to a zero of its sign.
+fn reference(case: &Case, preserves: bool) -> Vec<f32> {
+    if preserves {
+        return cpu(case);
+    }
+    let operands = case
+        .operands
+        .iter()
+        .map(|(name, ty, data)| {
+            let data = match data {
+                Data::F32(values) => Data::F32(flush_subnormals(values)),
+                Data::I32(values) => Data::I32(values.clone()),
+            };
+            (name.clone(), ty.clone(), data)
+        })
+        .collect();
+    cpu(&Case {
+        op: case.op.clone(),
+        operands,
+        result: case.result.clone(),
+        seed: case.seed,
+    })
 }
 
 /// Hypothesis 2, dropout at the ends of `[0, 1)`: `p = 0`, `0.999`, the largest `f32` below 1
@@ -1060,7 +1098,7 @@ fn norm_cases(x: &[f32]) -> Vec<Case> {
 /// deviation one ulp of `c`, and with the variance far below `eps = 1e-12`, `rstd` near `1e6`
 /// turns it into `x̂ = ±ulp(c) · rstd`, of order 1e-2 to 1 where the CPU has 0.
 #[test]
-#[ignore = "needs a Vulkan device; red: ADV-ROWWISE-1"]
+#[ignore = "needs a Vulkan device"]
 fn adv_rowwise_1_layer_norm_of_a_constant_row_is_within_tolerance() {
     with_device(|_, device| {
         let rows: Vec<(f32, usize)> = vec![
@@ -1103,7 +1141,7 @@ fn adv_rowwise_1_layer_norm_of_a_constant_row_is_within_tolerance() {
 /// `rstd`, a few ulp off the CPU's, leaves about `rstd` times a few ulp, past `GPU_ATOL` once
 /// `rstd` is in the tens.
 #[test]
-#[ignore = "needs a Vulkan device; red: ADV-ROWWISE-2"]
+#[ignore = "needs a Vulkan device"]
 fn adv_rowwise_2_layer_norm_grad_x_of_a_cancelling_gradient_is_within_tolerance() {
     with_device(|_, device| {
         let mut rng = Gen(0xadd5_0008);
@@ -1169,11 +1207,14 @@ fn adv_rowwise_2_layer_norm_grad_x_of_a_cancelling_gradient_is_within_tolerance(
 /// Finding ADV-ROWWISE-3: with every operand normal, so that DESIGN.md § 9 gate 5's flushed
 /// reference (the CPU on operands with subnormals flushed, for a device without
 /// `shaderDenormPreserveFloat32`) is the CPU itself, `AddRows`, `SumRows` and `EmbeddingGrad`
-/// whose adds land on a subnormal give the CPU's bits, as DESIGN.md revision 0.46 claims.
+/// whose adds land on a subnormal meet the class of DESIGN.md § 5.4 that the device
+/// negotiates: the CPU's bits on a device that preserves subnormals, else gate 5's tolerance.
+/// The RTX 3090 flushes the subnormal results to zeros of their sign.
 #[test]
-#[ignore = "needs a Vulkan device; red: ADV-ROWWISE-3"]
+#[ignore = "needs a Vulkan device"]
 fn adv_rowwise_3_bit_claims_hold_against_the_flushed_reference_for_subnormal_results() {
-    with_device(|_, device| {
+    with_device(|vulkan, device| {
+        let preserves = preserves_subnormals(vulkan);
         let (n, h) = (2_u64, 4_u64);
         let rows = TensorType::f32(&[n, h]);
         let row = TensorType::f32(&[h]);
@@ -1213,10 +1254,10 @@ fn adv_rowwise_3_bit_claims_hold_against_the_flushed_reference_for_subnormal_res
         let mut bad = Vec::new();
         for case in cases {
             let name = case.op.name();
-            let want = cpu(&case);
+            let want = reference(&case, preserves);
             let subnormal = want.iter().filter(|c| c.is_subnormal()).count();
             eprintln!("{name}: {subnormal} subnormal CPU results");
-            let (found, _) = compare(name, &gpu(device, &case), &want, true, 4);
+            let (found, _) = compare(name, &gpu(device, &case), &want, preserves, 4);
             bad.extend(found);
         }
         assert!(bad.is_empty(), "{bad:#?}");

@@ -470,9 +470,9 @@ pub const CAPABILITIES: &[Capability] = &[
     shipped(
         "BERT operators",
         "No Vulkan kernel yet for the BERT operators",
-        "Since 0.10.0: every command that needs a Vulkan kernel for one of them answers E-TARGET-011 at the operator's call, before a device is opened; they train with --backend cpu.",
+        "Since 0.10.0: every command that needs a Vulkan kernel answers E-TARGET-011 for `attention` at its call, since 0.11.0 for `cross_entropy` at its call and since 0.12.0 for an `adamw` step at its train block, before a device is opened; they train with --backend cpu. The other BERT operators have Vulkan kernels.",
         Evidence::Test(
-            "crates/modelspec-cli/tests/embedding_no_kernel.rs::every_command_that_needs_a_vulkan_kernel_answers_e_target_011_at_the_call",
+            "crates/modelspec-cli/tests/adversary_attention_cli.rs::adversary_attention_a8_every_vulkan_command_refuses_attention_at_its_call",
         ),
         "/docs/reference/diagnostics",
     ),
@@ -539,13 +539,6 @@ pub const CAPABILITIES: &[Capability] = &[
         "Since 0.12.0: `optimizer = adamw(...)` trains on the CPU with decoupled weight decay and a learning rate that warms up linearly from 0 and decays linearly to 0 at the last step, compiled into the training step; its first three steps match an `f32` reference bit for bit.",
         Evidence::Test("crates/modelspec-runtime/tests/adamw.rs::one_step"),
         "/docs/concepts/language",
-    ),
-    planned(
-        "GPU",
-        "Vulkan kernels for the row-wise BERT operators",
-        "`embedding`, `add_rows`, `gelu`, `layer_norm`, `softmax` and `dropout` on the device, checked against the CPU interpreter.",
-        "story:bert-vulkan-kernels-rowwise",
-        "/docs/roadmap",
     ),
     planned(
         "GPU",

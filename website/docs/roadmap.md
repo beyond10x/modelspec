@@ -86,8 +86,8 @@ rate that warms up linearly from 0 and decays linearly to 0 at the last step.
 
 :::caution[Planned]
 
-Vulkan kernels for the row-wise BERT operators and then for
-`attention`, `cross_entropy` and AdamW, and BERT-tiny pre-trained on the GPU until its held-out
+Vulkan kernels for `attention`, `cross_entropy` and AdamW (the row-wise operators have theirs on
+`main`), and BERT-tiny pre-trained on the GPU until its held-out
 loss is below the unigram baseline. `f16`, causal masks
 and the GPT-like model are design.
 

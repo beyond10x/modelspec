@@ -15,10 +15,11 @@ Milestone M0 implemented (DESIGN.md revision 0.6, § 1 and § 11, iteration 1; w
 M1 (`epic:m1-vulkan-execution`) is in progress, latest release 0.12.0. The active milestone is
 `epic:bert-from-scratch`, M3's BERT proof model: the operators `embedding` (with `i32` row ids),
 `add_rows`, `gelu`, `layer_norm`, `softmax` and `attention` (0.10.0), `cross_entropy` and
-`dropout` (0.11.0) run on the CPU interpreter only, as do packed `--data` training and
-`--eval-every` held-out evaluation (0.11.0) and `optimizer = adamw(...)` (0.12.0); every command
-that needs a Vulkan kernel for one answers E-TARGET-011 at its call, and their kernels are draft
-stories. A Cargo workspace of five crates: `modelspec-core`
+`dropout` (0.11.0) run on the CPU interpreter, as do packed `--data` training and
+`--eval-every` held-out evaluation (0.11.0) and `optimizer = adamw(...)` (0.12.0); on `main`,
+`embedding`, `add_rows`, `gelu`, `dropout`, `layer_norm`, `softmax` and their gradients also
+have Vulkan kernels checked against the CPU oracle, while every command that needs a Vulkan
+kernel for `attention`, `cross_entropy` or the `adamw` step answers E-TARGET-011 at its call. A Cargo workspace of five crates: `modelspec-core`
 (parser, checker, Tensor IR, autodiff, lowering, DCE; no Vulkan), `modelspec-runtime` (CPU oracle,
 SGD training and the corpus preparation, WordPiece tokenizer and MLM batch packing `dataset`; the `vulkan` feature holds Vulkan device discovery, negotiation, SPIR-V
 emission and the training runner `vulkan::runner` through `ash` and `rspirv`; the JSON Schema of

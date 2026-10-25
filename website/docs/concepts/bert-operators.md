@@ -1,8 +1,8 @@
 ---
 title: BERT operators
-description: The operators a small BERT needs - embedding, add_rows, gelu, layer_norm, softmax, attention, cross_entropy and dropout - what each computes, its i32 operands, its gradient, and why it runs on the CPU only for now.
+description: The operators a small BERT needs - embedding, add_rows, gelu, layer_norm, softmax, attention, cross_entropy and dropout - what each computes, its i32 operands, its gradient, and which have Vulkan kernels.
 sidebar_position: 4
-lede: "Eight operators added for a small BERT are typed by the operator registry, have gradients checked against central differences and run on the CPU interpreter only, answering E-TARGET-011 wherever a Vulkan kernel is needed."
+lede: "Eight operators added for a small BERT are typed by the operator registry, have gradients checked against central differences; six have Vulkan kernels, and attention and cross_entropy answer E-TARGET-011 wherever a Vulkan kernel is needed."
 source: "DESIGN.md § 2 and the operator registry in crates/modelspec-core/src/ops.rs and resolve.rs; the tests gradients_embedding.rs, gradients_dense.rs, gradients_norm.rs, gradients_attention.rs, gradients_cross_entropy.rs and gradients_dropout.rs of crates/modelspec-runtime, and check_i32.rs and embedding_no_kernel.rs of crates/modelspec-cli; the E-TARGET-011 output from a run of modelspec ir on crates/modelspec-cli/tests/fixtures/mlm_bag.mspec; CHANGELOG.md § 0.10.0 and § 0.11.0."
 ---
 
@@ -82,19 +82,21 @@ train Fit {
 It trains on a packed directory; [Prepare training data](../guides/prepare-training-data.md)
 builds one and runs it.
 
-## No Vulkan kernel yet
+## Vulkan kernels
 
-None of the eight has a Vulkan kernel. A program that uses one checks, compiles for the CPU and
-trains with `--backend cpu`; every command that needs a kernel stops at the first such call with
-`E-TARGET-011`, before a device is opened:
+`embedding`, `add_rows`, `gelu`, `layer_norm`, `softmax` and `dropout` have Vulkan kernels,
+checked against the CPU interpreter; a device run of a model with `dropout` is still refused,
+because the run supplies no RNG token per step. `attention` and `cross_entropy` have none. A
+program that uses one checks, compiles for the CPU and trains with `--backend cpu`; every command
+that needs a kernel stops at the first such call with `E-TARGET-011`, before a device is opened:
 
 ```sh
 modelspec ir mlm_bag.mspec --stage kernel
 ```
 
 ```text
-E-TARGET-011: operator `embedding` has no Vulkan kernel yet
-  mlm_bag.mspec:5:23
+E-TARGET-011: operator `cross_entropy` has no Vulkan kernel yet
+  mlm_bag.mspec:14:12
   compile and train it with `--backend cpu`
 ```
 
@@ -103,8 +105,7 @@ answer the same.
 
 :::caution[Planned]
 
-Vulkan kernels for `embedding`, `add_rows`, `gelu`, `layer_norm`, `softmax` and `dropout`, checked
-against the CPU interpreter, then kernels for `attention` and `cross_entropy` and a full BERT step
-on the GPU. None is built ([Roadmap](../roadmap.md)).
+Vulkan kernels for `attention` and `cross_entropy` and a full BERT step on the GPU
+([Roadmap](../roadmap.md)).
 
 :::

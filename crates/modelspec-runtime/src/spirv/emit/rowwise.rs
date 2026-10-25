@@ -8,9 +8,12 @@
 //! rounded, with each later product fused into it by one `Fma`, and every float add, subtract,
 //! multiply, division and `Fma` decorated `NoContraction` outside `fast_math`. So a kernel whose
 //! element is a copy, one rounded operation or a sequence of rounded adds gives the CPU's bits
-//! (`Embedding`, `EmbeddingGrad`, `AddRows`, `SumRows`, `Dropout`, `DropoutGrad`), and the
-//! others differ only by the `exp`, division and square root of the device, which Vulkan does not
-//! round correctly.
+//! (`Embedding`, `EmbeddingGrad`, `AddRows`, `SumRows`, `Dropout`, `DropoutGrad`) on a device
+//! that preserves subnormals, and the others differ only by the `exp`, division and square root
+//! of the device, which Vulkan does not round correctly. `LayerNorm` and its two gradients
+//! correct each quotient by the row width, and the square root and reciprocal that form `rstd`,
+//! by one `Fma` residual step each, so their means, variance and `rstd` are within 1 ulp of the
+//! CPU's values.
 //!
 //! `Embedding` reads an id outside the table as row 0 and writes `0.0` for it, so no invocation
 //! reads past the table; the CPU refuses such an id before it runs. `EmbeddingGrad` zeroes its
@@ -404,8 +407,7 @@ impl Shell {
             m.accumulate(x)
         })?;
         let total = self.b.load(self.f32_ty, None, acc, None, [])?;
-        let count = self.float(width as f32);
-        let mean = self.f_div(total, count)?;
+        let mean = self.over_width(total, width)?;
         let d = self.f_sub(first, mean)?;
         let square = self.f_mul(d, d)?;
         self.b.store(acc, square, None, [])?;
@@ -416,13 +418,57 @@ impl Shell {
             m.accumulate_square(d)
         })?;
         let squares = self.b.load(self.f32_ty, None, acc, None, [])?;
-        let variance = self.f_div(squares, count)?;
+        let variance = self.over_width(squares, width)?;
         let eps = self.float(LAYER_NORM_EPS);
         let shifted = self.f_add(variance, eps)?;
-        let root = self.sqrt(shifted)?;
-        let f_one = self.float(1.0);
-        let rstd = self.f_div(f_one, root)?;
+        let rstd = self.reciprocal_sqrt(shifted)?;
         Ok((mean, rstd))
+    }
+
+    /// `a / width` within 1 ulp of the CPU's quotient: the device's quotient `q` (`OpFDiv`, 2.5 ulp
+    /// on Vulkan) corrected by one residual step, `q + fma(q, -width, a) * (1 / width)`, the
+    /// residual one `Fma` and the step another, with `1 / width` the `f32` nearest to it. `q`
+    /// stands where the residual is 0 or NaN: an exact quotient, a zero of either sign, an
+    /// infinite or NaN `a`.
+    fn over_width(&mut self, a: Word, width: u32) -> Result<Word, EmitError> {
+        let count = self.float(width as f32);
+        let q = self.f_div(a, count)?;
+        let negated = self.float(-(width as f32));
+        let inverse = self.float(1.0 / width as f32);
+        let residual = self.f_fma(q, negated, a)?;
+        let corrected = self.f_fma(residual, inverse, q)?;
+        self.where_residual(residual, corrected, q)
+    }
+
+    /// `1 / sqrt(v)` within 1 ulp of the CPU's, which rounds the square root first: the device's
+    /// `s = sqrt(v)` and `q = 1 / s` (neither correctly rounded on Vulkan), the root corrected
+    /// to `s' = s + fma(0 - s, s, v) * (q * 0.5)`, then the reciprocal to
+    /// `q + q * fma(0 - q, s', 1)`, one Newton step from `q`. `q` stands where that last
+    /// residual is 0 or NaN: an exact reciprocal, an infinite `v` (`q = 0`) or a NaN.
+    fn reciprocal_sqrt(&mut self, v: Word) -> Result<Word, EmitError> {
+        let (zero, half, one) = (self.float(0.0), self.float(0.5), self.float(1.0));
+        let s = self.sqrt(v)?;
+        let q = self.f_div(one, s)?;
+        let neg_s = self.f_sub(zero, s)?;
+        let root_residual = self.f_fma(neg_s, s, v)?;
+        let half_q = self.f_mul(q, half)?;
+        let root = self.f_fma(root_residual, half_q, s)?;
+        let neg_q = self.f_sub(zero, q)?;
+        let residual = self.f_fma(neg_q, root, one)?;
+        let corrected = self.f_fma(residual, q, q)?;
+        self.where_residual(residual, corrected, q)
+    }
+
+    /// `corrected` where `residual` is ordered and not zero, else `raw`.
+    fn where_residual(
+        &mut self,
+        residual: Word,
+        corrected: Word,
+        raw: Word,
+    ) -> Result<Word, EmitError> {
+        let zero = self.float(0.0);
+        let step = self.b.f_ord_not_equal(self.bool_ty, None, residual, zero)?;
+        Ok(self.b.select(self.f32_ty, None, step, corrected, raw)?)
     }
 
     /// The module body of `rowwise`.
@@ -589,7 +635,6 @@ impl Shell {
         let base = self.mul(index, w)?;
         let (mean, rstd) = self.row_moments(0, base, width)?;
         let (zero, one, var, acc) = (self.uint(0), self.uint(1), self.u32_vars[0], self.f32_var);
-        let count = self.float(width as f32);
         // `g * gamma` and `(x - mean) * rstd` of element `j`.
         let gx = |m: &mut Shell, j: Word| -> Result<Word, EmitError> {
             let at = m.add(base, j)?;
@@ -610,7 +655,7 @@ impl Shell {
             m.accumulate(term)
         })?;
         let total = self.b.load(self.f32_ty, None, acc, None, [])?;
-        let mean_gx = self.f_div(total, count)?;
+        let mean_gx = self.over_width(total, width)?;
         let first_xhat = xhat(self, zero)?;
         let product = self.f_mul(first, first_xhat)?;
         self.b.store(acc, product, None, [])?;
@@ -623,7 +668,7 @@ impl Shell {
             Ok(())
         })?;
         let products = self.b.load(self.f32_ty, None, acc, None, [])?;
-        let mean_gx_xhat = self.f_div(products, count)?;
+        let mean_gx_xhat = self.over_width(products, width)?;
         self.counted(var, zero, w, one, |m, j| {
             let a = gx(m, j)?;
             let b = xhat(m, j)?;
