@@ -9,6 +9,10 @@ history.
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-10-25
+
+Vulkan kernels for the row-wise BERT operators: `embedding`, `add_rows`, `gelu`, `dropout`, `layer_norm`, `softmax` and their gradients run on the device as one dispatch each, every sum in the CPU interpreter's order; `EmbeddingGrad` adds without atomics, so two runs give the same bits; and the `dropout` mask is computed on the device bit-equal to the CPU's. `train --backend vulkan` trains a model of a matmul, `add_rows` and `gelu` within the GPU tolerance of the CPU run; a device run of a model with `dropout` is still refused with E-TARGET-011, because the device run supplies no RNG token per step.
+
 ### Added
 
 - Vulkan kernels for `embedding`, `add_rows`, `gelu`, `dropout`, `layer_norm`, `softmax` and their internal gradients (`EmbeddingGrad`, `SumRows`, `GeluGrad`, `DropoutGrad`, `LayerNormGradX`, `LayerNormGradGamma`, `SoftmaxGrad`), one `per_element`, `per_row` or `per_column` dispatch each with workgroups of 64, every sum in the CPU interpreter's ascending order and every product after the first fused by one `Fma` decorated `NoContraction`; `EmbeddingGrad` adds without atomics, so two runs give the same bits, and `Dropout` computes Philox4x32-10 on the device, its mask bit-equal to the CPU's; `train --backend vulkan` trains a matmul, `add_rows` and `gelu` model within the GPU tolerance of the CPU run, and a device run of a model with `dropout` is still refused with E-TARGET-011 because the device run supplies no RNG token per step; DESIGN.md revision 0.50 (story:bert-vulkan-kernels-rowwise).
@@ -249,7 +253,8 @@ with `E-TARGET-001`.
 - `examples/linear_regression.mspec` checks and trains; `task check-examples` runs `modelspec check` on it
 - ESS contracts for the compiled artifact, checkpoint, device profile and training run in `spec/`
 
-[Unreleased]: https://github.com/beyond10x/modelspec/compare/0.13.0...HEAD
+[Unreleased]: https://github.com/beyond10x/modelspec/compare/0.14.0...HEAD
+[0.14.0]: https://github.com/beyond10x/modelspec/compare/0.13.0...0.14.0
 [0.13.0]: https://github.com/beyond10x/modelspec/compare/0.12.0...0.13.0
 [0.12.0]: https://github.com/beyond10x/modelspec/compare/0.11.0...0.12.0
 [0.11.0]: https://github.com/beyond10x/modelspec/compare/0.10.0...0.11.0

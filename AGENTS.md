@@ -12,11 +12,11 @@ A Rust compiler and runtime for `.mspec` tensor-program specifications. Humans s
 ## State
 
 Milestone M0 implemented (DESIGN.md revision 0.6, § 1 and § 11, iteration 1; wave `m0` closed);
-M1 (`epic:m1-vulkan-execution`) is in progress, latest release 0.13.0. The active milestone is
+M1 (`epic:m1-vulkan-execution`) is in progress, latest release 0.14.0. The active milestone is
 `epic:bert-from-scratch`, M3's BERT proof model: the operators `embedding` (with `i32` row ids),
 `add_rows`, `gelu`, `layer_norm`, `softmax` and `attention` (0.10.0), `cross_entropy` and
 `dropout` (0.11.0) run on the CPU interpreter, as do packed `--data` training and
-`--eval-every` held-out evaluation (0.11.0) and `optimizer = adamw(...)` (0.12.0); on `main`,
+`--eval-every` held-out evaluation (0.11.0) and `optimizer = adamw(...)` (0.12.0); since 0.14.0,
 `embedding`, `add_rows`, `gelu`, `dropout`, `layer_norm`, `softmax` and their gradients also
 have Vulkan kernels checked against the CPU oracle, while every command that needs a Vulkan
 kernel for `attention`, `cross_entropy` or the `adamw` step answers E-TARGET-011 at its call. A Cargo workspace of five crates: `modelspec-core`
