@@ -46,7 +46,7 @@ use std::fmt;
 use std::ops::Range;
 use std::time::{Duration, Instant};
 
-use modelspec_core::artifact::CompiledArtifact;
+use modelspec_core::artifact::{CompiledArtifact, check_device};
 use modelspec_core::compile::CompiledTraining;
 use modelspec_core::device::DeviceProfile;
 use modelspec_core::diag::Diagnostic;
@@ -57,7 +57,7 @@ use thiserror::Error;
 use super::dispatch::{Bound, DescriptorArena, Recording, TimestampPool};
 use super::memory::{Buffer, MemorySpan};
 use super::negotiate::{Negotiated, NumericsClass, negotiate};
-use super::pipeline::Pipeline;
+use super::pipeline::{KernelStatistics, Pipeline};
 use super::profile::{PlanName, Profile, Site, timings};
 use super::select::select_device;
 use super::sync::{Barrier, recorded_barriers};
@@ -245,7 +245,7 @@ pub fn train_on_device_from(
     profiled: bool,
     options: RunOptions<'_>,
 ) -> Result<(Run, RunStats, Option<Profile>), DeviceRunError> {
-    on_device(device, |opened, profile, negotiated| {
+    on_device(device, profiled, artifact, |opened, profile, negotiated| {
         let job = Job {
             steps: compiled.config.steps,
             profiled,
@@ -266,17 +266,32 @@ pub fn infer_on_device(
     artifact: &CompiledArtifact,
     params: &BTreeMap<ParamId, HostTensor<f32>>,
 ) -> Result<(Inference, RunStats), DeviceRunError> {
-    on_device(device, |opened, profile, negotiated| {
+    on_device(device, false, artifact, |opened, profile, negotiated| {
         Ok(infer(
             opened, profile, negotiated, compiled, artifact, params,
         )?)
     })
 }
 
+/// The profile of device `device` (0 when `None`) of the Vulkan loader, the device
+/// [`train_on_device_from`] selects: what `train --backend vulkan` schedules its plan for
+/// ([`modelspec_core::compile::compile_artifact_for`]). Nothing is negotiated or opened.
+pub fn device_profile(device: Option<usize>) -> Result<DeviceProfile, Diagnostic> {
+    let vulkan = Vulkan::load()?;
+    let candidates = vulkan.candidates()?;
+    let index = select_device(&candidates, Some(device.unwrap_or(0)))?[0];
+    Ok(candidates[index].profile.clone())
+}
+
 /// Loads Vulkan, selects, negotiates and opens device `device` (0 when `None`) and calls `body`
-/// with it.
+/// with it; with `statistics`, the device is opened with
+/// [`Negotiated::with_pipeline_statistics`] when it offers the extension. A device that reports less than the
+/// limits `artifact` was scheduled for is refused before it is opened ([`check_device`],
+/// E-ARTIFACT-005).
 fn on_device<T>(
     device: Option<usize>,
+    statistics: bool,
+    artifact: &CompiledArtifact,
     body: impl FnOnce(&Device<'_>, &DeviceProfile, &Negotiated) -> Result<T, DeviceRunError>,
 ) -> Result<T, DeviceRunError> {
     let vulkan = Vulkan::load().map_err(DeviceRunError::Refused)?;
@@ -284,7 +299,15 @@ fn on_device<T>(
     let index =
         select_device(&candidates, Some(device.unwrap_or(0))).map_err(DeviceRunError::Refused)?[0];
     let profile = &candidates[index].profile;
-    let negotiated = negotiate(profile).map_err(DeviceRunError::Refused)?;
+    check_device(artifact, profile).map_err(DeviceRunError::Refused)?;
+    let mut negotiated = negotiate(profile).map_err(DeviceRunError::Refused)?;
+    if statistics
+        && vulkan
+            .offers_pipeline_statistics(index)
+            .map_err(DeviceRunError::Refused)?
+    {
+        negotiated = negotiated.with_pipeline_statistics();
+    }
     let opened = vulkan
         .create_device(index, &negotiated)
         .map_err(DeviceRunError::Refused)?;
@@ -430,7 +453,9 @@ struct Stamps<'p> {
     next: u32,
 }
 
-/// [`train`] for `job` from the start and with the checkpoints of `options`.
+/// [`train`] for `job` from the start and with the checkpoints of `options`. A device that reports
+/// less than the limits `artifact` was scheduled for is refused before anything is built or
+/// dispatched ([`check_device`], E-ARTIFACT-005).
 fn execute(
     device: &Device<'_>,
     profile: &DeviceProfile,
@@ -440,6 +465,7 @@ fn execute(
     job: Job,
     options: RunOptions<'_>,
 ) -> Result<Done, VulkanRunError> {
+    check_device(artifact, profile).map_err(|refused| VulkanRunError::Plan(refused.to_string()))?;
     let plan = &artifact.execution;
     let config = &compiled.config;
     let Job {
@@ -491,6 +517,20 @@ fn execute(
         pipelines.push(device.kernel_pipeline(kernel, &module.spirv)?);
     }
     let pipeline_creation = creating.elapsed();
+    // The statistics of every kernel's pipeline, read once when profiled on a device opened with
+    // the pipeline executable extension.
+    let pipeline_statistics = if profiled && device.pipeline_statistics_enabled() {
+        let mut kernels = Vec::with_capacity(pipelines.len());
+        for (kernel, pipeline) in plan.kernels.iter().zip(&pipelines) {
+            kernels.push(KernelStatistics {
+                kernel_module_id: kernel.id,
+                executables: pipeline.statistics()?.unwrap_or_default(),
+            });
+        }
+        Some(kernels)
+    } else {
+        None
+    };
 
     // The plan's `Allocate` steps: the scratch buffers, made once for the whole run.
     let scratch: BTreeMap<u32, BufferView> = plan
@@ -666,6 +706,7 @@ fn execute(
             timings,
             pipeline_creation,
             compile: emitted,
+            pipeline_statistics: pipeline_statistics.clone(),
         }))
     };
     // The chunk the next step records into and its next timestamp query, across the command

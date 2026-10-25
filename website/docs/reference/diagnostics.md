@@ -112,7 +112,7 @@ The `.msckpt` reader of `modelspec train --resume` and `modelspec infer`, which 
 
 ## Artifacts
 
-The artifact directory reader of `modelspec compile`, which checks the format version, the size of each plan as the manifest is parsed, that every kernel module file is present and no longer than its entry, each module hash and the artifact hash, and then the invariants and the execution plan, in that order.
+The artifact directory reader of `modelspec compile`, which checks the format version, the size of each plan as the manifest is parsed, that every kernel module file is present and no longer than its entry, each module hash and the artifact hash, and then the invariants and the execution plan, in that order; then, before a device runs it, that the device reports at least the workgroup limits the plan was scheduled for.
 
 | Code | Meaning | Declared in |
 |---|---|---|
@@ -120,6 +120,7 @@ The artifact directory reader of `modelspec compile`, which checks the format ve
 | <a id="e-artifact-002"></a>`E-ARTIFACT-002` | A kernel module's bytes differ from the blake3 its manifest entry records, or the manifest's `artifact_hash` or `artifact_id` is not the one its content gives: the artifact was changed after it was written. | [`crates/modelspec-core/src/artifact.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/artifact.rs) |
 | <a id="e-artifact-003"></a>`E-ARTIFACT-003` | The artifact breaks an invariant of `spec/domains/artifact.yaml` or the plan verifier: a plan of more than 4096 steps (`MAX_PLAN_STEPS`), 65536 dependencies (`MAX_PLAN_DEPENDENCIES`) or 65536 step views (`MAX_PLAN_VIEWS`), refused as the manifest is parsed, before the module files and the hashes are checked and so whether the artifact is sealed or not; or, in a sealed artifact, a byte size that does not fit in 64 bits, a buffer larger than 4294967295 bytes, a kernel module that is not SPIR-V (whole little-endian words, a 5-word header, the magic number 0x07230203), a Dispatch naming a module the artifact does not own, a dependency on a step that is not before it, a view outside its buffer, or any other execution-plan rule. | [`crates/modelspec-core/src/artifact.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/artifact.rs) |
 | <a id="e-artifact-004"></a>`E-ARTIFACT-004` | A kernel module file the manifest names is missing, not a regular file (a link, a device or a FIFO), cannot be read, or is longer than the byte length its entry records, or `kernels/` holds an entry no kernel of the manifest names; every file is checked before any module is hashed, and no read goes past the entry's byte length. | [`crates/modelspec-core/src/artifact.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/artifact.rs) |
+| <a id="e-artifact-005"></a>`E-ARTIFACT-005` | The device reports fewer invocations per workgroup or fewer bytes of workgroup memory than the `matmul_limits` the artifact's plan was scheduled for (`check_device`): the plan's tiles may not fit it, so it is refused before any module is built or dispatched. The diagnostic names the recorded and the reported value of both limits. | [`crates/modelspec-core/src/artifact.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-core/src/artifact.rs) |
 
 ## Target
 

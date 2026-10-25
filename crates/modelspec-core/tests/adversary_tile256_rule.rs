@@ -52,8 +52,9 @@ fn shapes(count: usize, bound: u64) -> Vec<(u64, u64, u64)> {
 
 /// `(m, k, n)` of one tile family, and the staged bytes, by hand, for each entry of [`FLAGS`].
 ///
-/// Block (256 invocations, 16 lanes, 128 rows, depth 8, 2 buffers): `a` 128 lines, `b` 8 lines
-/// of 128; a padded `a` line is 12, a padded `b` line 128 + 32 / 8 = 132.
+/// Block (256 invocations, 16 lanes, 128 rows, depth 8, 2 buffers), staged k-major for vector
+/// reads (`MatMulTile::vector_layout`): `a` 8 lines of 128 + 4 = 132, or 128 + 8 = 136 read
+/// transposed; `b` 8 lines of 128, a padded `b` line 128 + 32 / 8 = 132.
 /// Wide (128 invocations, 64 rows, depth 8, 2 buffers): `a` 64 lines.
 /// Square (128 invocations, 64 rows, 64 columns, depth 16, 2 buffers): a padded `a` line is 20,
 /// a padded `b` line 64 + 32 / 16 = 66.
@@ -64,10 +65,10 @@ const LITERAL: [Literal; 3] = [
         (8192, 784, 4096),
         1024,
         [
-            2 * (128 * 8 + 8 * 128) * 4,
-            2 * (128 * 12 + 8 * 128) * 4,
-            2 * (128 * 8 + 8 * 132) * 4,
-            2 * (128 * 12 + 8 * 132) * 4,
+            2 * (8 * 132 + 8 * 128) * 4,
+            2 * (8 * 136 + 8 * 128) * 4,
+            2 * (8 * 132 + 8 * 132) * 4,
+            2 * (8 * 136 + 8 * 132) * 4,
         ],
     ),
     (
@@ -103,21 +104,27 @@ fn the_staged_bytes_of_the_block_wide_and_square_tiles_are_those_of_the_layout_b
                 wrong.push(format!("{tile} {flags:?}: {got} bytes, by hand {want}"));
             }
         }
-        if tile.layout([false, false]).shared_bytes() > MIN_SHARED_MEMORY_BYTES {
+        // A tile of 128 invocations staged unpadded fits the 16 KiB every device has; the block,
+        // whose `a` lines always carry their 4 values of padding, is taken only where its own
+        // bytes fit, checked at the thresholds below.
+        if tile.workgroup_size <= 128
+            && tile.layout([false, false]).shared_bytes() > MIN_SHARED_MEMORY_BYTES
+        {
             wrong.push(format!("{tile}: unpadded over 16 KiB"));
         }
     }
-    // The block reading both operands transposed needs 20,736 bytes: a profile of exactly that
-    // takes it, one byte fewer takes the wide tile, with no refusal.
+    // The block reading neither operand transposed needs 16,640 bytes and reading both 17,152: a
+    // profile of exactly that takes it, one byte fewer takes the wide tile, with no refusal.
     let (m, k, n) = (8192, 784, 4096);
-    let both = [true, true];
-    let at = MatMulTile::for_profile(m, k, n, both, &limited(1024, 20_736));
-    let short = MatMulTile::for_profile(m, k, n, both, &limited(1024, 20_735));
-    if at.workgroup_size != 256 {
-        wrong.push(format!("20,736 bytes: {at}"));
-    }
-    if short != MatMulTile::of(m, k, n) {
-        wrong.push(format!("20,735 bytes: {short}"));
+    for (flags, bytes) in [([false, false], 16_640), ([true, true], 17_152)] {
+        let at = MatMulTile::for_profile(m, k, n, flags, &limited(1024, bytes));
+        let short = MatMulTile::for_profile(m, k, n, flags, &limited(1024, bytes - 1));
+        if at.workgroup_size != 256 {
+            wrong.push(format!("{bytes} bytes {flags:?}: {at}"));
+        }
+        if short != MatMulTile::of(m, k, n) {
+            wrong.push(format!("{} bytes {flags:?}: {short}", bytes - 1));
+        }
     }
     assert!(wrong.is_empty(), "{wrong:#?}");
 }
@@ -129,7 +136,10 @@ fn every_tile_a_profile_gets_is_staged_within_its_memory_and_a_block_keeps_its_p
     let mut dropped = 0u64;
     for (m, k, n) in shapes(20_000, 9000) {
         for invocations in [128, 255, 256, 1024] {
-            for shared in [16_384, 16_640, 18_432, 20_479, 20_480, 20_736, 49_152] {
+            for shared in [
+                16_384, 16_639, 16_640, 16_896, 17_151, 17_152, 18_432, 20_479, 20_480, 20_736,
+                49_152,
+            ] {
                 let limits = MatMulLimits {
                     invocations,
                     shared_bytes: shared,

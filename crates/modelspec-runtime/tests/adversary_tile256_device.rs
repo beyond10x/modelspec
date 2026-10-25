@@ -9,7 +9,8 @@
 //!    the wide tile and the block at depth 8, one- and two-row tiles at depths that are
 //!    multiples of 4 (`a` padded) and not, each emitted for the device's own workgroup memory
 //!    (padded) and for 16,384 bytes (the padding dropped where it does not fit), against the CPU
-//!    oracle bit for bit.
+//!    oracle bit for bit; the block, whose least staging is 16,640 bytes, for 16,640 bytes
+//!    instead, and refused for 16,384.
 //!
 //! Ignored by default: they create a Vulkan instance. Run them with
 //! `MODELSPEC_VK_VALIDATION=1 cargo test --release -p modelspec-runtime --features vulkan --test adversary_tile256_device -- --ignored`.
@@ -267,16 +268,33 @@ fn every_padded_layout_and_its_dropped_padding_give_the_cpu_oracle_bits() {
         (4097, 24, 7),
     ];
     let (mut wrong, mut compared) = compare(&vulkan, &device, &profiles, &shapes, 128, None);
+    // The block stages at least 16,640 bytes (`a` lines of 132 values, k-major for vector
+    // reads), so it is emitted for the device's memory and for exactly 16,640 bytes, where
+    // only the layout of neither operand transposed fits and the transposed reads drop their
+    // padding; for 16,384 bytes it is refused, never emitted short.
+    let (m, k, n) = (1153, 65, 1921);
+    let [profile, small] = profiles;
+    let mut least = profile.clone();
+    least.max_shared_memory_bytes = 16_640;
     let (block_wrong, block_compared) = compare(
         &vulkan,
         &device,
-        &profiles,
-        &[(1153, 65, 1921)],
+        &[profile, least],
+        &[(m, k, n)],
         1024,
         Some(256),
     );
     wrong.extend(block_wrong);
     compared += block_compared;
+    for flags in FLAGS {
+        match emit_module(&matmul(m, k, n, 1024, flags), &small) {
+            Err(e) if e.to_string().contains("16640") && e.to_string().contains("16384") => {}
+            Err(e) => wrong.push(format!(
+                "the block for 16,384 bytes {flags:?}: refused as {e}"
+            )),
+            Ok(_) => wrong.push(format!("the block for 16,384 bytes {flags:?}: emitted")),
+        }
+    }
     eprintln!(
         "validation {}; {} shapes, {compared} elements against the CPU oracle",
         vulkan.validation_enabled(),

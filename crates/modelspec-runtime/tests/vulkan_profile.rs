@@ -205,6 +205,7 @@ fn the_report_prints_one_line_per_site_then_the_counters() {
         timings: Some(timings(&steps, &last, 3, &stamps, clock).expect("the stamps fit")),
         pipeline_creation: Duration::from_micros(1500),
         compile: Duration::from_nanos(2_250_500),
+        pipeline_statistics: None,
     };
     let id = KernelModuleId([1; 16]);
     assert_eq!(
@@ -215,6 +216,7 @@ fn the_report_prints_one_line_per_site_then_the_counters() {
              profile dispatch step 2 {id} main calls 3 total_us 0.036 mean_us 0.012 uncounted\n\
              profile dispatch final 0 {id} main calls 1 total_us 0.006 mean_us 0.006 \
              flop 48 bytes 120 gflop_per_s 8.000 gb_per_s 20.000\n\
+             profile pipeline statistics: not reported\n\
              profile dispatches 7\n\
              profile submits 1\n\
              profile host_waits 1\n\
@@ -238,10 +240,12 @@ fn without_timestamp_queries_the_report_says_so_and_still_prints_the_counters() 
         timings: None,
         pipeline_creation: Duration::from_micros(1),
         compile: Duration::from_micros(2),
+        pipeline_statistics: None,
     };
     assert_eq!(
         profile.report(&stats()),
         "profile kernel timings unavailable: no timestamp queries\n\
+         profile pipeline statistics: not reported\n\
          profile dispatches 7\n\
          profile submits 1\n\
          profile host_waits 1\n\
@@ -325,6 +329,7 @@ fn the_step_total_divides_the_counted_step_sites_by_the_steady_time_per_step() {
         timings: Some(timed),
         pipeline_creation: Duration::from_micros(1),
         compile: Duration::from_micros(2),
+        pipeline_statistics: None,
     };
     let report = profile.report(&stats());
     assert_eq!(

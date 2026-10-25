@@ -63,7 +63,7 @@ Usage: modelspec compile [OPTIONS] --backend <BACKEND> --output <DIR> <PATH>
 | `<PATH>` | yes | none | The .mspec file to compile. |
 | `--backend <BACKEND>` | yes | none | The backend the artifact is for. One of:<br/>`cpu`: The CPU interpreter: an artifact without kernel modules<br/>`vulkan`: Vulkan compute: an artifact with one SPIR-V module per kernel, in a build with the vulkan feature |
 | `--output <DIR>` | yes | none | The artifact directory to write, created with its parents; files of an earlier artifact in it are overwritten. |
-| `--device-profile <PATH>` | no | none | With --backend vulkan, build the kernel modules for the DeviceProfile JSON file PATH (the form `inspect-device --format json` prints) instead of probing device 0. |
+| `--device-profile <PATH>` | no | none | With --backend vulkan, schedule the plan within the limits of the DeviceProfile JSON file PATH (the form `inspect-device --format json` prints: its workgroup invocations and workgroup memory, recorded in the manifest as matmul_limits) and build the kernel modules for it, instead of scheduling for every device and probing device 0. |
 | `--fast-math` | no | `false` | With --backend vulkan, compile with fast_math (DESIGN.md ADR-008): the manifest and every kernel cache key record it, and the float multiplies, adds and subtracts of the matmul, reduction, loss-sum and SGD kernels carry no NoContraction, so a driver may contract them into fused multiply-adds. |
 
 ## `modelspec data`

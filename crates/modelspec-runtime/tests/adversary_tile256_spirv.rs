@@ -3,8 +3,9 @@
 //!
 //! - The block module of a shape has the arithmetic of the wide module of the same shape, op for
 //!   op (opcode and the kind of each operand), every `OpFMul` and `OpFAdd` `NoContraction`,
-//!   `LocalSize` 256, and a workgroup array of the length worked out by hand for its flags; it
-//!   passes `spirv-val`.
+//!   `LocalSize` 256, and a workgroup array of the length worked out by hand for its flags (in
+//!   `f32` values; the block declares it as `vec4`, and a component of a `vec4` read from it
+//!   counts as a read from workgroup memory); it passes `spirv-val`.
 //! - The square tile reading `a` transposed, emitted for a device with 49,152 bytes of workgroup
 //!   memory (padded) and with 16,384 (the padding dropped): the same arithmetic, and the array
 //!   lengths by hand, 4,608 and 4,096 values.
@@ -31,6 +32,7 @@ const FIXTURE: &str = include_str!(concat!(
 
 const OP_EXECUTION_MODE: u32 = 16;
 const MODE_LOCAL_SIZE: u32 = 17;
+const OP_TYPE_VECTOR: u32 = 23;
 const OP_TYPE_ARRAY: u32 = 28;
 const OP_TYPE_POINTER: u32 = 32;
 const OP_CONSTANT: u32 = 43;
@@ -38,6 +40,7 @@ const OP_VARIABLE: u32 = 59;
 const OP_LOAD: u32 = 61;
 const OP_ACCESS_CHAIN: u32 = 65;
 const OP_DECORATE: u32 = 71;
+const OP_COMPOSITE_EXTRACT: u32 = 81;
 const OP_F_ADD: u32 = 129;
 const OP_F_MUL: u32 = 133;
 const NO_CONTRACTION: u32 = 42;
@@ -93,9 +96,10 @@ fn instructions(module: &[u32]) -> Vec<(u32, &[u32])> {
 
 #[derive(Debug, PartialEq, Eq)]
 struct Shape {
-    /// Per `OpFMul` / `OpFAdd` in module order: the opcode and the kind of each operand.
+    /// Per `OpFMul` / `OpFAdd` in module order: the opcode and the kind of each operand; a
+    /// component of a vector loaded from workgroup memory is a load from workgroup memory.
     arithmetic: Vec<(u32, String, String)>,
-    /// The lengths of the workgroup memory arrays.
+    /// The lengths of the workgroup memory arrays in `f32` values: a `vec4` element is 4.
     shared: Vec<u32>,
     /// The arithmetic results not decorated `NoContraction`.
     contracted: usize,
@@ -109,7 +113,8 @@ fn shape_of(module: &[u32]) -> Shape {
     let mut variables: BTreeMap<u32, u32> = BTreeMap::new();
     let mut constants: BTreeMap<u32, u32> = BTreeMap::new();
     let mut pointers: BTreeMap<u32, u32> = BTreeMap::new();
-    let mut arrays: BTreeMap<u32, u32> = BTreeMap::new();
+    let mut arrays: BTreeMap<u32, (u32, u32)> = BTreeMap::new();
+    let mut vectors: BTreeMap<u32, u32> = BTreeMap::new();
     let mut no_contraction = BTreeSet::new();
     let mut local_x = 0;
     for &(op, words) in &instructions {
@@ -125,19 +130,26 @@ fn shape_of(module: &[u32]) -> Shape {
             OP_TYPE_POINTER => {
                 pointers.insert(words[0], words[2]);
             }
+            OP_TYPE_VECTOR => {
+                vectors.insert(words[0], words[2]);
+            }
             OP_TYPE_ARRAY => {
-                arrays.insert(words[0], words[2]);
+                arrays.insert(words[0], (words[1], words[2]));
             }
             OP_DECORATE if words[1] == NO_CONTRACTION => {
                 no_contraction.insert(words[0]);
             }
-            OP_LOAD | OP_ACCESS_CHAIN | OP_F_ADD | OP_F_MUL => {
+            OP_LOAD | OP_ACCESS_CHAIN | OP_COMPOSITE_EXTRACT | OP_F_ADD | OP_F_MUL => {
                 defined.insert(words[1], (op, words));
             }
             _ => {}
         }
     }
     let kind = |id: u32| -> String {
+        let id = match defined.get(&id) {
+            Some((OP_COMPOSITE_EXTRACT, words)) => words[2],
+            _ => id,
+        };
         match defined.get(&id) {
             Some((OP_F_MUL, _)) => "fmul".to_owned(),
             Some((OP_F_ADD, _)) => "fadd".to_owned(),
@@ -165,8 +177,8 @@ fn shape_of(module: &[u32]) -> Shape {
     let mut shared = Vec::new();
     for &(op, words) in &instructions {
         if op == OP_VARIABLE && words[2] == WORKGROUP {
-            let array = pointers[&words[0]];
-            shared.push(constants[&arrays[&array]]);
+            let (element, length) = arrays[&pointers[&words[0]]];
+            shared.push(constants[&length] * vectors.get(&element).copied().unwrap_or(1));
         }
     }
     Shape {
@@ -178,12 +190,13 @@ fn shape_of(module: &[u32]) -> Shape {
 }
 
 /// The workgroup memory values of the block, by hand, for each entry of [`FLAGS`], with 2
-/// buffers: `a` 128 lines of 8 (12 padded), `b` 8 lines of 128 (132 padded).
+/// buffers, staged k-major for vector reads: `a` 8 lines of 132 (136 read transposed), `b` 8
+/// lines of 128 (132 padded).
 const BLOCK_VALUES: [u32; 4] = [
-    2 * (128 * 8 + 8 * 128),
-    2 * (128 * 12 + 8 * 128),
-    2 * (128 * 8 + 8 * 132),
-    2 * (128 * 12 + 8 * 132),
+    2 * (8 * 132 + 8 * 128),
+    2 * (8 * 136 + 8 * 128),
+    2 * (8 * 132 + 8 * 132),
+    2 * (8 * 136 + 8 * 132),
 ];
 
 #[test]

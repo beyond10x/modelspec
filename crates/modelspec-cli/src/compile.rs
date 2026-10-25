@@ -4,7 +4,12 @@
 //! `artifact.json` and, for Vulkan, one `kernels/<kernel_module_id>.spv` per kernel.
 //!
 //! A Vulkan compile builds its modules for one device: the `DeviceProfile` JSON file named by
-//! `--device-profile`, or without it device 0 of the Vulkan loader. The profile is negotiated
+//! `--device-profile`, or without it device 0 of the Vulkan loader. With `--device-profile` the
+//! plan is also scheduled within that profile's workgroup invocations and workgroup memory
+//! (`modelspec_core::compile::compile_artifact_for`), the manifest records them as
+//! `matmul_limits`, and the artifact is read back for that profile
+//! (`modelspec_core::artifact::read_for_device`); without it the plan is the one for every
+//! Vulkan device and the manifest has no `matmul_limits`. The profile is negotiated
 //! before anything is written, so a device the runtime would refuse (E-TARGET-004) leaves the
 //! output directory as it was. A profile file that cannot be read or breaks an invariant of
 //! `spec/domains/device.yaml` exits 1 naming the file and the invariant. `--fast-math` sets the
@@ -35,8 +40,10 @@ pub struct Args {
     /// in it are overwritten.
     #[arg(long, value_name = "DIR")]
     pub output: PathBuf,
-    /// With --backend vulkan, build the kernel modules for the DeviceProfile JSON file PATH (the
-    /// form `inspect-device --format json` prints) instead of probing device 0.
+    /// With --backend vulkan, schedule the plan within the limits of the DeviceProfile JSON file
+    /// PATH (the form `inspect-device --format json` prints: its workgroup invocations and
+    /// workgroup memory, recorded in the manifest as matmul_limits) and build the kernel modules
+    /// for it, instead of scheduling for every device and probing device 0.
     #[arg(long, value_name = "PATH")]
     pub device_profile: Option<PathBuf>,
     /// With --backend vulkan, compile with fast_math (DESIGN.md ADR-008): the manifest and every
@@ -101,24 +108,39 @@ pub fn run(args: Args, stdout: &mut dyn Write, stderr: &mut dyn Write) -> u8 {
         Backend::Cpu => Target::Cpu,
         Backend::Vulkan => Target::Vulkan,
     };
-    let compiled = match compile::compile_artifact(&file, &source, target) {
-        Ok(mut compiled) => {
-            compiled.fast_math = args.fast_math;
-            compiled
-        }
-        Err(diagnostics) => {
-            for diagnostic in &diagnostics {
-                let _ = writeln!(stderr, "{diagnostic}");
+    // The profile of `--device-profile`, read before the plan is scheduled within its limits.
+    #[cfg(feature = "vulkan")]
+    let scheduled_for = match args.device_profile.as_deref() {
+        Some(path) if args.backend == Backend::Vulkan => match vulkan::profile(Some(path)) {
+            Ok(profile) => Some(profile),
+            Err(message) => {
+                let _ = writeln!(stderr, "{message}");
+                return crate::EXIT_FAILURE;
             }
-            return crate::EXIT_FAILURE;
-        }
+        },
+        _ => None,
     };
+    #[cfg(not(feature = "vulkan"))]
+    let scheduled_for: Option<modelspec_core::device::DeviceProfile> = None;
+    let compiled =
+        match compile::compile_artifact_for(&file, &source, target, scheduled_for.as_ref()) {
+            Ok(mut compiled) => {
+                compiled.fast_math = args.fast_math;
+                compiled
+            }
+            Err(diagnostics) => {
+                for diagnostic in &diagnostics {
+                    let _ = writeln!(stderr, "{diagnostic}");
+                }
+                return crate::EXIT_FAILURE;
+            }
+        };
     let modules = match args.backend {
         Backend::Cpu => Vec::new(),
         #[cfg(not(feature = "vulkan"))]
         Backend::Vulkan => unreachable!("refused above in a build without the vulkan feature"),
         #[cfg(feature = "vulkan")]
-        Backend::Vulkan => match vulkan::modules(&compiled, args.device_profile.as_deref()) {
+        Backend::Vulkan => match vulkan::modules(&compiled, scheduled_for.as_ref()) {
             Ok(modules) => modules,
             Err(message) => {
                 let _ = writeln!(stderr, "{message}");
@@ -131,7 +153,11 @@ pub fn run(args: Args, stdout: &mut dyn Write, stderr: &mut dyn Write) -> u8 {
         let _ = writeln!(stderr, "modelspec compile {file}: {error}");
         return crate::EXIT_FAILURE;
     }
-    match artifact::read(&args.output) {
+    let read = match &scheduled_for {
+        Some(profile) => artifact::read_for_device(&args.output, profile),
+        None => artifact::read(&args.output),
+    };
+    match read {
         Ok(read) => {
             let _ = writeln!(
                 stdout,
@@ -162,7 +188,7 @@ mod vulkan {
 
     /// The device profile of `path`, or of device 0 of the Vulkan loader; what fails is the
     /// line to print.
-    fn profile(path: Option<&Path>) -> Result<DeviceProfile, String> {
+    pub(super) fn profile(path: Option<&Path>) -> Result<DeviceProfile, String> {
         match path {
             Some(path) => {
                 let shown = path.display();
@@ -180,12 +206,16 @@ mod vulkan {
         }
     }
 
-    /// The kernel modules of `compiled` for the negotiated device profile.
+    /// The kernel modules of `compiled` for the negotiated device profile: `scheduled_for`, the
+    /// profile of `--device-profile`, or else that of device 0.
     pub(super) fn modules(
         compiled: &CompiledArtifact,
-        path: Option<&Path>,
+        scheduled_for: Option<&DeviceProfile>,
     ) -> Result<Vec<KernelModuleFile>, String> {
-        let profile = profile(path)?;
+        let profile = match scheduled_for {
+            Some(profile) => profile.clone(),
+            None => profile(None)?,
+        };
         negotiate(&profile).map_err(|d| d.to_string())?;
         let modules = emit_kernels(compiled, &profile).map_err(|error| {
             format!("modelspec compile: the kernel modules cannot be built: {error}")

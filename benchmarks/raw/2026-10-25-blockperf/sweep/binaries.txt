@@ -1,0 +1,4 @@
+base bench <scratch>/mlp_sweep-base, built in <scratch>/base-tree (git archive of 92ba28b44357e81000c14bc462db386aa369d90e), cwd <scratch>/base-tree/crates/modelspec-runtime
+final bench <scratch>/mlp_sweep-final, built in <worktree> (impl/matmul-block-kernel-throughput, uncommitted tree), cwd <worktree>/crates/modelspec-runtime
+command mlp_sweep --bench --point 8192:4096 --point 8192:1024 --point 1000:1024 --min-seconds 6 [--fast-math]
+order per round: base, final, base --fast-math, final --fast-math; 3 rounds

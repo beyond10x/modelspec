@@ -38,10 +38,17 @@
 //! (barriers per step, device allocations and peak device bytes among them), the compile and
 //! pipeline creation times, the steady-state microseconds per step and a
 //! `profile step_total` line, the step's counts over that time
-//! ([`modelspec_runtime::vulkan::profile`]); stdout is unchanged. The file is
-//! compiled before the loader is opened; then a missing loader exits 1 with `E-TARGET-002`, no
-//! device or a `--device` that names none with `E-TARGET-003`, and a device below the
-//! requirements with `E-TARGET-004`. A build without the `vulkan` feature refuses the backend
+//! ([`modelspec_runtime::vulkan::profile`]), then per kernel of the plan the pipeline executable
+//! statistics the driver reports (`profile pipeline <kernel_module_id> executable <i> ...` and
+//! `... statistic "<name>" <value> description "<text>"`), or `profile pipeline statistics: not
+//! reported` on a device without `VK_KHR_pipeline_executable_properties`; stdout is unchanged.
+//! The plan is scheduled within the workgroup invocations and workgroup memory of the device
+//! the run selects (`compile_artifact_for`), so on a device that allows 256 invocations the
+//! large matmuls take the 128 by 128 block (DESIGN.md § 3.1); the bits of every output are those
+//! of the plan for every device. When the loader reports no such device the plan is the one for
+//! every device, and then a missing loader exits 1 with `E-TARGET-002`, no device or a
+//! `--device` that names none with `E-TARGET-003`, and a device below the requirements with
+//! `E-TARGET-004`. A build without the `vulkan` feature refuses the backend
 //! with [`E_TARGET_001`] before the file is read. `--fast-math` compiles the artifact with
 //! `fast_math` set (DESIGN.md § 12 ADR-008): its kernels carry no `NoContraction`, the run is
 //! compared within tolerance, and `--stats` names the class `tolerance`. `--data`, `--init`,
@@ -344,15 +351,23 @@ pub enum Backend {
     Vulkan,
 }
 
-/// The artifact a Vulkan run of `source` executes, with the `fast_math` of `--fast-math`.
+/// The artifact a Vulkan run of `source` executes, with the `fast_math` of `--fast-math`: its
+/// plan scheduled within the limits of the device the run selects
+/// ([`modelspec_runtime::vulkan::runner::device_profile`]), or for every Vulkan device when the
+/// loader reports no such device, whose run is then refused as it opens the device.
 #[cfg(feature = "vulkan")]
 fn vulkan_artifact(
     file: &str,
     source: &str,
     args: &Args,
 ) -> Result<modelspec_core::artifact::CompiledArtifact, Vec<Diagnostic>> {
-    let mut artifact =
-        compile::compile_artifact(file, source, modelspec_core::artifact::Backend::Vulkan)?;
+    let profile = modelspec_runtime::vulkan::runner::device_profile(args.device).ok();
+    let mut artifact = compile::compile_artifact_for(
+        file,
+        source,
+        modelspec_core::artifact::Backend::Vulkan,
+        profile.as_ref(),
+    )?;
     artifact.fast_math = args.fast_math;
     Ok(artifact)
 }

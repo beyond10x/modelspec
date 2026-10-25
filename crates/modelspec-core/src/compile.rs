@@ -10,11 +10,13 @@
 
 use crate::artifact::{Backend, CompiledArtifact};
 use crate::autodiff::differentiate;
+use crate::device::DeviceProfile;
 use crate::diag::Diagnostic;
 use crate::hir::Hir;
+use crate::ir::kernel::MatMulLimits;
 use crate::ir::tensor::TensorProgram;
 use crate::ir::training::{TrainConfig, TrainingStep, attach_sgd};
-use crate::ir::verify::{verify, verify_plan, verify_step};
+use crate::ir::verify::{verify, verify_plan_for, verify_step};
 use crate::lower::{self, LoweredProgram};
 use crate::passes::dce;
 use crate::schedule;
@@ -64,18 +66,33 @@ pub fn compile_training(path: &str, source: &str) -> Result<CompiledTraining, Ve
 }
 
 /// [`compile_training`], then the fixed safe schedule ([`schedule::schedule`]) and
-/// [`verify_plan`]: Kernel IR, the step plan and the forward plan, in an artifact for `backend`.
-/// A Cpu artifact keeps the views and has no kernels and empty plans.
+/// [`crate::ir::verify::verify_plan`]: Kernel IR, the step plan and the forward plan, in an
+/// artifact for `backend`. A Cpu artifact keeps the views and has no kernels and empty plans.
 pub fn compile_artifact(
     path: &str,
     source: &str,
     backend: Backend,
 ) -> Result<CompiledArtifact, Vec<Diagnostic>> {
+    compile_artifact_for(path, source, backend, None)
+}
+
+/// [`compile_artifact`] for the device `profile` describes: the plan is scheduled within its
+/// limits ([`schedule::schedule_for`] with [`MatMulLimits::of`] the profile), verified against
+/// it ([`verify_plan_for`]), and the artifact records those limits
+/// ([`CompiledArtifact::matmul_limits`]). Without a profile it is [`compile_artifact`].
+pub fn compile_artifact_for(
+    path: &str,
+    source: &str,
+    backend: Backend,
+    profile: Option<&DeviceProfile>,
+) -> Result<CompiledArtifact, Vec<Diagnostic>> {
     let compiled = compile_training(path, source)?;
-    let plan = schedule::schedule(
+    let limits = profile.map(MatMulLimits::of);
+    let plan = schedule::schedule_for(
         &compiled.training,
         compiled.forward.prediction,
         &compiled.config,
+        limits,
     )
     .map_err(|error| {
         if error.is_target_limit() {
@@ -93,14 +110,11 @@ pub fn compile_artifact(
             )]
         }
     })?;
-    verify_plan(&plan)
+    verify_plan_for(&plan, profile)
         .map_err(|error| vec![compiler_bug("the execution plan does not verify", &error)])?;
-    Ok(CompiledArtifact::new(
-        backend,
-        source,
-        &compiled.training,
-        plan,
-    ))
+    let mut artifact = CompiledArtifact::new(backend, source, &compiled.training, plan);
+    artifact.matmul_limits = limits;
+    Ok(artifact)
 }
 
 /// Differentiates the single output of `forward`, its loss, attaches SGD at `lr` and verifies

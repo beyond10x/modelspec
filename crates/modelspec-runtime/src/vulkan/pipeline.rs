@@ -5,7 +5,7 @@
 //! stage.
 
 use ash::vk;
-use modelspec_core::ir::kernel::{Kernel, Operand};
+use modelspec_core::ir::kernel::{Kernel, KernelModuleId, Operand};
 
 use super::{Device, ExecError};
 
@@ -15,6 +15,8 @@ pub const PUSH_CONSTANT_BYTES: u32 = 4;
 /// A compute pipeline, its layout and its shader module.
 pub struct Pipeline<'d> {
     device: &'d ash::Device,
+    /// The pipeline executable queries of the device, when it was created with them.
+    statistics: Option<&'d ash::khr::pipeline_executable_properties::Device>,
     module: vk::ShaderModule,
     pub(crate) set_layout: vk::DescriptorSetLayout,
     pub(crate) layout: vk::PipelineLayout,
@@ -41,6 +43,112 @@ impl Pipeline<'_> {
     pub fn local_size(&self) -> [u32; 3] {
         self.local_size
     }
+
+    /// Every executable of the pipeline and the statistics the driver reports for it, in the
+    /// order the driver lists them, through `VK_KHR_pipeline_executable_properties`; `None`
+    /// when the device was created without the extension, so the pipeline captured none.
+    pub fn statistics(&self) -> Result<Option<Vec<PipelineExecutable>>, ExecError> {
+        let Some(queries) = self.statistics else {
+            return Ok(None);
+        };
+        let info = vk::PipelineInfoKHR::default().pipeline(self.pipeline);
+        // SAFETY: the pipeline was created on the device of `queries` with
+        // `CAPTURE_STATISTICS_KHR`, and `info` outlives the call.
+        let executables = unsafe { queries.get_pipeline_executable_properties(&info) }
+            .map_err(ExecError::call("vkGetPipelineExecutablePropertiesKHR"))?;
+        let mut read = Vec::with_capacity(executables.len());
+        for (index, executable) in executables.iter().enumerate() {
+            let info = vk::PipelineExecutableInfoKHR::default()
+                .pipeline(self.pipeline)
+                .executable_index(index as u32);
+            // SAFETY: as above; `index` is below the count the driver returned.
+            let statistics = unsafe { queries.get_pipeline_executable_statistics(&info) }
+                .map_err(ExecError::call("vkGetPipelineExecutableStatisticsKHR"))?;
+            read.push(PipelineExecutable {
+                name: text(executable.name_as_c_str()),
+                description: text(executable.description_as_c_str()),
+                subgroup_size: executable.subgroup_size,
+                statistics: statistics
+                    .iter()
+                    .map(|statistic| PipelineStatistic {
+                        name: text(statistic.name_as_c_str()),
+                        description: text(statistic.description_as_c_str()),
+                        value: StatisticValue::of(statistic),
+                    })
+                    .collect(),
+            });
+        }
+        Ok(Some(read))
+    }
+}
+
+/// A string the driver returned in a fixed array, up to its NUL; empty without one.
+fn text(read: Result<&std::ffi::CStr, std::ffi::FromBytesUntilNulError>) -> String {
+    read.map(|text| text.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+/// The value of one statistic, in the format the driver states for it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum StatisticValue {
+    Bool(bool),
+    Int(i64),
+    Uint(u64),
+    Float(f64),
+}
+
+impl StatisticValue {
+    fn of(statistic: &vk::PipelineExecutableStatisticKHR<'_>) -> Self {
+        // SAFETY: `format` names the member of the union the driver wrote.
+        unsafe {
+            match statistic.format {
+                vk::PipelineExecutableStatisticFormatKHR::BOOL32 => {
+                    Self::Bool(statistic.value.b32 != vk::FALSE)
+                }
+                vk::PipelineExecutableStatisticFormatKHR::INT64 => Self::Int(statistic.value.i64),
+                vk::PipelineExecutableStatisticFormatKHR::FLOAT64 => {
+                    Self::Float(statistic.value.f64)
+                }
+                _ => Self::Uint(statistic.value.u64),
+            }
+        }
+    }
+}
+
+impl std::fmt::Display for StatisticValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Bool(value) => write!(f, "{value}"),
+            Self::Int(value) => write!(f, "{value}"),
+            Self::Uint(value) => write!(f, "{value}"),
+            Self::Float(value) => write!(f, "{value}"),
+        }
+    }
+}
+
+/// One statistic of a pipeline executable, as the driver names, describes and states it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PipelineStatistic {
+    pub name: String,
+    pub description: String,
+    pub value: StatisticValue,
+}
+
+/// One executable of a pipeline (for a compute pipeline, its compute shader) and its statistics.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PipelineExecutable {
+    pub name: String,
+    pub description: String,
+    /// The subgroup size the executable was compiled for.
+    pub subgroup_size: u32,
+    pub statistics: Vec<PipelineStatistic>,
+}
+
+/// The executables of the pipeline of one kernel of a plan.
+#[derive(Clone, Debug, PartialEq)]
+pub struct KernelStatistics {
+    pub kernel_module_id: KernelModuleId,
+    pub executables: Vec<PipelineExecutable>,
 }
 
 impl Drop for Pipeline<'_> {
@@ -159,6 +267,7 @@ impl Device<'_> {
         }
         let mut pipeline = Pipeline {
             device: &self.device,
+            statistics: self.pipeline_statistics.as_ref(),
             module: vk::ShaderModule::null(),
             set_layout: vk::DescriptorSetLayout::null(),
             layout: vk::PipelineLayout::null(),
@@ -199,7 +308,13 @@ impl Device<'_> {
             .stage(vk::ShaderStageFlags::COMPUTE)
             .module(pipeline.module)
             .name(c"main");
+        let flags = if pipeline.statistics.is_some() {
+            vk::PipelineCreateFlags::CAPTURE_STATISTICS_KHR
+        } else {
+            vk::PipelineCreateFlags::empty()
+        };
         let infos = [vk::ComputePipelineCreateInfo::default()
+            .flags(flags)
             .stage(stage)
             .layout(pipeline.layout)];
         // SAFETY: `infos` and what it points to outlive the call.
