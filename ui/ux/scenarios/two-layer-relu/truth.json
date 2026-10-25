@@ -1,0 +1,12 @@
+{
+  "recording": "crates/modelspec-cli/tests/fixtures/two_layer_relu.run.jsonl",
+  "run_state": "finished",
+  "steps": 200,
+  "start_step": 0,
+  "last_step": 200,
+  "last_loss": 0.01849818229675293,
+  "metrics": [],
+  "parameters": ["TwoLayer.w1", "TwoLayer.w2"],
+  "last_statistics_step": 200,
+  "first_parameter_gradient": { "path": "TwoLayer.w1", "step": 100, "norm": 0.05911282372503078 }
+}

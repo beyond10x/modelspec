@@ -25,6 +25,9 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Fetch main for the UI ratchet
+        run: git fetch --no-tags --depth=1 origin main:refs/remotes/origin/main
+
       - name: Install go-task
         env:
           TASK_VERSION: "3.52.0"
@@ -60,7 +63,7 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends libvulkan-dev spirv-tools
+          sudo apt-get install --yes --no-install-recommends libvulkan-dev spirv-tools fonts-dejavu-core
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec

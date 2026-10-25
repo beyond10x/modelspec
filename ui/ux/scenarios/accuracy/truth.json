@@ -1,0 +1,12 @@
+{
+  "recording": "crates/modelspec-cli/tests/fixtures/accuracy.run.jsonl",
+  "run_state": "finished",
+  "steps": 21,
+  "start_step": 0,
+  "last_step": 20,
+  "last_loss": 0.095238097012043,
+  "metrics": [{ "name": "accuracy", "last_value": 0.85 }],
+  "parameters": [],
+  "last_statistics_step": null,
+  "first_parameter_gradient": null
+}
