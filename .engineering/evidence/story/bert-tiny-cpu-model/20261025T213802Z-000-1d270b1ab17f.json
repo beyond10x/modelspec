@@ -1,0 +1,15 @@
+{
+  "at": "2026-10-25T21:38:02Z",
+  "actor": "human:timo",
+  "artifact": "story:bert-tiny-cpu-model",
+  "kind": "story",
+  "revision": 5,
+  "change": {
+    "change": "evidence",
+    "kind": "review_outcome",
+    "source": "fix passes 1 and 2, D71 and D72",
+    "reference": "2bd289adc6f659fe208b4f27c2b5688e4b1cffb7",
+    "review": "review-result:adversary-tiny-cpu-pass-1",
+    "outcome": "fixed"
+  }
+}
