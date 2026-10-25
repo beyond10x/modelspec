@@ -2,7 +2,7 @@
 format: aep.planning-md/3
 id: story:bert-tiny-cpu-model
 kind: story
-status: active
+status: implemented
 title: BERT-tiny as a checked example, and its hidden-32 twin gradient-checked and trained on the CPU
 summary: examples/bert_tiny.mspec (4,367,290 parameters) joins check-examples; a hidden-32 twin passes a whole-model f64 gradient check and trains to identical loss curves from one seed.
 relations:
@@ -34,10 +34,11 @@ scope:
   path: website/data/status.json
 - confidence: cited
   path: website/docs/examples/
-revision: 5
+revision: 6
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-25T19:41:38Z", actor: "human:timo", revision: 4}
 - {from: "proposed", to: "active", at: "2026-10-25T19:41:38Z", actor: "human:timo", revision: 5}
+- {from: "active", to: "implemented", at: "2026-10-25T21:52:03Z", actor: "human:timo", revision: 6, decided_on: {"recorded":{"test_result":1,"review_outcome":1}}}
 ---
 # BERT-tiny as a checked example, and its hidden-32 twin gradient-checked and trained on the CPU
 

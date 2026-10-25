@@ -1,0 +1,13 @@
+{
+  "at": "2026-10-25T21:52:03Z",
+  "actor": "human:timo",
+  "artifact": "story:bert-tiny-cpu-model",
+  "kind": "story",
+  "revision": 5,
+  "change": {
+    "change": "evidence",
+    "kind": "test_result",
+    "source": "task ci",
+    "reference": "d84055db80cf095aec7ac1241628e2f64e4cb6d8"
+  }
+}
