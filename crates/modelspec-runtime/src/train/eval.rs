@@ -14,8 +14,12 @@
 //! [`HeldOut::evaluate`] runs the forward program, the one without dropout
 //! ([`CompiledTraining::forward`]), on the CPU interpreter over every batch with the batch's
 //! tensors bound by declaration name as the training step binds them, and reads the logits as
-//! the intermediate value `prediction`, as the data loader reads it ([`super::data`]). Over
-//! every row `n` of every batch, in batch order and then row order:
+//! the intermediate value `prediction`, as the data loader reads it ([`super::data`]). The
+//! program is verified and planned once per run, in [`HeldOut::new`], as a [`Prepared`] program
+//! that holds `prediction` after each run; every batch of every evaluation runs that prepared
+//! program, each intermediate freed after its last consumer and its storage refilled by the next
+//! batch, so no batch's values outlive the next batch. Over every row `n` of every batch, in
+//! batch order and then row order:
 //!
 //! - the loss is `Σ weight_n · nll_n / Σ weight_n` in `f32`, `nll_n` the row's `max + ln(Σ
 //!   exp(x - max)) - x[label_n]` as `cross_entropy` computes it (DESIGN.md § 2.2), the
@@ -26,15 +30,17 @@
 //!   correct when the first largest logit of its row, the lowest id among ties, is its label,
 //!   and never when its row holds a NaN; `0` when no row is selected.
 
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 
 use modelspec_core::compile::CompiledTraining;
-use modelspec_core::ir::tensor::{DType, Dim, ParamId};
+use modelspec_core::ir::tensor::{DType, Dim, ParamId, ValueId};
 use thiserror::Error;
 
 use super::data::{DataError, PackedBatch, PackedData};
 use super::runner::{RunError, argmax};
-use crate::cpu::{HostTensor, RuntimeError, evaluate_all_with_ids};
+use crate::cpu::interpreter::Prepared;
+use crate::cpu::{HostTensor, RuntimeError};
 use crate::dataset::SplitRole;
 
 /// The name of the held-out loss among the metric samples of a step
@@ -90,17 +96,62 @@ struct Batch {
     weights: Vec<f32>,
 }
 
-/// The `HeldOut` batches of a run, drawn once.
-pub struct HeldOut {
+/// The forward program, verified and planned to hold `prediction` after each run, and the
+/// outputs of its last run, given back to it before the next one.
+struct Forward<'p> {
+    prepared: Prepared<'p, f32>,
+    outputs: Vec<HostTensor<f32>>,
+}
+
+impl<'p> Forward<'p> {
+    /// Verifies and plans `compiled`'s forward program; a program the verifier rejects is the
+    /// error of batch 0, the first batch that would have run it.
+    fn new(compiled: &'p CompiledTraining) -> Result<Self, EvalError> {
+        let forward = &compiled.forward;
+        let prepared = Prepared::keeping(&forward.program, &[forward.prediction])
+            .map_err(|source| EvalError::Runtime { batch: 0, source })?;
+        Ok(Forward {
+            prepared,
+            outputs: Vec::new(),
+        })
+    }
+}
+
+/// The `HeldOut` batches of a run, drawn once, and the forward program they run on, prepared
+/// once.
+pub struct HeldOut<'p> {
     batches: Vec<Batch>,
     /// The classes `V` of the logits.
     classes: usize,
+    /// The forward program of the `compiled` that [`HeldOut::new`] was given.
+    forward: RefCell<Forward<'p>>,
 }
 
-impl HeldOut {
-    /// Draws the `HeldOut` batches of `data` for `compiled`, refusing a split of fewer than `B`
-    /// sequences and a prediction that is not `f32` logits `[B·S, V]`.
-    pub fn new(compiled: &CompiledTraining, data: &PackedData) -> Result<HeldOut, RunError> {
+/// The classes `V` of `compiled`'s prediction when it is `f32` logits `[rows, V]`.
+fn classes(compiled: &CompiledTraining, rows: usize) -> Result<usize, EvalError> {
+    let prediction = compiled
+        .forward
+        .program
+        .node(compiled.forward.prediction)
+        .map(|n| &n.ty);
+    let classes = match prediction {
+        Some(ty) if ty.dtype == DType::F32 => match ty.shape.as_slice() {
+            &[Dim::Static(n), Dim::Static(v)] if n as usize == rows && v > 0 => Some(v as usize),
+            _ => None,
+        },
+        _ => None,
+    };
+    classes.ok_or_else(|| EvalError::Prediction {
+        rows,
+        prediction: prediction.map_or_else(|| "undefined".to_owned(), |t| t.to_string()),
+    })
+}
+
+impl<'p> HeldOut<'p> {
+    /// Draws the `HeldOut` batches of `data` for `compiled` and prepares its forward program,
+    /// refusing a split of fewer than `B` sequences and a prediction that is not `f32` logits
+    /// `[B·S, V]`.
+    pub fn new(compiled: &'p CompiledTraining, data: &PackedData) -> Result<Self, RunError> {
         let batch = data.batch();
         let sequences = data.sequences(SplitRole::HeldOut);
         if sequences < batch {
@@ -111,25 +162,8 @@ impl HeldOut {
             }
             .into());
         }
-        let rows = batch * data.binding().seq_len as usize;
-        let program = &compiled.forward.program;
-        let prediction = program.node(compiled.forward.prediction).map(|n| &n.ty);
-        let classes = match prediction {
-            Some(ty) if ty.dtype == DType::F32 => match ty.shape.as_slice() {
-                &[Dim::Static(n), Dim::Static(v)] if n as usize == rows && v > 0 => {
-                    Some(v as usize)
-                }
-                _ => None,
-            },
-            _ => None,
-        };
-        let Some(classes) = classes else {
-            return Err(EvalError::Prediction {
-                rows,
-                prediction: prediction.map_or_else(|| "undefined".to_owned(), |t| t.to_string()),
-            }
-            .into());
-        };
+        let classes = classes(compiled, batch * data.binding().seq_len as usize)?;
+        let forward = RefCell::new(Forward::new(compiled)?);
         let batches = (0..sequences / batch)
             .map(|b| {
                 let drawn = data.draw(SplitRole::HeldOut, b as u64)?;
@@ -143,7 +177,11 @@ impl HeldOut {
                 })
             })
             .collect::<Result<Vec<_>, DataError>>()?;
-        Ok(HeldOut { batches, classes })
+        Ok(HeldOut {
+            batches,
+            classes,
+            forward,
+        })
     }
 
     /// The number of batches each evaluation reads.
@@ -152,27 +190,46 @@ impl HeldOut {
     }
 
     /// The held-out loss and accuracy of `compiled`'s forward program with `params`.
+    ///
+    /// For the `compiled` that [`HeldOut::new`] was given, every batch runs the forward program
+    /// prepared there. Another `compiled` is checked as `new` checks it, and its forward program
+    /// verified and planned for this evaluation alone.
     pub fn evaluate(
         &self,
         compiled: &CompiledTraining,
         params: &BTreeMap<ParamId, HostTensor<f32>>,
     ) -> Result<HeldOutMetrics, RunError> {
         let prediction = compiled.forward.prediction;
-        let v = self.classes;
+        let mut forward = self.forward.borrow_mut();
+        if std::ptr::eq(forward.prepared.program(), &compiled.forward.program) {
+            return self.measure(&mut forward, prediction, self.classes, params);
+        }
+        let rows = self.batches.first().map_or(0, |batch| batch.labels.len());
+        let classes = classes(compiled, rows)?;
+        self.measure(&mut Forward::new(compiled)?, prediction, classes, params)
+    }
+
+    /// The reduction of the module documentation over every batch, each run on `forward`.
+    fn measure(
+        &self,
+        forward: &mut Forward<'_>,
+        prediction: ValueId,
+        v: usize,
+        params: &BTreeMap<ParamId, HostTensor<f32>>,
+    ) -> Result<HeldOutMetrics, RunError> {
+        let Forward { prepared, outputs } = forward;
         let mut numerator: Option<f32> = None;
         let mut denominator: Option<f32> = None;
         let (mut correct, mut selected) = (0u64, 0u64);
         for (b, batch) in self.batches.iter().enumerate() {
-            let mut values = evaluate_all_with_ids(
-                &compiled.forward.program,
-                batch.tensors.inputs(),
-                batch.tensors.ids(),
-                params,
-            )
-            .map_err(|source| EvalError::Runtime { batch: b, source })?
-            .values;
-            let logits = values
-                .remove(&prediction)
+            prepared
+                .run_into(batch.tensors.inputs(), batch.tensors.ids(), params, outputs)
+                .map_err(|source| EvalError::Runtime { batch: b, source })?;
+            for (position, output) in outputs.drain(..).enumerate() {
+                prepared.recycle(position, output);
+            }
+            let logits = prepared
+                .kept(prediction)
                 .ok_or(DataError::UndefinedPrediction(prediction))?;
             let rows = logits.data().chunks_exact(v);
             for (n, ((row, &label), &weight)) in

@@ -1,9 +1,10 @@
 //! `modelspec train --backend cpu --data <packed-dir> --eval-every <n>`
-//! (story:bert-heldout-evaluation, coordinator decision D55): at step 0, every `n` steps and the
-//! last step the forward program without dropout runs over every full batch of the `HeldOut`
-//! split, each drawn with the run seed, and the run prints `eval <k> loss <v> accuracy <a>` after
-//! the `step <k>` line and streams the two values as the `MetricSample`s `heldout_mlm_loss` and
-//! `heldout_mlm_accuracy` of the `StepCompleted` of step `k`.
+//! (story:bert-heldout-evaluation, coordinator decision D55): at every multiple of `n` among the
+//! run's steps and at the run's last step the forward program without dropout runs over every
+//! full batch of the `HeldOut` split, each drawn with the run seed, and the run prints
+//! `eval <k> loss <v> accuracy <a>` after the `step <k>` line and streams the two values as the
+//! `MetricSample`s `heldout_mlm_loss` and `heldout_mlm_accuracy` of the `StepCompleted` of step
+//! `k`.
 //!
 //! The packed directory is the one `train_data.rs` makes: `modelspec data prepare`, `data
 //! tokenizer` and `data pack` on the original-text fixture

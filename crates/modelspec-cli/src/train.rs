@@ -79,14 +79,17 @@
 //! error (coordinator decision D56).
 //!
 //! `--eval-every <n>` beside a packed `--data` directory evaluates the held-out split
-//! ([`modelspec_runtime::train::eval`]; story:bert-heldout-evaluation, coordinator decision D55):
-//! at every step `k` of the run that is a multiple of `n`, and at its last step, the forward
-//! program without dropout runs on the parameters after `k` updates, the ones the loss of step
-//! `k` is of, over every full batch of the `HeldOut` split drawn with the run seed, and stdout
-//! has `eval <k> loss <v> accuracy <a>` after the `step <k>` line, which an evaluated step always
+//! ([`modelspec_runtime::train::eval`]; story:bert-heldout-evaluation, coordinator decision D55).
+//! Evaluation happens at every multiple of `n` among the run's steps and at the run's last step,
+//! so a resumed run evaluates no step 0 of its own and starts at the first multiple of `n` at or
+//! after the step it resumes at. At an evaluated step `k` the forward program without dropout
+//! runs on the parameters after `k` updates, the ones the loss of step `k` is of, over every full
+//! batch of `B` sequences of the `HeldOut` split drawn with the run seed, so the last
+//! `count mod B` held-out sequences are never evaluated, and stdout has
+//! `eval <k> loss <v> accuracy <a>` after the `step <k>` line, which an evaluated step always
 //! gets; the `StepCompleted` of step `k` carries the metric samples `heldout_mlm_loss` and
-//! `heldout_mlm_accuracy` with those values, every other one an empty `metrics` list. A resumed
-//! run evaluates at the steps of the run that never stopped. `--eval-every` without `--data`,
+//! `heldout_mlm_accuracy` with those values, every other one an empty `metrics` list.
+//! `--eval-every` without `--data`,
 //! beside a dense `--data` directory or with `n = 0` is a usage error on one line (exit 2), and a
 //! `HeldOut` split of fewer sequences than a batch is reported on one line before the first step
 //! (exit 1).
@@ -212,10 +215,14 @@ pub struct Args {
     /// beside a packed --data directory it is a usage error.
     #[arg(long, value_name = "DIR")]
     pub eval: Option<PathBuf>,
-    /// With a packed --data directory, at step 0, every N steps and the last step run the
-    /// forward program without dropout over every full batch of the HeldOut split and print
-    /// `eval <k> loss <v> accuracy <a>` after the `step <k>` line; the step's StepCompleted
-    /// carries them as the metric samples heldout_mlm_loss and heldout_mlm_accuracy. CPU only.
+    /// With a packed --data directory, run the forward program without dropout over every full
+    /// batch of the HeldOut split and print `eval <k> loss <v> accuracy <a>` after the
+    /// `step <k>` line; the step's StepCompleted carries them as the metric samples
+    /// heldout_mlm_loss and heldout_mlm_accuracy. Evaluation happens at every multiple of N
+    /// among the run's steps and at the run's last step, so a resumed run evaluates no step 0 of
+    /// its own and starts at the first multiple of N at or after the step it resumes at. The
+    /// last (count mod B) HeldOut sequences are never evaluated, count the split's sequences and
+    /// B the batch. CPU only.
     #[arg(long, value_name = "N")]
     pub eval_every: Option<u64>,
     /// Run N steps instead of the steps of the file's train block; a resumed run ends at its
