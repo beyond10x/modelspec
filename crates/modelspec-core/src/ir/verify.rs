@@ -2284,4 +2284,50 @@ mod tests {
             Err(VerifyError::IntegerOutput { output: ids })
         );
     }
+
+    /// A `Dropout` verifies with an `i32[2]` token input and `p` in `[0, 1)`; a token of another
+    /// shape or a `p` of 1 is refused by the registry rule.
+    #[test]
+    fn a_dropout_needs_an_i32_2_token_and_p_below_1() {
+        let mut b = crate::ir::tensor::TensorProgramBuilder::new();
+        let x = b.input("x", TensorType::f32(&[3, 4])).unwrap();
+        let token = b
+            .input("M.forward.dropout#0", TensorType::i32(&[2]))
+            .unwrap();
+        let y = b.dropout(x, token, 0.5).unwrap();
+        let loss = b.reduce_sum(y).unwrap();
+        b.output(loss).unwrap();
+        let program = b.finish();
+        assert_eq!(verify(&program), Ok(()));
+
+        let mut wide = program.clone();
+        let at = wide.nodes.iter().position(|n| n.id == token).unwrap();
+        wide.nodes[at].ty = TensorType::i32(&[3]);
+        assert!(
+            matches!(
+                verify(&wide),
+                Err(VerifyError::Op {
+                    source: OpError::Token { index: 1, .. },
+                    ..
+                })
+            ),
+            "{:?}",
+            verify(&wide)
+        );
+
+        let mut certain = program;
+        let at = certain.nodes.iter().position(|n| n.id == y).unwrap();
+        certain.nodes[at].op = TensorOp::Dropout { p: 1.0 };
+        assert!(
+            matches!(
+                verify(&certain),
+                Err(VerifyError::Op {
+                    source: OpError::DropoutRate { .. },
+                    ..
+                })
+            ),
+            "{:?}",
+            verify(&certain)
+        );
+    }
 }

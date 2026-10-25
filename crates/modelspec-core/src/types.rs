@@ -11,15 +11,18 @@
 //! byte counts within `u64`; an `i32` tensor is declared only by an `input`, a `target` or a
 //! function argument, and read only as the ids of `embedding` or the labels of `cross_entropy`
 //! (E-TYPE-018 for a parameter or a function result of `i32`; the registry refuses every other
-//! operand); a parameter is initialized by `xavier_uniform()` and is rank 2; a
+//! operand); the third use of `i32`, the RNG token of `dropout` ([`ops::token_operand`]), is no
+//! source value: the checker types the call with an `i32[2]` token in its place and the lowering
+//! supplies it; a parameter is initialized by `xavier_uniform()` and is rank 2; a
 //! function's `return` has its declared type; a `model.<function>(args)` call matches the
 //! function's arguments; the loss is rank 0 and calls `model.forward` exactly once, counting calls
 //! nested in the arguments of another (the prediction is that call's value, DESIGN.md § 2.1);
 //! the `sgd` learning rate is a positive finite `f32`;
 //! `steps` is positive. An operator that takes named compile-time arguments
-//! ([`ops::named_parameters`], `heads` of `attention`) gets each exactly once, as a literal of its
-//! kind, after the operands (E-TYPE-001 when omitted, E-TYPE-002 when unknown, repeated or
-//! before an operand, E-TYPE-019 for another value); every other call takes positional arguments
+//! ([`ops::named_parameters`], `heads` of `attention`, `p` of `dropout`) gets each exactly once,
+//! as a literal of its kind, after the operands (E-TYPE-001 when omitted, E-TYPE-002 when
+//! unknown, repeated or before an operand, E-TYPE-019 for another value, E-TYPE-022 for a float
+//! literal `p` outside `[0, 1)`, coordinator decision D47); every other call takes positional arguments
 //! only. An operand that takes no gradient ([`ops::constant_operands`], the `key_mask` of
 //! `attention`, the `labels` and `weights` of `cross_entropy`) must not read a parameter by
 //! dataflow (E-TYPE-021, coordinator decisions D41 and D43):
@@ -112,11 +115,14 @@ pub mod codes {
         /// An `i32` tensor used other than as the ids of `embedding` or the labels of
         /// `cross_entropy`: an operand of any other operator, the table of `embedding`, the
         /// `logits` or `weights` of `cross_entropy`, an `f32` where those ids or labels go, a
-        /// `param` of type `i32`, or a function declared to return `i32` (DESIGN.md § 2.2).
+        /// `param` of type `i32`, or a function declared to return `i32` (DESIGN.md § 2.2). The
+        /// RNG token of `dropout`, the third use of `i32`, is supplied by the compiler, never by
+        /// a source value.
         DTYPE = "E-TYPE-018";
         /// A named operator argument whose value is not a literal of its kind, such as
         /// `heads = x` or `heads = 0` of `attention`, whose `heads` is an integer literal of at
-        /// least 1 (DESIGN.md § 2.1).
+        /// least 1, or `p = x` or `p = 0` of `dropout`, whose `p` is a float literal
+        /// (DESIGN.md § 2.1).
         NAMED_VALUE = "E-TYPE-019";
         /// An `attention` whose `heads` does not divide the width `H` of `q`, `k` and `v`.
         HEADS_DIVIDE = "E-TYPE-020";
@@ -127,6 +133,10 @@ pub mod codes {
         /// the function, reported at that argument. A model function that reads no parameter is
         /// no reason to refuse.
         CONSTANT_OPERAND = "E-TYPE-021";
+        /// A `dropout` whose `p` is a float literal outside `[0, 1)` once rounded to `f32`, such
+        /// as `p = 1.0`, whose scale `1 / (1 - p)` is infinite, or `p = -0.1` (DESIGN.md
+        /// § 2.3).
+        DROPOUT_RATE = "E-TYPE-022";
     }
 
     /// A compiler verification failure, not a user error (DESIGN.md § 8.1): the checker reached a
@@ -796,6 +806,22 @@ impl Checker {
             let parameter = named[index];
             let value = match arg.value.kind {
                 ast::ExprKind::Int(literal) => parameter.kind.integer(literal),
+                ast::ExprKind::Float(literal) if parameter.kind == ops::NamedKind::Probability => {
+                    let value = parameter.kind.float(literal);
+                    if value.is_none() {
+                        self.report(
+                            codes::DROPOUT_RATE,
+                            format!(
+                                "`{}` of `{callee}` must be in [0, 1); got {literal:?}",
+                                parameter.name
+                            ),
+                            &arg.span,
+                        );
+                        valid = false;
+                        continue;
+                    }
+                    value
+                }
                 _ => None,
             };
             if value.is_none() {
@@ -846,7 +872,24 @@ impl Checker {
         };
         let (op, (args, values)) = (op?, args?);
         let op = ops::with_named(&op, &values);
-        let types: Vec<&TensorType> = args.iter().map(|a| &a.ty).collect();
+        let mut types: Vec<&TensorType> = args.iter().map(|a| &a.ty).collect();
+        let token = ops::token_type();
+        if let Some(index) = ops::token_operand(&op) {
+            let expected = ops::source_arity(&op);
+            if types.len() != expected {
+                self.report(
+                    codes::ARGUMENT_COUNT,
+                    format!(
+                        "`{}` takes {expected} argument(s); got {}",
+                        call.callee.name,
+                        types.len()
+                    ),
+                    &call.span,
+                );
+                return None;
+            }
+            types.insert(index, &token);
+        }
         match ops::infer(&op, &types, None) {
             Ok(ty) => {
                 if !self.counts_fit(&ty, &call.span) {
@@ -1221,7 +1264,9 @@ fn op_diagnostic(
         ),
         error @ (OpError::DTypeMismatch { .. }
         | OpError::MissingDeclaredType { .. }
-        | OpError::ParamDType { .. }) => Diagnostic::new(
+        | OpError::ParamDType { .. }
+        | OpError::DropoutRate { .. }
+        | OpError::Token { .. }) => Diagnostic::new(
             codes::INTERNAL,
             format!("compiler verification failure in `{name}`: {error}"),
         ),
@@ -1314,7 +1359,8 @@ mod tests {
                 "layer_norm",
                 "softmax",
                 "attention",
-                "cross_entropy"
+                "cross_entropy",
+                "dropout"
             ]
         );
     }
@@ -1757,6 +1803,51 @@ train T {{
         );
         assert_eq!(
             attention_codes("", "matmul(x, w, heads = x)"),
+            ["E-TYPE-002"]
+        );
+    }
+
+    /// `dropout(x, p = P)` checks at any rank with one operand; the HIR holds `p` in the op and
+    /// the one source operand, the token being the lowering's.
+    #[test]
+    fn dropout_with_a_literal_p_checks_and_carries_it_in_its_op() {
+        let source = attention_source("let d = dropout(m, p = 0.25);", "dropout(x, p = 0.5)");
+        let hir = check_source("m.mspec", &source).expect("checks");
+        let (_, forward) = hir.model.function("forward").expect("forward");
+        assert!(matches!(
+            &forward.result.kind,
+            HirExprKind::Op { op: TensorOp::Dropout { p }, args } if *p == 0.5 && args.len() == 1
+        ));
+        assert_eq!(forward.result.ty, TensorType::f32(&[6, 4]));
+        assert!(matches!(
+            &forward.lets[0].value.kind,
+            HirExprKind::Op { op: TensorOp::Dropout { p }, .. } if *p == 0.25
+        ));
+        assert_eq!(
+            attention_codes("", "dropout(x, p = 0.0)"),
+            Vec::<String>::new()
+        );
+    }
+
+    /// `p` outside `[0, 1)` is E-TYPE-022, a value that is not a float literal E-TYPE-019, a
+    /// missing `p` or a second operand E-TYPE-001.
+    #[test]
+    fn dropout_p_is_a_float_literal_in_0_1() {
+        for p in ["1.0", "1.5", "0.9999999999", "-0.1"] {
+            let result = format!("dropout(x, p = {p})");
+            assert_eq!(attention_codes("", &result), ["E-TYPE-022"], "{p}");
+        }
+        for p in ["0", "1", "x"] {
+            let result = format!("dropout(x, p = {p})");
+            assert_eq!(attention_codes("", &result), ["E-TYPE-019"], "{p}");
+        }
+        assert_eq!(attention_codes("", "dropout(x)"), ["E-TYPE-001"]);
+        assert_eq!(
+            attention_codes("", "dropout(x, x, p = 0.5)"),
+            ["E-TYPE-001"]
+        );
+        assert_eq!(
+            attention_codes("", "dropout(x, p = 0.5, p = 0.5)"),
             ["E-TYPE-002"]
         );
     }

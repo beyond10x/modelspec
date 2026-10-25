@@ -2,7 +2,7 @@
 format: aep.planning-md/3
 id: story:bert-dropout
 kind: story
-status: draft
+status: active
 title: Dropout drawn from Philox through an explicit per-step RNG token, gradient-checked on the CPU
 summary: Adds dropout on Philox stream tag 4 keyed by site and step through an explicit token input, identity outside the training step, with an f64 finite-difference check at a fixed token.
 relations:
@@ -60,7 +60,10 @@ scope:
   path: ui/src/generated/
 - confidence: cited
   path: website/docs/reference/operators.md
-revision: 5
+revision: 7
+transitions:
+- {from: "draft", to: "proposed", at: "2026-10-25T06:47:21Z", actor: "human:timo", revision: 6}
+- {from: "proposed", to: "active", at: "2026-10-25T06:47:21Z", actor: "human:timo", revision: 7}
 ---
 # Dropout drawn from Philox through an explicit per-step RNG token, gradient-checked on the CPU
 

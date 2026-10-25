@@ -223,6 +223,18 @@ pub enum TensorOp {
     /// `G * weights[n] / sum(weights) * (softmax(logits[n]) - onehot(labels[n]))`, all `0.0` when
     /// the weights sum to `0.0` (DESIGN.md § 4).
     CrossEntropyGrad,
+    /// Operands `x` of any `f32` shape and the site's RNG token `i32[2]` `-> x`'s type: each
+    /// element of `x` times `1 / (1 - p)` where the Philox mask of the token keeps it, `0.0`
+    /// where it drops it; `p` in `[0, 1)` (DESIGN.md § 2.3, § 4).
+    Dropout {
+        p: f32,
+    },
+    /// Internal gradient op over operands `token: i32[2]`, `G`: `G` times `1 / (1 - p)` where
+    /// the mask of [`Self::Dropout`] at the same token keeps the element, `0.0` elsewhere
+    /// (DESIGN.md § 4). The mask is recomputed, never stored.
+    DropoutGrad {
+        p: f32,
+    },
 }
 
 impl TensorOp {
@@ -260,6 +272,16 @@ impl TensorOp {
             TensorOp::AttentionGradV { .. } => "AttentionGradV",
             TensorOp::CrossEntropy => "CrossEntropy",
             TensorOp::CrossEntropyGrad => "CrossEntropyGrad",
+            TensorOp::Dropout { .. } => "Dropout",
+            TensorOp::DropoutGrad { .. } => "DropoutGrad",
+        }
+    }
+
+    /// The `p` of `Dropout` and `DropoutGrad`; `None` for every other op.
+    pub fn dropout_rate(&self) -> Option<f32> {
+        match self {
+            TensorOp::Dropout { p } | TensorOp::DropoutGrad { p } => Some(*p),
+            _ => None,
         }
     }
 
@@ -574,6 +596,21 @@ impl TensorProgramBuilder {
         self.push(TensorOp::CrossEntropy, &[logits, labels, weights])
     }
 
+    /// `x` under the dropout mask of the `i32[2]` RNG `token` with drop probability `p`.
+    pub fn dropout(&mut self, x: ValueId, token: ValueId, p: f32) -> Result<ValueId, BuildError> {
+        self.push(TensorOp::Dropout { p }, &[x, token])
+    }
+
+    /// The gradient of a dropout at `token` with drop probability `p`, from the result's `g`.
+    pub fn dropout_grad(
+        &mut self,
+        token: ValueId,
+        g: ValueId,
+        p: f32,
+    ) -> Result<ValueId, BuildError> {
+        self.push(TensorOp::DropoutGrad { p }, &[token, g])
+    }
+
     /// Adds any op except `Input`, typed by the registry.
     pub fn push(&mut self, op: TensorOp, operands: &[ValueId]) -> Result<ValueId, BuildError> {
         self.push_at(op, operands, None)
@@ -685,6 +722,8 @@ mod tests {
             TensorOp::AttentionGradV { heads: 1 },
             TensorOp::CrossEntropy,
             TensorOp::CrossEntropyGrad,
+            TensorOp::Dropout { p: 0.5 },
+            TensorOp::DropoutGrad { p: 0.5 },
         ];
         for op in &ops {
             match op {
@@ -718,7 +757,9 @@ mod tests {
                 | TensorOp::AttentionGradK { .. }
                 | TensorOp::AttentionGradV { .. }
                 | TensorOp::CrossEntropy
-                | TensorOp::CrossEntropyGrad => {}
+                | TensorOp::CrossEntropyGrad
+                | TensorOp::Dropout { .. }
+                | TensorOp::DropoutGrad { .. } => {}
             }
         }
         ops

@@ -2,7 +2,9 @@
 //!
 //! One line per parameter, `param @<path>: <type> = <initializer>`, in `ParamId` order; one line
 //! per node, `%2: Tensor<f32, [8, 1]> = MatMul %0, %1`, in definition order, with parameters named
-//! by canonical path; then one `output %n` line per output. Training programs and steps print
+//! by canonical path; then one `output %n` line per output. A `Dropout` or `DropoutGrad` node
+//! prints its `p` and its site, the name of the token input it reads:
+//! `Dropout [p = 0.3, site = Reg.forward.dropout#0] %4, %5`. Training programs and steps print
 //! the same lines with their subgraph tags, output roles, effects and state versions
 //! ([`print_training`], [`print_step`]).
 
@@ -235,6 +237,15 @@ pub fn write_node(out: &mut impl Write, program: &TensorProgram, node: &TensorNo
         | TensorOp::AttentionGradQ { heads }
         | TensorOp::AttentionGradK { heads }
         | TensorOp::AttentionGradV { heads } => write!(out, " [heads = {heads}]")?,
+        TensorOp::Dropout { p } | TensorOp::DropoutGrad { p } => {
+            write!(out, " [p = {p:?}, site = ")?;
+            let token = crate::ops::token_operand(&node.op).and_then(|i| node.operands.get(i));
+            match token.and_then(|&t| program.node(t)).map(|n| &n.op) {
+                Some(TensorOp::Input { name }) => out.write_str(name)?,
+                _ => out.write_char('?')?,
+            }
+            out.write_char(']')?;
+        }
         _ => {}
     }
     for (i, operand) in node.operands.iter().enumerate() {

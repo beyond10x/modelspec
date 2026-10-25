@@ -11,6 +11,7 @@ history.
 
 ### Added
 
+- `dropout(x, p = <float literal>)` on the CPU interpreter, its mask drawn on Philox stream tag 4 from the seed, the call site and the step and recomputed by the internal `DropoutGrad` from the site's `i32[2]` RNG token; it applies in the training step only, so the final loss line, `--eval` and `infer` run without it; `p = 0.0` lowers to the identity, a `p` that is not a float literal is E-TYPE-019 and one outside [0, 1) the new E-TYPE-022, and `dropout` has no Vulkan kernel yet (E-TARGET-011).
 - `cross_entropy(logits: f32[N,V], labels: i32[N], weights: f32[N]) -> f32[]`, the weighted masked-language-model loss, every reduction in ascending order and the weighted sum fused after its first product, whose gradient is the internal `CrossEntropyGrad`, which recomputes the row softmax; checked against central differences in `f64` and `f32` for `matmul(x, w)` logits and the tied decoder `matmul(embedding(table, ids), transpose(table))`; a weight sum of 0 gives the loss 0 and a zero gradient; labels or weights of the wrong length are E-TYPE-003, an operand of the wrong rank E-TYPE-004, `f32` labels E-TYPE-018, and labels or weights whose value reads a parameter E-TYPE-021; a label outside the classes or a negative or non-finite weight is a runtime error naming the row before the op runs; no Vulkan kernel yet (E-TARGET-011); DESIGN.md revision 0.44 (story:bert-mlm-cross-entropy).
 
 ## [0.10.0] - 2026-10-25

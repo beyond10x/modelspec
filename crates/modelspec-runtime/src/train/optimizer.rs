@@ -130,7 +130,7 @@ pub fn evaluate_step(
     state: &ParamState,
 ) -> Result<Evaluated, StepError> {
     let mut prepared = PreparedStep::new(step)?;
-    let loss = prepared.run(inputs, state, false)?;
+    let loss = prepared.run(inputs, &BTreeMap::new(), state, false)?;
     let updates = prepared
         .writes
         .iter()
@@ -247,11 +247,27 @@ impl<'s> PreparedStep<'s> {
         inputs: &BTreeMap<String, HostTensor<f32>>,
         state: &ParamState,
     ) -> Result<PendingStep<'_, 's>, StepError> {
-        let loss = self.run(inputs, state, true)?;
+        self.evaluate_with_ids(inputs, &BTreeMap::new(), state)
+    }
+
+    /// [`PreparedStep::evaluate`] with `ids`, a tensor for exactly the program's `i32` inputs:
+    /// the RNG token of each dropout site at this step (DESIGN.md § 2.3).
+    pub fn evaluate_with_ids(
+        &mut self,
+        inputs: &BTreeMap<String, HostTensor<f32>>,
+        ids: &BTreeMap<String, HostTensor<i32>>,
+        state: &ParamState,
+    ) -> Result<PendingStep<'_, 's>, StepError> {
+        let loss = self.run(inputs, ids, state, true)?;
         Ok(PendingStep {
             prepared: self,
             loss,
         })
+    }
+
+    /// Sets the seed every later step keys its dropout masks with, the `train` block's seed.
+    pub fn set_seed(&mut self, seed: u64) {
+        self.program.set_seed(seed);
     }
 
     /// Evaluates one step and applies it; returns its loss.
@@ -269,6 +285,7 @@ impl<'s> PreparedStep<'s> {
     fn run(
         &mut self,
         inputs: &BTreeMap<String, HostTensor<f32>>,
+        ids: &BTreeMap<String, HostTensor<i32>>,
         state: &ParamState,
         again: bool,
     ) -> Result<f32, StepError> {
@@ -288,7 +305,7 @@ impl<'s> PreparedStep<'s> {
             }
         }
         self.program
-            .run_into(inputs, &state.values, &mut self.outputs)?;
+            .run_into(inputs, ids, &state.values, &mut self.outputs)?;
         let mut loss = f32::NAN;
         for (position, output) in self.outputs.drain(..).enumerate() {
             match self.roles[position] {

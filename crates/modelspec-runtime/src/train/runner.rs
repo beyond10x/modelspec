@@ -7,6 +7,12 @@
 //! own evaluation computes before its update, and step `steps` is the forward program evaluated on
 //! the final parameters. A run therefore records `steps + 1` losses.
 //!
+//! Dropout applies in the training step alone: before step `k` the host computes the RNG token
+//! of every dropout site of the step at `k` ([`dropout_sites`], [`dropout_token`]) and the step
+//! keys its masks with the `train` block's seed, so the loss of each step `k < steps` includes
+//! dropout. The final loss, evaluation and inference run the forward program, in which every
+//! dropout is the identity (coordinator decision D47, 2026-10-25).
+//!
 //! [`run_with`] trains on dense data read from files instead, optionally from parameter values read
 //! from files, and [`evaluate_dense`] measures the trained parameters on an eval directory.
 //! [`run_from`] resumes at a checkpoint's step and reports the state after each update, for
@@ -22,11 +28,12 @@ use std::collections::BTreeMap;
 use modelspec_core::compile::CompiledTraining;
 use modelspec_core::diag::{Code, Diagnostic};
 use modelspec_core::ir::tensor::ParamId;
+use modelspec_core::ir::training::dropout_sites;
 use thiserror::Error;
 
 use super::checkpoint::CheckpointError;
 use super::data::{DataError, DenseBatch, DenseData, SyntheticData, synthetic};
-use super::init::{InitError, Stream, initialize};
+use super::init::{InitError, Stream, dropout_token, initialize};
 use super::optimizer::{ParamState, PreparedStep, StepError};
 use crate::cpu::{HostTensor, RuntimeError, evaluate, evaluate_all};
 
@@ -210,17 +217,23 @@ pub fn run_from(
     // Prepared at the first step that makes an update, so a run of no steps verifies nothing more
     // than before; every later step reuses it (story:cpu-prepared-training-step).
     let mut prepared: Option<PreparedStep<'_>> = None;
+    let sites = dropout_sites(&compiled.training.training.program);
     let mut losses = Vec::new();
     for step in start..=end {
         let loss = if step < end {
             if prepared.is_none() {
-                let ready = PreparedStep::new(&compiled.training)
+                let mut ready = PreparedStep::new(&compiled.training)
                     .map_err(|source| RunError::Step { step, source })?;
+                ready.set_seed(config.seed);
                 prepared = Some(ready);
             }
             let prepared = prepared.as_mut().expect("prepared above");
+            let tokens: BTreeMap<String, HostTensor<i32>> = sites
+                .iter()
+                .map(|site| (site.clone(), dropout_token(site, step)))
+                .collect();
             let evaluated = prepared
-                .evaluate(feed.inputs(step), &state)
+                .evaluate_with_ids(feed.inputs(step), &tokens, &state)
                 .map_err(|source| RunError::Step { step, source })?;
             observe(&Observed {
                 step,
