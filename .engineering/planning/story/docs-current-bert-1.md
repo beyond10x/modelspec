@@ -2,7 +2,7 @@
 format: aep.planning-md/3
 id: story:docs-current-bert-1
 kind: story
-status: active
+status: implemented
 title: The documentation site, README and AGENTS.md brought current with the BERT operator chain, and the site review's own-file defects fixed
 relations:
 - serves: vision:modelspec
@@ -27,10 +27,11 @@ scope:
   path: website/sidebars.ts
 - confidence: cited
   path: website/static/img/benchmarks/**
-revision: 4
+revision: 5
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-25T09:50:24Z", actor: "human:timo", revision: 3}
 - {from: "proposed", to: "active", at: "2026-10-25T09:50:24Z", actor: "human:timo", revision: 4}
+- {from: "active", to: "implemented", at: "2026-10-25T12:36:05Z", actor: "human:timo", revision: 5, decided_on: {"recorded":{"test_result":1,"review_outcome":1}}}
 ---
 # The documentation site, README and AGENTS.md brought current with the BERT operator chain, and the site review's own-file defects fixed
 

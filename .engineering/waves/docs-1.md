@@ -23,7 +23,7 @@ and of 2026-10-25, "make sure we keep the docs up-to-date".
 
 | # | unit | branch | tree | build dir | scratch | adversary | status |
 |---|---|---|---|---|---|---|---|
-| 1 | docs-current-bert-1 (decision D58) | impl/docs-current-bert-1 | wt-41996e980b07 | `target/` in the tree | `~/.cache/modelspec-wave-docs-1/current/scratch/` | | unit ce3032b; adversary pass 1: 7 findings (0 blocker, 2 warnings, 5 notes), fix pass 1 under D63 |
+| 1 | docs-current-bert-1 (decision D58) | impl/docs-current-bert-1 | wt-41996e980b07 | `target/` in the tree | `~/.cache/modelspec-wave-docs-1/current/scratch/` | | unit ce3032b; adversary pass 1: 7 findings (0 blocker, 2 warnings, 5 notes), fix pass 1 under D63; task ci exit 0 (2485 passed, 0 failed, 235 ignored), task website exit 0 |
 
 ## Decisions
 
