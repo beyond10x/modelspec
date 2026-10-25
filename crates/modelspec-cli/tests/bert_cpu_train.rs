@@ -109,7 +109,10 @@ const EVAL_EVERY: &str = "100";
 
 /// Scenario 4: the twin, trained twice from its one seed on the packed fixture corpus with
 /// `--eval-every`, exits 0 both times and prints identical stdout, `step` and `eval` lines
-/// included, and its last `step` loss is below its step-0 loss.
+/// included, and the held-out loss of its last `eval` line is below the held-out unigram baseline
+/// `data pack` records in `packed.json`: the twin learns more than token frequencies. A `step`
+/// loss is one batch of 2 sequences, so a twin that does not learn can end below its step 0
+/// (coordinator decision D71).
 #[test]
 fn reproducible() {
     let case = scratch("reproducible");
@@ -148,8 +151,32 @@ fn reproducible() {
         first_loss.is_finite() && last_loss.is_finite(),
         "{losses:?}"
     );
+
+    let record: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(packed.join("packed.json")).expect("packed.json"),
+    )
+    .expect("a PackedDataset record");
+    let baseline = record["heldout_unigram_baseline_nats"]
+        .as_f64()
+        .expect("heldout_unigram_baseline_nats");
+    let (last_eval, heldout) = *held_out(&out).last().unwrap();
     assert!(
-        last_loss < first_loss,
-        "last step loss {last_loss} not below step 0 loss {first_loss}:\n{out}"
+        heldout < baseline,
+        "held-out loss {heldout} at eval {last_eval} not below the held-out unigram baseline \
+         {baseline}:\n{out}"
     );
+}
+
+/// The `(step, loss)` of every `eval <k> loss <v> accuracy <a>` line.
+fn held_out(stdout: &str) -> Vec<(u64, f64)> {
+    stdout
+        .lines()
+        .filter_map(|line| line.strip_prefix("eval "))
+        .map(|rest| {
+            let mut words = rest.split_whitespace();
+            let step = words.next().unwrap().parse().unwrap();
+            assert_eq!(words.next(), Some("loss"), "{rest}");
+            (step, words.next().unwrap().parse().unwrap())
+        })
+        .collect()
 }

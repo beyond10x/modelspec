@@ -550,7 +550,7 @@ pub const CAPABILITIES: &[Capability] = &[
     shipped(
         "Training",
         "BERT-tiny checked, and its hidden-32 twin trained on the CPU",
-        "`examples/bert_tiny.mspec`, BERT-tiny with 4,367,290 parameters, passes modelspec check; its hidden-32 twin passes a finite-difference check of every parameter in `f64` and, trained twice from one seed with --data and --eval-every, prints the same step and eval lines both times.",
+        "`examples/bert_tiny.mspec`, BERT-tiny with 1,486,720 parameters at the 8,192-token corpus vocabulary (Turc et al.'s has 4.4M at 30,522), passes modelspec check; its hidden-32 twin passes a finite-difference check of every parameter in `f64` and, trained twice from one seed with --data and --eval-every, prints the same step and eval lines both times.",
         Evidence::Test("crates/modelspec-cli/tests/bert_cpu_train.rs::reproducible"),
         "/docs/examples/bert-tiny",
     ),

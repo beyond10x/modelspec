@@ -113,7 +113,6 @@ fn step_lines(stdout: &str) -> Vec<&str> {
 /// `step` loss (one batch of 2 sequences) is below the step-0 loss, which a run at
 /// `lr = 1e-9` also passes.
 #[test]
-#[ignore = "ADV-TINY-1: red, the twin's held-out loss stays above the unigram baseline"]
 fn adv_tiny_1_twin_heldout_loss_falls_below_the_unigram_baseline() {
     let case = scratch("heldout");
     let packed = packed(&case, 300);
@@ -217,30 +216,49 @@ fn setting<'a>(line: &'a str, name: &str) -> Option<&'a str> {
     Some(&rest[..end])
 }
 
-/// H3: the twin is the example with other shapes and another run length, and nothing else: line
-/// by line, outside `[...]` the two agree except for `steps = ` and the optimizer's
-/// `warmup_steps = `, and both warm up over 10 % of their steps (coordinator decision D70 (b)).
-/// `twin_is_the_example_with_other_sizes` masks every digit, so `heads`, `p`, `lr`,
-/// `weight_decay`, the betas, `eps`, `seed` and the layer index of a parameter may differ there.
+/// The optimizer settings the twin may set to its own value: its warm-up, which follows its run
+/// length, and its learning rate, which a run of 2 sequences a step on the fixture corpus tunes
+/// apart from the example's (coordinator decision D71).
+const RUN_SETTINGS: [&str; 2] = ["warmup_steps", "lr"];
+
+/// Whether the twin line `t` differs from the example line `e` beyond the text inside `[...]`, the
+/// value of a `steps = ` line and the values of [`RUN_SETTINGS`].
+fn differs_beyond_run_settings(e: &str, t: &str) -> bool {
+    let (mut e0, mut t0) = (without_shapes(e), without_shapes(t));
+    if e0 == t0 {
+        return false;
+    }
+    if e.trim_start().starts_with("steps = ") && t.trim_start().starts_with("steps = ") {
+        return false;
+    }
+    for name in RUN_SETTINGS {
+        let we = setting(&e0, name).map(str::to_owned);
+        let wt = setting(&t0, name).map(str::to_owned);
+        if let (Some(we), Some(wt)) = (we, wt) {
+            e0 = e0.replacen(&format!("{name} = {we}"), &format!("{name} = #"), 1);
+            t0 = t0.replacen(&format!("{name} = {wt}"), &format!("{name} = #"), 1);
+        }
+    }
+    e0 != t0
+}
+
+/// H3: the twin is the example with other shapes and another run, and nothing else: line by
+/// line, outside `[...]` the two agree except for `steps = ` and the optimizer's `warmup_steps = `
+/// and `lr = `, and both warm up over 10 % of their steps (coordinator decisions D70 (b) and
+/// D71). The learning rate is a run setting since D71: the twin's `lr = 1e-4` over 500 steps left
+/// its held-out loss above the unigram baseline, and `reproducible` and
+/// `adv_tiny_1_twin_heldout_loss_falls_below_the_unigram_baseline` refuse a twin that does not
+/// learn, which is what a wrong `lr` makes, so the bound guards `lr` and this comparison need
+/// not. `heads`, `p`, `weight_decay`, the betas, `eps`, `seed` and the layer index of a parameter
+/// may not differ.
 #[test]
 fn twin_differs_from_the_example_only_in_shapes_and_run_length() {
     let (example, twin) = (body(EXAMPLE), body(TWIN));
     assert_eq!(example.len(), twin.len());
     for (e, t) in example.iter().zip(&twin) {
-        let (e0, t0) = (without_shapes(e), without_shapes(t));
-        if e0 == t0 {
-            continue;
-        }
-        if setting(e, "steps").is_some() && e.trim_start().starts_with("steps") {
-            continue;
-        }
-        let (Some(we), Some(wt)) = (setting(e, "warmup_steps"), setting(t, "warmup_steps")) else {
-            panic!("the twin differs outside its shapes:\n  {e}\n  {t}");
-        };
-        assert_eq!(
-            e0.replace(we, "#"),
-            t0.replace(wt, "#"),
-            "the optimizer differs beyond warmup_steps"
+        assert!(
+            !differs_beyond_run_settings(e, t),
+            "the twin differs outside its shapes and run settings:\n  {e}\n  {t}"
         );
     }
     let ratio = |lines: &[String]| -> (u64, u64) {
@@ -270,27 +288,26 @@ fn twin_differs_from_the_example_only_in_shapes_and_run_length() {
 }
 
 /// The comparison above, applied to a mutated twin in memory: it refuses the digit-only
-/// mutations that `twin_is_the_example_with_other_sizes` lets through.
+/// mutations that a comparison masking every digit lets through. A twin learning rate that does
+/// not learn (`lr = 1e-9`, mutant h of the adversary's pass 1) is a run setting since D71 and is
+/// refused by the held-out bound of `reproducible` and `adv_tiny_1_…` instead.
 #[test]
 fn the_stronger_twin_comparison_refuses_digit_mutants() {
     let example = body(EXAMPLE);
     let twin = body(TWIN);
     let differs = |mutant: &[String]| {
-        example.iter().zip(mutant).any(|(e, t)| {
-            let (e0, t0) = (without_shapes(e), without_shapes(t));
-            e0 != t0
-                && !e.trim_start().starts_with("steps")
-                && match (setting(e, "warmup_steps"), setting(t, "warmup_steps")) {
-                    (Some(we), Some(wt)) => e0.replace(we, "#") != t0.replace(wt, "#"),
-                    _ => true,
-                }
-        })
+        example
+            .iter()
+            .zip(mutant)
+            .any(|(e, t)| differs_beyond_run_settings(e, t))
     };
     assert!(!differs(&twin), "the unmutated twin passes");
     for (what, from, to) in [
         ("one head", "heads = 2", "heads = 1"),
         ("dropout 0.5", "p = 0.1", "p = 0.5"),
-        ("lr 1e-9", "lr = 1e-4", "lr = 1e-9"),
+        ("beta1 0.5", "beta1 = 0.9", "beta1 = 0.5"),
+        ("beta2 0.9", "beta2 = 0.999", "beta2 = 0.9"),
+        ("eps 1e-3", "eps = 1e-6", "eps = 1e-3"),
         (
             "no weight decay",
             "weight_decay = 0.01",
@@ -318,7 +335,6 @@ fn the_stronger_twin_comparison_refuses_digit_mutants() {
 /// say 30522 are amended when dispatched"). With 30,522 rows, 22,330 rows of `tok_table` and of
 /// `mlm_bias` are never read nor a label on that data, and `train` does not refuse it.
 #[test]
-#[ignore = "ADV-TINY-2: red, the example's vocabulary is 30,522, the corpus tokenizer's 8,192"]
 fn adv_tiny_2_example_vocabulary_is_the_corpus_tokenizer_vocabulary() {
     let spec = std::fs::read_to_string(repo_root().join("spec/domains/data.yaml")).unwrap();
     assert!(
@@ -338,26 +354,83 @@ fn adv_tiny_2_example_vocabulary_is_the_corpus_tokenizer_vocabulary() {
 
 /// ADV-TINY-3: `train` on a packed directory whose `vocabulary_size` is below the rows of the
 /// program's token table refuses the run naming both, as it refuses a table narrower than the
-/// vocabulary at step 0. The twin (300 rows) on the fixture corpus packed at 200 tokens.
+/// vocabulary at step 0. The twin (300 rows) on the fixture corpus packed at 200 tokens. Since
+/// D71 both are E-DATA-006 before the first step, naming the table and both numbers: the
+/// 300-row twin and the twin narrowed to 150 rows on the same 200-token directory.
 #[test]
-#[ignore = "ADV-TINY-3: red, a table wider than the packed vocabulary trains without a word"]
 fn adv_tiny_3_train_refuses_a_table_wider_than_the_packed_vocabulary() {
     let case = scratch("vocab");
     let packed = packed(&case, 200);
+    let source = std::fs::read_to_string(repo_root().join(TWIN)).unwrap();
+    let narrow = case.join("bert_cpu_150.mspec");
+    std::fs::write(&narrow, source.replace("300", "150")).unwrap();
+    for (file, rows) in [(TWIN, "300"), (path(&narrow), "150")] {
+        let out = modelspec(&[
+            "train",
+            file,
+            "--backend",
+            "cpu",
+            "--data",
+            path(&packed),
+            "--steps",
+            "60",
+        ]);
+        assert_ne!(
+            out.status.code(),
+            Some(0),
+            "the {rows}-row twin trained on a 200-token packed directory:\n{}",
+            step_lines(&stdout(&out)).join("\n")
+        );
+        assert_eq!(out.status.code(), Some(1), "{file}");
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(step_lines(&stdout(&out)).is_empty(), "{file}: {err}");
+        assert!(
+            err.contains("E-DATA-006")
+                && err.contains("tok_table")
+                && err.contains(&format!("{rows} rows"))
+                && err.contains("200"),
+            "{file}: {err}"
+        );
+    }
+}
+
+/// The other width the packed vocabulary fixes: the logits of a `cross_entropy` that reads the
+/// bound `labels`. A program whose token table has the 200 rows of the packed vocabulary and
+/// whose untied decoder has 300 classes is E-DATA-006 before the first step, naming the logits
+/// and both numbers (coordinator decision D71).
+#[test]
+fn adv_tiny_3_train_refuses_logits_wider_than_the_packed_vocabulary() {
+    let case = scratch("logits");
+    let packed = packed(&case, 200);
+    let file = case.join("untied.mspec");
+    std::fs::write(
+        &file,
+        "model Untied {\n    param table: Tensor<f32, [200, 16]> = xavier_uniform();\n    \
+         param decoder: Tensor<f32, [16, 300]> = xavier_uniform();\n\n    \
+         fn forward(ids: Tensor<i32, [32]>) -> Tensor<f32, [32, 300]> {\n        \
+         return matmul(embedding(table, ids), decoder);\n    }\n}\n\n\
+         train Fit {\n    model = Untied;\n    input ids: Tensor<i32, [32]>;\n    \
+         target labels: Tensor<i32, [32]>;\n    target weights: Tensor<f32, [32]>;\n    \
+         loss = cross_entropy(model.forward(ids), labels, weights);\n    \
+         optimizer = sgd(lr = 0.1);\n    steps = 5;\n    seed = 7;\n    device = cpu;\n}\n",
+    )
+    .unwrap();
     let out = modelspec(&[
         "train",
-        TWIN,
+        path(&file),
         "--backend",
         "cpu",
         "--data",
         path(&packed),
-        "--steps",
-        "60",
     ]);
-    assert_ne!(
-        out.status.code(),
-        Some(0),
-        "the 300-row twin trained on a 200-token packed directory:\n{}",
-        step_lines(&stdout(&out)).join("\n")
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "{err}");
+    assert!(step_lines(&stdout(&out)).is_empty(), "{err}");
+    assert!(
+        err.contains("E-DATA-006")
+            && err.contains("logits")
+            && err.contains("300 classes")
+            && err.contains("200"),
+        "{err}"
     );
 }

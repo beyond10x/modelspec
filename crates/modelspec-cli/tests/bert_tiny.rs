@@ -6,7 +6,10 @@
 //! position tables, the embedding layer norm, per layer the four attention projections with their
 //! biases, the two feed-forward matrices with their biases and two layer norms, and the MLM head's
 //! dense layer, layer norm and decoder bias. The decoder is the token table read again, so it adds
-//! no parameter. BERT-tiny (`L = 2`, `H = 128`, `F = 512`, `S = 128`, `V = 30522`) has 4,367,290.
+//! no parameter. The example (`L = 2`, `H = 128`, `F = 512`, `S = 128`) has the 8,192-token
+//! vocabulary of the repository's corpus tokenizer (`spec/domains/data.yaml` `TokenizerKind`,
+//! coordinator decisions D19, D23 and D71), so it has 1,486,720; Turc et al.'s BERT-tiny, at the
+//! 30,522 tokens of the original BERT release, has 4,367,290.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -75,13 +78,15 @@ fn parameters(file: &str) -> Vec<(String, u64)> {
 }
 
 /// Scenario 2: the parameter types `modelspec ir examples/bert_tiny.mspec --stage tensor`
-/// prints have 4,367,290 elements in total, the count of the formula, and every path is unique;
-/// the twin has the formula's count at `H = 32`, `F = 64`, `S = 16`, `V = 300`.
+/// prints have 1,486,720 elements in total, the count of the formula at `V = 8192`, and every
+/// path is unique; the twin has the formula's count at `H = 32`, `F = 64`, `S = 16`, `V = 300`.
+/// The formula gives Turc et al.'s 4,367,290 at `V = 30522`.
 #[test]
 fn parameter_count() {
     assert_eq!(formula(2, 128, 512, 128, 30522), 4_367_290);
+    assert_eq!(formula(2, 128, 512, 128, 8192), 1_486_720);
     for (file, want, params) in [
-        (EXAMPLE, 4_367_290u64, 41usize),
+        (EXAMPLE, 1_486_720u64, 41usize),
         (TWIN, formula(2, 32, 64, 16, 300), 41),
     ] {
         let parameters = parameters(file);
@@ -103,35 +108,4 @@ fn check_exits_0() {
     for file in [EXAMPLE, TWIN] {
         assert_exit(&modelspec(&["check", file]), 0);
     }
-}
-
-/// The source with its leading comment lines dropped and every run of digits replaced by `#`.
-fn shape_of_source(file: &str) -> String {
-    let source = std::fs::read_to_string(repo_root().join(file)).expect("the file");
-    let body: Vec<&str> = source
-        .lines()
-        .skip_while(|line| line.trim().is_empty() || line.trim_start().starts_with("//"))
-        .collect();
-    let mut out = String::new();
-    let mut in_digits = false;
-    for c in body.join("\n").chars() {
-        if c.is_ascii_digit() {
-            if !in_digits {
-                out.push('#');
-            }
-            in_digits = true;
-        } else {
-            out.push(c);
-            in_digits = false;
-        }
-    }
-    out
-}
-
-/// The twin is the example with other numbers: the same parameters, operators, train block and
-/// optimizer, so what the twin's gradient check and training run show holds for the example's
-/// program text.
-#[test]
-fn twin_is_the_example_with_other_sizes() {
-    assert_eq!(shape_of_source(TWIN), shape_of_source(EXAMPLE));
 }

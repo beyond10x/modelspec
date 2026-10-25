@@ -2,7 +2,10 @@
 // F = 64, S = 16, batches of 2 and the 300-token vocabulary of the fixture tokenizer, 28,684
 // parameters. tests/gradients_bert_cpu.rs of modelspec-runtime checks every parameter's gradient
 // against central differences in f64, and tests/bert_cpu_train.rs trains it twice from one seed
-// on the packed fixture corpus.
+// on the packed fixture corpus. Like the example it differs from Devlin et al. 2019 in four
+// ways: weight decay applies to every parameter, layer-norm gains and biases included; every
+// matrix is initialised xavier-uniform, not from N(0, 0.02); there is no dropout on the
+// attention probabilities; and the warm-up is 10 % of the run, not 1 %.
 model BertTiny {
     param tok_table: Tensor<f32, [300, 32]> = xavier_uniform();
     param pos_table: Tensor<f32, [16, 32]> = xavier_uniform();

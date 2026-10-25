@@ -3,11 +3,11 @@
 title: "Example: BERT-tiny"
 sidebar_label: "BERT-tiny"
 sidebar_position: 5
-description: "BERT-tiny, two encoder layers of hidden size 128 and an MLM head tied to the token table, 4,367,290 parameters, checked and lowered."
+description: "BERT-tiny, two encoder layers of hidden size 128 over the 8,192-token corpus vocabulary and an MLM head tied to the token table, 1,486,720 parameters, checked and lowered."
 custom_edit_url: null
 ---
 
-BERT-tiny (Turc et al. 2019) written out in the M0 subset: token and position embeddings, two post-layer-norm encoder layers of `attention` and a `gelu` feed-forward, `dropout` after the embeddings and each sublayer, and the masked-language-model head whose decoder is the token table read again through `transpose`, trained with `cross_entropy` and `adamw` on the tensors of a packed `--data` directory. The parameter lines of `ir --stage tensor` add up to 4,367,290 elements. `task check-examples` checks it on every change. Its hidden-32 twin, `crates/modelspec-cli/tests/fixtures/bert_cpu.mspec`, is the same program with other sizes: the tests of `modelspec-runtime` check the gradient of every one of its parameters against central differences in `f64`, and the tests of `modelspec-cli` train it twice from one seed on a packed corpus and compare the output line for line.
+BERT-tiny (Turc et al. 2019) written out in the M0 subset: token and position embeddings, two post-layer-norm encoder layers of `attention` and a `gelu` feed-forward, `dropout` after the embeddings and each sublayer, and the masked-language-model head whose decoder is the token table read again through `transpose`, trained with `cross_entropy` and `adamw` on the tensors of a packed `--data` directory. Its vocabulary is the 8,192 tokens of the repository's corpus tokenizer, so the parameter lines of `ir --stage tensor` add up to 1,486,720 elements; Turc et al.'s BERT-tiny has 4.4M at the 30,522 tokens of the original BERT release. `task check-examples` checks it on every change. Its hidden-32 twin, `crates/modelspec-cli/tests/fixtures/bert_cpu.mspec`, is the same program with other sizes: the tests of `modelspec-runtime` check the gradient of every one of its parameters against central differences in `f64`, and the tests of `modelspec-cli` train it twice from one seed on a packed corpus and compare the output line for line.
 
 The output below was recorded by `modelspec-docs` running the `modelspec` command line on the model; `task docs-check` fails when a run prints anything else.
 
@@ -17,7 +17,7 @@ The output below was recorded by `modelspec-docs` running the `modelspec` comman
 
 ```modelspec title="examples/bert_tiny.mspec"
 model BertTiny {
-    param tok_table: Tensor<f32, [30522, 128]> = xavier_uniform();
+    param tok_table: Tensor<f32, [8192, 128]> = xavier_uniform();
     param pos_table: Tensor<f32, [128, 128]> = xavier_uniform();
     param emb_ln_gamma: Tensor<f32, [128]> = ones();
     param emb_ln_beta: Tensor<f32, [128]> = zeros();
@@ -60,10 +60,10 @@ model BertTiny {
     param mlm_b: Tensor<f32, [128]> = zeros();
     param mlm_ln_gamma: Tensor<f32, [128]> = ones();
     param mlm_ln_beta: Tensor<f32, [128]> = zeros();
-    param mlm_bias: Tensor<f32, [30522]> = zeros();
+    param mlm_bias: Tensor<f32, [8192]> = zeros();
 
     fn forward(ids: Tensor<i32, [4096]>, positions: Tensor<i32, [4096]>, key_mask: Tensor<f32, [32, 128]>)
-        -> Tensor<f32, [4096, 30522]> {
+        -> Tensor<f32, [4096, 8192]> {
         let e = dropout(layer_norm(add(embedding(tok_table, ids), embedding(pos_table, positions)), emb_ln_gamma, emb_ln_beta), p = 0.1);
 
         let q0 = add_rows(matmul(e, l0_wq), l0_bq);
@@ -115,7 +115,7 @@ Exit status `0`.
 stdout:
 
 ```text
-param @BertTiny.tok_table: Tensor<f32, [30522, 128]> = xavier_uniform
+param @BertTiny.tok_table: Tensor<f32, [8192, 128]> = xavier_uniform
 param @BertTiny.pos_table: Tensor<f32, [128, 128]> = xavier_uniform
 param @BertTiny.emb_ln_gamma: Tensor<f32, [128]> = ones
 param @BertTiny.emb_ln_beta: Tensor<f32, [128]> = zeros
@@ -155,13 +155,13 @@ param @BertTiny.mlm_w: Tensor<f32, [128, 128]> = xavier_uniform
 param @BertTiny.mlm_b: Tensor<f32, [128]> = zeros
 param @BertTiny.mlm_ln_gamma: Tensor<f32, [128]> = ones
 param @BertTiny.mlm_ln_beta: Tensor<f32, [128]> = zeros
-param @BertTiny.mlm_bias: Tensor<f32, [30522]> = zeros
+param @BertTiny.mlm_bias: Tensor<f32, [8192]> = zeros
 %0: Tensor<i32, [4096]> = Input "ids"
 %1: Tensor<i32, [4096]> = Input "positions"
 %2: Tensor<f32, [32, 128]> = Input "key_mask"
 %3: Tensor<i32, [4096]> = Input "labels"
 %4: Tensor<f32, [4096]> = Input "weights"
-%5: Tensor<f32, [30522, 128]> = ParamRead @BertTiny.tok_table
+%5: Tensor<f32, [8192, 128]> = ParamRead @BertTiny.tok_table
 %6: Tensor<f32, [128, 128]> = ParamRead @BertTiny.pos_table
 %7: Tensor<f32, [128]> = ParamRead @BertTiny.emb_ln_gamma
 %8: Tensor<f32, [128]> = ParamRead @BertTiny.emb_ln_beta
@@ -201,7 +201,7 @@ param @BertTiny.mlm_bias: Tensor<f32, [30522]> = zeros
 %42: Tensor<f32, [128]> = ParamRead @BertTiny.mlm_b
 %43: Tensor<f32, [128]> = ParamRead @BertTiny.mlm_ln_gamma
 %44: Tensor<f32, [128]> = ParamRead @BertTiny.mlm_ln_beta
-%45: Tensor<f32, [30522]> = ParamRead @BertTiny.mlm_bias
+%45: Tensor<f32, [8192]> = ParamRead @BertTiny.mlm_bias
 %46: Tensor<f32, [4096, 128]> = Embedding %5, %0
 %47: Tensor<f32, [4096, 128]> = Embedding %6, %1
 %48: Tensor<f32, [4096, 128]> = Add %46, %47
@@ -256,9 +256,9 @@ param @BertTiny.mlm_bias: Tensor<f32, [30522]> = zeros
 %97: Tensor<f32, [4096, 128]> = AddRows %96, %42
 %98: Tensor<f32, [4096, 128]> = Gelu %97
 %99: Tensor<f32, [4096, 128]> = LayerNorm %98, %43, %44
-%100: Tensor<f32, [128, 30522]> = Transpose %5
-%101: Tensor<f32, [4096, 30522]> = MatMul %99, %100
-%102: Tensor<f32, [4096, 30522]> = AddRows %101, %45
+%100: Tensor<f32, [128, 8192]> = Transpose %5
+%101: Tensor<f32, [4096, 8192]> = MatMul %99, %100
+%102: Tensor<f32, [4096, 8192]> = AddRows %101, %45
 %103: Tensor<f32, []> = CrossEntropy %102, %3, %4
 output %103
 ```

@@ -126,15 +126,17 @@ const EXAMPLES: &[Example] = &[
         page: "bert-tiny.md",
         title: "Example: BERT-tiny",
         label: "BERT-tiny",
-        description: "BERT-tiny, two encoder layers of hidden size 128 and an MLM head tied to the token table, 4,367,290 parameters, checked and lowered.",
+        description: "BERT-tiny, two encoder layers of hidden size 128 over the 8,192-token corpus vocabulary and an MLM head tied to the token table, 1,486,720 parameters, checked and lowered.",
         file: "examples/bert_tiny.mspec",
         intro: "BERT-tiny (Turc et al. 2019) written out in the M0 subset: token and position \
                 embeddings, two post-layer-norm encoder layers of `attention` and a `gelu` \
                 feed-forward, `dropout` after the embeddings and each sublayer, and the \
                 masked-language-model head whose decoder is the token table read again through \
                 `transpose`, trained with `cross_entropy` and `adamw` on the tensors of a packed \
-                `--data` directory. The parameter lines of `ir --stage tensor` add up to 4,367,290 \
-                elements. `task check-examples` checks it on every change. Its hidden-32 twin, \
+                `--data` directory. Its vocabulary is the 8,192 tokens of the repository's corpus \
+                tokenizer, so the parameter lines of `ir --stage tensor` add up to 1,486,720 \
+                elements; Turc et al.'s BERT-tiny has 4.4M at the 30,522 tokens of the original \
+                BERT release. `task check-examples` checks it on every change. Its hidden-32 twin, \
                 `crates/modelspec-cli/tests/fixtures/bert_cpu.mspec`, is the same program with \
                 other sizes: the tests of `modelspec-runtime` check the gradient of every one of \
                 its parameters against central differences in `f64`, and the tests of \

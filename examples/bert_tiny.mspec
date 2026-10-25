@@ -1,15 +1,21 @@
 // BERT-tiny (Turc et al. 2019, arXiv 1908.08962): two post-layer-norm encoder layers of
 // Devlin et al. 2019 with hidden size 128, 2 attention heads and a feed-forward width of 512,
-// learned positions over sequences of 128 and the 30,522-token vocabulary of the original BERT
-// release, in batches of 32. Masked-language-model pre-training only, so there is no token-type
-// embedding and no pooler; the MLM head's decoder is the token table transposed, with its own
-// bias. 4,367,290 parameters. Dropout 0.1 after the embeddings and each sublayer, and AdamW
-// with BERT's settings, warmed up over the first 10% of the steps. The ids, positions, key
-// mask, labels and weights are the tensors of a packed `--data` directory, declared [B·S] and
-// [B, S]. Its hidden-32 twin, crates/modelspec-cli/tests/fixtures/bert_cpu.mspec, is the same
-// program at sizes the CPU reference gradient-checks and trains in seconds.
+// learned positions over sequences of 128, in batches of 32, over the 8,192-token WordPiece
+// vocabulary of the repository's corpus tokenizer (spec/domains/data.yaml, TokenizerKind).
+// Masked-language-model pre-training only, so there is no token-type embedding and no pooler;
+// the MLM head's decoder is the token table transposed, with its own bias. 1,486,720
+// parameters; Turc et al.'s BERT-tiny has 4.4M at the 30,522 tokens of the original BERT
+// release. Dropout 0.1 after the embeddings and each sublayer, and AdamW (lr 1e-4, weight decay
+// 0.01, betas 0.9 and 0.999, eps 1e-6) on a linear warm-up and decay. It differs from Devlin et
+// al. 2019 in four ways: weight decay applies to every parameter, layer-norm gains and biases
+// included; every matrix is initialised xavier-uniform, not from N(0, 0.02); there is no dropout
+// on the attention probabilities; and the warm-up is 10 % of the run, not 1 %. The ids,
+// positions, key mask, labels and weights are the tensors of a packed `--data` directory,
+// declared [B·S] and [B, S]. Its hidden-32 twin,
+// crates/modelspec-cli/tests/fixtures/bert_cpu.mspec, is the same program at sizes the CPU
+// reference gradient-checks and trains in seconds.
 model BertTiny {
-    param tok_table: Tensor<f32, [30522, 128]> = xavier_uniform();
+    param tok_table: Tensor<f32, [8192, 128]> = xavier_uniform();
     param pos_table: Tensor<f32, [128, 128]> = xavier_uniform();
     param emb_ln_gamma: Tensor<f32, [128]> = ones();
     param emb_ln_beta: Tensor<f32, [128]> = zeros();
@@ -52,10 +58,10 @@ model BertTiny {
     param mlm_b: Tensor<f32, [128]> = zeros();
     param mlm_ln_gamma: Tensor<f32, [128]> = ones();
     param mlm_ln_beta: Tensor<f32, [128]> = zeros();
-    param mlm_bias: Tensor<f32, [30522]> = zeros();
+    param mlm_bias: Tensor<f32, [8192]> = zeros();
 
     fn forward(ids: Tensor<i32, [4096]>, positions: Tensor<i32, [4096]>, key_mask: Tensor<f32, [32, 128]>)
-        -> Tensor<f32, [4096, 30522]> {
+        -> Tensor<f32, [4096, 8192]> {
         let e = dropout(layer_norm(add(embedding(tok_table, ids), embedding(pos_table, positions)), emb_ln_gamma, emb_ln_beta), p = 0.1);
 
         let q0 = add_rows(matmul(e, l0_wq), l0_bq);

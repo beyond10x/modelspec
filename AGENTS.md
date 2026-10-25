@@ -61,13 +61,18 @@ step `k` the `Train` batch of step `k`, each `input` and `target` naming a batch
 `positions`, `key_mask`, `labels`, `weights`), and prints a `data` line first (DESIGN.md 0.46);
 any other `--data` directory holds dense `f32` files. `--data`, `--init` and `--eval` are CPU only.
 Its tests are `cargo test -p modelspec-cli --test train_data`.
-`examples/bert_tiny.mspec` is BERT-tiny written out (4,367,290 parameters; `cargo test -p
+`examples/bert_tiny.mspec` is BERT-tiny written out at the 8,192-token vocabulary of the corpus
+tokenizer (1,486,720 parameters; Turc et al.'s BERT-tiny has 4.4M at 30,522 tokens; `cargo test -p
 modelspec-cli --test bert_tiny`), and `crates/modelspec-cli/tests/fixtures/bert_cpu.mspec` is the
 same program at hidden size 32, whose every parameter `cargo test -p modelspec-runtime --test
 gradients_bert_cpu` checks against central differences in `f64` and which `cargo test -p
 modelspec-cli --test bert_cpu_train` trains twice from one seed on the packed `corpus` fixture.
-Its test `twin_is_the_example_with_other_sizes` in `bert_tiny.rs` fails when the two files differ in more than
-their numbers, so change both together.
+Two tests guard the pair, so change both files together:
+`adversary_bert_cpu.rs::both_files_are_post_ln_bert_in_the_ir` (modelspec-runtime) walks the
+Tensor IR of both as post-layer-norm BERT, and
+`adversary_bert_tiny_cli.rs::twin_differs_from_the_example_only_in_shapes_and_run_length`
+(modelspec-cli) fails when the twin differs from the example beyond its shapes, `steps`,
+`warmup_steps` (10 % of the steps in both) and `lr`.
 The documentation site's guide `website/docs/guides/prepare-training-data.md` and concept page
 `website/docs/concepts/bert-operators.md` paste output from these commands; rerun them when the
 output changes.

@@ -260,8 +260,9 @@ fn both_files_are_post_ln_bert_in_the_ir() {
     bert_structure("bert_cpu.mspec", TWIN, 2, 2).unwrap();
 }
 
-/// The walk above rejects the mutants `twin_is_the_example_with_other_sizes` lets through when
-/// they are made to both files, or to the twin in its digits only.
+/// The walk above rejects the mutants a digit-masking comparison of the two files (the unit's
+/// first guard, deleted under coordinator decision D71) lets through when they are made to both
+/// files, or to the twin in its digits only.
 #[test]
 fn the_structure_walk_rejects_the_mutants() {
     let mutants: [(&str, String); 6] = [
@@ -297,7 +298,7 @@ fn the_structure_walk_rejects_the_mutants() {
         ),
     ];
     for (what, source) in mutants {
-        let base = if source.contains("[30522") {
+        let base = if source.contains("[4096") {
             EXAMPLE
         } else {
             TWIN

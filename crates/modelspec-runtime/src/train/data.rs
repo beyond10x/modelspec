@@ -29,7 +29,9 @@
 //! [`mlm_batch`] of the `Train` split at step `k` with the run seed and the policy of the
 //! binding. A declaration that names no batch tensor is [`E_DATA_005`] and one of another dtype
 //! or shape [`E_DATA_006`], both before any file but the binding is read; E-DATA-001, E-DATA-002
-//! and E-DATA-004 do not apply, and E-DATA-003 does. A directory without [`BINDING_FILE`] stays
+//! and E-DATA-004 do not apply, and E-DATA-003 does. Once the packed files are read, an
+//! `embedding` table or `cross_entropy` logits whose width is not the packed `vocabulary_size` is
+//! [`E_DATA_006`] too (coordinator decision D71). A directory without [`BINDING_FILE`] stays
 //! dense, and when every declaration names a batch tensor its dense refusal follows the line of
 //! [`read_as_dense`] (coordinator decision D56).
 
@@ -69,7 +71,9 @@ pub const E_DATA_005: Code = Code::new("E-DATA-005");
 /// A declared `input` or `target` of a run on a packed `--data` directory is not of the type of
 /// its batch tensor: `i32` for `ids`, `positions` and `labels`, `f32` for `key_mask` and
 /// `weights`, of shape `[B, S]` or `[B·S]` with `S` the packed sequence length and one `B` for
-/// every declaration.
+/// every declaration; or, once the packed files are read, the table of an `embedding` that reads
+/// the bound `ids` has other rows, or the logits of a `cross_entropy` that reads the bound
+/// `labels` other classes, than the packed `vocabulary_size`.
 pub const E_DATA_006: Code = Code::new("E-DATA-006");
 /// A data, order or `--init` file is missing, unreadable, or not a whole number of samples (for
 /// `--init`, not the parameter's size), or a data or `--init` file holds a NaN or an infinity, or
@@ -798,7 +802,9 @@ impl PackedData {
 /// The training data of the packed directory `dir`, whose binding [`source`] read: refused with
 /// [`E_DATA_005`], [`E_DATA_006`] and [`E_DATA_003`] as [`bind`] refuses, before any packed file
 /// is read; then the packed files are read once ([`mlm::load`]), and a directory whose record
-/// does not belong to the binding or holds fewer `Train` sequences than `B` is
+/// does not belong to the binding is [`DataError::Packed`], a program whose `embedding` table or
+/// `cross_entropy` logits are not as wide as the record's `vocabulary_size` is [`E_DATA_006`]
+/// ([`refuse_vocabulary`]), and a directory that holds fewer `Train` sequences than `B` is
 /// [`DataError::Packed`].
 pub fn packed(
     dir: &Path,
@@ -820,6 +826,7 @@ pub fn packed(
             packed.record.seq_len
         )));
     }
+    refuse_vocabulary(&bound, lowered, packed.record.vocabulary_size)?;
     let sequences = packed.sequence_count(SplitRole::Train);
     if batch > sequences {
         return Err(failed(format!(
@@ -937,6 +944,88 @@ fn bind(
         path: first.name.clone(),
     })?;
     Ok((batch, bound))
+}
+
+/// [`E_DATA_006`] at the first op whose width the packed vocabulary fixes and which does not have
+/// `vocabulary` (the `vocabulary_size` of [`mlm::PACKED_FILE`]) rows or classes, in program
+/// order: an `embedding` whose ids are the bound `ids` and whose table has another row count, or
+/// a `cross_entropy` whose labels are the bound `labels` and whose logits have another class
+/// count (coordinator decision D71). A wider table or logits holds rows no batch reads and no
+/// label names, so it would train without a word; a narrower one would fail at step 0 on a row
+/// id or label past its end.
+fn refuse_vocabulary(
+    bound: &[(BatchTensor, String, Vec<u64>)],
+    lowered: &LoweredProgram,
+    vocabulary: u64,
+) -> Result<(), DataError> {
+    let forward = &lowered.program;
+    let input_of = |tensor: BatchTensor| {
+        let (_, name, _) = bound.iter().find(|(t, _, _)| *t == tensor)?;
+        forward
+            .nodes
+            .iter()
+            .find(|n| matches!(&n.op, TensorOp::Input { name: input } if input == name))
+            .map(|n| (n.id, name.as_str()))
+    };
+    let (ids, labels) = (input_of(BatchTensor::Ids), input_of(BatchTensor::Labels));
+    for node in &forward.nodes {
+        let (what, read, operand, width) = match (&node.op, ids, labels) {
+            (TensorOp::Embedding, Some((id, name)), _) if node.operands.get(1) == Some(&id) => {
+                ("table", name, node.operands[0], 0)
+            }
+            (TensorOp::CrossEntropy, _, Some((id, name))) if node.operands.get(1) == Some(&id) => {
+                ("logits", name, node.operands[0], 1)
+            }
+            _ => continue,
+        };
+        let Some(value) = forward.node(operand) else {
+            continue;
+        };
+        let Some(&Dim::Static(n)) = value.ty.shape.get(width) else {
+            continue;
+        };
+        if n == vocabulary {
+            continue;
+        }
+        let (op, count) = match what {
+            "table" => ("embedding", "rows"),
+            _ => ("cross_entropy", "classes"),
+        };
+        let named = match value.op {
+            TensorOp::ParamRead { param } => forward
+                .params
+                .get(&param)
+                .map_or_else(|| value.id.to_string(), |p| p.path.clone()),
+            _ => value.id.to_string(),
+        };
+        let mut diagnostic = Diagnostic::new(
+            E_DATA_006,
+            format!(
+                "the {what} `{named}` of the `{op}` that reads `{read}` has {n} {count}, not the \
+                 {vocabulary} tokens of the packed vocabulary"
+            ),
+        );
+        let span = node.source_span.clone().or_else(|| {
+            lowered
+                .declared_inputs
+                .iter()
+                .find(|d| d.name == read)
+                .map(|d| d.span.clone())
+        });
+        if let Some(span) = span {
+            diagnostic = diagnostic.at(span);
+        }
+        return Err(DataError::Refused(
+            diagnostic.with(what, value.ty.to_string()).with(
+                "expected",
+                format!(
+                    "{vocabulary} {count}, the vocabulary_size of {}",
+                    mlm::PACKED_FILE
+                ),
+            ),
+        ));
+    }
+    Ok(())
 }
 
 /// The names of the batch tensors, for a diagnostic.

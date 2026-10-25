@@ -11,7 +11,11 @@ history.
 
 ### Added
 
-- `examples/bert_tiny.mspec`, BERT-tiny (2 post-layer-norm encoder layers, hidden 128, 2 heads, feed-forward 512, sequences of 128, 30,522 tokens, an MLM head tied to the token table; 4,367,290 parameters), joins `task check-examples`, and its hidden-32 twin `crates/modelspec-cli/tests/fixtures/bert_cpu.mspec` passes a finite-difference check of every parameter in `f64` and trains to identical `step` and `eval` lines twice from one seed with `train --backend cpu --data --eval-every` (story:bert-tiny-cpu-model).
+- `examples/bert_tiny.mspec`, BERT-tiny (2 post-layer-norm encoder layers, hidden 128, 2 heads, feed-forward 512, sequences of 128, the 8,192-token vocabulary of the corpus tokenizer, an MLM head tied to the token table; 1,486,720 parameters, where Turc et al.'s BERT-tiny has 4.4M at 30,522 tokens), joins `task check-examples`, and its hidden-32 twin `crates/modelspec-cli/tests/fixtures/bert_cpu.mspec` passes a finite-difference check of every parameter in `f64` and trains to identical `step` and `eval` lines twice from one seed with `train --backend cpu --data --eval-every` (story:bert-tiny-cpu-model).
+
+### Changed
+
+- `train --data` on a packed directory refuses, with `E-DATA-006` before the first step, an `embedding` table read with the bound `ids` whose rows, or `cross_entropy` logits read with the bound `labels` whose classes, are not the packed `vocabulary_size`, naming the table or logits and both numbers; a wider table trained without a word, a narrower one failed at step 0 (story:bert-tiny-cpu-model).
 
 ## [0.15.0] - 2026-10-25
 
