@@ -9,6 +9,10 @@ history.
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-10-25
+
+The `muon` optimizer on the CPU reference: each rank-2 parameter that no `embedding` reads as its table trains with Nesterov momentum orthogonalized by quintic Newton–Schulz steps, and every other parameter trains with AdamW. `E-TYPE-025` refuses a `momentum` outside [0, 1) and an `ns_steps` outside [1, 10], `train --checkpoint` and `--resume` refuse a Muon run, and a non-finite Newton-Schulz norm or buffer stops the run with E-TRAIN-001.
+
 ### Added
 
 - The `muon` optimizer on the CPU reference: `muon(lr, momentum, weight_decay, ns_steps, warmup_steps, adam_lr, beta1, beta2, eps)` trains each rank-2 parameter that no `embedding` reads as its table with Nesterov momentum orthogonalized by quintic Newton–Schulz steps, and every other parameter with AdamW at `adam_lr`; `E-TYPE-025` refuses a `momentum` outside [0, 1) and an `ns_steps` outside [1, 10], `train --checkpoint` and `--resume` refuse a Muon run, and a non-finite Newton-Schulz norm or buffer is E-TRAIN-001 (DESIGN.md revision 0.51, story:muon-optimizer).
@@ -257,7 +261,8 @@ with `E-TARGET-001`.
 - `examples/linear_regression.mspec` checks and trains; `task check-examples` runs `modelspec check` on it
 - ESS contracts for the compiled artifact, checkpoint, device profile and training run in `spec/`
 
-[Unreleased]: https://github.com/beyond10x/modelspec/compare/0.14.0...HEAD
+[Unreleased]: https://github.com/beyond10x/modelspec/compare/0.15.0...HEAD
+[0.15.0]: https://github.com/beyond10x/modelspec/compare/0.14.0...0.15.0
 [0.14.0]: https://github.com/beyond10x/modelspec/compare/0.13.0...0.14.0
 [0.13.0]: https://github.com/beyond10x/modelspec/compare/0.12.0...0.13.0
 [0.12.0]: https://github.com/beyond10x/modelspec/compare/0.11.0...0.12.0

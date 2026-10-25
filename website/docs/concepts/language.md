@@ -1,8 +1,8 @@
 ---
 title: The language
-description: A tour of the .mspec language from DESIGN.md § 2, the subset the 0.14.0 compiler accepts, and the target language it grows into.
+description: A tour of the .mspec language from DESIGN.md § 2, the subset the 0.15.0 compiler accepts, and the target language it grows into.
 sidebar_position: 1
-lede: "A .mspec file is declarative, statically typed and pure, and 0.14.0 parses and checks a subset of the language DESIGN.md § 2 designs, refusing each construct beyond it with its own code."
+lede: "A .mspec file is declarative, statically typed and pure, and 0.15.0 parses and checks a subset of the language DESIGN.md § 2 designs, refusing each construct beyond it with its own code."
 source: "DESIGN.md § 2; crates/modelspec-core/src/syntax, resolve.rs, types.rs and ops.rs; the tests syntax.rs of crates/modelspec-core and check.rs, check_i32.rs, check_attention.rs and check_dropout.rs of crates/modelspec-cli; the diagnostic reference generated from crates/modelspec-core/src/diag.rs."
 ---
 
@@ -11,7 +11,7 @@ source: "DESIGN.md § 2; crates/modelspec-core/src/syntax, resolve.rs, types.rs 
 A `.mspec` file is declarative, statically typed and pure by default. It says what a model
 computes and how it is trained; it does no I/O and has no runtime objects. This page is a tour of
 [DESIGN.md § 2](https://github.com/beyond10x/modelspec/blob/main/DESIGN.md#2-modelspec-source-language),
-in two parts: the subset that 0.14.0 parses and checks, and the target language it grows into.
+in two parts: the subset that 0.15.0 parses and checks, and the target language it grows into.
 The subset is called M0, after the milestone that defined its syntax; later releases added
 operators, the `i32` element type and named operator arguments to it, and no new statements.
 
@@ -94,13 +94,14 @@ literal of its kind is `E-TYPE-019`, a name the operator does not take or one gi
 | `loss = expr;` | a scalar expression that calls `model.forward` exactly once (`E-TYPE-017` otherwise) |
 | `optimizer = sgd(lr = 0.05);` | plain SGD with a positive learning rate, constant over the run |
 | `optimizer = adamw(lr = F, weight_decay = F, beta1 = F, beta2 = F, eps = F, warmup_steps = N);` | AdamW with decoupled weight decay, every argument required and named; the learning rate rises linearly from 0 over `warmup_steps` and falls linearly to 0 at the last step. Out-of-range arguments are `E-TYPE-023` and `E-TYPE-024`. CPU reference only; `train --checkpoint` and `--resume` refuse an AdamW run |
+| `optimizer = muon(lr = F, momentum = F, weight_decay = F, ns_steps = N, warmup_steps = N, adam_lr = F, beta1 = F, beta2 = F, eps = F);` | Muon: orthogonalized momentum (Nesterov momentum, the update normalised by its Frobenius norm, `ns_steps` Newton-Schulz steps, the scale `0.2 * sqrt(max(rows, cols))`, decoupled weight decay) for every rank-2 parameter that no `embedding` reads, AdamW at `adam_lr` for the rest; both rates on the `adamw` warm-up schedule. `E-TYPE-025` refuses a `momentum` outside [0, 1) or an `ns_steps` outside [1, 10]. CPU reference only; `train --checkpoint` and `--resume` refuse a Muon run |
 | `steps = 200;` | the number of updates, at least one |
 | `seed = 7;` | the seed of every random draw: initial parameters, synthetic data, the batches drawn from a packed directory and dropout masks ([Training](./training.md)) |
 | `device = cpu;` | `cpu` or `vulkan(<index>)`. The command line takes the backend from `--backend`, not from this setting |
 
 ## The target language
 
-DESIGN.md § 2 designs a larger language. This model is its running example, and 0.14.0 refuses
+DESIGN.md § 2 designs a larger language. This model is its running example, and 0.15.0 refuses
 it:
 
 ```modelspec
@@ -125,7 +126,7 @@ model TinyMLP<B: dim> {
 }
 ```
 
-| Construct | Meaning | 0.14.0 |
+| Construct | Meaning | 0.15.0 |
 |---|---|---|
 | `module` | a reusable group of parameters and functions | refused, `E-SYNTAX-004` |
 | `layer` | a named module instance, elaborated statically; each instance owns its own weights | refused, `E-SYNTAX-005` |

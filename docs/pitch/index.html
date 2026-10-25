@@ -216,7 +216,7 @@ body.all .hud, body.all .narrow { display: none; }
 <!-- 1 -->
 <section class="slide" data-n="1">
   <div class="title-wrap">
-    <div class="kicker">Vision · 2026-10-25 · release 0.14.0</div>
+    <div class="kicker">Vision · 2026-10-25 · release 0.15.0</div>
     <h1>ModelSpec</h1>
     <p class="promise">Specify <b>what</b> the model computes.<br>The compiler decides <b>how</b> it runs.</p>
     <p class="sub">A declarative language and a Rust compiler for differentiable tensor programs. One <code>.mspec</code> file is the whole training step.</p>
@@ -227,7 +227,7 @@ body.all .hud, body.all .narrow { display: none; }
       <span class="chip">no Python · PyTorch · CUDA</span>
     </div>
   </div>
-  <aside class="notes">Vision objective; DESIGN.md header principle and section 0. Date and version: the 0.14.0 release, 2026-10-25 (CHANGELOG.md § 0.14.0).</aside>
+  <aside class="notes">Vision objective; DESIGN.md header principle and section 0. Date and version: the 0.15.0 release, 2026-10-25 (CHANGELOG.md § 0.15.0).</aside>
 </section>
 
 <!-- 2 -->
@@ -550,12 +550,12 @@ body.all .hud, body.all .narrow { display: none; }
 <!-- 13 -->
 <section class="slide" data-n="13">
   <div class="kicker">Status · 2026-10-25</div>
-  <h2>0.14.0 trains on the RTX 3090 through Vulkan</h2>
+  <h2>0.15.0 trains on the RTX 3090 through Vulkan</h2>
   <div class="stats">
-    <div class="stat"><div class="v">0.14.0</div><div class="l">latest of 16 releases, 2026-10-25, with a Linux x86_64 binary</div></div>
-    <div class="stat"><div class="v">53</div><div class="l">capabilities shipped, each held by a named test or task</div></div>
-    <div class="stat"><div class="v">69</div><div class="l">stories implemented</div></div>
-    <div class="stat"><div class="v">2587</div><div class="l">tests passed in <code>task ci</code>, 0 failed, 273 ignored</div></div>
+    <div class="stat"><div class="v">0.15.0</div><div class="l">latest of 17 releases, 2026-10-25, with a Linux x86_64 binary</div></div>
+    <div class="stat"><div class="v">54</div><div class="l">capabilities shipped, each held by a named test or task</div></div>
+    <div class="stat"><div class="v">70</div><div class="l">stories implemented</div></div>
+    <div class="stat"><div class="v">2644</div><div class="l">tests passed in <code>task ci</code>, 0 failed, 273 ignored</div></div>
   </div>
   <div class="grid3" style="gap:24px">
     <div class="card" style="padding:22px 26px">
@@ -563,15 +563,15 @@ body.all .hud, body.all .narrow { display: none; }
       <p style="font-size:21px"><code>train --backend vulkan</code> with one host wait · checkpoints, resume and <code>infer</code> on CPU and Vulkan · <code>compile</code> to a sealed artifact · <code>--serve</code>, <code>--record</code>, <code>observe</code> and the observatory UI · <code>--profile</code> · tiled GPU matmul</p>
     </div>
     <div class="card" style="padding:22px 26px">
-      <h3 style="font-size:26px">Released, 0.8.0 to 0.14.0</h3>
-      <p style="font-size:21px">Register-blocked matmul · elementwise chain fusion · deterministic fused multiply-adds · <code>--fast-math</code> · <code>embedding</code>, <code>layer_norm</code>, <code>softmax</code>, <code>attention</code>, <code>cross_entropy</code>, <code>dropout</code> on the CPU · <code>data prepare</code>, <code>tokenizer</code>, <code>pack</code> · <code>train --data</code> with <code>--eval-every</code> · <code>adamw</code> with a warm-up schedule · <code>relu_grad</code> as a matmul epilogue · Vulkan kernels for the row-wise BERT operators</p>
+      <h3 style="font-size:26px">Released, 0.8.0 to 0.15.0</h3>
+      <p style="font-size:21px">Register-blocked matmul · elementwise chain fusion · deterministic fused multiply-adds · <code>--fast-math</code> · <code>embedding</code>, <code>layer_norm</code>, <code>softmax</code>, <code>attention</code>, <code>cross_entropy</code>, <code>dropout</code> on the CPU · <code>data prepare</code>, <code>tokenizer</code>, <code>pack</code> · <code>train --data</code> with <code>--eval-every</code> · <code>adamw</code> with a warm-up schedule · <code>relu_grad</code> as a matmul epilogue · Vulkan kernels for the row-wise BERT operators · <code>muon</code> on the CPU</p>
     </div>
     <div class="card" style="padding:22px 26px">
       <h3 style="font-size:26px">Not built</h3>
       <p style="font-size:21px">Vulkan kernels for <code>attention</code>, <code>cross_entropy</code> and AdamW · M4: the Tensor Core path</p>
     </div>
   </div>
-  <aside class="notes">Releases: 16 tags, 0.1.0 to 0.14.0; 0.14.0 dated 2026-10-25 (CHANGELOG.md § 0.14.0); the Linux x86_64 binary: the opening paragraph of CHANGELOG.md and .github/workflows/release.yml. 53 shipped, 2 planned: website/data/status.json (asOf 2026-10-25). 69 implemented, none in progress: the stories of the repository's planning store, 2026-10-25. 2587 / 0 / 273: the sum of the cargo "test result" lines of the 379 suites of task ci on f3b6547, 2026-10-25; the ignored tests include the device tests and the browser tests that task ui-browser then runs (AGENTS.md "Commands"); the node --test cases of pnpm test are not counted. Released, 0.2.0 to 0.7.1: --serve in CHANGELOG.md § 0.2.0; train --backend vulkan with one host wait and --profile in CHANGELOG.md § 0.4.0; the tiled GPU matmul in CHANGELOG.md § 0.5.0; checkpoints, resume, infer, compile, --record and observe in CHANGELOG.md § 0.6.0; the observatory UI in CHANGELOG.md § 0.7.0. Released, 0.8.0 to 0.14.0: CHANGELOG.md § 0.9.0, § 0.10.0, § 0.11.0, § 0.12.0, § 0.13.0 and § 0.14.0; data prepare, tokenizer and pack are in the 0.10.0 tag without a CHANGELOG.md entry (website/docs/guides/prepare-training-data.md). Not built: the planned rows of website/data/status.json; DESIGN.md section 1 M3 and M4 rows.</aside>
+  <aside class="notes">Releases: 17 tags, 0.1.0 to 0.15.0; 0.15.0 dated 2026-10-25 (CHANGELOG.md § 0.15.0); the Linux x86_64 binary: the opening paragraph of CHANGELOG.md and .github/workflows/release.yml. 54 shipped, 2 planned: website/data/status.json (asOf 2026-10-25). 70 implemented, none in progress: the stories of the repository's planning store, 2026-10-25. 2644 / 0 / 273: the sum of the cargo "test result" lines of the 387 suites of task ci on 3ad0474, 2026-10-25; the ignored tests include the device tests and the browser tests that task ui-browser then runs (AGENTS.md "Commands"); the node --test cases of pnpm test are not counted. Released, 0.2.0 to 0.7.1: --serve in CHANGELOG.md § 0.2.0; train --backend vulkan with one host wait and --profile in CHANGELOG.md § 0.4.0; the tiled GPU matmul in CHANGELOG.md § 0.5.0; checkpoints, resume, infer, compile, --record and observe in CHANGELOG.md § 0.6.0; the observatory UI in CHANGELOG.md § 0.7.0. Released, 0.8.0 to 0.15.0: CHANGELOG.md § 0.9.0, § 0.10.0, § 0.11.0, § 0.12.0, § 0.13.0, § 0.14.0 and § 0.15.0; data prepare, tokenizer and pack are in the 0.10.0 tag without a CHANGELOG.md entry (website/docs/guides/prepare-training-data.md). Not built: the planned rows of website/data/status.json; DESIGN.md section 1 M3 and M4 rows.</aside>
 </section>
 
 <!-- 14 -->
@@ -684,7 +684,7 @@ body.all .hud, body.all .narrow { display: none; }
       </ul>
     </div>
     <div>
-      <div class="kicker" style="color:var(--m1)">2 · Released, 0.7.0 to 0.14.0</div>
+      <div class="kicker" style="color:var(--m1)">2 · Released, 0.7.0 to 0.15.0</div>
       <ul class="bul" style="font-size:0">
         <li style="font-size:24px;margin-bottom:12px">0.7.0: the observatory UI; Vulkan refuses a NaN or ±inf run</li>
         <li style="font-size:24px;margin-bottom:12px">0.8.0: a CPU run prepares its step once; per-step device counters</li>
@@ -694,6 +694,7 @@ body.all .hud, body.all .narrow { display: none; }
         <li style="font-size:24px;margin-bottom:12px">0.12.0: AdamW with decoupled weight decay and a linear warm-up schedule</li>
         <li style="font-size:24px;margin-bottom:12px">0.13.0: relu_grad as a matmul epilogue and the loss sum beside the largest matmul; b8192 h4096 at 1.044 of PyTorch eager</li>
         <li style="font-size:24px;margin-bottom:12px">0.14.0: Vulkan kernels for the row-wise BERT operators (embedding, add_rows, gelu, dropout, layer_norm, softmax and their gradients)</li>
+        <li style="font-size:24px;margin-bottom:12px">0.15.0: the muon optimizer (orthogonalized momentum for the matrix parameters, AdamW for the rest) on the CPU</li>
       </ul>
     </div>
     <div>
@@ -705,7 +706,7 @@ body.all .hud, body.all .narrow { display: none; }
       </ul>
     </div>
   </div>
-  <aside class="notes">Done: CHANGELOG.md § 0.1.0 (2026-10-21), CHANGELOG.md § 0.4.0 (2026-10-22, train --backend vulkan), CHANGELOG.md § 0.5.0 (2026-10-23, 27.282 µs from 40.225 µs), CHANGELOG.md § 0.6.0 (2026-10-23, Vulkan checkpoints, infer --backend vulkan, compile). Released: CHANGELOG.md § 0.7.0, § 0.8.0, § 0.9.0, § 0.10.0, § 0.11.0, § 0.12.0, § 0.13.0 and § 0.14.0; 0.13.0 at b8192 h4096, 6,858.9 µs against 6,568.5 µs for PyTorch eager (1.044): benchmarks/raw/2026-10-25-step-sites/verdict.md. Open: DESIGN.md:551-559 nine unticked boxes; CHANGELOG.md § 0.6.0 "ADR-007's accuracy and final-weight conditions were not measured for this release". BERT: website/data/status.json planned rows, asOf 2026-10-25.</aside>
+  <aside class="notes">Done: CHANGELOG.md § 0.1.0 (2026-10-21), CHANGELOG.md § 0.4.0 (2026-10-22, train --backend vulkan), CHANGELOG.md § 0.5.0 (2026-10-23, 27.282 µs from 40.225 µs), CHANGELOG.md § 0.6.0 (2026-10-23, Vulkan checkpoints, infer --backend vulkan, compile). Released: CHANGELOG.md § 0.7.0, § 0.8.0, § 0.9.0, § 0.10.0, § 0.11.0, § 0.12.0, § 0.13.0, § 0.14.0 and § 0.15.0; 0.13.0 at b8192 h4096, 6,858.9 µs against 6,568.5 µs for PyTorch eager (1.044): benchmarks/raw/2026-10-25-step-sites/verdict.md. Open: DESIGN.md:551-559 nine unticked boxes; CHANGELOG.md § 0.6.0 "ADR-007's accuracy and final-weight conditions were not measured for this release". BERT: website/data/status.json planned rows, asOf 2026-10-25.</aside>
 </section>
 
 <div class="narrow">The slides are 16:9: turn the device sideways to read them. Tap the right or left half, or swipe, to change slides.</div>
