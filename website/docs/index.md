@@ -42,9 +42,9 @@ train Fit {
 ## What works today
 
 ModelSpec is in milestone M1 (GPU execution), and its current goal is a small BERT pre-trained
-from scratch; the latest release is [0.15.0](https://github.com/beyond10x/modelspec/releases/tag/0.15.0).
+from scratch; the latest release is [0.16.0](https://github.com/beyond10x/modelspec/releases/tag/0.16.0).
 
-| Works in 0.15.0 | Not built yet |
+| Works in 0.16.0 | Not built yet |
 |---|---|
 | `modelspec check`: parse and check names, types and shapes | `bench` |
 | `modelspec ir --stage tensor`, `--stage training` and `--stage kernel`: print the verified IR and the kernel plan | more than one device |
@@ -95,7 +95,7 @@ capability with the test that holds it, and [Roadmap](./roadmap.md) says what M1
 
 ## Where to go next
 
-- [Getting started](./getting-started.md): download the 0.15.0 binary and train the examples on the CPU or a GPU.
+- [Getting started](./getting-started.md): download the 0.16.0 binary and train the examples on the CPU or a GPU.
 - [The language](./concepts/language.md): what a file may contain.
 - [Write a model](./guides/write-a-model.md): build a two-layer model step by step.
 - [Pitch deck](pathname:///modelspec/pitch/): the case for ModelSpec in slides.

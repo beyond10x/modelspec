@@ -6,7 +6,7 @@ description: Milestones M0 to M4 from DESIGN.md § 1. M0 is built; M1, GPU execu
 # Roadmap
 
 The milestones are those of [DESIGN.md § 1](https://github.com/beyond10x/modelspec/blob/main/DESIGN.md#1-scope-and-milestones).
-M0 is built and released as 0.1.0. M1 is in progress; the latest release is 0.15.0. Some M2 items
+M0 is built and released as 0.1.0. M1 is in progress; the latest release is 0.16.0. Some M2 items
 were done early, in M1. The current milestone is a small BERT, pre-trained from scratch, which is
 one of the two proof models of M3: its operators run on the CPU reference interpreter, the row-wise
 ones also have Vulkan kernels since 0.14.0, and the kernels of `attention`, `cross_entropy` and
@@ -41,6 +41,7 @@ reference interpreter, and `modelspec check`, `ir` and `train --backend cpu`.
 | 0.13.0 | a `relu_grad` whose gradient operand is a matmul output nothing else reads is an epilogue of that matmul, and the `mse` loss sum shares a barrier interval with the largest matmul; the same bits, and the `mlp_sweep` b8192 h4096 step on the RTX 3090 at 1.044 of PyTorch eager (was 1.111) |
 | 0.14.0 | Vulkan kernels for `embedding`, `add_rows`, `gelu`, `dropout`, `layer_norm`, `softmax` and their gradients, one dispatch each with every sum in the CPU interpreter's order; `EmbeddingGrad` adds without atomics, so two runs give the same bits; the `dropout` mask is computed on the device bit-equal to the CPU's, and a device run of a model with `dropout` is still refused with E-TARGET-011 |
 | 0.15.0 | no change to the Vulkan backend; the `muon` optimizer trains on the CPU reference only |
+| 0.16.0 | no change to the Vulkan backend; BERT-tiny is a checked example, and its hidden-32 twin is gradient-checked and trains on the CPU reference only |
 
 The 9 acceptance boxes of DESIGN.md § 9 are not ticked.
 
@@ -87,7 +88,7 @@ Released in 0.12.0: `optimizer = adamw(...)`, AdamW with decoupled weight decay 
 rate that warms up linearly from 0 and decays linearly to 0 at the last step.
 Released in 0.15.0: `optimizer = muon(...)`, Nesterov momentum orthogonalized by Newton–Schulz
 steps for each rank-2 parameter that no `embedding` reads as its table, and AdamW for the rest.
-On `main` after 0.15.0: [BERT-tiny](./examples/bert-tiny.md), `examples/bert_tiny.mspec` with
+Released in 0.16.0: [BERT-tiny](./examples/bert-tiny.md), `examples/bert_tiny.mspec` with
 1,486,720 parameters at the 8,192-token vocabulary of the corpus tokenizer (Turc et al.'s BERT-tiny
 has 4.4M at 30,522 tokens), passes `modelspec check`, and its hidden-32 twin passes a gradient
 check of every parameter and trains to the same output twice from one seed.

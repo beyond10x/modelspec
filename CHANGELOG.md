@@ -9,6 +9,10 @@ history.
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-10-25
+
+BERT-tiny written out in the language: `examples/bert_tiny.mspec` (2 post-layer-norm encoder layers, hidden 128, 2 heads, feed-forward 512, sequences of 128, the 8,192-token vocabulary; 1,486,720 parameters) passes `modelspec check` as part of `task check-examples`, and its hidden-32 twin passes a finite-difference check of every parameter in `f64` and trains reproducibly on the CPU from one seed. `train --data` on a packed directory refuses with `E-DATA-006`, before the first step, an `embedding` table or `cross_entropy` logits whose size differs from the packed vocabulary.
+
 ### Added
 
 - `examples/bert_tiny.mspec`, BERT-tiny (2 post-layer-norm encoder layers, hidden 128, 2 heads, feed-forward 512, sequences of 128, the 8,192-token vocabulary of the corpus tokenizer, an MLM head tied to the token table; 1,486,720 parameters, where Turc et al.'s BERT-tiny has 4.4M at 30,522 tokens), joins `task check-examples`, and its hidden-32 twin `crates/modelspec-cli/tests/fixtures/bert_cpu.mspec` passes a finite-difference check of every parameter in `f64` and trains to identical `step` and `eval` lines twice from one seed with `train --backend cpu --data --eval-every` (story:bert-tiny-cpu-model).
@@ -269,7 +273,8 @@ with `E-TARGET-001`.
 - `examples/linear_regression.mspec` checks and trains; `task check-examples` runs `modelspec check` on it
 - ESS contracts for the compiled artifact, checkpoint, device profile and training run in `spec/`
 
-[Unreleased]: https://github.com/beyond10x/modelspec/compare/0.15.0...HEAD
+[Unreleased]: https://github.com/beyond10x/modelspec/compare/0.16.0...HEAD
+[0.16.0]: https://github.com/beyond10x/modelspec/compare/0.15.0...0.16.0
 [0.15.0]: https://github.com/beyond10x/modelspec/compare/0.14.0...0.15.0
 [0.14.0]: https://github.com/beyond10x/modelspec/compare/0.13.0...0.14.0
 [0.13.0]: https://github.com/beyond10x/modelspec/compare/0.12.0...0.13.0
