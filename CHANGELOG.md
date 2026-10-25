@@ -9,6 +9,10 @@ history.
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-10-25
+
+Four BERT operators on the CPU interpreter (`embedding`, `add_rows`, `layer_norm` with `softmax`, `attention` with the first named compile-time argument), deterministic fused multiply-adds in every reduction, per-kernel pipeline statistics under `--profile`, device-profile scheduling, elementwise chain fusion, and a sweep harness that keeps the GPU busy between timed runs. At batch 8192 hidden 4096 the back-to-back run of that harness on the unit's tree gives modelspec 6,912.6 µs against PyTorch eager CUDA 6,333.4 µs per step (ratio 1.09; the 0.9.0 harness measured on 74a9520 gave 1.25). The 0.10.0 sweep of all 12 points is recorded in `benchmarks/runs.yaml`.
+
 ### Added
 
 - `attention(q, k, v, key_mask, heads = A)`, multi-head scaled dot-product attention over sequences of `S` rows of `q, k, v: f32[N,H]` with a key mask `f32[B,S]`, `N = B * S`, whose gradients are the internal `AttentionGradQ`, `AttentionGradK` and `AttentionGradV`; `heads` is the first named compile-time operator argument, an integer literal, and E-TYPE-019, E-TYPE-020 and E-TYPE-021 refuse a `heads` that is not one, a `heads` that does not divide `H` and a key mask whose value reads a parameter by dataflow, through `let`s, model function bodies and model function arguments, and a named argument before an operand is E-TYPE-002; a mask value other than 0 or 1, or a sequence with every key masked, is a runtime error before the op runs, not NaN; no Vulkan kernel yet (E-TARGET-011); DESIGN.md revision 0.43 (story:bert-attention).
@@ -208,7 +212,8 @@ with `E-TARGET-001`.
 - `examples/linear_regression.mspec` checks and trains; `task check-examples` runs `modelspec check` on it
 - ESS contracts for the compiled artifact, checkpoint, device profile and training run in `spec/`
 
-[Unreleased]: https://github.com/beyond10x/modelspec/compare/0.9.0...HEAD
+[Unreleased]: https://github.com/beyond10x/modelspec/compare/0.10.0...HEAD
+[0.10.0]: https://github.com/beyond10x/modelspec/compare/0.9.0...0.10.0
 [0.9.0]: https://github.com/beyond10x/modelspec/compare/0.8.0...0.9.0
 [0.8.0]: https://github.com/beyond10x/modelspec/compare/0.7.1...0.8.0
 [0.7.1]: https://github.com/beyond10x/modelspec/compare/0.7.0...0.7.1
