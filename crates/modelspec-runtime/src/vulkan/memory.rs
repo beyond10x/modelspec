@@ -2,7 +2,8 @@
 //!
 //! A device-local buffer is a storage buffer that copies run into and out of; a staging buffer
 //! is host-visible, host-coherent memory mapped for the buffer's whole life, which the host
-//! writes inputs to and reads results from.
+//! writes inputs to and reads results from; a download buffer is a staging buffer in host-cached
+//! memory where the device has it, for the results the host reads.
 //!
 //! Every `vkAllocateMemory` call and the free of its memory are counted for the thread that
 //! made the buffer, which is the thread that frees it (a [`Buffer`] is not `Send`). A
@@ -236,6 +237,18 @@ pub fn find_memory_type(
     })
 }
 
+/// [`find_memory_type`] for `preferred`, a superset of `wanted`, and for `wanted` when `allowed`
+/// permits no type with every property of `preferred`.
+pub fn find_preferred_memory_type(
+    memory: &vk::PhysicalDeviceMemoryProperties,
+    allowed: u32,
+    wanted: vk::MemoryPropertyFlags,
+    preferred: vk::MemoryPropertyFlags,
+) -> Option<u32> {
+    find_memory_type(memory, allowed, preferred)
+        .or_else(|| find_memory_type(memory, allowed, wanted))
+}
+
 impl Device<'_> {
     /// A device-local storage buffer of `bytes` bytes that copies can run into and out of.
     pub fn device_local_buffer(&self, bytes: u64) -> Result<Buffer<'_>, ExecError> {
@@ -264,11 +277,38 @@ impl Device<'_> {
         )
     }
 
+    /// A [`Device::staging_buffer`] the host reads results back from: host-cached memory when the
+    /// device has a host-visible, host-coherent type that is also host-cached, so the read is a
+    /// copy through the host's caches rather than one uncached read per word. A run's read-back
+    /// of the parameters of the 8192 × 4096 sweep point took 35 to 53 ms from uncached memory
+    /// (story:sweep-run-starts-busy).
+    pub fn download_buffer(&self, bytes: u64) -> Result<Buffer<'_>, ExecError> {
+        let host = vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT;
+        self.buffer_preferring(
+            bytes,
+            vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::TRANSFER_DST,
+            host,
+            host | vk::MemoryPropertyFlags::HOST_CACHED,
+        )
+    }
+
     fn buffer(
         &self,
         bytes: u64,
         usage: vk::BufferUsageFlags,
         wanted: vk::MemoryPropertyFlags,
+    ) -> Result<Buffer<'_>, ExecError> {
+        self.buffer_preferring(bytes, usage, wanted, wanted)
+    }
+
+    /// A buffer in memory of a type with every property of `preferred` when the buffer allows
+    /// one, else of `wanted` ([`find_preferred_memory_type`]).
+    fn buffer_preferring(
+        &self,
+        bytes: u64,
+        usage: vk::BufferUsageFlags,
+        wanted: vk::MemoryPropertyFlags,
+        preferred: vk::MemoryPropertyFlags,
     ) -> Result<Buffer<'_>, ExecError> {
         if bytes == 0 {
             return Err(ExecError::ZeroSize);
@@ -295,12 +335,12 @@ impl Device<'_> {
         };
         // SAFETY: `buffer` was created on this device.
         let needs = unsafe { self.device.get_buffer_memory_requirements(buffer) };
-        let index = find_memory_type(&self.memory, needs.memory_type_bits, wanted).ok_or(
-            ExecError::NoMemoryType {
-                wanted: wanted.as_raw(),
-                types: needs.memory_type_bits,
-            },
-        )?;
+        let index =
+            find_preferred_memory_type(&self.memory, needs.memory_type_bits, wanted, preferred)
+                .ok_or(ExecError::NoMemoryType {
+                    wanted: wanted.as_raw(),
+                    types: needs.memory_type_bits,
+                })?;
         let allocation = vk::MemoryAllocateInfo::default()
             .allocation_size(needs.size)
             .memory_type_index(index);
@@ -357,6 +397,32 @@ mod tests {
         );
         assert_eq!(find_memory_type(&memory, 0b0011, host), None);
         assert_eq!(find_memory_type(&memory, 0b1_0000, host), None);
+    }
+
+    /// story:sweep-run-starts-busy: a download buffer takes a host-cached type when the buffer
+    /// allows one, so the host reads it back through its caches, and the first host-visible,
+    /// host-coherent type otherwise.
+    #[test]
+    fn a_download_buffer_prefers_a_host_cached_type_and_falls_back_to_the_staging_one() {
+        let host = vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT;
+        let cached = host | vk::MemoryPropertyFlags::HOST_CACHED;
+        let memory = properties(&[vk::MemoryPropertyFlags::DEVICE_LOCAL, host, cached]);
+        assert_eq!(
+            find_preferred_memory_type(&memory, 0b111, host, cached),
+            Some(2)
+        );
+        assert_eq!(
+            find_preferred_memory_type(&memory, 0b011, host, cached),
+            Some(1)
+        );
+        assert_eq!(
+            find_preferred_memory_type(&memory, 0b001, host, cached),
+            None
+        );
+        assert_eq!(
+            find_preferred_memory_type(&memory, 0b111, host, host),
+            Some(1)
+        );
     }
 
     /// story:vulkan-step-counters: a span counts the allocations made after it starts and the

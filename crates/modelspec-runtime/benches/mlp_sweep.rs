@@ -4,25 +4,29 @@
 //! `.mspec` file is read. The data is the runner's synthetic teacher-student batch.
 //!
 //! Per point: a [`sweep::WARMUP_STEPS`]-step warm-up run, calibration runs until one lasts at
-//! least `--min-seconds`, then [`sweep::RUNS`] timed runs of that many steps. A run's time is
-//! [`RunStats::elapsed`], host wall time from the first submit to the end of the one host wait:
-//! compilation, SPIR-V emission, pipeline creation, buffer allocation and the parameter draws
-//! run before it. The span holds the one upload of the parameters and the batch, the final loss
-//! evaluation and the read-back of the parameters and losses, once per run.
+//! least `--min-seconds`, then [`sweep::RUNS`] timed runs of that many steps ([`runs::measure`]).
+//! A run's time is `RunStats::elapsed`, host wall time from the first submit to the end of the
+//! one host wait: compilation, SPIR-V emission, pipeline creation, buffer allocation and the
+//! parameter draws run before it. The span holds the one upload of the parameters and the batch,
+//! the final loss evaluation and the read-back of the parameters and losses, once per run.
 //!
-//! The GPU between runs: the batch and its CPU teacher forward, the slowest part of a run's
-//! setup at the wide points, are made once per point, before the warm-up, and handed to every
-//! run ([`RunOptions::data`]). This setup is hoisted out of the per-run loop; no extra GPU
-//! warm-up runs before a timed run. What still runs on the CPU between two timed runs, with the
-//! GPU idle, is what follows one run's last wait (below) and what precedes the next run's first
-//! submit: the parameter draws, SPIR-V emission, pipeline creation, buffer allocation and the
-//! staging writes. The PyTorch side runs its timed runs back to back, a synchronize between them.
+//! The GPU between runs: all runs of a point are one series on one setup
+//! (`vulkan::runner::train_repeatedly`). The point is compiled once, at the warm-up's step count,
+//! and its batch, its CPU teacher forward, the parameter draws, the SPIR-V, the pipelines, the
+//! buffers and the upload staging buffer are made once, before the warm-up; each later run is
+//! given its step count, and starts from the same initial parameters and batch, copied up inside
+//! its span as before. No extra GPU warm-up runs before a timed run. What runs on the CPU between
+//! two runs, with the GPU idle, is the read-back and check of one run, the next run's losses and
+//! read-back buffers and the recording of its first command buffer: 26 ms between two timed
+//! spans at batch 8192, hidden 4096, where a whole setup per run took about 150 ms, enough for
+//! the driver to lower the clock 0.3 s into every run and take two to three seconds to raise it
+//! (story:sweep-run-starts-busy, `benchmarks/raw/2026-10-25-sweep-idle/diagnosis.md`). The
+//! PyTorch side runs its timed runs back to back, a synchronize between them.
 //!
-//! `span_unix_ms` is not read from the span itself: [`RunStats`] has its length but not its
-//! start. A run's span is written as `[return − elapsed, return]`, `return` being the wall
-//! clock when `train_with` returned, so both ends sit later than the span by what follows the
-//! last wait: the host read of the downloaded values, the divergence check and the release of
-//! the run's buffers and pipelines.
+//! `span_unix_ms` is not read from the span itself: `RunStats` has its length but not its start.
+//! A run's span is written as `[return − elapsed, return]`, `return` being the wall clock when
+//! the series handed the finished run to the harness, so both ends sit later than the span by
+//! what follows the last wait: the host read of the downloaded values and the divergence check.
 //!
 //! Each point prints one JSON line on stdout ([`sweep::PointResult`]): FLOP per step
 //! (matmul-only, `3196·B·H`), µs per step of each timed run, their median and GFLOP/s, and the
@@ -49,22 +53,19 @@
 #[path = "mlp_sweep/sweep.rs"]
 mod sweep;
 
+#[path = "mlp_sweep/runs.rs"]
+mod runs;
+
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, ExitCode};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use clap::Parser;
-use modelspec_core::artifact::{Backend, CompiledArtifact};
-use modelspec_core::compile::{CompiledTraining, compile_artifact_for, compile_training};
-use modelspec_core::device::DeviceProfile;
-use modelspec_runtime::train::data::{SyntheticData, synthetic};
-use modelspec_runtime::vulkan::Device;
 use modelspec_runtime::vulkan::Vulkan;
-use modelspec_runtime::vulkan::negotiate::{Negotiated, negotiate};
-use modelspec_runtime::vulkan::runner::{RunOptions, RunStats, train_with};
+use modelspec_runtime::vulkan::negotiate::negotiate;
 use modelspec_runtime::vulkan::select::select_device;
-use sweep::{Build, Point, PointResult, TimedRun};
+use runs::{On, measure};
+use sweep::{Build, Point, PointResult};
 
 /// The side this bench writes.
 const SIDE: &str = "modelspec-vulkan";
@@ -72,9 +73,6 @@ const SIDE: &str = "modelspec-vulkan";
 /// The side this bench writes with `--fast-math`: a labelled figure beside the deterministic one,
 /// never the headline (DESIGN.md § 12 ADR-008).
 const SIDE_FAST_MATH: &str = "modelspec-vulkan-fast-math";
-
-/// The calibration runs a point gets before its step count is taken as it stands.
-const CALIBRATIONS: usize = 4;
 
 /// The MLP size sweep on one Vulkan device, or the crossover of result files.
 #[derive(Parser)]
@@ -244,101 +242,4 @@ fn build() -> Build {
         git(&["rev-parse", "HEAD"]).as_deref(),
         git(&["status", "--porcelain", "--untracked-files=no"]).as_deref(),
     )
-}
-
-/// The opened device a point runs on.
-struct On<'d> {
-    device: &'d Device<'d>,
-    profile: &'d DeviceProfile,
-    negotiated: &'d Negotiated,
-    /// The `fast_math` every point's artifact is compiled with.
-    fast_math: bool,
-}
-
-/// The point's source for `steps` steps, compiled for training and for Vulkan with `fast_math`,
-/// its plan scheduled within the limits of the device `profile` as `train --backend vulkan`
-/// schedules it.
-fn compile(
-    point: Point,
-    steps: u64,
-    fast_math: bool,
-    profile: &DeviceProfile,
-) -> Result<(CompiledTraining, CompiledArtifact), String> {
-    let name = point.file_name();
-    let source = point.source(steps);
-    let refusal = |diagnostics: Vec<modelspec_core::diag::Diagnostic>| {
-        diagnostics
-            .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>()
-            .join("\n")
-    };
-    let compiled = compile_training(&name, &source).map_err(refusal)?;
-    let mut artifact =
-        compile_artifact_for(&name, &source, Backend::Vulkan, Some(profile)).map_err(refusal)?;
-    artifact.fast_math = fast_math;
-    Ok((compiled, artifact))
-}
-
-/// One run of `compiled` on the device, on the point's batch `data`.
-fn run(
-    on: &On<'_>,
-    (compiled, artifact): &(CompiledTraining, CompiledArtifact),
-    data: &SyntheticData,
-) -> Result<RunStats, String> {
-    train_with(
-        on.device,
-        on.profile,
-        on.negotiated,
-        compiled,
-        artifact,
-        RunOptions {
-            data: Some(data.clone()),
-            ..RunOptions::default()
-        },
-    )
-    .map(|(_, stats)| stats)
-    .map_err(|error| error.to_string())
-}
-
-/// The warm-up, the calibration and the timed runs of `point`: the steps of each timed run and
-/// the runs.
-fn measure(on: &On<'_>, point: Point, min_seconds: f64) -> Result<(u64, Vec<TimedRun>), String> {
-    let target = min_seconds * 1.2;
-    let warm = compile(point, sweep::WARMUP_STEPS, on.fast_math, on.profile)?;
-    let data = synthetic(&warm.0.config, &warm.0.forward).map_err(|error| error.to_string())?;
-    let warm = run(on, &warm, &data)?;
-    let mut steps = sweep::steps_for(warm.elapsed.as_secs_f64(), warm.steps, target);
-    for _ in 0..CALIBRATIONS {
-        let stats = run(on, &compile(point, steps, on.fast_math, on.profile)?, &data)?;
-        let seconds = stats.elapsed.as_secs_f64();
-        eprintln!("mlp_sweep:   calibration: {steps} steps in {seconds:.3} s");
-        if seconds >= min_seconds {
-            break;
-        }
-        steps = sweep::steps_for(seconds, steps, target).max(steps + 1);
-    }
-    let timed = compile(point, steps, on.fast_math, on.profile)?;
-    let mut runs = Vec::with_capacity(sweep::RUNS);
-    for _ in 0..sweep::RUNS {
-        let stats = run(on, &timed, &data)?;
-        let end = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |since| since.as_millis() as u64);
-        let elapsed_ms = stats.elapsed.as_millis() as u64;
-        let seconds = stats.elapsed.as_secs_f64();
-        eprintln!(
-            "mlp_sweep:   timed: {steps} steps in {seconds:.3} s, {:.3} us per step",
-            stats.us_per_step()
-        );
-        if seconds < min_seconds {
-            eprintln!("mlp_sweep:   warning: the run was shorter than {min_seconds} s");
-        }
-        runs.push(TimedRun {
-            us_per_step: stats.us_per_step(),
-            seconds,
-            span_unix_ms: [end.saturating_sub(elapsed_ms), end],
-        });
-    }
-    Ok((steps, runs))
 }

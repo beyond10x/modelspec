@@ -1,0 +1,15 @@
+# binary: <venv>/bin/python
+# cwd: <worktree>
+# args: opponents/mlp_sweep/mlp_sweep.py --point 8192:4096 --modes eager
+# start: 1792904200083
+<venv>/lib/python3.14/site-packages/torch/_subclasses/functional_tensor.py:368: UserWarning: Failed to initialize NumPy: No module named 'numpy' (Triggered internally at /__w/pytorch/pytorch/torch/csrc/utils/tensor_numpy.cpp:84.)
+  cpu = _conversion_method_template(device=torch.device("cpu"))
+mlp_sweep: warning: not a clean checkout: {'commit': '74a9520da4e50e961c77770781b46af92dfd99ce', 'dirty': True}
+mlp_sweep: pytorch-eager batch 8192 hidden 4096
+mlp_sweep:   calibration: 679 steps in 4.330 s
+mlp_sweep:   calibration: 941 steps in 6.015 s
+mlp_sweep:   timed: 941 steps in 6.029 s, 6407.442 us per step
+mlp_sweep:   timed: 941 steps in 6.041 s, 6420.231 us per step
+mlp_sweep:   timed: 941 steps in 6.047 s, 6426.672 us per step
+# end: 1792904231430
+EXIT=0

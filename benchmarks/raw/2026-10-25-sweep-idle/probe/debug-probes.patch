@@ -1,0 +1,156 @@
+diff --git a/crates/modelspec-runtime/benches/mlp_sweep.rs b/crates/modelspec-runtime/benches/mlp_sweep.rs
+index ec9e06c..e075527 100644
+--- a/crates/modelspec-runtime/benches/mlp_sweep.rs
++++ b/crates/modelspec-runtime/benches/mlp_sweep.rs
+@@ -286,6 +286,10 @@ fn run(
+     (compiled, artifact): &(CompiledTraining, CompiledArtifact),
+     data: &SyntheticData,
+ ) -> Result<RunStats, String> {
++    if let Some(ms) = std::env::var("DEBUG_SWEEPIDLE_SLEEP_MS").ok().and_then(|v| v.parse::<u64>().ok()) {
++        std::thread::sleep(std::time::Duration::from_millis(ms)); // [DEBUG-sweepidle]
++    }
++    modelspec_runtime::vulkan::runner::debug_sweepidle("harness: train_with called");
+     train_with(
+         on.device,
+         on.profile,
+@@ -297,7 +301,10 @@ fn run(
+             ..RunOptions::default()
+         },
+     )
+-    .map(|(_, stats)| stats)
++    .map(|(_, stats)| {
++        modelspec_runtime::vulkan::runner::debug_sweepidle("harness: train_with returned");
++        stats
++    })
+     .map_err(|error| error.to_string())
+ }
+ 
+diff --git a/crates/modelspec-runtime/src/vulkan/runner.rs b/crates/modelspec-runtime/src/vulkan/runner.rs
+index d858e4c..72b5ab6 100644
+--- a/crates/modelspec-runtime/src/vulkan/runner.rs
++++ b/crates/modelspec-runtime/src/vulkan/runner.rs
+@@ -73,6 +73,15 @@ use crate::train::runner::{Diverged, Run, RunError, non_finite};
+ /// The most training steps one command buffer records.
+ pub const CHUNK_STEPS: u64 = 256;
+ 
++pub fn debug_sweepidle(label: &str) {
++    if std::env::var_os("DEBUG_SWEEPIDLE").is_some() {
++        let ms = std::time::SystemTime::now()
++            .duration_since(std::time::UNIX_EPOCH)
++            .map_or(0.0, |d| d.as_secs_f64() * 1000.0);
++        eprintln!("[DEBUG-sweepidle] {ms:.1} {label}");
++    }
++}
++
+ /// What a device run did, counted on the device while it ran.
+ #[derive(Clone, Copy, Debug, PartialEq)]
+ pub struct RunStats {
+@@ -465,6 +474,7 @@ fn execute(
+     job: Job,
+     options: RunOptions<'_>,
+ ) -> Result<Done, VulkanRunError> {
++    debug_sweepidle("execute start");
+     check_device(artifact, profile).map_err(|refused| VulkanRunError::Plan(refused.to_string()))?;
+     let plan = &artifact.execution;
+     let config = &compiled.config;
+@@ -487,6 +497,7 @@ fn execute(
+     let mut initial = initialize(&forward.program, config.seed, Stream::Init)
+         .map_err(|error| refused(error.into()))?;
+     initial.extend(init);
++    debug_sweepidle("params drawn");
+     let data = match data {
+         Some(data) => data,
+         None => synthetic(config, forward).map_err(|error| refused(error.into()))?,
+@@ -511,12 +522,14 @@ fn execute(
+     let emitting = Instant::now();
+     let modules = emit_kernels(artifact, profile)?;
+     let emitted = emitting.elapsed();
++    debug_sweepidle("spirv emitted");
+     let creating = Instant::now();
+     let mut pipelines = Vec::with_capacity(plan.kernels.len());
+     for (kernel, module) in plan.kernels.iter().zip(&modules) {
+         pipelines.push(device.kernel_pipeline(kernel, &module.spirv)?);
+     }
+     let pipeline_creation = creating.elapsed();
++    debug_sweepidle("pipelines created");
+     // The statistics of every kernel's pipeline, read once when profiled on a device opened with
+     // the pipeline executable extension; a failing query leaves the reason and the run goes on.
+     let pipeline_statistics = if profiled && device.pipeline_statistics_enabled() {
+@@ -545,6 +558,7 @@ fn execute(
+         });
+     }
+ 
++    debug_sweepidle("buffers allocated");
+     // What goes up: every parameter's initial value, then every data declaration's batch.
+     let mut uploads: Vec<(BufferView, &[f32])> = Vec::new();
+     for parameter in &plan.parameters {
+@@ -570,6 +584,7 @@ fn execute(
+     }
+     let upload_bytes: u64 = uploads.iter().map(|(view, _)| view.size_bytes).sum();
+     let mut upload = device.staging_buffer(upload_bytes)?;
++    debug_sweepidle("staging allocated");
+     upload.write_f32(
+         &uploads
+             .iter()
+@@ -577,6 +592,7 @@ fn execute(
+             .collect::<Vec<_>>(),
+     )?;
+ 
++    debug_sweepidle("staging written");
+     let loss_slots = steps
+         .checked_add(1)
+         .ok_or_else(|| VulkanRunError::Plan(format!("{steps} steps have no final loss")))?;
+@@ -642,6 +658,7 @@ fn execute(
+     }
+     let stamps_of = |chunk: usize, next: u32| pools.get(chunk).map(|pool| Stamps { pool, next });
+ 
++    debug_sweepidle("descriptors bound, pools made");
+     let class = numerics_class(negotiated, artifact);
+     let waits_before = device.host_waits();
+     let submits_before = device.submits();
+@@ -743,6 +760,7 @@ fn execute(
+                     if k != from {
+                         let recorded = recording.finish()?;
+                         first_submit.get_or_insert_with(Instant::now);
++                        debug_sweepidle("submit chunk");
+                         chain.submit(recorded)?;
+                         recording = device.record()?;
+                     }
+@@ -811,7 +829,9 @@ fn execute(
+             recording.barrier(Barrier::TransferToHost);
+             let recorded = recording.finish()?;
+             first_submit.get_or_insert_with(Instant::now);
++            debug_sweepidle("submit last, wait");
+             chain.finish(recorded)?.wait()?;
++            debug_sweepidle("wait done");
+             next_query = stamps.map_or(0, |stamps| stamps.next);
+         }
+         if !last && let Some(write) = write.as_mut() {
+@@ -842,8 +862,11 @@ fn execute(
+     let stats = count(steps, dispatches_per_step, barriers_per_step, first_submit);
+     let profiled = profile_of(steps, None)?;
+ 
++    debug_sweepidle("stats, profile");
+     let read = download.read_f32()?;
++    debug_sweepidle("download read");
+     let values = parameters(plan, &initial, &read)?;
++    debug_sweepidle("parameters built");
+     let at = param_floats;
+     let losses = read[at..at + loss_slots as usize].to_vec();
+     if !predict
+@@ -863,6 +886,7 @@ fn execute(
+             profile: profiled,
+         })));
+     }
++    debug_sweepidle("read back, checked");
+     let prediction = if predict {
+         let at = at + loss_slots as usize;
+         let count = plan.prediction_view.element_count as usize;
+@@ -895,6 +919,7 @@ fn execute(
+         state: state_of(compiled, values, end),
+         teacher: data.teacher,
+     };
++    debug_sweepidle("run built");
+     Ok(Done {
+         run,
+         stats,

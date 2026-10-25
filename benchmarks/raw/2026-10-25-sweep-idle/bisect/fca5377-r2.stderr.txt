@@ -1,0 +1,13 @@
+# binary: <scratch>/bin/mlp_sweep-fca5377
+# cwd: <scratch>/tree-fca5377/crates/modelspec-runtime
+# args: --bench --point 8192:4096 --min-seconds 6
+# start: 1792902288025
+mlp_sweep: warning: not a clean checkout: Build { version: Some("0.9.0"), commit: None, dirty: None }
+mlp_sweep: batch 8192 hidden 4096: 107239964672 FLOP per step
+mlp_sweep:   calibration: 400 steps in 4.281 s
+mlp_sweep:   calibration: 673 steps in 6.126 s
+mlp_sweep:   timed: 673 steps in 6.305 s, 9368.723 us per step
+mlp_sweep:   timed: 673 steps in 6.330 s, 9405.300 us per step
+mlp_sweep:   timed: 673 steps in 6.107 s, 9073.603 us per step
+# end: 1792902321399
+EXIT=0

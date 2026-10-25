@@ -1,0 +1,17 @@
+b10x-build-slot: slot 2 of 3, 128G free
+   Compiling modelspec-runtime v0.9.0 (<worktree>/crates/modelspec-runtime)
+    Finished `release` profile [optimized] target(s) in 0.58s
+     Running tests/vulkan_mlp_sweep.rs (target/release/deps/vulkan_mlp_sweep-bbee05b7e6b4bd6b)
+
+running 2 tests
+test every_run_of_a_series_is_bit_for_bit_the_run_of_the_source_at_its_step_count ... ok
+test the_timed_runs_of_the_widest_point_leave_the_device_idle_under_40_ms_between_them ... mlp_sweep:   calibration: 38 steps in 0.573 s
+mlp_sweep:   timed: 38 steps in 0.542 s, 14261.329 us per step
+mlp_sweep:   timed: 38 steps in 0.508 s, 13367.742 us per step
+mlp_sweep:   timed: 38 steps in 0.474 s, 12474.865 us per step
+mlp_sweep:   warning: the run was shorter than 0.5 s
+38 steps per timed run; ms between consecutive timed spans: [15, 16]
+ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.92s
+
