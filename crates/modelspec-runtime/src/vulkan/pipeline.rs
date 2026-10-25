@@ -151,6 +151,50 @@ pub struct KernelStatistics {
     pub executables: Vec<PipelineExecutable>,
 }
 
+/// What a profiled run read of the statistics of its pipelines
+/// ([`super::profile::Profile::pipeline_statistics`]).
+#[derive(Clone, Debug, PartialEq)]
+pub enum PipelineStatistics {
+    /// The device was opened without `VK_KHR_pipeline_executable_properties`, so no pipeline
+    /// captured any.
+    NotCaptured,
+    /// Per kernel of the plan, in plan order, the statistics of its pipeline's executables
+    /// ([`Pipeline::statistics`]).
+    Reported(Vec<KernelStatistics>),
+    /// A query failed, with this reason: the run goes on without statistics.
+    Failed(String),
+}
+
+impl PipelineStatistics {
+    /// The statistics of each kernel's pipeline, from the result of its query in plan order
+    /// (`None`, a pipeline that captured none, counts as no executables); at the first error,
+    /// [`Self::Failed`] with its reason, and no later query is read. A failing query never ends
+    /// a run.
+    pub fn collect<E: std::fmt::Display>(
+        queries: impl IntoIterator<Item = (KernelModuleId, Result<Option<Vec<PipelineExecutable>>, E>)>,
+    ) -> Self {
+        let mut kernels = Vec::new();
+        for (kernel_module_id, read) in queries {
+            match read {
+                Ok(executables) => kernels.push(KernelStatistics {
+                    kernel_module_id,
+                    executables: executables.unwrap_or_default(),
+                }),
+                Err(error) => return Self::Failed(error.to_string()),
+            }
+        }
+        Self::Reported(kernels)
+    }
+
+    /// The statistics per kernel, when they were read.
+    pub fn reported(&self) -> Option<&[KernelStatistics]> {
+        match self {
+            Self::Reported(kernels) => Some(kernels),
+            Self::NotCaptured | Self::Failed(_) => None,
+        }
+    }
+}
+
 impl Drop for Pipeline<'_> {
     fn drop(&mut self) {
         // SAFETY: every object was created on `device`, null handles are ignored, and no

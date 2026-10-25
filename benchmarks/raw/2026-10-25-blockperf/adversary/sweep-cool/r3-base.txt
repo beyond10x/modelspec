@@ -1,0 +1,14 @@
+# cooled: 50 C after 180 s (target 50 C, cap 900 s)
+# gpu-apps-before [] 2026-10-25T01:05:34Z
+# binary: <scratch>/bin/mlp_sweep-base (9135029cc91144fc)
+# command: <scratch>/bin/mlp_sweep-base --bench --point 8192:4096 --min-seconds 6 (cwd <scratch>/base/crates/modelspec-runtime)
+# before: 2026/10/25 02:05:34.784, 50, 210 MHz, P8
+mlp_sweep: warning: not a clean checkout: Build { version: Some("0.9.0"), commit: None, dirty: None }
+mlp_sweep: batch 8192 hidden 4096: 107239964672 FLOP per step
+mlp_sweep:   calibration: 379 steps in 4.064 s
+mlp_sweep:   calibration: 672 steps in 6.239 s
+mlp_sweep:   timed: 672 steps in 6.285 s, 9353.349 us per step
+mlp_sweep:   timed: 672 steps in 6.090 s, 9062.537 us per step
+mlp_sweep:   timed: 672 steps in 6.110 s, 9092.748 us per step
+# exit 0
+# after: 2026/10/25 02:06:07.843, 63, 780 MHz, P3

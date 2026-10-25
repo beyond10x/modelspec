@@ -71,7 +71,7 @@ fn a_time_of_zero_prints_unavailable_never_inf_or_nan() {
         }),
         pipeline_creation: Duration::from_micros(1),
         compile: Duration::from_micros(2),
-        pipeline_statistics: None,
+        pipeline_statistics: modelspec_runtime::vulkan::pipeline::PipelineStatistics::NotCaptured,
     };
     let report = profile.report(&stats());
     assert!(

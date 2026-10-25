@@ -205,7 +205,7 @@ fn the_report_prints_one_line_per_site_then_the_counters() {
         timings: Some(timings(&steps, &last, 3, &stamps, clock).expect("the stamps fit")),
         pipeline_creation: Duration::from_micros(1500),
         compile: Duration::from_nanos(2_250_500),
-        pipeline_statistics: None,
+        pipeline_statistics: modelspec_runtime::vulkan::pipeline::PipelineStatistics::NotCaptured,
     };
     let id = KernelModuleId([1; 16]);
     assert_eq!(
@@ -240,7 +240,7 @@ fn without_timestamp_queries_the_report_says_so_and_still_prints_the_counters() 
         timings: None,
         pipeline_creation: Duration::from_micros(1),
         compile: Duration::from_micros(2),
-        pipeline_statistics: None,
+        pipeline_statistics: modelspec_runtime::vulkan::pipeline::PipelineStatistics::NotCaptured,
     };
     assert_eq!(
         profile.report(&stats()),
@@ -329,7 +329,7 @@ fn the_step_total_divides_the_counted_step_sites_by_the_steady_time_per_step() {
         timings: Some(timed),
         pipeline_creation: Duration::from_micros(1),
         compile: Duration::from_micros(2),
-        pipeline_statistics: None,
+        pipeline_statistics: modelspec_runtime::vulkan::pipeline::PipelineStatistics::NotCaptured,
     };
     let report = profile.report(&stats());
     assert_eq!(

@@ -1,0 +1,14 @@
+b10x-build-slot: slot 2 of 3, 115G free
+    Finished `release` profile [optimized] target(s) in 0.03s
+     Running tests/adversary_blockperf_device.rs (target/release/deps/adversary_blockperf_device-084d27627900e1c9)
+
+running 3 tests
+test signed_zeros_subnormals_and_cancellation_give_the_block_the_bits_of_the_tile_of_128 ... validation true; 17719304 elements block against tile; block against the oracle: same bits; against the oracle on flushed inputs: same bits; subnormal outputs 0, -0.0 outputs 0; denorm preserve reported Some(false)
+ok
+test the_block_at_every_boundary_gives_the_oracle_bits_and_the_bits_of_the_tile_of_128 ... validation true; 17 block shapes x 4 flags x 2 tiles, 251184240 elements: [(127, 64, 16385), (128, 65, 16386), (16387, 66, 128), (129, 67, 8195), (8196, 127, 129), (255, 128, 8193), (8194, 129, 255), (256, 255, 8194), (8195, 256, 256), (257, 257, 5507), (5508, 511, 257), (511, 512, 4097), (4098, 513, 511), (512, 72, 4098), (4099, 100, 512), (513, 199, 3331), (3332, 300, 513)]
+ok
+test the_block_under_fast_math_is_within_the_gate_5_tolerance ... validation true; fast_math bit-identical to deterministic in 4 of 4 flag sets; module ids are shared (the id is the kernel's, the cache key carries fast_math)
+ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 140.93s
+

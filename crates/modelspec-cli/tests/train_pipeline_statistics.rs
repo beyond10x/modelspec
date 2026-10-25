@@ -29,6 +29,32 @@ fn text(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
 }
 
+/// The `--profile` row of the generated CLI reference, from the doc comment of the flag, names
+/// the `profile pipeline` lines and the `not reported` line (adversary pass 1, the note on
+/// `train.rs`); `task docs-check` keeps the page equal to the doc comment.
+#[test]
+fn the_profile_flag_documents_the_profile_pipeline_lines() {
+    let page = std::fs::read_to_string(repo_root().join("website/docs/reference/cli.md"))
+        .expect("the CLI reference reads");
+    let row = page
+        .lines()
+        .find(|l| l.starts_with("| `--profile` |"))
+        .expect("the --profile row");
+    for words in [
+        "profile pipeline <kernel_module_id> executable",
+        "statistic",
+        "profile pipeline statistics: not reported",
+    ] {
+        assert!(row.contains(words), "{words}: {row}");
+    }
+    let help = modelspec(&["train", "--help"]);
+    assert!(
+        text(&help.stdout).contains("profile pipeline statistics: not reported"),
+        "{}",
+        text(&help.stdout)
+    );
+}
+
 #[test]
 #[ignore = "needs a Vulkan device"]
 fn profile_prints_the_statistics_of_every_kernel_and_leaves_stdout_alone() {

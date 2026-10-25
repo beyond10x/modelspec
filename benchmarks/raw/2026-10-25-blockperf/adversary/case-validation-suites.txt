@@ -1,0 +1,42 @@
+b10x-build-slot: waiting (all 3 slots busy or under 20G free)
+b10x-build-slot: slot 3 of 3, 115G free
+    Finished `release` profile [optimized] target(s) in 0.87s
+     Running tests/adversary_tile256_device.rs (target/release/deps/adversary_tile256_device-1cd9ce9feb7cb199)
+
+running 2 tests
+test every_padded_layout_and_its_dropped_padding_give_the_cpu_oracle_bits ... ok
+test the_256_invocation_block_gives_the_cpu_oracle_bits_at_partial_blocks_and_partial_tiles ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 56.92s
+
+     Running tests/vulkan_matmul_plan_sites_same_bits.rs (target/release/deps/vulkan_matmul_plan_sites_same_bits-717eeea409527855)
+
+running 1 test
+test every_matmul_site_of_the_step_plans_writes_the_bits_of_the_plan_before_the_change ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.08s
+
+     Running tests/vulkan_matmul_tile256_same_bits.rs (target/release/deps/vulkan_matmul_tile256_same_bits-41c11ddc4be0403c)
+
+running 1 test
+test every_matmul_site_of_the_profile_plans_writes_the_bits_of_the_plan_before_the_change ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.07s
+
+     Running tests/vulkan_pipeline_statistics.rs (target/release/deps/vulkan_pipeline_statistics-b986552d3b8918f0)
+
+running 2 tests
+test a_matmul_pipeline_reports_a_positive_register_count ... ok
+test a_profiled_run_reports_the_statistics_of_every_kernel_of_its_plan ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.51s
+
+     Running tests/vulkan_profile_wired.rs (target/release/deps/vulkan_profile_wired-39196c14974a84bd)
+
+running 2 tests
+test an_artifact_scheduled_past_the_device_limits_is_refused_before_the_device_is_opened ... ok
+test the_plan_for_the_device_takes_the_block_and_trains_to_the_bits_of_the_plan_for_every_device ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.57s
+
+EXIT=0

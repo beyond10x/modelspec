@@ -8,8 +8,8 @@
 use std::path::{Path, PathBuf};
 
 use modelspec_core::artifact::{
-    self, Backend, CompiledArtifact, E_ARTIFACT_003, E_ARTIFACT_005, KernelCacheKey,
-    KernelModuleFile,
+    self, Backend, CompiledArtifact, E_ARTIFACT_002, E_ARTIFACT_003, E_ARTIFACT_005,
+    KernelCacheKey, KernelModuleFile,
 };
 use modelspec_core::compile::{compile_artifact, compile_artifact_for};
 use modelspec_core::device::DeviceProfile;
@@ -19,6 +19,7 @@ use modelspec_core::ir::tensor::DType;
 use modelspec_core::ir::verify::{
     PlanVerifyError, verify_device_limits, verify_plan, verify_plan_within,
 };
+use serde_json::Value;
 
 const RTX3090: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -269,5 +270,217 @@ fn a_manifest_whose_limits_do_not_cover_its_kernels_is_refused() {
         let refused = artifact::read(&dir).expect_err("a kernel past the recorded invocations");
         assert_eq!(refused.code, E_ARTIFACT_003, "{name}: {refused}");
         assert!(refused.to_string().contains("256"), "{name}: {refused}");
+    }
+}
+
+/// Writes `compiled`, replaces its manifest's `matmul_limits` with `limits` and reseals it when
+/// `reseal`.
+fn rewritten(name: &str, compiled: &CompiledArtifact, limits: Value, reseal: bool) -> PathBuf {
+    let dir = scratch(name);
+    artifact::write(&dir, compiled, &modules(compiled)).expect("written");
+    let path = dir.join(artifact::MANIFEST_FILE);
+    let mut json: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    json.as_object_mut()
+        .unwrap()
+        .insert("matmul_limits".to_owned(), limits);
+    std::fs::write(&path, serde_json::to_string_pretty(&json).unwrap() + "\n").unwrap();
+    if reseal {
+        artifact::seal(&dir).expect("resealed");
+    }
+    dir
+}
+
+/// ADV-BLOCKPERF-1: a resealed manifest whose `matmul_limits` break an invariant of
+/// `spec/domains/artifact.yaml` `MatMulLimits` (`invocations >= 128`, `shared_bytes >= 16384`)
+/// is refused with E-ARTIFACT-003 naming the field and its bound, as the reader refuses the
+/// other invariants; limits at exactly the bounds are read.
+#[test]
+fn the_reader_refuses_limits_below_the_vulkan_minimum_naming_the_field_and_bound() {
+    let minimum = compiled(Backend::Vulkan, Some(&limited(128, 16_384)));
+    assert_eq!(
+        minimum.matmul_limits,
+        Some(MatMulLimits {
+            invocations: 128,
+            shared_bytes: 16_384
+        })
+    );
+    let dir = rewritten(
+        "at-the-bounds",
+        &minimum,
+        serde_json::json!({"invocations": 128, "shared_bytes": 16_384}),
+        true,
+    );
+    artifact::read(&dir).expect("limits at the bounds are read");
+    for (name, limits, rule) in [
+        (
+            "invocations-127",
+            serde_json::json!({"invocations": 127, "shared_bytes": 16_384}),
+            "matmul_limits.invocations >= 128",
+        ),
+        (
+            "invocations-zero",
+            serde_json::json!({"invocations": 0, "shared_bytes": 49_152}),
+            "matmul_limits.invocations >= 128",
+        ),
+        (
+            "shared-16383",
+            serde_json::json!({"invocations": 1024, "shared_bytes": 16_383}),
+            "matmul_limits.shared_bytes >= 16384",
+        ),
+        (
+            "shared-zero",
+            serde_json::json!({"invocations": 1024, "shared_bytes": 0}),
+            "matmul_limits.shared_bytes >= 16384",
+        ),
+    ] {
+        let dir = rewritten(name, &minimum, limits, true);
+        let refused = artifact::read(&dir).expect_err("limits below the invariants");
+        assert_eq!(refused.code, E_ARTIFACT_003, "{name}: {refused}");
+        assert!(refused.to_string().contains(rule), "{name}: {refused}");
+    }
+}
+
+/// ADV-BLOCKPERF-2 and ADV-BLOCKPERF-3: a profile whose limits are below the Vulkan minimum the
+/// smallest tile needs (`MatMulLimits` `invocations >= 128`, `shared_bytes >= 16384`) is refused
+/// by `compile_artifact_for` with one E-ARTIFACT-005, the device cannot run the plan, naming the
+/// field, its bound and the reported value; never E-INTERNAL-002, and no artifact records such
+/// limits. A profile at exactly the bounds compiles and records them.
+#[test]
+fn a_profile_below_the_vulkan_minimum_is_refused_with_e_artifact_005_naming_the_field() {
+    let mut narrow = rtx3090();
+    narrow.max_workgroup_size.x = 64;
+    for (name, profile, field, bound, reported) in [
+        (
+            "invocations-64",
+            limited(64, 49_152),
+            "invocations",
+            "128",
+            "64",
+        ),
+        (
+            "invocations-127",
+            limited(127, 16_384),
+            "invocations",
+            "128",
+            "127",
+        ),
+        ("size-x-64", narrow, "invocations", "128", "64"),
+        (
+            "shared-8192",
+            limited(1024, 8192),
+            "shared_bytes",
+            "16384",
+            "8192",
+        ),
+        (
+            "shared-16383",
+            limited(128, 16_383),
+            "shared_bytes",
+            "16384",
+            "16383",
+        ),
+    ] {
+        let refused =
+            compile_artifact_for("mlp_sweep.mspec", &sweep(), Backend::Vulkan, Some(&profile))
+                .expect_err("a profile below the Vulkan minimum");
+        let [diagnostic] = &refused[..] else {
+            panic!("{name}: one diagnostic: {refused:?}");
+        };
+        assert_eq!(diagnostic.code, E_ARTIFACT_005, "{name}: {diagnostic}");
+        assert_eq!(
+            detail(diagnostic, "field"),
+            Some(field),
+            "{name}: {diagnostic}"
+        );
+        assert_eq!(
+            detail(diagnostic, "bound"),
+            Some(bound),
+            "{name}: {diagnostic}"
+        );
+        assert_eq!(
+            detail(diagnostic, "reported"),
+            Some(reported),
+            "{name}: {diagnostic}"
+        );
+        assert!(
+            !diagnostic.to_string().contains("compiler bug"),
+            "{name}: {diagnostic}"
+        );
+    }
+    let minimum = compiled(Backend::Vulkan, Some(&limited(128, 16_384)));
+    verify_plan_within(&minimum.execution, minimum.matmul_limits).expect("within the minimum");
+}
+
+/// The artifact hash covers `matmul_limits` (mutant M4 of the adversary pass leaves them out of
+/// it): two artifacts of one plan and one set of modules that differ only in the recorded
+/// limits have different hashes, and a manifest whose limits are changed and not resealed is
+/// refused with E-ARTIFACT-002.
+#[test]
+fn the_artifact_hash_covers_matmul_limits() {
+    let scheduled = compiled(Backend::Vulkan, Some(&rtx3090()));
+    let mut wider = scheduled.clone();
+    wider.matmul_limits = Some(MatMulLimits {
+        invocations: 1024,
+        shared_bytes: 49_153,
+    });
+    let one =
+        artifact::write(&scratch("hash-one"), &scheduled, &modules(&scheduled)).expect("written");
+    let other = artifact::write(&scratch("hash-other"), &wider, &modules(&wider)).expect("written");
+    assert_ne!(one, other, "the limits are in the artifact hash");
+
+    let dir = rewritten(
+        "hash-edited",
+        &scheduled,
+        serde_json::json!({"invocations": 1024, "shared_bytes": 49_153}),
+        false,
+    );
+    let refused = artifact::read(&dir).expect_err("changed after it was sealed");
+    assert_eq!(refused.code, E_ARTIFACT_002, "{refused}");
+}
+
+/// The bounds `MatMulLimits::checked` enforces, which the compile and the reader share, are
+/// exactly the invariants `spec/domains/artifact.yaml` gives `MatMulLimits`: each is accepted at
+/// its bound and refused one below it.
+#[test]
+fn the_checked_bounds_are_the_specification_invariants_of_matmul_limits() {
+    let spec = include_str!("../../../spec/domains/artifact.yaml");
+    let start = spec
+        .find("- name: modelspec.artifact.MatMulLimits")
+        .expect("the specification names MatMulLimits");
+    let rest = &spec[start..];
+    let block = &rest[..rest[1..]
+        .find("\n  - name: ")
+        .map_or(rest.len(), |end| end + 1)];
+    let invariants: Vec<&str> = block
+        .split("invariants:")
+        .nth(1)
+        .expect("MatMulLimits has invariants")
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("- "))
+        .collect();
+    assert_eq!(
+        invariants,
+        [
+            format!("invocations >= {}", MatMulLimits::MIN_INVOCATIONS),
+            format!("shared_bytes >= {}", MatMulLimits::MIN_SHARED_BYTES),
+        ],
+        "{block}"
+    );
+    let bounds = MatMulLimits {
+        invocations: MatMulLimits::MIN_INVOCATIONS,
+        shared_bytes: MatMulLimits::MIN_SHARED_BYTES,
+    };
+    assert_eq!(bounds.checked(), Ok(bounds));
+    for below in [
+        MatMulLimits {
+            invocations: bounds.invocations - 1,
+            ..bounds
+        },
+        MatMulLimits {
+            shared_bytes: bounds.shared_bytes - 1,
+            ..bounds
+        },
+    ] {
+        assert!(below.checked().is_err(), "{below:?}");
     }
 }

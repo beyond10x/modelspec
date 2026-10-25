@@ -544,7 +544,61 @@ impl MatMulLimits {
             shared_bytes: profile.max_shared_memory_bytes,
         }
     }
+
+    /// The least invocations of one workgroup every Vulkan device provides, which the smallest
+    /// tile needs: the invariant `invocations >= 128` of `spec/domains/artifact.yaml`
+    /// `MatMulLimits`.
+    pub const MIN_INVOCATIONS: u32 = MAX_WORKGROUP_INVOCATIONS;
+
+    /// The least workgroup memory every Vulkan device provides, which every tile of
+    /// [`Self::MIN_INVOCATIONS`] stages within: the invariant `shared_bytes >= 16384` of
+    /// `spec/domains/artifact.yaml` `MatMulLimits`.
+    pub const MIN_SHARED_BYTES: u32 = MIN_SHARED_MEMORY_BYTES;
+
+    /// The limits, if they hold both invariants of `spec/domains/artifact.yaml` `MatMulLimits`
+    /// ([`Self::MIN_INVOCATIONS`], [`Self::MIN_SHARED_BYTES`]); else the first field below its
+    /// bound. Every recorded limit passes here: the compile's, from a device profile
+    /// ([`crate::compile::compile_artifact_for`]), and the reader's, from a manifest
+    /// ([`crate::artifact::read`]).
+    pub fn checked(self) -> Result<Self, LimitsBelowMinimum> {
+        for (field, bound, value) in [
+            ("invocations", Self::MIN_INVOCATIONS, self.invocations),
+            ("shared_bytes", Self::MIN_SHARED_BYTES, self.shared_bytes),
+        ] {
+            if value < bound {
+                return Err(LimitsBelowMinimum {
+                    field,
+                    bound,
+                    value,
+                });
+            }
+        }
+        Ok(self)
+    }
 }
+
+/// A [`MatMulLimits`] field below the bound of its invariant ([`MatMulLimits::checked`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LimitsBelowMinimum {
+    /// `invocations` or `shared_bytes`.
+    pub field: &'static str,
+    /// The least value the field may hold.
+    pub bound: u32,
+    /// The value it holds.
+    pub value: u32,
+}
+
+impl fmt::Display for LimitsBelowMinimum {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "matmul_limits.{} >= {} ({} is {})",
+            self.field, self.bound, self.field, self.value
+        )
+    }
+}
+
+impl std::error::Error for LimitsBelowMinimum {}
 
 /// The workgroup memory of a [`MatMulTile`] for a matmul with given `transposed` flags
 /// ([`MatMulTile::layout`]), in `f32` values: what the emitter stages and where.

@@ -21,7 +21,7 @@ use modelspec_core::ir::kernel::{KernelKind, KernelModuleId};
 use modelspec_runtime::spirv::emit::emit_module;
 use modelspec_runtime::vulkan::negotiate::{PIPELINE_EXECUTABLE_PROPERTIES, negotiate};
 use modelspec_runtime::vulkan::pipeline::{
-    KernelStatistics, PipelineExecutable, PipelineStatistic, StatisticValue,
+    KernelStatistics, PipelineExecutable, PipelineStatistic, PipelineStatistics, StatisticValue,
 };
 use modelspec_runtime::vulkan::profile::Profile;
 use modelspec_runtime::vulkan::runner::{RunStats, train_profiled};
@@ -80,7 +80,7 @@ fn the_report_prints_every_statistic_of_every_kernel_before_the_counters() {
         timings: None,
         pipeline_creation: Duration::from_micros(1),
         compile: Duration::from_micros(2),
-        pipeline_statistics: Some(vec![KernelStatistics {
+        pipeline_statistics: PipelineStatistics::Reported(vec![KernelStatistics {
             kernel_module_id: id,
             executables: vec![PipelineExecutable {
                 name: "Compute shader".to_owned(),
@@ -153,13 +153,87 @@ fn without_the_extension_the_report_says_pipeline_statistics_are_not_reported() 
         timings: None,
         pipeline_creation: Duration::from_micros(1),
         compile: Duration::from_micros(2),
-        pipeline_statistics: None,
+        pipeline_statistics: PipelineStatistics::NotCaptured,
     };
     let report = profile.report(&stats());
     assert_eq!(
         report.lines().nth(1),
         Some("profile pipeline statistics: not reported"),
         "{report}"
+    );
+}
+
+/// A statistics query that fails does not end the profiled run (adversary pass 1, the note on
+/// `runner.rs`): [`PipelineStatistics::collect`], through which the runner reads the pipeline of
+/// every kernel, keeps the first error as the reason and reads no further pipeline, and the
+/// report prints `profile pipeline statistics: not reported (<reason>)` once, no statistic line,
+/// and the run's counters after it. The error is injected here: no device at hand fails the
+/// query, so the runner's own call on a device is not exercised by this test.
+#[test]
+fn a_failing_statistics_query_degrades_to_one_not_reported_line() {
+    let executable = PipelineExecutable {
+        name: "Compute shader".to_owned(),
+        description: "The compute stage".to_owned(),
+        subgroup_size: 32,
+        statistics: Vec::new(),
+    };
+    let reason = "vkGetPipelineExecutableStatisticsKHR failed: ERROR_OUT_OF_HOST_MEMORY";
+    let mut read = Vec::new();
+    let statistics = PipelineStatistics::collect(
+        [
+            (KernelModuleId([7; 16]), Ok(Some(vec![executable.clone()]))),
+            (KernelModuleId([8; 16]), Err(reason)),
+            (KernelModuleId([9; 16]), Ok(Some(vec![executable.clone()]))),
+        ]
+        .into_iter()
+        .inspect(|(id, _)| read.push(*id)),
+    );
+    assert_eq!(statistics, PipelineStatistics::Failed(reason.to_owned()));
+    assert_eq!(
+        read,
+        [KernelModuleId([7; 16]), KernelModuleId([8; 16])],
+        "no pipeline is read after the first error"
+    );
+    let profile = Profile {
+        timings: None,
+        pipeline_creation: Duration::from_micros(1),
+        compile: Duration::from_micros(2),
+        pipeline_statistics: statistics,
+    };
+    let report = profile.report(&stats());
+    let pipeline: Vec<&str> = report
+        .lines()
+        .filter(|l| l.starts_with("profile pipeline "))
+        .collect();
+    assert_eq!(
+        pipeline,
+        [format!(
+            "profile pipeline statistics: not reported ({reason})"
+        )],
+        "{report}"
+    );
+    assert_eq!(
+        report.lines().nth(2),
+        Some("profile dispatches 7"),
+        "{report}"
+    );
+
+    let every = PipelineStatistics::collect([
+        (
+            KernelModuleId([7; 16]),
+            Ok::<_, &str>(Some(vec![executable.clone()])),
+        ),
+        (KernelModuleId([8; 16]), Ok(None)),
+    ]);
+    assert_eq!(
+        every.reported().map(|kernels| kernels
+            .iter()
+            .map(|k| (k.kernel_module_id, k.executables.len()))
+            .collect::<Vec<_>>()),
+        Some(vec![
+            (KernelModuleId([7; 16]), 1),
+            (KernelModuleId([8; 16]), 0)
+        ])
     );
 }
 
@@ -267,7 +341,7 @@ fn a_profiled_run_reports_the_statistics_of_every_kernel_of_its_plan() {
     let (_, stats, profile) = train_profiled(&device, device_profile, &plain, &compiled, &artifact)
         .expect("the profiled run finishes");
     drop(device);
-    assert_eq!(profile.pipeline_statistics, None);
+    assert_eq!(profile.pipeline_statistics, PipelineStatistics::NotCaptured);
     assert!(
         profile
             .report(&stats)
@@ -291,7 +365,7 @@ fn a_profiled_run_reports_the_statistics_of_every_kernel_of_its_plan() {
     );
     let reported = profile
         .pipeline_statistics
-        .as_ref()
+        .reported()
         .expect("the device reports statistics");
     assert_eq!(
         reported

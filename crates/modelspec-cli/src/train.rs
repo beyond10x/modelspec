@@ -41,7 +41,8 @@
 //! ([`modelspec_runtime::vulkan::profile`]), then per kernel of the plan the pipeline executable
 //! statistics the driver reports (`profile pipeline <kernel_module_id> executable <i> ...` and
 //! `... statistic "<name>" <value> description "<text>"`), or `profile pipeline statistics: not
-//! reported` on a device without `VK_KHR_pipeline_executable_properties`; stdout is unchanged.
+//! reported` on a device without `VK_KHR_pipeline_executable_properties`, followed by the reason
+//! in parentheses when a query fails, which does not end the run; stdout is unchanged.
 //! The plan is scheduled within the workgroup invocations and workgroup memory of the device
 //! the run selects (`compile_artifact_for`), so on a device that allows 256 invocations the
 //! large matmuls take the 128 by 128 block (DESIGN.md § 3.1); the bits of every output are those
@@ -206,7 +207,11 @@ pub struct Args {
     pub stats: bool,
     /// With --backend vulkan, time every dispatch with GPU timestamp queries and print one
     /// `profile dispatch` line per dispatch site, with its FLOP, bytes, achieved GFLOP/s and
-    /// GB/s, then the run's counters (dispatches, submits, host waits, barriers per step, bytes
+    /// GB/s, then per kernel of the plan the pipeline executable statistics the driver reports
+    /// (`profile pipeline <kernel_module_id> executable <i> ...` lines, one per executable and
+    /// one per statistic), or one `profile pipeline statistics: not reported` line on a device
+    /// without VK_KHR_pipeline_executable_properties, with the reason in parentheses when the
+    /// query fails, then the run's counters (dispatches, submits, host waits, barriers per step, bytes
     /// copied up and down, device allocations, peak device bytes), compile and pipeline creation
     /// time, steady-state microseconds per step and the step's total FLOP, bytes, GFLOP/s and
     /// GB/s on stderr after it.

@@ -1,0 +1,11 @@
+# gpu-apps-before [] 2026-10-25T00:35:03Z
+# binary: <scratch>/bin/mlp_sweep-head (bdd35a21ab1bb309)
+# command: <scratch>/bin/mlp_sweep-head --bench --point 8192:4096 --min-seconds 6 (cwd <worktree>/crates/modelspec-runtime)
+# before: 2026/10/25 02:35:03.369, 72, 1935 MHz, P0
+mlp_sweep: batch 8192 hidden 4096: 107239964672 FLOP per step
+mlp_sweep:   calibration: 960 steps in 6.952 s
+mlp_sweep:   timed: 960 steps in 7.042 s, 7335.008 us per step
+mlp_sweep:   timed: 960 steps in 7.052 s, 7346.078 us per step
+mlp_sweep:   timed: 960 steps in 7.030 s, 7323.333 us per step
+# exit 0
+# after: 2026/10/25 02:35:35.415, 85, 1680 MHz, P0

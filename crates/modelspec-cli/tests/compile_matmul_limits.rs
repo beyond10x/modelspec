@@ -171,3 +171,41 @@ fn ir_stage_kernel_takes_no_profile_and_prints_no_block() {
         "no block without a profile: {printed}"
     );
 }
+
+/// ADV-BLOCKPERF-2 and ADV-BLOCKPERF-3: `compile --device-profile` of a profile below the
+/// Vulkan minimum the smallest tile needs (64 invocations, or 8192 bytes of workgroup memory)
+/// exits 1 with E-ARTIFACT-005 naming the field and its bound, not E-INTERNAL-002, and does
+/// not create the output directory.
+#[test]
+fn compile_refuses_a_profile_below_the_vulkan_minimum_with_e_artifact_005() {
+    for (name, field, value, bound) in [
+        ("inv64", "max_workgroup_invocations", 64, "bound: 128"),
+        ("sh8k", "max_shared_memory_bytes", 8192, "bound: 16384"),
+    ] {
+        let fixture = root().join("crates/modelspec-runtime/tests/fixtures/rtx3090.device.json");
+        let mut json: Value =
+            serde_json::from_str(&std::fs::read_to_string(fixture).unwrap()).unwrap();
+        json[field] = Value::from(value);
+        let dir = scratch(&format!("{name}-profile"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let profile = dir.join("profile.json");
+        std::fs::write(&profile, serde_json::to_string_pretty(&json).unwrap()).unwrap();
+        let (source, out) = (sweep_file(&format!("{name}-source")), scratch(name));
+        let output = modelspec(&[
+            "compile",
+            &source.display().to_string(),
+            "--backend",
+            "vulkan",
+            "--output",
+            &out.display().to_string(),
+            "--device-profile",
+            &profile.display().to_string(),
+        ]);
+        let stderr = text(&output.stderr);
+        assert_eq!(output.status.code(), Some(1), "{name}: {stderr}");
+        assert!(stderr.starts_with("E-ARTIFACT-005: "), "{name}: {stderr}");
+        assert!(stderr.contains(bound), "{name}: {stderr}");
+        assert!(!stderr.contains("compiler bug"), "{name}: {stderr}");
+        assert!(!out.exists(), "{name}: the output directory is not created");
+    }
+}

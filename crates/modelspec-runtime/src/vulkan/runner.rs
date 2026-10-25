@@ -57,7 +57,7 @@ use thiserror::Error;
 use super::dispatch::{Bound, DescriptorArena, Recording, TimestampPool};
 use super::memory::{Buffer, MemorySpan};
 use super::negotiate::{Negotiated, NumericsClass, negotiate};
-use super::pipeline::{KernelStatistics, Pipeline};
+use super::pipeline::{Pipeline, PipelineStatistics};
 use super::profile::{PlanName, Profile, Site, timings};
 use super::select::select_device;
 use super::sync::{Barrier, recorded_barriers};
@@ -518,18 +518,16 @@ fn execute(
     }
     let pipeline_creation = creating.elapsed();
     // The statistics of every kernel's pipeline, read once when profiled on a device opened with
-    // the pipeline executable extension.
+    // the pipeline executable extension; a failing query leaves the reason and the run goes on.
     let pipeline_statistics = if profiled && device.pipeline_statistics_enabled() {
-        let mut kernels = Vec::with_capacity(pipelines.len());
-        for (kernel, pipeline) in plan.kernels.iter().zip(&pipelines) {
-            kernels.push(KernelStatistics {
-                kernel_module_id: kernel.id,
-                executables: pipeline.statistics()?.unwrap_or_default(),
-            });
-        }
-        Some(kernels)
+        PipelineStatistics::collect(
+            plan.kernels
+                .iter()
+                .zip(&pipelines)
+                .map(|(kernel, pipeline)| (kernel.id, pipeline.statistics())),
+        )
     } else {
-        None
+        PipelineStatistics::NotCaptured
     };
 
     // The plan's `Allocate` steps: the scratch buffers, made once for the whole run.

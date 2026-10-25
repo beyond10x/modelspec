@@ -24,7 +24,8 @@
 //! module file is a regular file no longer than its entry says and `kernels/` holds no other
 //! entry ([`E_ARTIFACT_004`]); each module's hash and then `artifact_hash` and `artifact_id`
 //! ([`E_ARTIFACT_002`]); then every byte size computed from a shape or element count fits in 64
-//! bits, the invariants of `spec/domains/artifact.yaml`, every kernel cache key has the
+//! bits, the invariants of `spec/domains/artifact.yaml` (`matmul_limits` among them,
+//! [`MatMulLimits::checked`]), every kernel cache key has the
 //! manifest's `fast_math`, every Dispatch names a module the
 //! artifact owns, every module is SPIR-V, and the plan verifier within the manifest's
 //! `matmul_limits` ([`verify_plan_within`]) ([`E_ARTIFACT_003`]). [`read_for_device`] then
@@ -45,8 +46,8 @@ use uuid::Uuid;
 use crate::device::DeviceProfile;
 use crate::diag::{Code, Diagnostic};
 use crate::ir::kernel::{
-    BufferView, Epilogue, ExecutionPlan, Kernel, KernelKind, KernelModuleId, MatMulLimits, Operand,
-    PlanOp, PlanStep,
+    BufferView, Epilogue, ExecutionPlan, Kernel, KernelKind, KernelModuleId, LimitsBelowMinimum,
+    MatMulLimits, Operand, PlanOp, PlanStep,
 };
 use crate::ir::print::print_step;
 use crate::ir::tensor::{DType, Dim, ParamDecl, ParamId, TensorType, ValueId};
@@ -229,7 +230,11 @@ pub const E_ARTIFACT_004: Code = Code::new("E-ARTIFACT-004");
 /// The device reports fewer invocations per workgroup or fewer bytes of workgroup memory than
 /// the `matmul_limits` the artifact's plan was scheduled for ([`check_device`]): the plan's tiles
 /// may not fit it, so it is refused before any module is built or dispatched. The diagnostic
-/// names the recorded and the reported value of both limits.
+/// names the recorded and the reported value of both limits. A device profile given to a compile
+/// (`compile --device-profile`, `train --backend vulkan`) that reports fewer than 128
+/// invocations or 16384 bytes of workgroup memory, the Vulkan minimum the smallest matmul tile
+/// needs (`MatMulLimits::checked`), is refused with this code before a plan is scheduled, naming
+/// the field, its bound and the reported value.
 pub const E_ARTIFACT_005: Code = Code::new("E-ARTIFACT-005");
 
 /// Whether `artifact` runs on the device `profile` describes: [`verify_device_limits`] of its
@@ -1174,6 +1179,18 @@ struct WireLimits {
     shared_bytes: u32,
 }
 
+impl WireLimits {
+    /// The limits, if they hold the invariants of `spec/domains/artifact.yaml` `MatMulLimits`
+    /// ([`MatMulLimits::checked`]).
+    fn limits(self) -> Result<MatMulLimits, LimitsBelowMinimum> {
+        MatMulLimits {
+            invocations: self.invocations,
+            shared_bytes: self.shared_bytes,
+        }
+        .checked()
+    }
+}
+
 /// `artifact.json`: `modelspec.artifact.CompiledArtifact` and its kernel modules' entries.
 /// [`read`] parses its plans as [`BoundedPlan`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1496,6 +1513,11 @@ impl Manifest {
     fn check(&self) -> Result<CompiledArtifact, String> {
         self.check_byte_sizes()?;
         self.check_invariants()?;
+        let matmul_limits = self
+            .matmul_limits
+            .map(WireLimits::limits)
+            .transpose()
+            .map_err(|below| below.to_string())?;
         if let Some(kernel) = self
             .kernels
             .iter()
@@ -1575,10 +1597,7 @@ impl Manifest {
                 prediction_view: BufferView::from(&self.prediction_view),
             },
             fast_math: self.fast_math,
-            matmul_limits: self.matmul_limits.map(|limits| MatMulLimits {
-                invocations: limits.invocations,
-                shared_bytes: limits.shared_bytes,
-            }),
+            matmul_limits,
         })
     }
 
