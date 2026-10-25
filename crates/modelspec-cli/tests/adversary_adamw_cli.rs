@@ -3,8 +3,8 @@
 //!
 //! The commands besides `train --backend cpu` that take such a file: `compile`, `ir --stage
 //! kernel`, `train --backend vulkan`, the checkpoint flags, and `--steps` at the warm-up's edge.
-//! A case named `adv_adamw_f<N>_...` is a finding of the adversary's report and is ignored until
-//! its fix lands.
+//! A case named `adv_adamw_f<N>_...` is a finding of the adversary's report, ignored until its
+//! fix landed in fix pass 1 (coordinator decision D64).
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -42,7 +42,6 @@ fn scratch(name: &str) -> PathBuf {
 /// block data it does not declare. A CPU artifact keeps the views and needs no kernel
 /// (`compile_artifact_for`), so the file should compile.
 #[test]
-#[ignore = "finding F1: compile --backend cpu on an adamw file is E-INTERNAL-002"]
 fn adv_adamw_f1_compile_backend_cpu_writes_an_artifact() {
     let out = scratch("artifact");
     let output = modelspec(&[

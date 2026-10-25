@@ -15,15 +15,21 @@
 //! linear warmup from 0 over `warmup_steps`, then linear decay to 0 at the run's last step:
 //! `lr * t / warmup_steps` for `t <= warmup_steps`, `lr * (steps - t) / (steps - warmup_steps)`
 //! after (coordinator decision D50, 2026-10-25, `.engineering/waves/bert-1.md`, settlement 1).
-//! The references below compute all of it in `f64` from the gradients the run reports, never
-//! through the runtime's own schedule.
+//! The references below work from the gradients the run reports, never through the runtime's own
+//! schedule. `one_step` and `zero_gradient_decays_the_moments` compare bits with an `f32`
+//! reference: the host constants `lr_t`, `c1`, `c2` and each `1 - beta` computed in `f64` and
+//! rounded once, then every elementwise operation one rounded `f32` operation in the written order
+//! (coordinator decision D64). `schedule` and `decoupled_decay` evaluate in `f64`.
 
 use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 
 use modelspec_core::compile::{CompiledTraining, compile_training};
 use modelspec_core::ir::tensor::ParamId;
+use modelspec_core::ir::training::Moment;
 use modelspec_runtime::cpu::HostTensor;
-use modelspec_runtime::train::runner::run_with;
+use modelspec_runtime::train::data::dense;
+use modelspec_runtime::train::runner::{RunError, run_from, run_with};
 
 /// The hyperparameters every source below is written with.
 const LR: f32 = 0.01;
@@ -118,20 +124,84 @@ fn settled(t: u64, warmup_steps: u64, steps: u64) -> f64 {
     }
 }
 
-/// The error of `got` relative to `scale`.
-fn relative_to(got: f32, expected: f64, scale: f64) -> f64 {
-    (f64::from(got) - expected).abs() / scale
-}
-
+/// The error of `got` relative to `expected`.
 fn relative(got: f32, expected: f64) -> f64 {
-    relative_to(got, expected, expected.abs())
+    (f64::from(got) - expected).abs() / expected.abs()
 }
 
-/// Scenario 2. The parameters after steps 1, 2 and 3 equal the AdamW update computed here in
-/// `f64` within `1e-6` relative, from the gradient the run reports at each step and moments that
-/// start at 0. The error is relative to the larger of the old and the new value: the update
-/// subtracts from the old value, so a parameter that passes near 0 keeps the absolute error of
-/// the old magnitude.
+/// The host constants of step `t` of a run of `steps` steps, each computed in `f64` and rounded
+/// once to `f32`: `(lr_t, c1, c2)`.
+fn host_constants(t: u64, warmup_steps: u64, steps: u64) -> (f32, f32, f32) {
+    let correction = |beta: f32| (1.0 / (1.0 - f64::from(beta).powi(t as i32))) as f32;
+    (
+        settled(t, warmup_steps, steps) as f32,
+        correction(BETA1),
+        correction(BETA2),
+    )
+}
+
+/// One AdamW update of one element, every operation one rounded `f32` operation in the written
+/// order, each `1 - beta` computed in `f64` and rounded once; returns `(p', m', v')`.
+fn reference(p: f32, g: f32, m: f32, v: f32, (lr_t, c1, c2): (f32, f32, f32)) -> (f32, f32, f32) {
+    let rest1 = (1.0 - f64::from(BETA1)) as f32;
+    let rest2 = (1.0 - f64::from(BETA2)) as f32;
+    let decayed_m = BETA1 * m;
+    let new_m = rest1 * g;
+    let m = decayed_m + new_m;
+    let decayed_v = BETA2 * v;
+    let scaled_g = rest2 * g;
+    let new_v = scaled_g * g;
+    let v = decayed_v + new_v;
+    let m_hat = m * c1;
+    let v_hat = v * c2;
+    let root = v_hat.sqrt();
+    let denominator = root + EPS;
+    let direction = m_hat / denominator;
+    let shrink = WEIGHT_DECAY * p;
+    let step = direction + shrink;
+    let scaled = lr_t * step;
+    (p - scaled, m, v)
+}
+
+/// The moments of the reference, by parameter: `m`, then `v`.
+type Moments = BTreeMap<ParamId, (Vec<f32>, Vec<f32>)>;
+
+/// Checks that step `t` took every parameter of `params` from `before` to `after` by the
+/// reference update on the gradients `before` reports, bit for bit, and advances `moments`.
+fn assert_reference_step(
+    t: u64,
+    (warmup_steps, steps): (u64, u64),
+    params: &[ParamId],
+    (before, after): (&Seen, &Seen),
+    moments: &mut Moments,
+) {
+    let gradients = before.gradients.as_ref().expect("a step with an update");
+    let constants = host_constants(t, warmup_steps, steps);
+    for &p in params {
+        let g = gradients[&p].data();
+        let (m, v) = moments
+            .entry(p)
+            .or_insert_with(|| (vec![0.0; g.len()], vec![0.0; g.len()]));
+        let old = before.values[&p].data();
+        let new = after.values[&p].data();
+        for i in 0..g.len() {
+            let (expected, m_next, v_next) = reference(old[i], g[i], m[i], v[i], constants);
+            (m[i], v[i]) = (m_next, v_next);
+            assert_eq!(
+                new[i].to_bits(),
+                expected.to_bits(),
+                "step {t}, parameter {p}, element {i}: {} against {expected}, from {}",
+                new[i],
+                old[i]
+            );
+        }
+    }
+}
+
+/// Scenario 2. The parameters after steps 1, 2 and 3 are bit-equal to the AdamW update computed
+/// here in `f32`, every operation rounded in the written order, from the gradient the run
+/// reports at each step and moments that start at 0 (coordinator decision D64: an `f64`
+/// reference within `1e-6` cannot be met under cancellation, the `f32` reference is the measure).
 #[test]
 fn one_step() {
     let (warmup_steps, steps) = (2, 10);
@@ -139,39 +209,148 @@ fn one_step() {
     let params = [param(&c, "Reg.w"), param(&c, "Reg.b")];
     let seen = observe(&c);
     assert_eq!(seen.len(), steps as usize + 1);
-    let (beta1, beta2) = (f64::from(BETA1), f64::from(BETA2));
-    let (eps, decay) = (f64::from(EPS), f64::from(WEIGHT_DECAY));
-    let mut m: BTreeMap<ParamId, Vec<f64>> = BTreeMap::new();
-    let mut v: BTreeMap<ParamId, Vec<f64>> = BTreeMap::new();
+    let mut moments = Moments::new();
     for t in 1..=3u64 {
-        let before = &seen[t as usize - 1];
-        let after = &seen[t as usize];
-        let gradients = before.gradients.as_ref().expect("a step with an update");
-        let lr_t = settled(t, warmup_steps, steps);
-        let c1 = 1.0 / (1.0 - beta1.powi(t as i32));
-        let c2 = 1.0 / (1.0 - beta2.powi(t as i32));
+        let (before, after) = (&seen[t as usize - 1], &seen[t as usize]);
+        assert_reference_step(
+            t,
+            (warmup_steps, steps),
+            &params,
+            (before, after),
+            &mut moments,
+        );
         for &p in &params {
-            let g = gradients[&p].data();
-            let m = m.entry(p).or_insert_with(|| vec![0.0; g.len()]);
-            let v = v.entry(p).or_insert_with(|| vec![0.0; g.len()]);
-            let old = before.values[&p].data();
-            let new = after.values[&p].data();
-            for i in 0..g.len() {
-                let g = f64::from(g[i]);
-                m[i] = beta1 * m[i] + (1.0 - beta1) * g;
-                v[i] = beta2 * v[i] + (1.0 - beta2) * g * g;
-                let p_old = f64::from(old[i]);
-                let expected =
-                    p_old - lr_t * (m[i] * c1 / ((v[i] * c2).sqrt() + eps) + decay * p_old);
-                assert!(
-                    relative_to(new[i], expected, p_old.abs().max(expected.abs())) <= 1e-6,
-                    "step {t}, parameter {p}, element {i}: {} against {expected}, from {p_old}",
-                    new[i]
-                );
-                assert_ne!(f64::from(new[i]), p_old, "step {t} moves {p}[{i}]");
-            }
+            let moved = before.values[&p]
+                .data()
+                .iter()
+                .zip(after.values[&p].data())
+                .all(|(old, new)| old != new);
+            assert!(moved, "step {t} moves every element of {p}");
         }
     }
+}
+
+const ZERO_STEP: u64 = 3;
+const DENSE_STEPS: u64 = 6;
+
+fn write_f32(path: &Path, values: &[f32]) {
+    let bytes: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
+    std::fs::write(path, bytes).expect("the fixture is written");
+}
+
+/// Dense data for [`two_parameters`] with batch 8: one batch per step of a run of
+/// [`DENSE_STEPS`] steps, the input of step [`ZERO_STEP`] all zero and every other input not.
+fn zero_step_data() -> PathBuf {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join("adamw")
+        .join("zero_step");
+    if dir.exists() {
+        std::fs::remove_dir_all(&dir).expect("the old fixture is removed");
+    }
+    std::fs::create_dir_all(&dir).expect("the temp dir is writable");
+    let samples = 8 * DENSE_STEPS as usize;
+    let x: Vec<f32> = (0..samples * 4)
+        .map(|k| {
+            if (k / 4) / 8 == ZERO_STEP as usize {
+                0.0
+            } else {
+                ((k * 7 % 11) as f32 - 5.0) / 4.0
+            }
+        })
+        .collect();
+    let y: Vec<f32> = (0..samples).map(|k| (k % 5) as f32 * 0.5 - 1.0).collect();
+    write_f32(&dir.join("x.f32"), &x);
+    write_f32(&dir.join("y.f32"), &y);
+    dir
+}
+
+/// D64, F7. A parameter whose gradient is nonzero for three steps and exactly zero at the fourth
+/// keeps moving on its moments: the fourth step decays them, `m = beta1 * m` and
+/// `v = beta2 * v`, and the run stays bit-equal to the `f32` reference at every step, its final
+/// moments included. A step that left the moments of an all-zero gradient where they were would
+/// leave the reference from that step on.
+#[test]
+fn zero_gradient_decays_the_moments() {
+    let (warmup_steps, steps) = (2, DENSE_STEPS);
+    let c = compiled(&two_parameters(warmup_steps, steps));
+    let data = dense(&zero_step_data(), &c.config, &c.forward).expect("the fixture is dense data");
+    let (w, b) = (param(&c, "Reg.w"), param(&c, "Reg.b"));
+    let mut seen = Vec::new();
+    let run = run_with(&c, Some(&data), &BTreeMap::new(), |o| {
+        seen.push(Seen {
+            values: o.values.clone(),
+            gradients: o.gradients.cloned(),
+            learning_rate: o.learning_rate,
+        })
+    })
+    .expect("the run finishes");
+    assert_eq!(seen.len(), steps as usize + 1);
+    for (step, seen) in seen.iter().enumerate().take(steps as usize) {
+        let g = seen.gradients.as_ref().expect("an update")[&w].data();
+        let zero = g.iter().all(|&g| g == 0.0);
+        assert_eq!(zero, step as u64 == ZERO_STEP, "step {step}: {g:?}");
+    }
+    let mut moments = Moments::new();
+    for t in 1..=steps {
+        let (before, after) = (&seen[t as usize - 1], &seen[t as usize]);
+        let m_before = moments.get(&w).map(|(m, v)| (m.clone(), v.clone()));
+        assert_reference_step(
+            t,
+            (warmup_steps, steps),
+            &[w, b],
+            (before, after),
+            &mut moments,
+        );
+        if t == ZERO_STEP + 1 {
+            let (m_old, v_old) = m_before.expect("moments after three steps");
+            let (m, v) = &moments[&w];
+            for i in 0..m.len() {
+                assert_ne!(m_old[i], 0.0, "element {i} has a first moment to decay");
+                assert_eq!(m[i].to_bits(), (BETA1 * m_old[i]).to_bits(), "m[{i}]");
+                assert_eq!(v[i].to_bits(), (BETA2 * v_old[i]).to_bits(), "v[{i}]");
+            }
+            let moved = before.values[&w]
+                .data()
+                .iter()
+                .zip(after.values[&w].data())
+                .all(|(old, new)| old != new);
+            assert!(moved, "the zero-gradient step moves every element of w");
+        }
+    }
+    for (p, (m, v)) in &moments {
+        for (moment, expected) in [(Moment::First, m), (Moment::Second, v)] {
+            let got: Vec<u32> = run.state.moments[&(*p, moment)]
+                .data()
+                .iter()
+                .map(|x| x.to_bits())
+                .collect();
+            let expected: Vec<u32> = expected.iter().map(|x| x.to_bits()).collect();
+            assert_eq!(got, expected, "{moment} of {p}");
+        }
+    }
+}
+
+/// D64, F6. A run of an AdamW file from a step above 0 is refused before its first step: the
+/// moments are not checkpointed, and moments restarted at 0 would take the bias corrections of
+/// the resumed step. An SGD file resumes from the same step.
+#[test]
+fn resumed_run_is_refused() {
+    let adamw = compiled(&two_parameters(2, 10));
+    let refused = run_from(&adamw, None, &BTreeMap::new(), 3, |_| {}, |_, _| Ok(()));
+    match refused {
+        Err(error @ RunError::MomentsNotCheckpointed { start: 3 }) => {
+            assert!(error.to_string().contains("not checkpointed"), "{error}");
+        }
+        other => panic!("{:?}", other.map(|run| run.losses)),
+    }
+    assert!(run_from(&adamw, None, &BTreeMap::new(), 0, |_| {}, |_, _| Ok(())).is_ok());
+    let source = two_parameters(2, 10);
+    let line = source
+        .lines()
+        .find(|line| line.contains("optimizer = adamw("))
+        .expect("the optimizer line");
+    let sgd = compiled(&source.replace(line, "    optimizer = sgd(lr = 0.01);"));
+    assert!(run_from(&sgd, None, &BTreeMap::new(), 3, |_| {}, |_, _| Ok(())).is_ok());
 }
 
 /// Scenario 3. The learning rate the runner passes at every step from 0 to `warmup_steps + 2`

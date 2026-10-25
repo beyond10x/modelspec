@@ -8,8 +8,8 @@
 //! paths the change touched without a test: the checkpoint optimizer record, a step with no
 //! parameter to update and a second moment that overflows.
 //!
-//! A case named `adv_adamw_f<N>_...` is a finding of the adversary's report and is ignored until
-//! its fix lands.
+//! A case named `adv_adamw_f<N>_...` is a finding of the adversary's report, ignored until its
+//! fix landed in fix pass 1 (coordinator decision D64).
 
 use std::collections::BTreeMap;
 
@@ -255,6 +255,10 @@ fn adamw_matches_an_f32_reference_with_a_large_eps() {
     }
 }
 
+/// The element with the largest relative error so far: the error, the step, the parameter, the
+/// element, the runner's value, the `f64` reference, the old value and `lr_t * step` in `f64`.
+type Worst = (f64, u64, ParamId, usize, f32, f64, f32, f64);
+
 /// Hypothesis 1, the implementor's near-zero element. In the unit's `one_step` setting (warm-up
 /// 2 of 10 steps), the element with the largest error against an `f64` reference relative to
 /// its own expected value over steps 1 to 3 is still the bits of the `f32` reference, and its
@@ -271,7 +275,7 @@ fn adamw_one_step_near_zero_error_is_f32_rounding_of_a_cancellation() {
     let mut v64: BTreeMap<(ParamId, usize), f64> = BTreeMap::new();
     let mut m32: BTreeMap<(ParamId, usize), f32> = BTreeMap::new();
     let mut v32: BTreeMap<(ParamId, usize), f32> = BTreeMap::new();
-    let mut worst: Option<(f64, u64, ParamId, usize, f32, f64, f32, f64)> = None;
+    let mut worst: Option<Worst> = None;
     for t in 1..=3u64 {
         let before = &seen[t as usize - 1];
         let gradients = before.gradients.as_ref().unwrap();
@@ -466,7 +470,6 @@ fn adamw_checkpoint_optimizer_invariant_is_refused_on_read() {
 /// `kind: Sgd` without its hyperparameters or schedule, and `resume_into` an AdamW file accepts
 /// an SGD checkpoint of the same learning rate, then trains with moments restarted at 0.
 #[test]
-#[ignore = "finding F2: OptimizerConfig::of records an AdamW file as SGD"]
 fn adv_adamw_f2_checkpoint_optimizer_record_of_an_adamw_file() {
     let adamw_file = compiled(&regression(&adamw(2), 10));
     let recorded = OptimizerConfig::of(&adamw_file);
@@ -500,7 +503,6 @@ fn adv_adamw_f2_checkpoint_optimizer_record_of_an_adamw_file() {
 /// update), but `PreparedStep::evaluate` supplies `optimizer.lr_t`, `c1` and `c2` anyway and the
 /// interpreter refuses a value for an input the program does not have.
 #[test]
-#[ignore = "finding F3: an AdamW step without an update supplies host inputs the program lacks"]
 fn adv_adamw_f3_a_step_with_no_update_runs() {
     let identity = |optimizer: &str| {
         format!(
@@ -542,7 +544,6 @@ train Fit {{
 /// no diagnostic while its optimizer state is not finite (with `weight_decay = 0` the
 /// parameters never move again). E-TRAIN-001 checks the loss and the parameters only.
 #[test]
-#[ignore = "finding F4: a non-finite moment is not diagnosed"]
 fn adv_adamw_f4_an_infinite_second_moment_is_diagnosed() {
     let source = regression(
         "adamw(lr = 0.01, weight_decay = 0.0, beta1 = 0.9, beta2 = 0.999, eps = 1e-8, warmup_steps = 2)",

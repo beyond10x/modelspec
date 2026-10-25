@@ -107,7 +107,7 @@ The CPU training loop of `modelspec train`, which checks the loss and every para
 
 | Code | Meaning | Declared in |
 |---|---|---|
-| <a id="e-train-001"></a>`E-TRAIN-001` | The loss of a training step, or a parameter after the update of a step, is NaN or ±inf: the run stops at the first such step and prints no final parameters. | [`crates/modelspec-runtime/src/train/runner.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-runtime/src/train/runner.rs) |
+| <a id="e-train-001"></a>`E-TRAIN-001` | The loss of a training step, or a parameter or an AdamW moment after the update of a step, is NaN or ±inf: the run stops at the first such step and prints no final parameters. | [`crates/modelspec-runtime/src/train/runner.rs`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-runtime/src/train/runner.rs) |
 
 ## Checkpoints
 

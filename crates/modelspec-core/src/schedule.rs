@@ -548,6 +548,7 @@ fn schedule_with(
         .nodes
         .iter()
         .filter_map(|n| ops::token_operand(&n.op).and_then(|i| n.operands.get(i).copied()))
+        .chain(step.optimizer.host_inputs())
         .collect();
     let mut places: BTreeMap<ValueId, Place> = BTreeMap::new();
     let mut works: Vec<Work> = Vec::new();
@@ -599,8 +600,8 @@ fn schedule_with(
         }
         match &node.op {
             TensorOp::Input { .. } if tokens.contains(&node.id) => {
-                // The RNG token of a dropout site, supplied by the host each step, is no data
-                // of the train block: it takes its own buffer.
+                // The RNG token of a dropout site and the AdamW scalars and moments, supplied by
+                // the host each step, are no data of the train block: each takes its own buffer.
                 let view = allocate(&mut buffers, &node.ty).ok_or_else(shape_error)?;
                 places.insert(node.id, Place::View(view));
                 continue;

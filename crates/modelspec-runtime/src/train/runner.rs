@@ -16,7 +16,10 @@
 //! Under AdamW the host computes the learning rate of step `k` by the warmup schedule at
 //! `t = k + 1` of a run that ends at step `start + steps`, and the two bias corrections, and
 //! hands them to the step ([`PreparedStep::schedule`], story:bert-adamw-warmup); a warmup not
-//! shorter than that is refused before the first step ([`RunError::Schedule`]).
+//! shorter than that is refused before the first step ([`RunError::Schedule`]). The moments are
+//! not checkpointed yet, so an AdamW run from a step above 0 is refused before its first step
+//! ([`RunError::MomentsNotCheckpointed`]). A moment that is NaN or ±inf after an update stops the
+//! run with [`E_TRAIN_001`], as a non-finite loss or parameter does.
 //!
 //! [`run_with`] trains on dense data read from files instead, optionally from parameter values read
 //! from files, and [`evaluate_dense`] measures the trained parameters on an eval directory.
@@ -38,7 +41,7 @@ use std::collections::BTreeMap;
 use modelspec_core::compile::CompiledTraining;
 use modelspec_core::diag::{Code, Diagnostic};
 use modelspec_core::ir::tensor::ParamId;
-use modelspec_core::ir::training::{OptimizerRule, dropout_sites};
+use modelspec_core::ir::training::{Moment, OptimizerRule, dropout_sites};
 use thiserror::Error;
 
 use super::checkpoint::CheckpointError;
@@ -53,8 +56,8 @@ use crate::cpu::{HostTensor, RuntimeError, evaluate_all, evaluate_with_ids};
 /// No `i32` tensors, the step inputs of synthetic and dense data.
 static NO_IDS: BTreeMap<String, HostTensor<i32>> = BTreeMap::new();
 
-/// The loss of a training step, or a parameter after the update of a step, is NaN or ±inf: the
-/// run stops at the first such step and prints no final parameters.
+/// The loss of a training step, or a parameter or an AdamW moment after the update of a step, is
+/// NaN or ±inf: the run stops at the first such step and prints no final parameters.
 pub const E_TRAIN_001: Code = Code::new("E-TRAIN-001");
 
 /// A finished run.
@@ -102,10 +105,18 @@ pub enum RunError {
          learning rate would have no steps to decay over"
     )]
     Schedule { warmup_steps: u64, steps: u64 },
+    /// An AdamW run from a step above 0: the moments are not checkpointed yet, and moments
+    /// restarted at 0 would take the bias corrections of step `start + 1`.
+    #[error(
+        "an AdamW run cannot resume at step {start}: its moments are not checkpointed yet, and \
+         moments restarted at 0 would take the bias corrections of step {}",
+        start.saturating_add(1)
+    )]
+    MomentsNotCheckpointed { start: u64 },
     /// The held-out split cannot be evaluated ([`super::eval`]).
     #[error(transparent)]
     Eval(Box<EvalError>),
-    /// The loss or a parameter stopped being finite ([`E_TRAIN_001`]).
+    /// The loss, a parameter or an AdamW moment stopped being finite ([`E_TRAIN_001`]).
     #[error("{}", .0.diagnostic)]
     NonFinite(Box<Diverged>),
 }
@@ -125,15 +136,18 @@ pub struct Diverged {
     pub run: Run,
 }
 
-/// The [`E_TRAIN_001`] diagnostic for step `step` with loss `loss` and the parameter values
-/// `values`, or `None` when the loss and every parameter are finite. A non-finite loss is named
-/// before a parameter; parameters are named by canonical path, in path order. The Vulkan runner
-/// calls it on what it reads back ([`crate::vulkan::runner`]).
+/// The [`E_TRAIN_001`] diagnostic for step `step` with loss `loss`, the parameter values `values`
+/// and the AdamW moments `moments`, or `None` when the loss, every parameter and every moment are
+/// finite. A non-finite loss is named before a parameter and a parameter before a moment;
+/// parameters are named by canonical path, in path order, and moments as `m @<path>` or
+/// `v @<path>`, in path order, `m` before `v`. The Vulkan runner calls it on what it reads back
+/// ([`crate::vulkan::runner`]), with no moments: it runs no AdamW step.
 pub(crate) fn non_finite(
     compiled: &CompiledTraining,
     step: u64,
     loss: f32,
     values: &BTreeMap<ParamId, HostTensor<f32>>,
+    moments: &BTreeMap<(ParamId, Moment), HostTensor<f32>>,
 ) -> Option<Diagnostic> {
     if !loss.is_finite() {
         return Some(
@@ -145,25 +159,54 @@ pub(crate) fn non_finite(
             .with("loss", loss.to_string()),
         );
     }
+    let path = |id: &ParamId| {
+        compiled
+            .forward
+            .program
+            .params
+            .get(id)
+            .map(|decl| decl.path.as_str())
+    };
+    let not_finite = |value: &HostTensor<f32>| value.data().iter().any(|v| !v.is_finite());
     let mut paths: Vec<&str> = values
         .iter()
-        .filter(|(_, value)| value.data().iter().any(|v| !v.is_finite()))
-        .filter_map(|(id, _)| compiled.forward.program.params.get(id))
-        .map(|decl| decl.path.as_str())
+        .filter(|(_, value)| not_finite(value))
+        .filter_map(|(id, _)| path(id))
         .collect();
-    if paths.is_empty() {
+    if !paths.is_empty() {
+        paths.sort_unstable();
+        let named: Vec<String> = paths.iter().map(|path| format!("@{path}")).collect();
+        return Some(
+            Diagnostic::new(
+                E_TRAIN_001,
+                format!("the update of step {step} leaves a parameter not finite"),
+            )
+            .with("step", step.to_string())
+            .with("loss", loss.to_string())
+            .with("parameter", named.join(", ")),
+        );
+    }
+    let mut moments: Vec<(&str, Moment)> = moments
+        .iter()
+        .filter(|(_, value)| not_finite(value))
+        .filter_map(|((id, moment), _)| Some((path(id)?, *moment)))
+        .collect();
+    if moments.is_empty() {
         return None;
     }
-    paths.sort_unstable();
-    let named: Vec<String> = paths.iter().map(|path| format!("@{path}")).collect();
+    moments.sort_unstable();
+    let named: Vec<String> = moments
+        .iter()
+        .map(|(path, moment)| format!("{moment} @{path}"))
+        .collect();
     Some(
         Diagnostic::new(
             E_TRAIN_001,
-            format!("the update of step {step} leaves a parameter not finite"),
+            format!("the update of step {step} leaves an optimizer moment not finite"),
         )
         .with("step", step.to_string())
         .with("loss", loss.to_string())
-        .with("parameter", named.join(", ")),
+        .with("moment", named.join(", ")),
     )
 }
 
@@ -282,14 +325,16 @@ pub fn run_checked(
         start,
         steps: config.steps,
     })?;
-    if let OptimizerRule::AdamW(adamw) = compiled.training.optimizer.rule
-        && config.steps > 0
-        && adamw.warmup_steps >= end
-    {
-        return Err(RunError::Schedule {
-            warmup_steps: adamw.warmup_steps,
-            steps: end,
-        });
+    if let OptimizerRule::AdamW(adamw) = compiled.training.optimizer.rule {
+        if start > 0 {
+            return Err(RunError::MomentsNotCheckpointed { start });
+        }
+        if config.steps > 0 && adamw.warmup_steps >= end {
+            return Err(RunError::Schedule {
+                warmup_steps: adamw.warmup_steps,
+                steps: end,
+            });
+        }
     }
     let forward = &compiled.forward.program;
     let mut initial = initialize(forward, config.seed, Stream::Init)?;
@@ -355,7 +400,7 @@ pub fn run_checked(
             loss
         };
         losses.push(loss);
-        if let Some(diagnostic) = non_finite(compiled, step, loss, &state.values) {
+        if let Some(diagnostic) = non_finite(compiled, step, loss, &state.values, &state.moments) {
             return Err(RunError::NonFinite(Box::new(Diverged {
                 diagnostic,
                 run: Run {

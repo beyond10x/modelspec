@@ -10,7 +10,9 @@
 //! An AdamW step (story:bert-adamw-warmup) also reads each parameter's two moments from the state
 //! and writes their next values back with the updates, and it takes three host scalars, the
 //! scheduled learning rate and the two bias corrections, which [`PreparedStep::schedule`] sets
-//! from the step number before each evaluation. The moments start at 0 ([`ParamState::new`]).
+//! from the step number before each evaluation. The moments start at 0 ([`ParamState::new`]). An
+//! AdamW step whose loss reads no parameter has no update, no moment and no host scalar, and is
+//! given none.
 //!
 //! [`evaluate_step`] is the evaluation alone: it returns the loss, the gradients and the updates
 //! of the old values and changes nothing, and [`Evaluated::apply`] writes the updates. Between
@@ -158,8 +160,8 @@ pub fn sgd_step(
 
 /// Evaluates one step of `step` on `inputs` and `state` and changes nothing: the step is refused
 /// as [`sgd_step`] refuses it, before it runs, and otherwise holds the loss, the gradients and
-/// the updates for [`Evaluated::apply`]. An AdamW step is refused with [`StepError::Unscheduled`]:
-/// it needs its step number, which only a [`PreparedStep`] is given.
+/// the updates for [`Evaluated::apply`]. An AdamW step with an update is refused with
+/// [`StepError::Unscheduled`]: it needs its step number, which only a [`PreparedStep`] is given.
 pub fn evaluate_step(
     step: &TrainingStep,
     inputs: &BTreeMap<String, HostTensor<f32>>,
@@ -236,6 +238,9 @@ pub struct PreparedStep<'s> {
     /// The step's peak or constant learning rate and, under AdamW, its hyperparameters.
     lr: f32,
     adamw: Option<AdamW>,
+    /// Whether the program declares the AdamW host scalars ([`TrainingStep`]'s `step_inputs`):
+    /// an AdamW step with no update has none, and is given none.
+    host_scalars: bool,
     /// The host scalars of the next AdamW evaluation, set by [`PreparedStep::schedule`].
     scalars: Option<StepScalars>,
     /// Each AdamW moment, the output position of its next value and the name of the input that
@@ -317,6 +322,7 @@ impl<'s> PreparedStep<'s> {
             gradients: BTreeMap::new(),
             lr: step.optimizer.lr,
             adamw,
+            host_scalars: step.optimizer.step_inputs.is_some(),
             scalars: None,
             pending_moments: vec![None; moments.len()],
             moments,
@@ -412,32 +418,33 @@ impl<'s> PreparedStep<'s> {
                 return Err(StepError::VersionExhausted { param, current });
             }
         }
-        let inputs = match self.adamw {
-            None => inputs,
-            Some(_) => {
-                let scalars = self.scalars.ok_or(StepError::Unscheduled)?;
-                self.host.clear();
-                self.host.extend(
-                    inputs
-                        .iter()
-                        .map(|(name, value)| (name.clone(), value.clone())),
-                );
-                for (name, value) in [
-                    (LR_T_INPUT, scalars.lr_t),
-                    (C1_INPUT, scalars.c1),
-                    (C2_INPUT, scalars.c2),
-                ] {
-                    self.host.insert(name.to_owned(), HostTensor::scalar(value));
-                }
-                // A moment missing from the state is left out, and the interpreter refuses the
-                // run for the input it lacks.
-                for ((key, _), name) in self.moments.iter().zip(&self.moment_names) {
-                    if let Some(value) = state.moments.get(key) {
-                        self.host.insert(name.clone(), value.clone());
-                    }
-                }
-                &self.host
+        // The host scalars and the moments go only to a program that declares them: SGD has
+        // none, nor has an AdamW step whose loss reads no parameter.
+        let inputs = if self.host_scalars {
+            let scalars = self.scalars.ok_or(StepError::Unscheduled)?;
+            self.host.clear();
+            self.host.extend(
+                inputs
+                    .iter()
+                    .map(|(name, value)| (name.clone(), value.clone())),
+            );
+            for (name, value) in [
+                (LR_T_INPUT, scalars.lr_t),
+                (C1_INPUT, scalars.c1),
+                (C2_INPUT, scalars.c2),
+            ] {
+                self.host.insert(name.to_owned(), HostTensor::scalar(value));
             }
+            // A moment missing from the state is left out, and the interpreter refuses the
+            // run for the input it lacks.
+            for ((key, _), name) in self.moments.iter().zip(&self.moment_names) {
+                if let Some(value) = state.moments.get(key) {
+                    self.host.insert(name.clone(), value.clone());
+                }
+            }
+            &self.host
+        } else {
+            inputs
         };
         self.program
             .run_into(inputs, ids, &state.values, &mut self.outputs)?;
