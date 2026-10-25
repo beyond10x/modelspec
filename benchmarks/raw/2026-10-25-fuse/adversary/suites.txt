@@ -1,0 +1,38 @@
+# adversary adv-fuse-1, suite runs on <worktree> at fca5377 plus the two adversary_fuse1_* test files
+# "before" deselects the adversary cases with --skip; "after" runs everything
+
+## workspace, default features
+# before: cargo test --workspace -- --skip every_fused_plan_computes_the_terms_of_its_training_ir --skip a_value_read_twice_keeps_its_dispatch
+# after:  cargo test --workspace
+before passed 1461 failed 0 ignored 122 filtered 2  EXIT=0
+after  passed 1463 failed 0 ignored 122 filtered 0  EXIT=0
+
+## modelspec-runtime device suite
+# before: cargo test --release --no-fail-fast -p modelspec-runtime --features vulkan -- --ignored --skip vulkan_the_plans_adjoint_sum_of_four_adds_left_to_right --skip vulkan_artifact_chains_write_host_bits_and_fast_math_stays_within_tolerance
+# after:  MODELSPEC_VK_VALIDATION=1 cargo test --release --no-fail-fast -p modelspec-runtime --features vulkan -- --ignored --nocapture
+gpu-idle-check before each: [] []
+before passed 69 failed 5  EXIT=101
+after  passed 71 failed 5  EXIT=101
+# the five failures, identical in both runs, are #[ignore]d tests this unit does not touch:
+#   adv_c1_real_release_counts_match_the_strict_heading_rules_counts  "set MODELSPEC_WIKITEXT103_RAW to the release directory"
+#   adv_real_release_separators_and_baseline                          "ADV_MLM_REAL_PACKED: NotPresent"
+#   adversary_gelu_grad_is_finite_for_every_finite_input              ignore reason F4, "gelu'(1e20) = NaN"
+#   adversary_gelu_f32_within_1e_6_relative_at_every_f32_in_minus_3_to_minus_1  ignore reason F3, "7 points over 1e-6"
+#   adv_every_size_up_to_the_maximum_trains                           ignore reason ADV-TOK-1, kept by design
+validation messages in the after log (VUID or "validation error"): 0
+
+## adversary_fuse1_chain_device, after cargo fmt
+# MODELSPEC_VK_VALIDATION=1 cargo test --release -p modelspec-runtime --features vulkan --test adversary_fuse1_chain_device -- --ignored --nocapture
+gpu-idle-check: []
+adversary_fuse1_chain_device adjoint: 90 elements, 0 not 1, validation on with 0 messages
+test vulkan_the_plans_adjoint_sum_of_four_adds_left_to_right ... ok
+  Sub>Mul@0>Add@0 n=16448: deterministic vs host differ 0, fast_math vs deterministic differ 2624, outside tolerance 0
+  Sub>Mul@0 n=16448: deterministic vs host differ 0, fast_math vs deterministic differ 0, outside tolerance 0
+  Mul>Add@1 n=16448: deterministic vs host differ 0, fast_math vs deterministic differ 0, outside tolerance 0
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+# fast_math differing from deterministic in 2624 elements is allowed (ADR-008); each is within the § 9 gate 5 tolerance
+
+## lint
+cargo fmt --all: exit 0 (it reformatted only the two adversary_fuse1_* files)
+cargo clippy -p modelspec-core --all-targets -- -D warnings: exit 0 (modelspec-core has no vulkan feature)
+cargo clippy -p modelspec-runtime --all-targets --features vulkan -- -D warnings: exit 0
