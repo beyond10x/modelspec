@@ -1,0 +1,13 @@
+{
+  "at": "2026-10-26T05:45:44Z",
+  "actor": "human:timo",
+  "artifact": "story:vulkan-eval-download-per-batch",
+  "kind": "story",
+  "revision": 11,
+  "change": {
+    "change": "evidence",
+    "kind": "test_result",
+    "source": "task ci",
+    "reference": "fcbc6ec6d48d171cc46fe7af91aef20c76ffcd17"
+  }
+}

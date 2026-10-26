@@ -2,7 +2,7 @@
 format: aep.planning-md/3
 id: story:vulkan-eval-download-per-batch
 kind: story
-status: active
+status: implemented
 title: The stepwise Vulkan run evaluates held-out batches through a one-batch download buffer
 summary: 'Fixes the --eval-every refusal on examples/bert_tiny.mspec over the packed corpus: the stepwise run sized its download buffer as every HeldOut batch''s logits at once (9.1 GB over maxStorageBufferRange); it now evaluates one batch per command buffer through a one-prediction buffer.'
 relations:
@@ -24,10 +24,11 @@ scope:
   path: crates/modelspec-runtime/tests/
 - confidence: cited
   path: website/docs/reference/cli.md
-revision: 11
+revision: 12
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-26T04:09:06Z", actor: "human:timo", revision: 2}
 - {from: "proposed", to: "active", at: "2026-10-26T04:09:06Z", actor: "human:timo", revision: 3}
+- {from: "active", to: "implemented", at: "2026-10-26T05:45:44Z", actor: "human:timo", revision: 12, decided_on: {"recorded":{"test_result":1,"review_outcome":1}}}
 ---
 # The stepwise Vulkan run evaluates held-out batches through a one-batch download buffer
 
