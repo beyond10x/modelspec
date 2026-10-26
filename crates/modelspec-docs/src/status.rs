@@ -570,11 +570,20 @@ pub const CAPABILITIES: &[Capability] = &[
         Evidence::Test("crates/modelspec-cli/tests/vulkan_bert_cpu_steps.rs::steps"),
         "/docs/reference/cli",
     ),
+    shipped(
+        "Training",
+        "BERT-tiny pre-trained on the GPU below the unigram baseline",
+        "On 2026-10-26: `examples/bert_tiny.mspec` trained for 10,000 steps on an RTX 3090 through Vulkan with the 0.18.0 binary over packed WikiText-103 ends at a held-out loss of 6.7674994 nats, 0.159 below the held-out unigram baseline of 6.9265379; the run record holds the commands, the device, every eval line and the SHA-256 of the recorded events.",
+        Evidence::Test(
+            "crates/modelspec-cli/tests/adversary_gpu_pretrain_cli.rs::run_record_page_agrees_with_the_committed_run_lines",
+        ),
+        "/docs/runs/bert-tiny-gpu-pretraining",
+    ),
     planned(
         "Training",
-        "Pre-train BERT-tiny on the GPU",
-        "BERT-tiny pre-trained on the GPU until its held-out loss is below the unigram baseline.",
-        "story:bert-tiny-gpu-pretraining",
+        "BERT-tiny time to held-out loss against PyTorch CUDA",
+        "The same model, data and target loss trained on PyTorch CUDA and on modelspec Vulkan, and the wall time each takes to reach the target compared.",
+        "story:bert-tiny-vs-pytorch-cuda",
         "/docs/roadmap",
     ),
 ];

@@ -1,0 +1,223 @@
+data dataset 0ddcfa78-c328-8cc9-ae3b-490c096d55a5 tokenizer dfd98df4-cbd0-8076-b713-99ab202efa85 seq_len 128 masking 0.15/0.8/0.1/0.1 binding 668f3433-dbd7-8871-a5a7-a421c2bd1816
+step 0 loss 9.035597
+eval 0 loss 9.029848 accuracy 0.00019112694
+step 50 loss 9.027942
+step 100 loss 9.011951
+step 150 loss 8.970035
+step 200 loss 8.88838
+step 250 loss 8.748299
+step 300 loss 8.571261
+step 350 loss 8.404144
+step 400 loss 8.198336
+step 450 loss 7.950393
+step 500 loss 7.785091
+eval 500 loss 7.751668 accuracy 0.03769979
+step 550 loss 7.550701
+step 600 loss 7.4505258
+step 650 loss 7.244367
+step 700 loss 7.025592
+step 750 loss 7.125413
+step 800 loss 7.115167
+step 850 loss 7.0855904
+step 900 loss 6.8641562
+step 950 loss 7.1365457
+step 1000 loss 6.8899775
+eval 1000 loss 6.928317 accuracy 0.05349165
+step 1050 loss 6.9689097
+step 1100 loss 6.9363556
+step 1150 loss 7.0709934
+step 1200 loss 6.780761
+step 1250 loss 6.989836
+step 1300 loss 6.903854
+step 1350 loss 6.9725695
+step 1400 loss 7.0324545
+step 1450 loss 7.0909243
+step 1500 loss 6.95485
+eval 1500 loss 6.919595 accuracy 0.05349165
+step 1550 loss 6.9837427
+step 1600 loss 6.863608
+step 1650 loss 7.025589
+step 1700 loss 6.8241973
+step 1750 loss 6.851167
+step 1800 loss 7.072536
+step 1850 loss 7.0579333
+step 1900 loss 6.926041
+step 1950 loss 6.8584156
+step 2000 loss 7.0497346
+eval 2000 loss 6.913906 accuracy 0.05349165
+step 2050 loss 6.8190246
+step 2100 loss 7.033418
+step 2150 loss 6.8819375
+step 2200 loss 7.076615
+step 2250 loss 7.0276866
+step 2300 loss 7.032393
+step 2350 loss 6.918658
+step 2400 loss 6.8852963
+step 2450 loss 6.8998823
+step 2500 loss 6.8869667
+eval 2500 loss 6.903071 accuracy 0.05349165
+step 2550 loss 6.8904223
+step 2600 loss 7.037469
+step 2650 loss 6.9465747
+step 2700 loss 6.8539724
+step 2750 loss 7.197012
+step 2800 loss 6.9289136
+step 2850 loss 6.990609
+step 2900 loss 7.1066623
+step 2950 loss 6.7433767
+step 3000 loss 6.8695393
+eval 3000 loss 6.889678 accuracy 0.05349165
+step 3050 loss 6.845083
+step 3100 loss 7.031476
+step 3150 loss 7.0502915
+step 3200 loss 6.8496842
+step 3250 loss 6.736315
+step 3300 loss 6.7675157
+step 3350 loss 6.96176
+step 3400 loss 7.120426
+step 3450 loss 7.065383
+step 3500 loss 6.7505207
+eval 3500 loss 6.8805966 accuracy 0.05349165
+step 3550 loss 6.6666365
+step 3600 loss 7.0108824
+step 3650 loss 6.8758535
+step 3700 loss 6.9566207
+step 3750 loss 6.96398
+step 3800 loss 6.811744
+step 3850 loss 6.8505325
+step 3900 loss 7.0502462
+step 3950 loss 6.934384
+step 4000 loss 7.009967
+eval 4000 loss 6.8714867 accuracy 0.05375445
+step 4050 loss 7.0041475
+step 4100 loss 6.8930073
+step 4150 loss 6.859113
+step 4200 loss 6.92094
+step 4250 loss 6.927219
+step 4300 loss 7.001245
+step 4350 loss 6.90847
+step 4400 loss 6.901637
+step 4450 loss 7.12654
+step 4500 loss 6.9636626
+eval 4500 loss 6.85976 accuracy 0.056621354
+step 4550 loss 6.836495
+step 4600 loss 6.8648596
+step 4650 loss 6.7916503
+step 4700 loss 6.9644675
+step 4750 loss 6.9806805
+step 4800 loss 7.0620756
+step 4850 loss 6.866865
+step 4900 loss 6.923736
+step 4950 loss 7.0048003
+step 5000 loss 6.9109597
+eval 5000 loss 6.846145 accuracy 0.056645244
+step 5050 loss 6.8250766
+step 5100 loss 7.016906
+step 5150 loss 6.8660083
+step 5200 loss 7.0968914
+step 5250 loss 6.9395847
+step 5300 loss 6.79049
+step 5350 loss 6.8496704
+step 5400 loss 6.96941
+step 5450 loss 6.74438
+step 5500 loss 6.950887
+eval 5500 loss 6.8329067 accuracy 0.060491674
+step 5550 loss 6.880487
+step 5600 loss 7.0662704
+step 5650 loss 6.8326306
+step 5700 loss 6.816191
+step 5750 loss 6.908616
+step 5800 loss 6.6057186
+step 5850 loss 6.9121785
+step 5900 loss 7.026356
+step 5950 loss 6.822419
+step 6000 loss 6.912746
+eval 6000 loss 6.818905 accuracy 0.064624794
+step 6050 loss 6.79499
+step 6100 loss 6.844456
+step 6150 loss 6.717765
+step 6200 loss 6.9571986
+step 6250 loss 6.7928114
+step 6300 loss 6.6292334
+step 6350 loss 6.897317
+step 6400 loss 6.857352
+step 6450 loss 6.934957
+step 6500 loss 6.890438
+eval 6500 loss 6.8074417 accuracy 0.068757914
+step 6550 loss 6.7544203
+step 6600 loss 6.7388115
+step 6650 loss 6.9086504
+step 6700 loss 7.030515
+step 6750 loss 6.9610786
+step 6800 loss 6.96801
+step 6850 loss 6.797743
+step 6900 loss 6.7912774
+step 6950 loss 6.980507
+step 7000 loss 6.839261
+eval 7000 loss 6.7983656 accuracy 0.07081253
+step 7050 loss 6.801634
+step 7100 loss 6.9396605
+step 7150 loss 6.83235
+step 7200 loss 6.8966413
+step 7250 loss 6.759473
+step 7300 loss 7.092868
+step 7350 loss 6.7232084
+step 7400 loss 6.8071465
+step 7450 loss 6.7043414
+step 7500 loss 6.829295
+eval 7500 loss 6.789642 accuracy 0.072461
+step 7550 loss 6.8611875
+step 7600 loss 6.6606164
+step 7650 loss 7.0465097
+step 7700 loss 6.9076962
+step 7750 loss 6.9266496
+step 7800 loss 6.9225426
+step 7850 loss 6.880218
+step 7900 loss 6.952533
+step 7950 loss 6.7888722
+step 8000 loss 6.748133
+eval 8000 loss 6.7826333 accuracy 0.07305827
+step 8050 loss 6.7399645
+step 8100 loss 6.918322
+step 8150 loss 6.781184
+step 8200 loss 6.985034
+step 8250 loss 6.837594
+step 8300 loss 6.7303915
+step 8350 loss 6.953026
+step 8400 loss 6.895051
+step 8450 loss 6.8712506
+step 8500 loss 6.9588294
+eval 8500 loss 6.7763753 accuracy 0.07470674
+step 8550 loss 6.7900424
+step 8600 loss 6.9031744
+step 8650 loss 6.8392663
+step 8700 loss 6.7811856
+step 8750 loss 6.7142425
+step 8800 loss 6.741662
+step 8850 loss 6.903007
+step 8900 loss 6.7261434
+step 8950 loss 6.9399443
+step 9000 loss 6.768724
+eval 9000 loss 6.7717495 accuracy 0.07511289
+step 9050 loss 6.9030156
+step 9100 loss 6.695873
+step 9150 loss 6.805194
+step 9200 loss 6.71568
+step 9250 loss 6.9484835
+step 9300 loss 6.7462754
+step 9350 loss 6.98856
+step 9400 loss 6.690157
+step 9450 loss 6.836898
+step 9500 loss 6.8189487
+eval 9500 loss 6.7688417 accuracy 0.07556681
+step 9550 loss 6.837841
+step 9600 loss 6.680764
+step 9650 loss 6.752279
+step 9700 loss 6.928002
+step 9750 loss 6.8201103
+step 9800 loss 6.89508
+step 9850 loss 6.885496
+step 9900 loss 6.776336
+step 9950 loss 6.740318
+step 10000 loss 6.8116674
+eval 10000 loss 6.7674994 accuracy 0.07592517

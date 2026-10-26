@@ -553,7 +553,7 @@ body.all .hud, body.all .narrow { display: none; }
   <h2>0.18.0 trains on the RTX 3090 through Vulkan</h2>
   <div class="stats">
     <div class="stat"><div class="v">0.18.0</div><div class="l">latest of 20 releases, 2026-10-26, with a Linux x86_64 binary</div></div>
-    <div class="stat"><div class="v">57</div><div class="l">capabilities shipped, each held by a named test or task</div></div>
+    <div class="stat"><div class="v">58</div><div class="l">capabilities shipped, each held by a named test or task</div></div>
     <div class="stat"><div class="v">73</div><div class="l">stories implemented</div></div>
     <div class="stat"><div class="v">2699</div><div class="l">tests passed in <code>task ci</code>, 0 failed, 311 ignored</div></div>
   </div>
@@ -568,10 +568,10 @@ body.all .hud, body.all .narrow { display: none; }
     </div>
     <div class="card" style="padding:22px 26px">
       <h3 style="font-size:26px">Not built</h3>
-      <p style="font-size:21px">BERT-tiny pre-trained on the GPU · M4: the Tensor Core path</p>
+      <p style="font-size:21px">M4: the Tensor Core path</p>
     </div>
   </div>
-  <aside class="notes">Releases: 20 tags, 0.1.0 to 0.18.0; 0.18.0 dated 2026-10-26 (CHANGELOG.md § 0.18.0); the Linux x86_64 binary: the opening paragraph of CHANGELOG.md and .github/workflows/release.yml. 57 shipped, 1 planned: website/data/status.json (asOf 2026-10-26). 73 implemented, none in progress: the stories of the repository's planning store, 2026-10-26. 2699 / 0 / 311: the sum of the cargo "test result" lines of the 408 suites of task ci on 266733e, 2026-10-26; the ignored tests include the device tests and the browser tests that task ui-browser then runs (AGENTS.md "Commands"); the node --test cases of pnpm test are not counted. Released, 0.2.0 to 0.7.1: --serve in CHANGELOG.md § 0.2.0; train --backend vulkan with one host wait and --profile in CHANGELOG.md § 0.4.0; the tiled GPU matmul in CHANGELOG.md § 0.5.0; checkpoints, resume, infer, compile, --record and observe in CHANGELOG.md § 0.6.0; the observatory UI in CHANGELOG.md § 0.7.0. Released, 0.8.0 to 0.18.0: CHANGELOG.md § 0.9.0, § 0.10.0, § 0.11.0, § 0.12.0, § 0.13.0, § 0.14.0, § 0.15.0, § 0.16.0, § 0.17.0 and § 0.18.0; data prepare, tokenizer and pack are in the 0.10.0 tag without a CHANGELOG.md entry (website/docs/guides/prepare-training-data.md). Not built: the planned rows of website/data/status.json; DESIGN.md section 1 M3 and M4 rows.</aside>
+  <aside class="notes">Releases: 20 tags, 0.1.0 to 0.18.0; 0.18.0 dated 2026-10-26 (CHANGELOG.md § 0.18.0); the Linux x86_64 binary: the opening paragraph of CHANGELOG.md and .github/workflows/release.yml. 58 shipped, 1 planned: website/data/status.json (asOf 2026-10-26). 73 implemented, none in progress: the stories of the repository's planning store, 2026-10-26. 2699 / 0 / 311: the sum of the cargo "test result" lines of the 408 suites of task ci on 266733e, 2026-10-26; the ignored tests include the device tests and the browser tests that task ui-browser then runs (AGENTS.md "Commands"); the node --test cases of pnpm test are not counted. Released, 0.2.0 to 0.7.1: --serve in CHANGELOG.md § 0.2.0; train --backend vulkan with one host wait and --profile in CHANGELOG.md § 0.4.0; the tiled GPU matmul in CHANGELOG.md § 0.5.0; checkpoints, resume, infer, compile, --record and observe in CHANGELOG.md § 0.6.0; the observatory UI in CHANGELOG.md § 0.7.0. Released, 0.8.0 to 0.18.0: CHANGELOG.md § 0.9.0, § 0.10.0, § 0.11.0, § 0.12.0, § 0.13.0, § 0.14.0, § 0.15.0, § 0.16.0, § 0.17.0 and § 0.18.0; data prepare, tokenizer and pack are in the 0.10.0 tag without a CHANGELOG.md entry (website/docs/guides/prepare-training-data.md). Not built: DESIGN.md section 1 M4 row; BERT-tiny pre-training on the GPU left this card with the run of 2026-10-26 (website/docs/runs/bert-tiny-gpu-pretraining.md).</aside>
 </section>
 
 <!-- 14 -->
@@ -705,11 +705,11 @@ body.all .hud, body.all .narrow { display: none; }
       <ul class="bul" style="font-size:0">
         <li style="font-size:24px;margin-bottom:16px">M1 acceptance: the 9 boxes of DESIGN.md § 9 are not ticked</li>
         <li style="font-size:24px;margin-bottom:16px">ADR-007: accuracy and final weights not measured</li>
-        <li style="font-size:24px;margin-bottom:16px">BERT: pre-training on the GPU is planned</li>
+        <li style="font-size:24px;margin-bottom:16px">BERT-tiny on the GPU: held-out loss 6.767, 0.159 nats below the unigram baseline; no tighter target yet</li>
       </ul>
     </div>
   </div>
-  <aside class="notes">Done: CHANGELOG.md § 0.1.0 (2026-10-21), CHANGELOG.md § 0.4.0 (2026-10-22, train --backend vulkan), CHANGELOG.md § 0.5.0 (2026-10-23, 27.282 µs from 40.225 µs), CHANGELOG.md § 0.6.0 (2026-10-23, Vulkan checkpoints, infer --backend vulkan, compile). Released: CHANGELOG.md § 0.7.0, § 0.8.0, § 0.9.0, § 0.10.0, § 0.11.0, § 0.12.0, § 0.13.0, § 0.14.0, § 0.15.0, § 0.16.0, § 0.17.0 and § 0.18.0; 0.13.0 at b8192 h4096, 6,858.9 µs against 6,568.5 µs for PyTorch eager (1.044): benchmarks/raw/2026-10-25-step-sites/verdict.md. Open: DESIGN.md:551-559 nine unticked boxes; CHANGELOG.md § 0.6.0 "ADR-007's accuracy and final-weight conditions were not measured for this release". BERT: website/data/status.json planned rows, asOf 2026-10-26.</aside>
+  <aside class="notes">Done: CHANGELOG.md § 0.1.0 (2026-10-21), CHANGELOG.md § 0.4.0 (2026-10-22, train --backend vulkan), CHANGELOG.md § 0.5.0 (2026-10-23, 27.282 µs from 40.225 µs), CHANGELOG.md § 0.6.0 (2026-10-23, Vulkan checkpoints, infer --backend vulkan, compile). Released: CHANGELOG.md § 0.7.0, § 0.8.0, § 0.9.0, § 0.10.0, § 0.11.0, § 0.12.0, § 0.13.0, § 0.14.0, § 0.15.0, § 0.16.0, § 0.17.0 and § 0.18.0; 0.13.0 at b8192 h4096, 6,858.9 µs against 6,568.5 µs for PyTorch eager (1.044): benchmarks/raw/2026-10-25-step-sites/verdict.md. Open: DESIGN.md:551-559 nine unticked boxes; CHANGELOG.md § 0.6.0 "ADR-007's accuracy and final-weight conditions were not measured for this release". BERT-tiny: website/docs/runs/bert-tiny-gpu-pretraining.md, eval 10000 loss 6.7674994 against the baseline 6.926537926202018 of packed.json, 2026-10-26.</aside>
 </section>
 
 <div class="narrow">The slides are 16:9: turn the device sideways to read them. Tap the right or left half, or swipe, to change slides.</div>

@@ -43,6 +43,8 @@ train Fit {
 
 ModelSpec is in milestone M1 (GPU execution), and its current goal is a small BERT pre-trained
 from scratch; the latest release is [0.18.0](https://github.com/beyond10x/modelspec/releases/tag/0.18.0).
+BERT-tiny pre-trained on one RTX 3090 for 10,000 steps reached a held-out loss of 6.7674994 nats,
+0.159 below the unigram baseline of 6.9265379 ([the run record](./runs/bert-tiny-gpu-pretraining.md)).
 
 | Works in 0.18.0 | Not built yet |
 |---|---|

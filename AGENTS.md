@@ -20,7 +20,11 @@ M1 (`epic:m1-vulkan-execution`) is in progress, latest release 0.18.0. The activ
 `embedding`, `add_rows`, `gelu`, `dropout`, `layer_norm`, `softmax` and their gradients also
 have Vulkan kernels checked against the CPU oracle, and since 0.17.0 so do `attention`,
 `cross_entropy` and the `adamw` step, and `train --backend vulkan --data` trains the hidden-32 BERT
-twin with dropout; a command that needs a Vulkan kernel for `muon` answers E-TARGET-011 at its call. A Cargo workspace of five crates: `modelspec-core`
+twin with dropout; a command that needs a Vulkan kernel for `muon` answers E-TARGET-011 at its call.
+On 2026-10-26 `examples/bert_tiny.mspec` was pre-trained on the RTX 3090 with the 0.18.0 binary for
+10,000 steps over packed WikiText-103 to a held-out loss of 6.7674994 nats, 0.159 below the unigram
+baseline 6.9265379 (`website/docs/runs/bert-tiny-gpu-pretraining.md`; the event file stays outside
+the repository). A Cargo workspace of five crates: `modelspec-core`
 (parser, checker, Tensor IR, autodiff, lowering, DCE; no Vulkan), `modelspec-runtime` (CPU oracle,
 SGD training and the corpus preparation, WordPiece tokenizer and MLM batch packing `dataset`; the `vulkan` feature holds Vulkan device discovery, negotiation, SPIR-V
 emission and the training runner `vulkan::runner` through `ash` and `rspirv`; the JSON Schema of

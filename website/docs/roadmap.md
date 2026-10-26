@@ -97,11 +97,17 @@ check of every parameter and trains to the same output twice from one seed.
 
 :::
 
+:::shipped[Pre-trained on the GPU, 2026-10-26]
+
+BERT-tiny pre-trained on one RTX 3090 through Vulkan with the 0.18.0 binary for 10,000 steps over
+packed WikiText-103 ends at a held-out loss of 6.7674994 nats, 0.159 nats below the unigram
+baseline of 6.9265379 ([the run record](./runs/bert-tiny-gpu-pretraining.md)).
+
+:::
+
 :::caution[Planned]
 
-BERT-tiny pre-trained on the GPU until its held-out loss is below the unigram baseline (the BERT
-operators and AdamW have Vulkan kernels, and the hidden-32 twin trains on the GPU, since 0.17.0). `f16`, causal masks
-and the GPT-like model are design.
+`f16`, causal masks and the GPT-like model are design.
 
 :::
 

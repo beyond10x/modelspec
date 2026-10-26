@@ -9,6 +9,10 @@ history.
 
 ## [Unreleased]
 
+### Added
+
+- The record of the first GPU pre-training run of `examples/bert_tiny.mspec`, `website/docs/runs/bert-tiny-gpu-pretraining.md` under a new Runs section of the documentation site: 10,000 steps on an RTX 3090 through Vulkan with the 0.18.0 binary over packed WikiText-103 end at a held-out loss of 6.7674994 nats, 0.159 nats (2.30 %) below the held-out unigram baseline of 6.9265379, with the commands, the commit, the device, every `eval` line, the training loss every 50 steps, the wall time and the SHA-256 of the recorded event file, which stays outside the repository (story:bert-tiny-gpu-pretraining).
+
 ## [0.18.0] - 2026-10-26
 
 Held-out evaluation on the GPU works at corpus scale: `train --backend vulkan --eval-every <n>` evaluates each held-out batch in a command buffer of its own through a download buffer of one batch's prediction, so `examples/bert_tiny.mspec` over the packed WikiText-103 corpus trains with `--eval-every` where it was refused before step 0 with `9126805508 bytes exceed maxStorageBufferRange 4294967295`. The `eval` lines and the recorded metrics are unchanged, and `--stats` counts the evaluation's submits and host waits.
