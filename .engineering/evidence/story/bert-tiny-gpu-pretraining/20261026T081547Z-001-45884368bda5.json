@@ -1,0 +1,13 @@
+{
+  "at": "2026-10-26T08:15:47Z",
+  "actor": "human:timo",
+  "artifact": "story:bert-tiny-gpu-pretraining",
+  "kind": "story",
+  "revision": 8,
+  "change": {
+    "change": "evidence",
+    "kind": "test_result",
+    "source": "task ci",
+    "reference": "6e22da7e473d7a6e103dcfeb5ea84661a2ec12f1"
+  }
+}

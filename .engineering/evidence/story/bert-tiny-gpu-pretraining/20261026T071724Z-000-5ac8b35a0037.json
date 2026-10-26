@@ -1,0 +1,13 @@
+{
+  "at": "2026-10-26T07:17:24Z",
+  "actor": "human:timo",
+  "artifact": "story:bert-tiny-gpu-pretraining",
+  "kind": "story",
+  "revision": 8,
+  "change": {
+    "change": "evidence",
+    "kind": "metric_observation",
+    "source": "modelspec train examples/bert_tiny.mspec --backend vulkan --data packed-128 --eval-every 500 --record (7e371a1, 2026-10-26T06:32:19Z to 07:17:24Z): eval 10000 loss 6.7674994 accuracy 0.07592517, baseline 6.926537926202018, events sha256 2336f1e1f0a7375a6702a48defba50dbc5b7218fbdf7ffc8853bebc4b12e11bd",
+    "reference": "website/docs/runs/bert-tiny-gpu-pretraining.md"
+  }
+}

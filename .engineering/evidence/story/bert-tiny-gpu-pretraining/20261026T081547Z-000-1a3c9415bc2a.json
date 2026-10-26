@@ -1,0 +1,15 @@
+{
+  "at": "2026-10-26T08:15:47Z",
+  "actor": "human:timo",
+  "artifact": "story:bert-tiny-gpu-pretraining",
+  "kind": "story",
+  "revision": 8,
+  "change": {
+    "change": "evidence",
+    "kind": "review_outcome",
+    "source": "pass B fix on the page (F1 rounding, F2 the baseline over the evaluated rows); F3 pre-existing, draft story:cli-fails-on-vulkan-validation-messages",
+    "reference": "6e22da7e473d7a6e103dcfeb5ea84661a2ec12f1",
+    "review": "review-result:adversary-gpu-pretrain-pass-1",
+    "outcome": "fixed"
+  }
+}
