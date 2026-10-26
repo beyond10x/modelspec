@@ -2,7 +2,7 @@
 format: aep.planning-md/3
 id: story:bert-tiny-gpu-pretraining
 kind: story
-status: draft
+status: active
 title: Pre-train BERT-tiny on the GPU until held-out MLM loss is below the unigram baseline
 summary: Operator-run GPU pre-training of examples/bert_tiny.mspec on the settled corpus, watched in the observatory and recorded, ending below the held-out unigram baseline, with the curve and margin recorded as evidence.
 relations:
@@ -12,7 +12,10 @@ relations:
 scope:
 - confidence: cited
   path: examples/bert_tiny.mspec
-revision: 5
+revision: 7
+transitions:
+- {from: "draft", to: "proposed", at: "2026-10-26T03:57:20Z", actor: "human:timo", revision: 6}
+- {from: "proposed", to: "active", at: "2026-10-26T03:57:21Z", actor: "human:timo", revision: 7}
 ---
 # Pre-train BERT-tiny on the GPU until held-out MLM loss is below the unigram baseline
 
