@@ -39,7 +39,7 @@ body { font-family: var(--sans); color: var(--fg); -webkit-font-smoothing: antia
 }
 .slide.active { display: block; }
 .slide::after {
-  content: attr(data-n) " / 17"; position: absolute; right: 100px; bottom: 34px;
+  content: attr(data-n) " / 18"; position: absolute; right: 100px; bottom: 34px;
   font: 500 20px var(--mono); color: var(--dim);
 }
 .slide::before {
@@ -619,6 +619,26 @@ body.all .hud, body.all .narrow { display: none; }
 
 <!-- 15 -->
 <section class="slide" data-n="15">
+  <div class="kicker">Benchmark · release 0.10.0</div>
+  <h2 style="margin-bottom:16px">MLP size sweep on the RTX 3090 against PyTorch</h2>
+  <p class="mut" style="font-size:23px;margin-bottom:20px">784 → H ReLU → 10, f32, SGD, synthetic data, H from 64 to 4096. The crossover is the first hidden width whose step time is more than 10 % above the previous width's: where a side stops being launch-bound.</p>
+  <p style="font-size:25px;margin-bottom:12px"><b>Crossover at batch 1000</b></p>
+  <div class="stats" style="grid-template-columns:repeat(3, 1fr);margin-bottom:22px">
+    <div class="stat" style="padding:18px 24px"><div class="v" style="font-size:54px">H 256</div><div class="l" style="font-size:21px;margin-top:10px">ModelSpec Vulkan: 95.3 µs at H 64, 212.2 µs at H 256</div></div>
+    <div class="stat" style="padding:18px 24px"><div class="v" style="font-size:54px">H 4096</div><div class="l" style="font-size:21px;margin-top:10px">PyTorch eager, CUDA: 405.8 to 436.6 µs up to H 1024, 935.4 µs at H 4096</div></div>
+    <div class="stat" style="padding:18px 24px"><div class="v" style="font-size:54px">H 4096</div><div class="l" style="font-size:21px;margin-top:10px">PyTorch torch.compile, CUDA: 539.3 to 558.3 µs up to H 1024, 933.4 µs at H 4096</div></div>
+  </div>
+  <p style="font-size:25px;margin-bottom:12px"><b>GFLOP/s at batch 8192, H 4096</b> <span class="mut" style="font-size:22px">107,239,964,672 FLOP per step, the matmuls</span></p>
+  <div class="stats" style="grid-template-columns:repeat(3, 1fr);margin-bottom:0">
+    <div class="stat" style="padding:18px 24px"><div class="v" style="font-size:54px">14,834.7</div><div class="l" style="font-size:21px;margin-top:10px">ModelSpec Vulkan, 7,229.0 µs per step</div></div>
+    <div class="stat" style="padding:18px 24px"><div class="v" style="font-size:54px">15,676.1</div><div class="l" style="font-size:21px;margin-top:10px">PyTorch eager, CUDA, 6,841.0 µs per step</div></div>
+    <div class="stat" style="padding:18px 24px"><div class="v" style="font-size:54px">15,812.4</div><div class="l" style="font-size:21px;margin-top:10px">PyTorch torch.compile, CUDA, 6,782.0 µs per step</div></div>
+  </div>
+  <aside class="notes">Source: the MLP size sweep report of 2026-10-25, one deterministic sweep from release 0.10.0 at 5b713ce on the RTX 3090, clocks not locked, PyTorch 2.14.1+cu130, tf32 off; its Results table (median of 3 timed runs of at least 6 s, µs per step) and its Crossover lines; raw records, clock samples and the crossover output in benchmarks/raw/2026-10-25-sweep-0.10.0/ (crossover.txt). Crossover widths: the three lines of crossover.txt with "pitch_slide": true, batch 1000, "verdict": "reached", hidden 256 for modelspec-vulkan, 4096 for pytorch-eager and 4096 for pytorch-compile; the rule is the first width whose median µs per step is more than 10 % above the previous width's (the --crossover option of the mlp_sweep bench, crates/modelspec-runtime/benches/mlp_sweep.rs). Batch 1000 step times: the runs sweep-b1000-h64-, -h256-, -h1024- and -h4096- of modelspec-vulkan-0.10.0, pytorch-cuda-eager-0.10.0 and pytorch-cuda-compile-0.10.0 in benchmarks/runs.yaml. GFLOP/s: flop_per_step / µs per step / 1000, with flop_per_step 107,239,964,672 (flop_rule MatmulOnly, 3196 · 8192 · 4096) and the report's 7229.0, 6841.0 and 6782.0 µs per step, the runs sweep-b8192-h4096-modelspec-vulkan-0.10.0, sweep-b8192-h4096-pytorch-cuda-eager-0.10.0 and sweep-b8192-h4096-pytorch-cuda-compile-0.10.0 of benchmarks/runs.yaml (medians 7229.009, 6840.956 and 6782.021 µs). The report's modelspec / eager ratio there is 1.057. A later ModelSpec run of the same point, 6,858.9 µs on the 0.13.0 tree against 6,568.5 µs for PyTorch eager (1.044), is on slide 18 and on the site's benchmarks page; it is not this sweep, so it is not on this slide. MatmulOnly is 3196 · B · H, the matmuls of a 784 → H → 10 step at batch B (spec/domains/benchmark.yaml, FlopRule).</aside>
+</section>
+
+<!-- 16 -->
+<section class="slide" data-n="16">
   <span class="tag m0">Epic · training observatory</span>
   <h2 style="margin-bottom:30px">Watch a run while it trains</h2>
   <div class="strip">
@@ -645,8 +665,8 @@ body.all .hud, body.all .narrow { display: none; }
   <aside class="notes">--serve: CHANGELOG.md § 0.2.0 and website/docs/reference/cli.md (train --serve, loopback address). Input adjoint: CHANGELOG.md § 0.2.0. --record and observe: CHANGELOG.md § 0.6.0 and website/docs/reference/cli.md. --ui: CHANGELOG.md § 0.7.0 and the train and observe sections of website/docs/reference/cli.md. Schema: AGENTS.md "State" (modelspec-observatory's JSON Schema under schema/ is ess generate output). Released in 0.7.0: the observatory UI and per-parameter statistics, an L2 norm and a 32-bin histogram per parameter every --statistics-every N steps, default 100 (CHANGELOG.md § 0.7.0). Drafted: the architecture graph, activation statistics and gradient-times-input saliency are draft work in the repository's planning store, not built.</aside>
 </section>
 
-<!-- 16 -->
-<section class="slide" data-n="16">
+<!-- 17 -->
+<section class="slide" data-n="17">
   <h2>How it is built</h2>
   <div class="grid3" style="margin-bottom:40px">
     <div class="card"><h3>Spec-first</h3><p>ESS data contracts under <code>spec/</code>: artifact, checkpoint, data, device, observatory, training</p></div>
@@ -669,8 +689,8 @@ body.all .hud, body.all .narrow { display: none; }
   <aside class="notes">AGENTS.md "Planning and specification"; spec/domains/ holds artifact, checkpoint, data, device, observatory and training .yaml; vision direction item 5. Waves and stories: the closed wave records of the repository's planning store and their merge commits in git log, 2026-10-25.</aside>
 </section>
 
-<!-- 17 -->
-<section class="slide" data-n="17">
+<!-- 18 -->
+<section class="slide" data-n="18">
   <div class="kicker">2026-10-26</div>
   <h2>Next steps</h2>
   <div style="display:grid;grid-template-columns:1fr 1.25fr 1fr;gap:40px;align-items:start">

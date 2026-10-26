@@ -175,11 +175,49 @@ fn schema_field(error: &jsonschema::ValidationError<'_>) -> String {
 /// What is wrong with a schema-valid run beyond the schema: the invariants of
 /// `modelspec.benchmark.BenchmarkRun` (spec/domains/benchmark.yaml), checked here too so that they
 /// hold whatever schema is read, its date, its repeats against its repeat count and its median
-/// against the median of its repeats.
+/// against the median of its repeats; a `MatmulOnly` count against `3196·B·H` (`FlopRule`); and
+/// its workload against the workloads the page declares ([`WORKLOADS`]).
 fn semantic_problems(run: &Run) -> Vec<(&'static str, String)> {
     let mut problems = Vec::new();
     if !is_date(&run.date) {
         problems.push(("date", format!("`{}` is not a `YYYY-MM-DD` date", run.date)));
+    }
+    if !WORKLOADS.iter().any(|declared| declared.id == run.workload) {
+        let declared: Vec<String> = WORKLOADS
+            .iter()
+            .map(|declared| format!("`{}`", declared.id))
+            .collect();
+        problems.push((
+            "workload",
+            format!(
+                "`{}` is not a declared workload; the page declares {}",
+                run.workload,
+                declared.join(", ")
+            ),
+        ));
+    }
+    if let (Some(flop), Some("MatmulOnly")) = (run.flop_per_step, run.flop_rule.as_deref()) {
+        match (run.batch, run.hidden) {
+            (Some(batch), Some(hidden)) => {
+                let expected = 3196u64
+                    .checked_mul(batch)
+                    .and_then(|n| n.checked_mul(hidden));
+                if expected != Some(flop) {
+                    problems.push((
+                        "flop_per_step",
+                        format!(
+                            "{flop} is not what flop_rule MatmulOnly counts, 3196·B·H = {} at batch {batch}, hidden {hidden}",
+                            expected.map_or("more than 2^64".to_owned(), |n| n.to_string())
+                        ),
+                    ));
+                }
+            }
+            _ => problems.push((
+                "flop_per_step",
+                "flop_rule MatmulOnly counts 3196·B·H, so the run must give batch and hidden"
+                    .to_owned(),
+            )),
+        }
     }
     let counts = [
         ("threads", run.threads),
@@ -430,6 +468,17 @@ fn number(value: f64) -> String {
     } else {
         &text
     };
+    grouped(text)
+}
+
+/// GFLOP/s with 1 decimal and thousands separated by commas; blank for none.
+fn gflops_text(value: Option<f64>) -> String {
+    value.map_or(String::new(), |value| grouped(&format!("{value:.1}")))
+}
+
+/// `text`, a non-negative decimal number, with the thousands of its whole part separated by
+/// commas.
+fn grouped(text: &str) -> String {
     let (whole, fraction) = text
         .split_once('.')
         .map_or((text, None), |(w, f)| (w, Some(f)));
@@ -467,11 +516,13 @@ struct Series {
     points: Vec<Point>,
 }
 
-/// A chart of µs per step on a log scale against categories on the x axis, at 0, 1, 2, ...
+/// A chart of µs per step on a log scale against categories on the x axis, at 0, 1, 2, ..., or,
+/// with `log_x`, against a quantity on a log scale whose decades are the ticks.
 struct Chart {
     title: String,
     x_label: String,
     ticks: Vec<String>,
+    log_x: bool,
     series: Vec<Series>,
     /// Whether an opponent's last point is carried to the right edge as a dotted line, the
     /// figure ModelSpec is measured against until the opponent is measured again.
@@ -549,6 +600,20 @@ fn marker(out: &mut String, x: f64, y: f64, colour: &str, modelspec: bool) {
             y - 4.0
         ));
     }
+}
+
+/// `10` raised to `decade`, written with a superscript exponent: `10⁷`.
+fn power_of_ten(decade: i32) -> String {
+    const SUPERSCRIPTS: [char; 10] = ['⁰', '¹', '²', '³', '⁴', '⁵', '⁶', '⁷', '⁸', '⁹'];
+    let exponent: String = decade
+        .to_string()
+        .chars()
+        .map(|c| match c.to_digit(10) {
+            Some(digit) => SUPERSCRIPTS[digit as usize],
+            None => '⁻',
+        })
+        .collect();
+    format!("10{exponent}")
 }
 
 /// The title on two lines, split after its first `": "`.
@@ -675,8 +740,25 @@ fn svg(chart: &Chart) -> String {
         high = low + 1;
     }
     let y_of = |us: f64| TOP + PLOT_HEIGHT * (f64::from(high) - us.log10()) / f64::from(high - low);
-    let slots = chart.ticks.len().max(1) as f64;
-    let x_of = |x: f64| LEFT + plot_width * (x + 0.5) / slots;
+    let decades = chart.log_x.then(|| {
+        let xs = chart
+            .series
+            .iter()
+            .flat_map(|series| series.points.iter().map(|point| point.x));
+        let low = xs.clone().fold(f64::INFINITY, f64::min).log10().floor() as i32;
+        let high = xs.fold(f64::NEG_INFINITY, f64::max).log10().ceil() as i32;
+        (low, high.max(low + 1))
+    });
+    let slots = match decades {
+        Some((low, high)) => f64::from(high - low + 1),
+        None => chart.ticks.len().max(1) as f64,
+    };
+    let x_of = |x: f64| match decades {
+        Some((low, high)) => {
+            LEFT + plot_width * (x.log10() - f64::from(low)) / f64::from(high - low)
+        }
+        None => LEFT + plot_width * (x + 0.5) / slots,
+    };
     let axis = TOP + PLOT_HEIGHT;
     let legend = axis + 76.0;
     let height = legend + chart.series.len() as f64 * LEGEND_ROW;
@@ -709,12 +791,48 @@ fn svg(chart: &Chart) -> String {
             }
         }
     }
+    if let Some((low, high)) = decades {
+        for decade in low..=high {
+            let base = 10f64.powi(decade);
+            let minors: &[f64] = if decade < high {
+                &[1.0, 2.0, 5.0]
+            } else {
+                &[1.0]
+            };
+            for minor in minors {
+                let x = x_of(base * minor);
+                out.push_str(&format!(
+                    "<line x1=\"{x:.1}\" y1=\"{TOP}\" x2=\"{x:.1}\" y2=\"{:.1}\" stroke=\"{}\"/>\n",
+                    TOP + PLOT_HEIGHT,
+                    if *minor == 1.0 { GRID } else { MINOR }
+                ));
+            }
+        }
+    }
     out.push_str(&format!(
         "<rect x=\"{LEFT}\" y=\"{TOP}\" width=\"{plot_width:.1}\" height=\"{PLOT_HEIGHT}\" fill=\"none\" stroke=\"{FRAME}\"/>\n"
     ));
-    let (ticks, x_label) = ticks_and_axis(chart, plot_width / slots);
-    for (i, tick) in ticks.iter().enumerate() {
-        let x = x_of(i as f64);
+    let (ticks, x_label): (Vec<(f64, String)>, String) = match decades {
+        Some((low, high)) => (
+            (low..=high)
+                .map(|decade| (x_of(10f64.powi(decade)), power_of_ten(decade)))
+                .collect(),
+            chart.x_label.clone(),
+        ),
+        None => {
+            let (ticks, x_label) = ticks_and_axis(chart, plot_width / slots);
+            (
+                ticks
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, tick)| (x_of(i as f64), tick))
+                    .collect(),
+                x_label,
+            )
+        }
+    };
+    for (x, tick) in &ticks {
+        let x = *x;
         out.push_str(&format!(
             "<line x1=\"{x:.1}\" y1=\"{axis:.1}\" x2=\"{x:.1}\" y2=\"{:.1}\" stroke=\"{FRAME}\"/>\n<text x=\"{x:.1}\" y=\"{:.1}\" text-anchor=\"middle\" fill=\"{MUTED}\">{}</text>\n",
             axis + 5.0,
@@ -806,13 +924,46 @@ fn svg(chart: &Chart) -> String {
     out
 }
 
+/// A workload the page declares: its `workload` in `runs.yaml`, the heading of its section, and
+/// what the "Not measured" section says of it while it has no run.
+struct Workload {
+    id: &'static str,
+    title: &'static str,
+    not_measured: &'static str,
+}
+
+/// The declared workloads. One without a run in `runs.yaml` is listed under "Not measured"; its
+/// first run gives it a section of its own, with no change here.
+const WORKLOADS: [Workload; 4] = [
+    Workload {
+        id: "mnist-784-64-10",
+        title: "MNIST 784-64-10",
+        not_measured: "the MNIST benchmark: the 784 → 64 ReLU → 10 training step at batch 100 against PyTorch.",
+    },
+    Workload {
+        id: "mlp-784-H-10",
+        title: "MLP 784-H-10 sweep",
+        not_measured: "the MLP size sweep: the 784 → H ReLU → 10 step over batch and hidden width against PyTorch CUDA.",
+    },
+    Workload {
+        id: "transformer-block",
+        title: "Transformer block",
+        not_measured: "the transformer-block benchmark on synthetic data against PyTorch CUDA: the two BERT-tiny encoder blocks (hidden 128, 2 heads, sequence 128) on random `f32` inputs.",
+    },
+    Workload {
+        id: "bert-tiny-pretrain",
+        title: "BERT-tiny pre-training",
+        not_measured: "BERT-tiny pre-training timed to the same held-out loss as PyTorch CUDA with the same corpus, batches, initial weights and optimizer.",
+    },
+];
+
 /// The heading of a workload's section.
 fn workload_title(workload: &str) -> String {
-    match workload {
-        "mnist-784-64-10" => "MNIST 784-64-10".to_owned(),
-        "mlp-784-H-10" => "MLP 784-H-10 sweep".to_owned(),
-        other => other.to_owned(),
-    }
+    WORKLOADS
+        .iter()
+        .find(|declared| declared.id == workload)
+        .map_or(workload, |declared| declared.title)
+        .to_owned()
 }
 
 /// The file-name stem of a workload's charts.
@@ -919,6 +1070,7 @@ fn over_date(title: String, runs: &[&Run], with_hidden: bool) -> Chart {
         ticks: dates.iter().map(|date| (*date).to_owned()).collect(),
         series,
         carry_forward: true,
+        log_x: false,
     }
 }
 
@@ -994,9 +1146,10 @@ fn fixed_section(workload: &str, runs: &[&Run], images: &mut Pages) -> String {
     out
 }
 
-/// The section of a workload with batch and hidden parameters: per batch, a chart of µs per step
-/// against hidden width at the latest run of each point, an over-date chart when the batch has
-/// runs on more than one date, and the latest medians.
+/// The section of a workload with batch and hidden parameters: the chart against FLOP per step of
+/// every batch, then per batch a chart of µs per step against hidden width at the latest run of
+/// each point, an over-date chart when the batch has runs on more than one date, and the latest
+/// medians with their GFLOP/s.
 fn sweep_section(workload: &str, runs: &[&Run], images: &mut Pages) -> String {
     let title = workload_title(workload);
     let mut out = format!(
@@ -1004,6 +1157,7 @@ fn sweep_section(workload: &str, runs: &[&Run], images: &mut Pages) -> String {
          hidden width H, ModelSpec solid with filled circles and the opponents dashed with open \
          squares.\n"
     );
+    out.push_str(&flop_section(workload, runs, images));
     let batches: std::collections::BTreeSet<Option<u64>> =
         runs.iter().map(|run| run.batch).collect();
     for batch in batches {
@@ -1059,6 +1213,7 @@ fn sweep_section(workload: &str, runs: &[&Run], images: &mut Pages) -> String {
                     .collect(),
                 series,
                 carry_forward: false,
+                log_x: false,
             }),
         );
         let dates: std::collections::BTreeSet<&str> =
@@ -1083,13 +1238,18 @@ fn sweep_section(workload: &str, runs: &[&Run], images: &mut Pages) -> String {
             ));
         }
         out.push_str(&format!(
-            "\nLatest median µs per step per side, runs of {latest_date} unless the cell says otherwise:\n\n| H | FLOP per step |"
+            "\nLatest median µs per step per side, runs of {latest_date} unless the cell says otherwise, \
+             and the GFLOP/s of the same run, its FLOP per step / µs per step / 1000, blank where \
+             the run states no FLOP per step:\n\n| H | FLOP per step |"
         ));
         for (_, side) in &sides {
             out.push_str(&format!(" {} |", side_label(side)));
         }
+        for (_, side) in &sides {
+            out.push_str(&format!(" {} GFLOP/s |", side_label(side)));
+        }
         out.push_str("\n|---|---|");
-        for _ in &sides {
+        for _ in 0..2 * sides.len() {
             out.push_str("---|");
         }
         out.push('\n');
@@ -1119,9 +1279,219 @@ fn sweep_section(workload: &str, runs: &[&Run], images: &mut Pages) -> String {
                         });
                 out.push_str(&format!(" {value} |"));
             }
+            for (rank, side) in &sides {
+                let value = points.get(&(*rank, side.clone(), *hidden)).and_then(gflops);
+                out.push_str(&format!(" {} |", gflops_text(value)));
+            }
             out.push('\n');
         }
     }
+    out
+}
+
+/// The GFLOP/s of `run`, its FLOP per step / µs per step / 1000; none when it states no FLOP per
+/// step.
+fn gflops(run: &Run) -> Option<f64> {
+    run.flop_per_step
+        .map(|flop| flop as f64 / run.median_us_per_step / 1000.0)
+}
+
+/// One point of a sweep's FLOP chart: the latest run of one side at one batch and hidden width
+/// among the runs that state `flop_per_step`, at the FLOP per step the point is placed by.
+#[derive(Debug, Clone)]
+struct FlopPoint {
+    side: String,
+    batch: Option<u64>,
+    hidden: Option<u64>,
+    flop_per_step: u64,
+    us: f64,
+    /// The run, which the tests name.
+    #[cfg(test)]
+    run_id: String,
+}
+
+#[cfg(test)]
+impl FlopPoint {
+    fn gflops(&self) -> f64 {
+        self.flop_per_step as f64 / self.us / 1000.0
+    }
+}
+
+/// A sweep's FLOP chart: its points in side order, then batch and hidden width; the rules they are
+/// placed by; and each batch and hidden width whose sides count by different rules, with those
+/// rules.
+struct FlopChart {
+    points: Vec<FlopPoint>,
+    rules: std::collections::BTreeSet<String>,
+    mixed: Vec<(Option<u64>, Option<u64>, std::collections::BTreeSet<String>)>,
+}
+
+/// The FLOP chart of `runs`, the runs of one workload. Of each side at each batch and hidden width
+/// it takes the latest run that states `flop_per_step`. Where the sides at one batch and width
+/// count by different rules, every side there is placed at the ModelSpec run's FLOP per step (the
+/// first side's when ModelSpec has none), so all sides of a point share one FLOP count.
+fn flop_points(runs: &[&Run]) -> FlopChart {
+    let stating: Vec<&Run> = runs
+        .iter()
+        .copied()
+        .filter(|run| run.flop_per_step.is_some())
+        .collect();
+    let chosen = latest(&stating, |run| {
+        (
+            run.batch,
+            run.hidden,
+            side_rank(&run.side),
+            run.side.clone(),
+        )
+    });
+    let mut at: std::collections::BTreeMap<(Option<u64>, Option<u64>), Vec<&Run>> =
+        Default::default();
+    for ((batch, hidden, _, _), run) in &chosen {
+        at.entry((*batch, *hidden)).or_default().push(run);
+    }
+    let mut chart = FlopChart {
+        points: Vec::new(),
+        rules: Default::default(),
+        mixed: Vec::new(),
+    };
+    for ((batch, hidden), sides) in at {
+        let rules: std::collections::BTreeSet<String> = sides
+            .iter()
+            .filter_map(|run| run.flop_rule.clone())
+            .collect();
+        let reference = sides
+            .iter()
+            .find(|run| is_modelspec(&run.side))
+            .unwrap_or(&sides[0]);
+        let shared = rules.len() > 1;
+        if shared {
+            chart.rules.extend(reference.flop_rule.clone());
+            chart.mixed.push((batch, hidden, rules));
+        }
+        for run in sides.iter().copied() {
+            if !shared {
+                chart.rules.extend(run.flop_rule.clone());
+            }
+            let flop = if shared { reference } else { run }.flop_per_step;
+            chart.points.push(FlopPoint {
+                side: run.side.clone(),
+                batch,
+                hidden,
+                flop_per_step: flop.unwrap_or_default(),
+                us: run.median_us_per_step,
+                #[cfg(test)]
+                run_id: run.run_id.clone(),
+            });
+        }
+    }
+    chart.points.sort_by(|a, b| {
+        (side_rank(&a.side), &a.side, a.batch, a.hidden).cmp(&(
+            side_rank(&b.side),
+            &b.side,
+            b.batch,
+            b.hidden,
+        ))
+    });
+    chart
+}
+
+/// What a `flop_rule` counts, as the caption says it (`modelspec.benchmark.FlopRule`).
+fn rule_text(rule: &str) -> String {
+    match rule {
+        "MatmulOnly" => {
+            "`MatmulOnly`, 3196·B·H, the matmuls of a 784 → H → 10 step at batch B".to_owned()
+        }
+        "AllSites" => {
+            "`AllSites`, the `profile step_total` count over every dispatch site of the step"
+                .to_owned()
+        }
+        other => format!("`{other}`"),
+    }
+}
+
+/// The FLOP chart of a sweep's `runs` and its paragraph, or nothing when no run states
+/// `flop_per_step`.
+fn flop_section(workload: &str, runs: &[&Run], images: &mut Pages) -> String {
+    let chart = flop_points(runs);
+    if chart.points.is_empty() {
+        return String::new();
+    }
+    let title = workload_title(workload);
+    // One series per side and batch, in the points' order (side, then batch), so each batch's
+    // points of a side are joined by a line of their own and the legend names side and batch.
+    let mut series: Vec<Series> = Vec::new();
+    let mut keys: Vec<(&str, Option<u64>)> = Vec::new();
+    for point in &chart.points {
+        let key = (point.side.as_str(), point.batch);
+        if keys.last() != Some(&key) {
+            keys.push(key);
+            series.push(Series {
+                label: format!(
+                    "{}, {}",
+                    side_label(&point.side),
+                    point
+                        .batch
+                        .map_or("no batch".to_owned(), |b| format!("batch {b}"))
+                ),
+                modelspec: is_modelspec(&point.side),
+                points: Vec::new(),
+            });
+        }
+        if let Some(last) = series.last_mut() {
+            last.points.push(Point {
+                x: point.flop_per_step as f64,
+                us: point.us,
+                label: None,
+            });
+        }
+    }
+    let batches: std::collections::BTreeSet<u64> = chart
+        .points
+        .iter()
+        .filter_map(|point| point.batch)
+        .collect();
+    let batches: Vec<String> = batches.iter().map(u64::to_string).collect();
+    let at_batches = match batches.as_slice() {
+        [] => String::new(),
+        [one] => format!(" at batch {one}"),
+        [init @ .., last] => format!(" at batches {} and {last}", init.join(", ")),
+    };
+    let name = format!("{}-flop.svg", slug(workload));
+    images.insert(
+        name.clone(),
+        svg(&Chart {
+            title: format!("{title}: µs per step against FLOP per step"),
+            x_label: "FLOP per step, log scale".to_owned(),
+            ticks: Vec::new(),
+            series,
+            carry_forward: false,
+            log_x: true,
+        }),
+    );
+    let rules: Vec<String> = chart.rules.iter().map(|rule| rule_text(rule)).collect();
+    let mut out = format!(
+        "\n### Against FLOP per step\n\n![{title}: µs per step against FLOP per step{at_batches}, both axes log scale](/img/benchmarks/{name})\n\n\
+         Every batch and hidden width in one chart: the median µs per step of each side's latest \
+         run at each point that states its FLOP per step, against that FLOP per step, both axes \
+         log scale. A side's points of one batch are joined by a line of their own, which the \
+         legend names by side and batch. The points count FLOP by {}.",
+        rules.join(" and by ")
+    );
+    for (batch, hidden, rules) in &chart.mixed {
+        let rules: Vec<String> = rules.iter().map(|rule| format!("`{rule}`")).collect();
+        out.push_str(&format!(
+            " At {}, H {} the sides count by different rules ({}), so every side there is placed \
+             at the FLOP per step of the ModelSpec run (of the first side listed when ModelSpec \
+             has none), the same count for all.",
+            batch.map_or("no batch".to_owned(), |b| format!("batch {b}")),
+            hidden.map_or("none".to_owned(), |h| h.to_string()),
+            rules.join(", ")
+        ));
+    }
+    out.push_str(
+        " The tables below give each run's GFLOP/s; [Every run](#every-run) names the source \
+         of each.\n",
+    );
     out
 }
 
@@ -1138,8 +1508,13 @@ pub fn files(root: &Path) -> Result<(String, Pages)> {
     let schema = std::fs::read_to_string(root.join(SCHEMA)).map_err(crate::io(SCHEMA))?;
     let schema: Value = serde_json::from_str(&schema).map_err(|e| format!("{SCHEMA}: {e}"))?;
     let runs = read(&text, &schema)?;
+    Ok(render(&runs))
+}
+
+/// The page and its charts, keyed by file name, from `runs`, the validated runs of [`RUNS`].
+fn render(runs: &[Run]) -> (String, Pages) {
     let mut workloads: Vec<&str> = Vec::new();
-    for run in &runs {
+    for run in runs {
         if !workloads.contains(&run.workload.as_str()) {
             workloads.push(&run.workload);
         }
@@ -1182,7 +1557,7 @@ pub fn files(root: &Path) -> Result<(String, Pages)> {
         "## Every run\n\n| Run | Date | Workload | Side | Threads | Mode | Batch | H | Build | µs per step | Repeats | Source |\n\
          |---|---|---|---|---|---|---|---|---|---|---|---|\n",
     );
-    for run in &runs {
+    for run in runs {
         page.push_str(&format!(
             "| `{}` | {} | `{}` | {} | {} | {} | {} | {} | {} | {} | {} | `{}` |\n",
             run.run_id,
@@ -1199,7 +1574,24 @@ pub fn files(root: &Path) -> Result<(String, Pages)> {
             crate::cell(&run.source)
         ));
     }
-    Ok((page, images))
+    let unmeasured: Vec<&Workload> = WORKLOADS
+        .iter()
+        .filter(|declared| !workloads.contains(&declared.id))
+        .collect();
+    if !unmeasured.is_empty() {
+        page.push_str(
+            "\n## Not measured\n\nWorkloads the page declares that have no run in \
+             `benchmarks/runs.yaml` yet, so no figure. Each gets a section of its own above with \
+             its first run.\n\n",
+        );
+        for declared in unmeasured {
+            page.push_str(&format!(
+                "- **{}** (`{}`): {}\n",
+                declared.title, declared.id, declared.not_measured
+            ));
+        }
+    }
+    (page, images)
 }
 
 #[cfg(test)]
@@ -1593,5 +1985,572 @@ mod tests {
         }
         let on_disk = fs::read_dir(root().join(IMAGES)).unwrap().count();
         assert_eq!(on_disk, images.len());
+    }
+
+    /// One fixture entry of `runs.yaml`: a run with one repeat that states only its median.
+    fn entry(
+        id: &str,
+        date: &str,
+        workload: &str,
+        side: &str,
+        point: Option<(u64, u64)>,
+        flop: Option<(u64, &str)>,
+        median: f64,
+    ) -> String {
+        let mut text = format!(
+            "  - run_id: {id}\n    date: \"{date}\"\n    workload: {workload}\n    side: {side}\n    mode: Timed\n"
+        );
+        if let Some((batch, hidden)) = point {
+            text.push_str(&format!("    batch: {batch}\n    hidden: {hidden}\n"));
+        }
+        if let Some((flop, rule)) = flop {
+            text.push_str(&format!(
+                "    flop_per_step: {flop}\n    flop_rule: {rule}\n"
+            ));
+        }
+        text.push_str(&format!(
+            "    repeat_count: 1\n    repeats_us_per_step: null\n    median_us_per_step: {median}\n    source: verification-report:fixture\n    state: Recorded\n"
+        ));
+        text
+    }
+
+    const SWEEP: &str = "mlp-784-H-10";
+
+    /// A sweep at batch 100 whose FLOP chart points and GFLOP/s are worked out by hand in
+    /// [`the_flop_chart_takes_the_latest_run_stating_flop_per_step_per_side_and_point`]: `3196 · 100
+    /// · 64 = 20,454,400` and `3196 · 100 · 256 = 81,817,600` FLOP per step under `MatmulOnly`.
+    fn flop_fixture() -> String {
+        let matmul_64 = Some((20_454_400, "MatmulOnly"));
+        let matmul_256 = Some((81_817_600, "MatmulOnly"));
+        let mut text = "runs:\n".to_owned();
+        for run in [
+            entry(
+                "mnist",
+                "2026-10-21",
+                "mnist-784-64-10",
+                "ModelSpecVulkan",
+                None,
+                None,
+                40.0,
+            ),
+            entry(
+                "ms-64-old",
+                "2026-10-24",
+                SWEEP,
+                "ModelSpecVulkan",
+                Some((100, 64)),
+                matmul_64,
+                30.0,
+            ),
+            entry(
+                "ms-64",
+                "2026-10-25",
+                SWEEP,
+                "ModelSpecVulkan",
+                Some((100, 64)),
+                matmul_64,
+                25.0,
+            ),
+            entry(
+                "eager-64",
+                "2026-10-25",
+                SWEEP,
+                "PyTorchCudaEager",
+                Some((100, 64)),
+                matmul_64,
+                400.0,
+            ),
+            entry(
+                "ms-256",
+                "2026-10-25",
+                SWEEP,
+                "ModelSpecVulkan",
+                Some((100, 256)),
+                matmul_256,
+                40.0,
+            ),
+            entry(
+                "eager-256-flop",
+                "2026-10-24",
+                SWEEP,
+                "PyTorchCudaEager",
+                Some((100, 256)),
+                matmul_256,
+                450.0,
+            ),
+            entry(
+                "eager-256",
+                "2026-10-25",
+                SWEEP,
+                "PyTorchCudaEager",
+                Some((100, 256)),
+                None,
+                300.0,
+            ),
+            entry(
+                "compile-256",
+                "2026-10-25",
+                SWEEP,
+                "PyTorchCudaCompile",
+                Some((100, 256)),
+                Some((90_000_000, "AllSites")),
+                500.0,
+            ),
+        ] {
+            text.push_str(&run);
+        }
+        text
+    }
+
+    /// A FLOP chart point as the tests compare it: side, batch, hidden width, FLOP per step, µs per
+    /// step, run and GFLOP/s.
+    type Row<'a> = (&'a str, Option<u64>, Option<u64>, u64, f64, &'a str, String);
+
+    #[test]
+    fn the_flop_chart_takes_the_latest_run_stating_flop_per_step_per_side_and_point() {
+        let runs = read(&flop_fixture(), &schema()).unwrap();
+        let sweep: Vec<&Run> = runs.iter().filter(|run| run.workload == SWEEP).collect();
+        let chart = flop_points(&sweep);
+        let points: Vec<Row<'_>> = chart
+            .points
+            .iter()
+            .map(|point| {
+                (
+                    point.side.as_str(),
+                    point.batch,
+                    point.hidden,
+                    point.flop_per_step,
+                    point.us,
+                    point.run_id.as_str(),
+                    gflops_text(Some(point.gflops())),
+                )
+            })
+            .collect();
+        // ModelSpec at H 64 is its later run; PyTorch eager at H 256 is the 2026-10-24 run,
+        // because its later run states no flop_per_step; torch.compile at H 256 counts by
+        // AllSites, which is not the ModelSpec run's rule, so it is placed at the ModelSpec run's
+        // 81,817,600 FLOP: 81,817,600 / 500 / 1000 = 163.6352 GFLOP/s.
+        assert_eq!(
+            points,
+            vec![
+                (
+                    "ModelSpecVulkan",
+                    Some(100),
+                    Some(64),
+                    20_454_400,
+                    25.0,
+                    "ms-64",
+                    "818.2".to_owned()
+                ),
+                (
+                    "ModelSpecVulkan",
+                    Some(100),
+                    Some(256),
+                    81_817_600,
+                    40.0,
+                    "ms-256",
+                    "2,045.4".to_owned()
+                ),
+                (
+                    "PyTorchCudaEager",
+                    Some(100),
+                    Some(64),
+                    20_454_400,
+                    400.0,
+                    "eager-64",
+                    "51.1".to_owned()
+                ),
+                (
+                    "PyTorchCudaEager",
+                    Some(100),
+                    Some(256),
+                    81_817_600,
+                    450.0,
+                    "eager-256-flop",
+                    "181.8".to_owned()
+                ),
+                (
+                    "PyTorchCudaCompile",
+                    Some(100),
+                    Some(256),
+                    81_817_600,
+                    500.0,
+                    "compile-256",
+                    "163.6".to_owned()
+                ),
+            ]
+        );
+        // Every point is placed by MatmulOnly; the one point whose sides differ names both.
+        assert_eq!(
+            chart.rules.iter().map(String::as_str).collect::<Vec<_>>(),
+            ["MatmulOnly"]
+        );
+        let mixed: Vec<(Option<u64>, Option<u64>, Vec<&str>)> = chart
+            .mixed
+            .iter()
+            .map(|(batch, hidden, rules)| {
+                (*batch, *hidden, rules.iter().map(String::as_str).collect())
+            })
+            .collect();
+        assert_eq!(
+            mixed,
+            vec![(Some(100), Some(256), vec!["AllSites", "MatmulOnly"])]
+        );
+        assert_eq!(gflops_text(None), "");
+        assert_eq!(gflops_text(Some(14_834.712_3)), "14,834.7");
+        assert_eq!(gflops_text(Some(180.0)), "180.0");
+    }
+
+    #[test]
+    fn the_sweep_tables_carry_gflops_per_side_blank_where_the_run_states_no_flop() {
+        let runs = read(&flop_fixture(), &schema()).unwrap();
+        let (page, images) = render(&runs);
+        assert!(
+            page.contains(
+                "| H | FLOP per step | ModelSpec Vulkan | PyTorch CUDA eager | PyTorch CUDA torch.compile | ModelSpec Vulkan GFLOP/s | PyTorch CUDA eager GFLOP/s | PyTorch CUDA torch.compile GFLOP/s |\n|---|---|---|---|---|---|---|---|\n"
+            ),
+            "{page}"
+        );
+        // The table shows the latest run of each side: PyTorch eager's H 256 run of 2026-10-25
+        // states no flop_per_step, so its GFLOP/s is blank; torch.compile's is its own
+        // 90,000,000 / 500 / 1000.
+        assert!(
+            page.contains("| 64 | 20,454,400 | 25 | 400 |  | 818.2 | 51.1 |  |\n"),
+            "{page}"
+        );
+        assert!(
+            page.contains("| 256 | 81,817,600 | 40 | 300 | 500 | 2,045.4 |  | 180.0 |\n"),
+            "{page}"
+        );
+        let chart = &images["mlp-784-h-10-flop.svg"];
+        assert!(
+            page.contains("(/img/benchmarks/mlp-784-h-10-flop.svg)"),
+            "{page}"
+        );
+        assert!(
+            chart.contains(">FLOP per step, log scale</text>"),
+            "{chart}"
+        );
+        for label in [
+            "ModelSpec Vulkan",
+            "PyTorch CUDA eager",
+            "PyTorch CUDA torch.compile",
+        ] {
+            assert!(
+                chart.contains(&format!(">{label}, batch 100</text>")),
+                "{label}"
+            );
+        }
+        // Two ModelSpec points and its legend marker; three opponent points and two legend
+        // markers.
+        assert_eq!(chart.matches("r=\"4.5\"").count(), 3, "{chart}");
+        assert_eq!(
+            chart.matches("width=\"8\" height=\"8\"").count(),
+            5,
+            "{chart}"
+        );
+        assert!(
+            page.contains("The points count FLOP by `MatmulOnly`"),
+            "{page}"
+        );
+        assert!(
+            page.contains(
+                "At batch 100, H 256 the sides count by different rules (`AllSites`, `MatmulOnly`)"
+            ),
+            "{page}"
+        );
+        assert!(!images.contains_key("mnist-784-64-10-flop.svg"));
+    }
+
+    /// The `## Not measured` section of `page`, to the end of the page, or none.
+    fn not_measured(page: &str) -> Option<&str> {
+        page.find("\n## Not measured\n").map(|at| &page[at + 1..])
+    }
+
+    #[test]
+    fn a_declared_workload_without_a_run_is_listed_as_not_measured_and_leaves_with_its_first_run() {
+        let runs = read(&flop_fixture(), &schema()).unwrap();
+        let (page, _) = render(&runs);
+        let section = not_measured(&page).unwrap_or_else(|| panic!("no section: {page}"));
+        assert!(
+            !section[1..].contains("\n## "),
+            "not the last section: {section}"
+        );
+        assert!(section.contains("**Transformer block** (`transformer-block`)"));
+        assert!(
+            section
+                .contains("the transformer-block benchmark on synthetic data against PyTorch CUDA")
+        );
+        assert!(section.contains("**BERT-tiny pre-training** (`bert-tiny-pretrain`)"));
+        assert!(section.contains(
+            "BERT-tiny pre-training timed to the same held-out loss as PyTorch CUDA with the same corpus, batches, initial weights and optimizer"
+        ));
+        // Public prose names no planning record (coordinator decision D80, ADV-BP-5).
+        for declared in &WORKLOADS {
+            for kind in ["story:", "epic:", "verification-report:"] {
+                assert!(
+                    !declared.not_measured.contains(kind),
+                    "{}: {kind}",
+                    declared.id
+                );
+            }
+        }
+        for measured in ["MNIST", "MLP 784-H-10", "mlp-784-H-10", "![", "|"] {
+            assert!(!section.contains(measured), "{measured} in {section}");
+        }
+        assert_eq!(section.matches("\n- ").count(), 2, "{section}");
+
+        let with_block = format!(
+            "{}{}",
+            flop_fixture(),
+            entry(
+                "block",
+                "2026-10-27",
+                "transformer-block",
+                "ModelSpecVulkan",
+                None,
+                None,
+                900.0
+            )
+        );
+        let runs = read(&with_block, &schema()).unwrap();
+        let (page, images) = render(&runs);
+        assert!(page.contains("\n## Transformer block\n"), "{page}");
+        assert!(images.contains_key("transformer-block.svg"));
+        let section = not_measured(&page).unwrap();
+        assert!(!section.contains("Transformer block"), "{section}");
+        assert!(section.contains("**BERT-tiny pre-training**"), "{section}");
+        assert_eq!(section.matches("\n- ").count(), 1, "{section}");
+
+        let with_both = format!(
+            "{with_block}{}",
+            entry(
+                "bert",
+                "2026-10-28",
+                "bert-tiny-pretrain",
+                "ModelSpecVulkan",
+                None,
+                None,
+                5000.0
+            )
+        );
+        let runs = read(&with_both, &schema()).unwrap();
+        let (page, _) = render(&runs);
+        assert!(page.contains("\n## BERT-tiny pre-training\n"), "{page}");
+        assert!(not_measured(&page).is_none(), "{page}");
+    }
+
+    #[test]
+    fn the_published_page_has_the_flop_chart_of_the_sweep_and_lists_the_transformer_workloads() {
+        let text = fs::read_to_string(root().join(RUNS)).unwrap();
+        let runs = read(&text, &schema()).unwrap();
+        let sweep: Vec<&Run> = runs.iter().filter(|run| run.workload == SWEEP).collect();
+        let chart = flop_points(&sweep);
+        assert_eq!(chart.points.len(), 36, "3 sides × 3 batches × 4 widths");
+        assert_eq!(
+            chart.rules.iter().map(String::as_str).collect::<Vec<_>>(),
+            ["MatmulOnly"]
+        );
+        assert!(chart.mixed.is_empty());
+        let largest: Vec<(&str, &str, String)> = chart
+            .points
+            .iter()
+            .filter(|point| point.batch == Some(8192) && point.hidden == Some(4096))
+            .map(|point| {
+                assert_eq!(point.flop_per_step, 3196 * 8192 * 4096);
+                (
+                    point.side.as_str(),
+                    point.run_id.as_str(),
+                    gflops_text(Some(point.gflops())),
+                )
+            })
+            .collect();
+        assert_eq!(
+            largest,
+            [
+                (
+                    "ModelSpecVulkan",
+                    "sweep-b8192-h4096-modelspec-vulkan-step-sites",
+                    "15,635.1".to_owned()
+                ),
+                (
+                    "PyTorchCudaEager",
+                    "sweep-b8192-h4096-pytorch-cuda-eager-step-sites",
+                    "16,326.4".to_owned()
+                ),
+                (
+                    "PyTorchCudaCompile",
+                    "sweep-b8192-h4096-pytorch-cuda-compile-0.10.0",
+                    "15,812.4".to_owned()
+                ),
+            ]
+        );
+        let (page, images) = files(&root()).unwrap();
+        assert!(images.contains_key("mlp-784-h-10-flop.svg"));
+        assert!(!page.contains("the sides count by different rules"));
+        let section = not_measured(&page).unwrap();
+        assert!(section.contains("**Transformer block**"));
+        assert!(section.contains("**BERT-tiny pre-training**"));
+    }
+
+    #[test]
+    fn a_run_of_an_undeclared_workload_is_refused_with_its_line_and_workload() {
+        let text = format!(
+            "runs:\n{}",
+            entry(
+                "typo",
+                "2026-10-27",
+                "transformer_block",
+                "ModelSpecVulkan",
+                None,
+                None,
+                900.0
+            )
+        );
+        let error = read(&text, &schema()).err().unwrap();
+        assert!(
+            error.starts_with("benchmarks/runs.yaml:4: runs[0] (typo) field `workload`:"),
+            "{error}"
+        );
+        assert!(error.contains("`transformer_block`"), "{error}");
+        assert!(error.contains("transformer-block"), "{error}");
+    }
+
+    #[test]
+    fn a_matmul_only_count_that_is_not_3196_b_h_is_refused_with_its_line_and_field() {
+        // 3196 · 8192 · 4096 = 107,239,964,672; twice that is a multiply-add counted as two.
+        let text = format!(
+            "runs:\n{}",
+            entry(
+                "doubled",
+                "2026-10-25",
+                SWEEP,
+                "PyTorchCudaEager",
+                Some((8192, 4096)),
+                Some((214_479_929_344, "MatmulOnly")),
+                6568.5
+            )
+        );
+        let error = read(&text, &schema()).err().unwrap();
+        assert!(
+            error.starts_with("benchmarks/runs.yaml:9: runs[0] (doubled) field `flop_per_step`:"),
+            "{error}"
+        );
+        assert!(error.contains("107239964672"), "{error}");
+        let text = format!(
+            "runs:\n{}",
+            entry(
+                "no-width",
+                "2026-10-25",
+                SWEEP,
+                "ModelSpecVulkan",
+                None,
+                Some((1_000, "MatmulOnly")),
+                10.0
+            )
+        );
+        let error = read(&text, &schema()).err().unwrap();
+        assert!(
+            error.starts_with("benchmarks/runs.yaml:7: runs[0] (no-width) field `flop_per_step`:"),
+            "{error}"
+        );
+        // AllSites is not a formula of B and H, so any count stands.
+        let text = format!(
+            "runs:\n{}",
+            entry(
+                "all-sites",
+                "2026-10-25",
+                SWEEP,
+                "ModelSpecVulkan",
+                Some((100, 64)),
+                Some((1_000, "AllSites")),
+                10.0
+            )
+        );
+        assert!(read(&text, &schema()).is_ok());
+    }
+
+    /// Three sides at batches 100, 1000 and 8192 and widths 64 and 256, each counted by
+    /// `MatmulOnly`.
+    fn grid_fixture() -> String {
+        let mut text = "runs:\n".to_owned();
+        for (rank, side) in ["ModelSpecVulkan", "PyTorchCudaEager", "PyTorchCudaCompile"]
+            .into_iter()
+            .enumerate()
+        {
+            for batch in [100, 1000, 8192] {
+                for hidden in [64, 256] {
+                    text.push_str(&entry(
+                        &format!("{side}-{batch}-{hidden}"),
+                        "2026-10-25",
+                        SWEEP,
+                        side,
+                        Some((batch, hidden)),
+                        Some((3196 * batch * hidden, "MatmulOnly")),
+                        (rank as f64 + 1.0) * batch as f64 * hidden as f64 / 1000.0,
+                    ));
+                }
+            }
+        }
+        text
+    }
+
+    /// The centre x of every ModelSpec point of `svg`, the legend's marker at x 30 left out.
+    fn modelspec_xs(svg: &str) -> Vec<String> {
+        attribute_values(svg, "cx")
+            .into_iter()
+            .filter(|x| *x != "30.0")
+            .map(str::to_owned)
+            .collect()
+    }
+
+    #[test]
+    fn the_flop_chart_joins_each_side_and_batch_by_its_own_line() {
+        let runs = read(&grid_fixture(), &schema()).unwrap();
+        let (_, images) = render(&runs);
+        let chart = &images["mlp-784-h-10-flop.svg"];
+        assert_eq!(
+            chart.matches("<polyline ").count(),
+            9,
+            "3 sides × 3 batches: {chart}"
+        );
+        for side in [
+            "ModelSpec Vulkan",
+            "PyTorch CUDA eager",
+            "PyTorch CUDA torch.compile",
+        ] {
+            for batch in [100, 1000, 8192] {
+                assert!(
+                    chart.contains(&format!(">{side}, batch {batch}</text>")),
+                    "{side}, batch {batch}: {chart}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_flop_chart_point_lies_at_the_log10_of_its_flop_count() {
+        let runs = read(&grid_fixture(), &schema()).unwrap();
+        let (page, images) = render(&runs);
+        let chart = &images["mlp-784-h-10-flop.svg"];
+        // The counts run from 3196 · 100 · 64 = 20,454,400 to 3196 · 8192 · 256 =
+        // 6,702,497,792, so the axis spans 10⁷ to 10¹⁰ over the plot's 336 px from x 88:
+        // x = 88 + 336 · (log10(FLOP) - 7) / 3, worked out by hand for the six counts.
+        let mut xs = modelspec_xs(chart);
+        xs.sort_by(|a, b| a.parse::<f64>().unwrap().total_cmp(&b.parse().unwrap()));
+        assert_eq!(
+            xs,
+            ["122.8", "190.2", "234.8", "302.2", "337.1", "404.5"],
+            "{chart}"
+        );
+        for decade in ["10⁷", "10⁸", "10⁹", "10¹⁰"] {
+            assert!(chart.contains(&format!(">{decade}</text>")), "{decade}");
+        }
+        assert!(
+            page.contains(
+                "![MLP 784-H-10 sweep: µs per step against FLOP per step at batches 100, 1000 and 8192, both axes log scale]"
+            ),
+            "{page}"
+        );
     }
 }

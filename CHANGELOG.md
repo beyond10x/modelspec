@@ -9,6 +9,12 @@ history.
 
 ## [Unreleased]
 
+### Added
+
+- The Benchmarks page (`website/docs/benchmarks.md`) shows the MLP sweep in one chart of µs per step against FLOP per step, both axes log scale, for ModelSpec Vulkan, PyTorch CUDA eager and PyTorch CUDA `torch.compile` from the runs that state `flop_per_step`, one line per side and batch named in the legend, its caption naming the `flop_rule` the points count by; each batch's table of latest medians gains a GFLOP/s column per side, `flop_per_step` / µs per step / 1000, blank where the run states no `flop_per_step`; and a "Not measured" section lists the declared workloads without a run, the transformer block and BERT-tiny pre-training, each with the work that will measure it, until its first run in `benchmarks/runs.yaml` gives it a section of its own (story:benchmark-results-page).
+- `modelspec-docs generate` refuses a run of `benchmarks/runs.yaml` whose `workload` is not one the page declares, and a `MatmulOnly` run whose `flop_per_step` is not 3196·B·H, naming the entry's line and field (story:benchmark-results-page).
+- Pitch deck `docs/pitch/`: slide 15, after the MNIST slide, shows the MLP sweep of release 0.10.0 on the RTX 3090, each side's crossover width at batch 1000 (ModelSpec Vulkan H 256, PyTorch eager and `torch.compile` H 4096) and the GFLOP/s of the largest point, batch 8192 and H 4096 (14,834.7, 15,676.1 and 15,812.4); the slides after it move up by one, to 18 (story:benchmark-results-page).
+
 ## [0.19.0] - 2026-10-26
 
 BERT-tiny is pre-trained on the GPU below the unigram baseline, and the run is on the documentation site: `examples/bert_tiny.mspec` trained for 10,000 steps on an RTX 3090 through Vulkan over packed WikiText-103 ends at a held-out loss of 6.7674994 nats against the held-out unigram baseline of 6.9265379 (6.9041541 over the evaluated rows) in 45 min. The run record, `docs/runs/bert-tiny-gpu-pretraining` in a new Runs section, holds the commands, the commit, the device, every `eval` line, the training loss every 50 steps, the wall time and the SHA-256 of the recorded event file. This release changes no compiler or runtime behaviour.
