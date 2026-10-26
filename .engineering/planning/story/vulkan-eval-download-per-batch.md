@@ -24,7 +24,7 @@ scope:
   path: crates/modelspec-runtime/tests/
 - confidence: cited
   path: website/docs/reference/cli.md
-revision: 10
+revision: 11
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-26T04:09:06Z", actor: "human:timo", revision: 2}
 - {from: "proposed", to: "active", at: "2026-10-26T04:09:06Z", actor: "human:timo", revision: 3}
@@ -89,9 +89,10 @@ None new: the run stays a `modelspec.training.TrainingRun` and its evaluation th
 
 ## Acceptance
 
-`modelspec train examples/bert_tiny.mspec --backend vulkan --data <packed WikiText-103 at
-seq-len 128> --eval-every 50 --steps 100` on the RTX 3090 exits 0 and prints `eval 50 …` and
-`eval 100 …` lines, and the hidden-32 twin's `eval` lines on the device still match the CPU's
+`modelspec train <copy of examples/bert_tiny.mspec with steps = 100 and warmup_steps = 10>
+--backend vulkan --data <packed WikiText-103 at seq-len 128> --eval-every 50` on the RTX 3090
+exits 0 and prints `eval 0 …`, `eval 50 …` and `eval 100 …` lines (the example itself refuses
+`--steps 100` under its 1,000 warm-up steps, and step 0 is a multiple of 50), and the hidden-32 twin's `eval` lines on the device still match the CPU's
 within the run tolerance.
 
 Scenarios:
@@ -103,8 +104,8 @@ Scenarios:
    `--eval-every 5 --steps 10` exits 0 and its `eval` lines match the CPU run's within the run
    tolerance; a `--stats` run of it reports the evaluation's host waits (one per batch per
    evaluated step).
-3. `examples/bert_tiny.mspec` with `--eval-every 50 --steps 100` on the packed corpus exits 0
-   with two `eval` lines (a device run by the implementor, quoted in the report, not in `task ci`).
+3. The 100-step copy of `examples/bert_tiny.mspec` with `--eval-every 50` on the packed corpus
+   exits 0 with three `eval` lines (a device run by the implementor, quoted in the report, not in `task ci`).
 
 ## Out of scope
 

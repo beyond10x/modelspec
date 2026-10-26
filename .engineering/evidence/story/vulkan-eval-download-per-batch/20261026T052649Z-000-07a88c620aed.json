@@ -1,0 +1,15 @@
+{
+  "at": "2026-10-26T05:26:49Z",
+  "actor": "human:timo",
+  "artifact": "story:vulkan-eval-download-per-batch",
+  "kind": "story",
+  "revision": 11,
+  "change": {
+    "change": "evidence",
+    "kind": "review_outcome",
+    "source": "D77: no fix pass; F1 is story:cli-fails-on-vulkan-validation-messages",
+    "reference": "89d923c9e25a8419c15a455dd0b104d419722ec8",
+    "review": "review-result:adversary-eval-download-pass-1",
+    "outcome": "no-op"
+  }
+}
