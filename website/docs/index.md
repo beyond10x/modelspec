@@ -42,15 +42,15 @@ train Fit {
 ## What works today
 
 ModelSpec is in milestone M1 (GPU execution), and its current goal is a small BERT pre-trained
-from scratch; the latest release is [0.17.0](https://github.com/beyond10x/modelspec/releases/tag/0.17.0).
+from scratch; the latest release is [0.18.0](https://github.com/beyond10x/modelspec/releases/tag/0.18.0).
 
-| Works in 0.17.0 | Not built yet |
+| Works in 0.18.0 | Not built yet |
 |---|---|
 | `modelspec check`: parse and check names, types and shapes | `bench` |
 | `modelspec ir --stage tensor`, `--stage training` and `--stage kernel`: print the verified IR and the kernel plan | more than one device |
 | `modelspec train --backend cpu`: train on the CPU reference with seeded synthetic data or dense `f32` tensor files (`--data`) | modules, layers, generics and `f16` |
 | `modelspec train --backend vulkan [--stats] [--profile]`: train on one Vulkan device with one host wait per run | |
-| `modelspec train --backend vulkan --data <packed-dir> [--eval-every <n>]`: train the hidden-32 BERT twin with dropout and AdamW on one Vulkan device, one host wait per step, and evaluate the held-out split on the device | |
+| `modelspec train --backend vulkan --data <packed-dir> [--eval-every <n>]`: train the hidden-32 BERT twin with dropout and AdamW on one Vulkan device, one host wait per step and one more per held-out batch of an evaluated step, and evaluate the held-out split on the device | |
 | `embedding`, `add_rows`, `gelu`, `layer_norm`, `softmax`, `attention`, `cross_entropy` and `dropout`, with `i32` row ids, on the CPU reference; all eight also have Vulkan kernels | |
 | `modelspec data prepare`, `data tokenizer` and `data pack`: split a corpus, train a WordPiece tokenizer and pack token sequences | |
 | `modelspec train --backend cpu --data <packed-dir> [--eval-every <n>]`: train a masked-language model on packed sequences and evaluate the held-out split during the run | |
@@ -96,7 +96,7 @@ capability with the test that holds it, and [Roadmap](./roadmap.md) says what M1
 
 ## Where to go next
 
-- [Getting started](./getting-started.md): download the 0.17.0 binary and train the examples on the CPU or a GPU.
+- [Getting started](./getting-started.md): download the 0.18.0 binary and train the examples on the CPU or a GPU.
 - [The language](./concepts/language.md): what a file may contain.
 - [Write a model](./guides/write-a-model.md): build a two-layer model step by step.
 - [Pitch deck](pathname:///modelspec/pitch/): the case for ModelSpec in slides.

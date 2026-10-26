@@ -566,7 +566,7 @@ pub const CAPABILITIES: &[Capability] = &[
     shipped(
         "Training",
         "The hidden-32 BERT twin trained on the GPU",
-        "Since 0.17.0: modelspec train --backend vulkan --data <dir> --eval-every <n> trains the twin with dropout and AdamW, one command buffer and one host wait per step, the evaluation in the same command buffer; every step and eval line and every final parameter lies within the GPU tolerance of the CPU run, and --serve and --record stream them from the device.",
+        "Since 0.17.0: modelspec train --backend vulkan --data <dir> --eval-every <n> trains the twin with dropout and AdamW, one command buffer and one host wait per step, and since 0.18.0 each held-out batch of an evaluated step in a command buffer of its own with one host wait; every step and eval line and every final parameter lies within the GPU tolerance of the CPU run, and --serve and --record stream them from the device.",
         Evidence::Test("crates/modelspec-cli/tests/vulkan_bert_cpu_steps.rs::steps"),
         "/docs/reference/cli",
     ),
