@@ -9,6 +9,10 @@ history.
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-10-26
+
+The Benchmarks page shows the MLP sweep against FLOP per step: one log-log chart of µs per step for ModelSpec Vulkan, PyTorch CUDA eager and PyTorch CUDA `torch.compile`, a GFLOP/s column per side in each batch's table of latest medians, and a "Not measured" section that names the declared workloads without a run yet, the transformer block and BERT-tiny pre-training, with the work that will measure each. `modelspec-docs generate` refuses a run whose `workload` the page does not declare or whose `MatmulOnly` `flop_per_step` is not 3196·B·H, and the pitch deck gains the sweep slide. This release changes no compiler or runtime behaviour and no benchmark number.
+
 ### Added
 
 - The Benchmarks page (`website/docs/benchmarks.md`) shows the MLP sweep in one chart of µs per step against FLOP per step, both axes log scale, for ModelSpec Vulkan, PyTorch CUDA eager and PyTorch CUDA `torch.compile` from the runs that state `flop_per_step`, one line per side and batch named in the legend, its caption naming the `flop_rule` the points count by; each batch's table of latest medians gains a GFLOP/s column per side, `flop_per_step` / µs per step / 1000, blank where the run states no `flop_per_step`; and a "Not measured" section lists the declared workloads without a run, the transformer block and BERT-tiny pre-training, each with the work that will measure it, until its first run in `benchmarks/runs.yaml` gives it a section of its own (story:benchmark-results-page).
@@ -307,7 +311,8 @@ with `E-TARGET-001`.
 - `examples/linear_regression.mspec` checks and trains; `task check-examples` runs `modelspec check` on it
 - ESS contracts for the compiled artifact, checkpoint, device profile and training run in `spec/`
 
-[Unreleased]: https://github.com/beyond10x/modelspec/compare/0.19.0...HEAD
+[Unreleased]: https://github.com/beyond10x/modelspec/compare/0.20.0...HEAD
+[0.20.0]: https://github.com/beyond10x/modelspec/compare/0.19.0...0.20.0
 [0.19.0]: https://github.com/beyond10x/modelspec/compare/0.18.0...0.19.0
 [0.18.0]: https://github.com/beyond10x/modelspec/compare/0.17.0...0.18.0
 [0.17.0]: https://github.com/beyond10x/modelspec/compare/0.16.0...0.17.0
