@@ -9,6 +9,10 @@ history.
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-10-26
+
+BERT-tiny is pre-trained on the GPU below the unigram baseline, and the run is on the documentation site: `examples/bert_tiny.mspec` trained for 10,000 steps on an RTX 3090 through Vulkan over packed WikiText-103 ends at a held-out loss of 6.7674994 nats against the held-out unigram baseline of 6.9265379 (6.9041541 over the evaluated rows) in 45 min. The run record, `docs/runs/bert-tiny-gpu-pretraining` in a new Runs section, holds the commands, the commit, the device, every `eval` line, the training loss every 50 steps, the wall time and the SHA-256 of the recorded event file. This release changes no compiler or runtime behaviour.
+
 ### Added
 
 - The record of the first GPU pre-training run of `examples/bert_tiny.mspec`, `website/docs/runs/bert-tiny-gpu-pretraining.md` under a new Runs section of the documentation site: 10,000 steps on an RTX 3090 through Vulkan with the 0.18.0 binary over packed WikiText-103 end at a held-out loss of 6.7674994 nats, 0.159 nats (2.30 %) below the held-out unigram baseline of 6.9265379, with the commands, the commit, the device, every `eval` line, the training loss every 50 steps, the wall time and the SHA-256 of the recorded event file, which stays outside the repository (story:bert-tiny-gpu-pretraining).
@@ -297,7 +301,8 @@ with `E-TARGET-001`.
 - `examples/linear_regression.mspec` checks and trains; `task check-examples` runs `modelspec check` on it
 - ESS contracts for the compiled artifact, checkpoint, device profile and training run in `spec/`
 
-[Unreleased]: https://github.com/beyond10x/modelspec/compare/0.18.0...HEAD
+[Unreleased]: https://github.com/beyond10x/modelspec/compare/0.19.0...HEAD
+[0.19.0]: https://github.com/beyond10x/modelspec/compare/0.18.0...0.19.0
 [0.18.0]: https://github.com/beyond10x/modelspec/compare/0.17.0...0.18.0
 [0.17.0]: https://github.com/beyond10x/modelspec/compare/0.16.0...0.17.0
 [0.16.0]: https://github.com/beyond10x/modelspec/compare/0.15.0...0.16.0
