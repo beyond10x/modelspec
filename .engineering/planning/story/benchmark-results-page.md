@@ -2,17 +2,18 @@
 format: aep.planning-md/3
 id: story:benchmark-results-page
 kind: story
-status: active
+status: implemented
 title: Benchmark results page and pitch-deck slide
 relations:
 - decomposes: epic:transformer-vs-pytorch-cuda
 - depends_on: story:mlp-size-sweep-vs-pytorch-cuda
 - depends_on: story:profile-achieved-throughput
 - serves: vision:modelspec
-revision: 6
+revision: 7
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-26T09:03:19Z", actor: "human:timo", revision: 5}
 - {from: "proposed", to: "active", at: "2026-10-26T09:03:19Z", actor: "human:timo", revision: 6}
+- {from: "active", to: "implemented", at: "2026-10-26T10:06:43Z", actor: "human:timo", revision: 7, decided_on: {"recorded":{"test_result":1,"review_outcome":1}}}
 ---
 # Benchmark results page and pitch-deck slide
 

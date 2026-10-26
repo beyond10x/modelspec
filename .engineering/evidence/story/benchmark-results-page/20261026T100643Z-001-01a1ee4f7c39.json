@@ -1,0 +1,13 @@
+{
+  "at": "2026-10-26T10:06:43Z",
+  "actor": "human:timo",
+  "artifact": "story:benchmark-results-page",
+  "kind": "story",
+  "revision": 6,
+  "change": {
+    "change": "evidence",
+    "kind": "test_result",
+    "source": "task ci",
+    "reference": "3f82c4fdbabba8df688e638abfc7a9ab98357e76"
+  }
+}

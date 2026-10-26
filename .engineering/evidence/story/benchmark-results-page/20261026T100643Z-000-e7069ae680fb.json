@@ -1,0 +1,15 @@
+{
+  "at": "2026-10-26T10:06:43Z",
+  "actor": "human:timo",
+  "artifact": "story:benchmark-results-page",
+  "kind": "story",
+  "revision": 6,
+  "change": {
+    "change": "evidence",
+    "kind": "review_outcome",
+    "source": "fix pass: ADV-BP-5 planning ids out of the page prose, ADV-BP-7 undeclared workload refused, ADV-BP-3 MatmulOnly count checked, ADV-BP-8 fixture tests, ADV-BP-9 batch labels; ADV-BP-6 a note",
+    "reference": "3f82c4fdbabba8df688e638abfc7a9ab98357e76",
+    "review": "review-result:adversary-bench-page-pass-1",
+    "outcome": "fixed"
+  }
+}
