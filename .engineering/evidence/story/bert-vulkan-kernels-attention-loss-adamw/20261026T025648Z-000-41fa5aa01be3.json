@@ -1,0 +1,15 @@
+{
+  "at": "2026-10-26T02:56:48Z",
+  "actor": "human:timo",
+  "artifact": "story:bert-vulkan-kernels-attention-loss-adamw",
+  "kind": "story",
+  "revision": 6,
+  "change": {
+    "change": "evidence",
+    "kind": "review_outcome",
+    "source": "fix pass 1, D74",
+    "reference": "a30fbb0e853415bbcc9e4c786c65d80c1ab4ab6c",
+    "review": "review-result:adversary-gpu-step-pass-1",
+    "outcome": "fixed"
+  }
+}
