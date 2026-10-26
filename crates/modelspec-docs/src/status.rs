@@ -16,7 +16,7 @@ use serde_json::{Value, json};
 pub const FILE: &str = "status.json";
 
 /// The date [`CAPABILITIES`] was last checked against `main` and the planning store.
-pub const AS_OF: &str = "2026-10-25";
+pub const AS_OF: &str = "2026-10-26";
 
 /// What holds a shipped capability.
 #[derive(Clone, Copy)]
@@ -220,7 +220,7 @@ pub const CAPABILITIES: &[Capability] = &[
     shipped(
         "GPU",
         "SPIR-V kernels for attention, cross-entropy and AdamW",
-        "Not yet released: attention and its three gradients are one per_row dispatch each, an invocation per row and head, cross_entropy one loss_sum and its gradient one per_row dispatch, and the AdamW update runs as elementwise kernels with Sqrt and Div, one dispatch each; on the RTX 3090 every output lies within the GPU tolerance of the CPU interpreter, and spirv-val accepts every module.",
+        "Since 0.17.0: attention and its three gradients are one per_row dispatch each, an invocation per row and head, cross_entropy one loss_sum and its gradient one per_row dispatch, and the AdamW update runs as elementwise kernels with Sqrt and Div, one dispatch each; on the RTX 3090 every output lies within the GPU tolerance of the CPU interpreter, and spirv-val accepts every module.",
         Evidence::Test(
             "crates/modelspec-runtime/tests/vulkan_bert_attention_loss_adamw.rs::vulkan_attention_loss_and_optimizer_kernels_match_the_cpu_interpreter_within_tolerance",
         ),
@@ -566,7 +566,7 @@ pub const CAPABILITIES: &[Capability] = &[
     shipped(
         "Training",
         "The hidden-32 BERT twin trained on the GPU",
-        "Not yet released: modelspec train --backend vulkan --data <dir> --eval-every <n> trains the twin with dropout and AdamW, one command buffer and one host wait per step, the evaluation in the same command buffer; every step and eval line and every final parameter lies within the GPU tolerance of the CPU run, and --serve and --record stream them from the device.",
+        "Since 0.17.0: modelspec train --backend vulkan --data <dir> --eval-every <n> trains the twin with dropout and AdamW, one command buffer and one host wait per step, the evaluation in the same command buffer; every step and eval line and every final parameter lies within the GPU tolerance of the CPU run, and --serve and --record stream them from the device.",
         Evidence::Test("crates/modelspec-cli/tests/vulkan_bert_cpu_steps.rs::steps"),
         "/docs/reference/cli",
     ),

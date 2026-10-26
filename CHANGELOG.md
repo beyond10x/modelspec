@@ -9,6 +9,10 @@ history.
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-10-26
+
+The BERT twin trains on the GPU: Vulkan kernels for `attention` and its gradients, for `cross_entropy` and its gradient, and for the `Sqrt` and `Div` of the AdamW update, each within the GPU tolerance of the CPU interpreter, let `train --backend vulkan` take `--data`, `--eval-every`, `--serve` and `--record` and train the hidden-32 BERT twin with dropout and AdamW, one host wait per step and the held-out evaluation in the step's command buffer, every step and eval line and every final parameter within the run tolerance of the CPU run. `train --backend vulkan` no longer refuses a model with `dropout`; `muon` still answers `E-TARGET-011` on the GPU, and so does `infer --backend vulkan` on a model with dropout.
+
 ### Added
 
 - Vulkan kernels for `attention` and its gradients `AttentionGradQ`, `AttentionGradK` and `AttentionGradV`, for `cross_entropy` and its gradient `CrossEntropyGrad`, and for the `Sqrt` and `Div` of the AdamW update, naive, one dispatch per op, every sum in the CPU interpreter's ascending order; on the RTX 3090 each is within the GPU tolerance of the CPU interpreter, and `train --backend vulkan --data <dir> --eval-every <n>` trains the hidden-32 BERT twin with dropout and AdamW, one host wait per step and the evaluation in the step's command buffer, every step and eval line and every final parameter within the new run tolerance of the CPU run, streaming them with `--serve` and `--record`; `muon` still answers E-TARGET-011 (DESIGN.md revision 0.53, story:bert-vulkan-kernels-attention-loss-adamw).
@@ -281,7 +285,8 @@ with `E-TARGET-001`.
 - `examples/linear_regression.mspec` checks and trains; `task check-examples` runs `modelspec check` on it
 - ESS contracts for the compiled artifact, checkpoint, device profile and training run in `spec/`
 
-[Unreleased]: https://github.com/beyond10x/modelspec/compare/0.16.0...HEAD
+[Unreleased]: https://github.com/beyond10x/modelspec/compare/0.17.0...HEAD
+[0.17.0]: https://github.com/beyond10x/modelspec/compare/0.16.0...0.17.0
 [0.16.0]: https://github.com/beyond10x/modelspec/compare/0.15.0...0.16.0
 [0.15.0]: https://github.com/beyond10x/modelspec/compare/0.14.0...0.15.0
 [0.14.0]: https://github.com/beyond10x/modelspec/compare/0.13.0...0.14.0

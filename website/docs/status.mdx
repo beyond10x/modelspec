@@ -7,7 +7,7 @@ import status from '@site/data/status.json';
 
 # Status
 
-0.16.0 is the latest release; each release carries a prebuilt binary for Linux x86_64
+0.17.0 is the latest release; each release carries a prebuilt binary for Linux x86_64
 ([changelog](https://github.com/beyond10x/modelspec/blob/main/CHANGELOG.md)). 0.1.0 was
 milestone M0, the semantic core. `modelspec train --backend vulkan` trains on one Vulkan device
 within the GPU tolerance of the CPU reference since 0.4.0, and since 0.6.0 it writes and resumes
@@ -29,6 +29,7 @@ replays a run. A binary built without the `vulkan` feature refuses that backend 
 | 0.14.0 | Vulkan kernels for `embedding`, `add_rows`, `gelu`, `dropout`, `layer_norm`, `softmax` and their gradients, one dispatch each with every sum in the CPU interpreter's order; `EmbeddingGrad` adds without atomics, so two runs give the same bits; the `dropout` mask is computed by Philox4x32-10 on the device and is bit-equal to the CPU's; `train --backend vulkan` trains a matmul, `add_rows` and `gelu` model within the GPU tolerance of the CPU run; a device run of a model with `dropout` is still refused with E-TARGET-011 |
 | 0.15.0 | `optimizer = muon(...)` on the CPU interpreter: each rank-2 parameter that no `embedding` reads as its table trains with Nesterov momentum orthogonalized by quintic Newton–Schulz steps, every other parameter with AdamW; `E-TYPE-025` for a `momentum` outside [0, 1) and an `ns_steps` outside [1, 10]; `train --checkpoint` and `--resume` refuse a Muon run; `E-TRAIN-001` on a non-finite Newton-Schulz norm or buffer |
 | 0.16.0 | `examples/bert_tiny.mspec`, BERT-tiny with 2 post-layer-norm encoder layers, hidden 128, 2 heads, feed-forward 512, sequences of 128 and the 8,192-token vocabulary (1,486,720 parameters), passes `modelspec check` in `task check-examples`; its hidden-32 twin passes a finite-difference check of every parameter in `f64` and trains to identical `step` and `eval` lines twice from one seed with `train --backend cpu --data --eval-every`; `train --data` on a packed directory refuses with `E-DATA-006`, before the first step, an `embedding` table or `cross_entropy` logits whose size is not the packed `vocabulary_size` |
+| 0.17.0 | Vulkan kernels for `attention` and its gradients `AttentionGradQ`, `AttentionGradK` and `AttentionGradV`, for `cross_entropy` and its gradient `CrossEntropyGrad`, and for the `Sqrt` and `Div` of the AdamW update, one dispatch per op with every sum in the CPU interpreter's ascending order, each within the GPU tolerance of the CPU interpreter on the RTX 3090; `train --backend vulkan --data <dir> --eval-every <n>` trains the hidden-32 BERT twin with dropout and AdamW, one host wait per step and the evaluation in the step's command buffer, every step and eval line and every final parameter within the run tolerance of the CPU run, and streams them with `--serve` and `--record`; `train --backend vulkan` no longer refuses a model with `dropout`, while `infer --backend vulkan` on one and `muon` still answer E-TARGET-011 |
 
 The rows of the table below that start with "Since" name the release that added them, and those
 that start with "Not yet released" are on `main` only.
@@ -38,7 +39,7 @@ that start with "Not yet released" are on `main` only.
 | M0 semantic core | done: released as 0.1.0 |
 | M1 native Vulkan execution | in progress: Vulkan training since 0.4.0; `compile`, Vulkan checkpoints and Vulkan `infer` since 0.6.0; the observatory UI and Vulkan non-finite loss refusal since 0.7.0; per-dispatch FLOP and byte counts since 0.7.1; per-step device counters since 0.8.0; register blocking, in-place transposed operands and `--fast-math` since 0.9.0; device-profile scheduling and chain fusion since 0.10.0; the `relu_grad` matmul epilogue and the loss sum beside the largest matmul since 0.13.0 |
 | M2 optimizing compiler | partly done early, in M1: elementwise fusion and per-dispatch profiling since 0.4.0, the tiled shared-memory matmul since 0.5.0; the rest is design |
-| M3 neural-network essentials | in progress on the CPU reference: the BERT operators since 0.10.0, `cross_entropy`, `dropout`, packed training data and held-out evaluation since 0.11.0, AdamW since 0.12.0, the `muon` optimizer since 0.15.0, BERT-tiny checked and its hidden-32 twin gradient-checked and trained since 0.16.0; Vulkan kernels for the row-wise operators since 0.14.0, those for `attention`, `cross_entropy` and AdamW are planned |
+| M3 neural-network essentials | in progress on the CPU reference: the BERT operators since 0.10.0, `cross_entropy`, `dropout`, packed training data and held-out evaluation since 0.11.0, AdamW since 0.12.0, the `muon` optimizer since 0.15.0, BERT-tiny checked and its hidden-32 twin gradient-checked and trained since 0.16.0; Vulkan kernels for the row-wise operators since 0.14.0, those for `attention`, `cross_entropy` and AdamW, and the hidden-32 twin trained on the GPU, since 0.17.0 |
 | M4 device specialization | designed in DESIGN.md § 1; not built |
 
 ## Every capability
