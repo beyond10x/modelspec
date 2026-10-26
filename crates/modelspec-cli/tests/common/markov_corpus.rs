@@ -122,11 +122,17 @@ impl Chain {
 
 /// Writes `wiki.train.raw` and `wiki.valid.raw` of the synthetic corpus into `dir`.
 pub fn write(dir: &Path) {
+    write_with(dir, VALID_ARTICLES);
+}
+
+/// [`write`] with `valid_articles` articles in `wiki.valid.raw`, the first of them those of
+/// [`write`]'s, for a larger `HeldOut` split over the same `Train` split.
+pub fn write_with(dir: &Path, valid_articles: usize) {
     std::fs::create_dir_all(dir).expect("corpus directory");
     let chain = Chain::new();
     for (file, seed, articles) in [
         ("wiki.train.raw", TRAIN_SEED, TRAIN_ARTICLES),
-        ("wiki.valid.raw", VALID_SEED, VALID_ARTICLES),
+        ("wiki.valid.raw", VALID_SEED, valid_articles),
     ] {
         std::fs::write(dir.join(file), chain.text(seed, articles)).expect("corpus file");
     }

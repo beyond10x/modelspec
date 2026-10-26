@@ -12,7 +12,7 @@ relations:
 scope:
 - confidence: cited
   path: examples/bert_tiny.mspec
-revision: 7
+revision: 8
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-26T03:57:20Z", actor: "human:timo", revision: 6}
 - {from: "proposed", to: "active", at: "2026-10-26T03:57:21Z", actor: "human:timo", revision: 7}
@@ -46,7 +46,7 @@ reference interpreter is not a practical reference. The target set here is there
 ## What this story decides
 
 - An agent runs, on the local Vulkan device with no warm-up step: `modelspec data prepare`,
-  `modelspec data tokenizer --vocab-size 30522`, `modelspec data pack --seq-len 128` on the
+  `modelspec data tokenizer --vocab-size 8192` (the vocabulary D19 and D71 fixed; coordinator decision D75), `modelspec data pack --seq-len 128` on the
   settled corpus, then `modelspec train examples/bert_tiny.mspec --backend vulkan --data <dir>
   --eval-every <n>` with the serve flag of `story:observatory-live-event-stream` and the record
   flag of `story:observatory-run-recording-replay`. The step count and `n` are set in the `train`
@@ -90,14 +90,16 @@ recorded events.
 Scenarios, each a device run started by an agent on the local GPU, none part of `task ci`:
 
 1. `modelspec train examples/bert_tiny.mspec --backend vulkan --data <packed> --eval-every <n>`
-   with the serve and record flags exits 0, prints a device line and `eval` lines, and its last
-   `eval` loss is below the `baseline` value in the record of `<packed>`.
+   with the serve and record flags exits 0 and prints `eval` lines (the device is the
+   `inspect-device --backend vulkan` output recorded beside the run: `train` prints no device
+   line, coordinator decision D76), and its last `eval` loss is below the `baseline` value in the record of `<packed>`.
 2. The `eval` loss falls across the run: the last `eval` loss is below the step-0 `eval` loss, and
    the record shows every `eval` line.
 3. Replaying the recorded file with the replay verb or flag of
    `story:observatory-run-recording-replay` exits 0; its events validate against the observatory
-   JSON Schema, there is one `StepCompleted` per `step` line, and the `heldout_mlm_loss` of its last
-   evaluated step equals the last `eval` loss as `f32` shortest round-trip text.
+   JSON Schema, there is one `StepCompleted` per step of the run (step 0 to the last; `train`
+   prints a `step` line every 50 steps, and each printed line's loss equals its event's; decision
+   D76), and the `heldout_mlm_loss` of its last evaluated step equals the last `eval` loss as `f32` shortest round-trip text.
 4. The evidence record of this story holds the stdout, the commands, the commit, the device, the
    baseline, the final held-out loss and accuracy, the margin and the recorded event file.
 

@@ -1,6 +1,7 @@
 //! A training run on one Vulkan device that the host feeds before every step (coordinator decision
 //! D73, story:bert-vulkan-kernels-attention-loss-adamw): one command buffer and one host wait per
-//! step, for a step plan that reads more than its parameters and one batch.
+//! step, and one per evaluated held-out batch, for a step plan that reads more than its
+//! parameters and one batch.
 //!
 //! [`super::runner::train`] records up to [`super::runner::CHUNK_STEPS`] steps into one command
 //! buffer and uploads once, so it runs a step plan whose only inputs are the parameters and the
@@ -18,24 +19,27 @@
 //! - dense or packed `--data` ([`Data`]): the batch of step `k` is uploaded before it, as the CPU
 //!   run feeds it ([`crate::train::runner::run_checked`]);
 //! - held-out evaluation ([`Evaluation`], `--eval-every`): at every multiple of `every` and the last
-//!   step, before the step's update, the command buffer of the step also copies each `HeldOut`
-//!   batch into the data views, runs the steps of the plan the loss is computed from
+//!   step, before the step's command buffer, each `HeldOut` batch is a command buffer of its own
+//!   (coordinator decision D76, story:vulkan-eval-download-per-batch): it copies the batch into
+//!   the data views, runs the steps of the plan the loss is computed from
 //!   ([`modelspec_core::ir::kernel::ExecutionPlan::loss_steps`]) with dropout off and copies the
-//!   prediction down; the host reduces the logits as the CPU evaluation does
-//!   ([`HeldOut::metrics_of`]).
+//!   prediction into a download buffer of one prediction ([`download_bytes`]), and after its
+//!   host wait the host adds the logits to the reduction of the CPU evaluation, in batch order
+//!   ([`HeldOut::tallying`]), before the next batch overwrites them.
 //!
 //! Dropout is off where the CPU run has none: in the evaluation of the loss after the last
 //! update and in held-out evaluation, which the CPU run computes with the forward program. There
 //! the loss steps run with each `Dropout` pipeline replaced by the one of the same kernel at
 //! `p = 0`, which keeps every element and scales it by 1, so it copies its input.
 //!
-//! Step `k`'s command buffer, for `k` from the start to the end: on the first, the parameters and
-//! the zero moments are copied up; on an evaluated step, each held-out batch is evaluated; then
-//! the step's batch, tokens and scalars are copied up, the step plan runs (the loss steps without
-//! dropout at the end), and the loss is copied down, with the parameters and moments after the
-//! last step and at each due checkpoint. The host waits once per step, an evaluated step included,
-//! checks the loss, and the parameters and moments where it read them, with E-TRAIN-001 as the
-//! CPU run does, and shows the step to the observer ([`StepSeen`]). A step whose loss is not
+//! The first command buffer of the run, a held-out batch's or step `start`'s, copies the
+//! parameters and the zero moments up. Step `k`'s command buffer, for `k` from the start to the
+//! end, after the held-out batches of an evaluated step: the step's batch, tokens and scalars are
+//! copied up, the step plan runs (the loss steps without dropout at the end), and the loss is
+//! copied down, with the parameters and moments after the last step and at each due checkpoint.
+//! The host waits once per step and once per held-out batch of an evaluated step, checks the
+//! loss, and the parameters and moments where it read them, with E-TRAIN-001 as the CPU run
+//! does, and shows the step to the observer ([`StepSeen`]). A step whose loss is not
 //! finite stops the run with one more host wait, which reads the parameters and moments the
 //! diverged run holds.
 
@@ -162,7 +166,8 @@ enum Fed {
 
 /// Trains `compiled` on `device`, whose profile is `profile` and which was opened with
 /// `negotiated`, by the execution plan of `artifact`, one command buffer and one host wait per
-/// step (the module documentation), and calls `observe` after each step's wait.
+/// step and per evaluated held-out batch (the module documentation), and calls `observe` after
+/// each step's wait.
 pub fn train_stepwise(
     device: &Device<'_>,
     profile: &DeviceProfile,
@@ -383,10 +388,11 @@ pub fn train_stepwise(
         upload.write_f32(&eval_words)?;
     }
 
-    // What comes down: the loss and the held-out logits every step, the parameters and moments
-    // at the end and at each checkpoint.
-    let step_download_bytes = 4 + eval_batches as u64 * prediction.size_bytes;
-    let mut step_download = device.download_buffer(step_download_bytes)?;
+    // What comes down: the loss every step, the logits of one held-out batch after each
+    // evaluated batch, the parameters and moments at the end and at each checkpoint.
+    let download = download_bytes(&prediction, eval_batches);
+    let mut loss_download = device.download_buffer(download.loss)?;
+    let mut prediction_download = download_buffer(device, download.prediction)?;
     let param_bytes: u64 = plan.parameters.iter().map(|p| p.views[0].size_bytes).sum();
     let moment_bytes: u64 = moments.iter().map(|(view, _, _)| view.size_bytes).sum();
     let mut state_download = device.download_buffer(param_bytes + moment_bytes)?;
@@ -471,6 +477,8 @@ pub fn train_stepwise(
     let mut losses: Vec<f32> = Vec::new();
     let mut words: Vec<f32> = Vec::with_capacity((step_bytes / 4) as usize);
     let mut finished = None;
+    // Whether a command buffer of the run was recorded ([`open`]).
+    let mut opened = false;
     for k in start..=end {
         let last = k == end;
         let evaluated = eval
@@ -507,54 +515,68 @@ pub fn train_stepwise(
             }
             upload.write_f32(&words)?;
         }
+        // An evaluated step: before the step's command buffer, each held-out batch in one of its
+        // own, read back and tallied before the next batch overwrites the download.
+        let metrics = match held_out {
+            Some(held_out) if evaluated => {
+                let download = prediction_download.as_mut().ok_or_else(|| {
+                    VulkanRunError::Plan("a held-out evaluation without its download".into())
+                })?;
+                let mut tally = held_out.tallying();
+                for b in 0..eval_batches {
+                    {
+                        let mut recording = device.record()?;
+                        open(
+                            &mut recording,
+                            &mut opened,
+                            first_upload.as_ref(),
+                            &first_views,
+                            &buffers,
+                        )?;
+                        if let Some(upload) = &eval_upload {
+                            let mut at = b as u64 * data_bytes;
+                            for declaration in &plan.data {
+                                let view = declaration.view;
+                                recording.copy_region(
+                                    upload,
+                                    at,
+                                    buffer(&buffers, &view)?,
+                                    view.offset,
+                                    view.size_bytes,
+                                )?;
+                                at += view.size_bytes;
+                            }
+                        }
+                        recording.barrier(Barrier::TransferToCompute);
+                        record(&mut recording, loss_actions.iter().copied(), &buffers, None)?;
+                        recording.barrier(Barrier::ComputeToTransfer);
+                        recording.copy_region(
+                            buffer(&buffers, &prediction)?,
+                            prediction.offset,
+                            download,
+                            0,
+                            prediction.size_bytes,
+                        )?;
+                        recording.barrier(Barrier::TransferToHost);
+                        let recorded = recording.finish()?;
+                        first_submit.get_or_insert_with(Instant::now);
+                        device.submit(recorded)?.wait()?;
+                    }
+                    tally.add(&download.read_f32()?).map_err(refused)?;
+                }
+                Some(tally.metrics().map_err(refused)?)
+            }
+            _ => None,
+        };
         {
             let mut recording = device.record()?;
-            if k == start {
-                if let Some(upload) = &first_upload {
-                    let mut at = 0;
-                    for view in &first_views {
-                        recording.copy_region(
-                            upload,
-                            at,
-                            buffer(&buffers, view)?,
-                            view.offset,
-                            view.size_bytes,
-                        )?;
-                        at += view.size_bytes;
-                    }
-                }
-            } else {
-                // The step before this one, in an earlier command buffer: its dispatches wrote
-                // what this one's read, and read the views its copies overwrite.
-                recording.barrier(Barrier::ComputeToCompute);
-                recording.barrier(Barrier::ComputeToTransfer);
-            }
-            if evaluated && let Some(upload) = &eval_upload {
-                for b in 0..eval_batches {
-                    let mut at = b as u64 * data_bytes;
-                    for declaration in &plan.data {
-                        let view = declaration.view;
-                        recording.copy_region(
-                            upload,
-                            at,
-                            buffer(&buffers, &view)?,
-                            view.offset,
-                            view.size_bytes,
-                        )?;
-                        at += view.size_bytes;
-                    }
-                    recording.barrier(Barrier::TransferToCompute);
-                    record(&mut recording, loss_actions.iter().copied(), &buffers, None)?;
-                    recording.barrier(Barrier::ComputeToTransfer);
-                    recording.copy_region(
-                        buffer(&buffers, &prediction)?,
-                        prediction.offset,
-                        &step_download,
-                        4 + b as u64 * prediction.size_bytes,
-                        prediction.size_bytes,
-                    )?;
-                }
-            }
+            open(
+                &mut recording,
+                &mut opened,
+                first_upload.as_ref(),
+                &first_views,
+                &buffers,
+            )?;
             let barriers_before = recorded_barriers();
             if let Some(upload) = &step_upload {
                 let mut at = 0;
@@ -578,7 +600,7 @@ pub fn train_stepwise(
                 dispatches_per_step = recording.dispatches() - before;
             }
             recording.barrier(Barrier::ComputeToTransfer);
-            recording.copy_region(loss, plan.loss_view.offset, &step_download, 0, 4)?;
+            recording.copy_region(loss, plan.loss_view.offset, &loss_download, 0, 4)?;
             if !last {
                 barriers_per_step = recorded_barriers() - barriers_before;
             }
@@ -590,18 +612,7 @@ pub fn train_stepwise(
             first_submit.get_or_insert_with(Instant::now);
             device.submit(recorded)?.wait()?;
         }
-        let read = step_download.read_f32()?;
-        let loss_k = read[0];
-        let metrics = match held_out {
-            Some(held_out) if evaluated => {
-                let per_batch = prediction.element_count as usize;
-                let logits: Vec<Vec<f32>> = (0..eval_batches)
-                    .map(|b| read[1 + b * per_batch..1 + (b + 1) * per_batch].to_vec())
-                    .collect();
-                Some(held_out.metrics_of(&logits).map_err(refused)?)
-            }
-            _ => None,
-        };
+        let loss_k = loss_download.read_f32()?[0];
         let state = if reads_state {
             Some(read_state(&state_download.read_f32()?)?)
         } else {
@@ -688,6 +699,69 @@ pub fn train_stepwise(
     ))
 }
 
+/// The bytes of the host-visible buffers a stepwise run reads back through before its host
+/// waits, apart from the parameters and moments.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DownloadBytes {
+    /// The loss of a step, one `f32`.
+    pub loss: u64,
+    /// The held-out logits, 0 without held-out evaluation.
+    pub prediction: u64,
+}
+
+impl DownloadBytes {
+    /// Both buffers together.
+    pub fn total(&self) -> u64 {
+        self.loss + self.prediction
+    }
+}
+
+/// The download buffers of a stepwise run whose plan predicts into `prediction` and which
+/// evaluates `eval_batches` held-out batches: the loss, and one batch's prediction whatever the
+/// number of batches, since each batch is evaluated in a command buffer of its own and read
+/// back before the next (story:vulkan-eval-download-per-batch).
+pub fn download_bytes(prediction: &BufferView, eval_batches: usize) -> DownloadBytes {
+    DownloadBytes {
+        loss: 4,
+        prediction: if eval_batches == 0 {
+            0
+        } else {
+            prediction.size_bytes
+        },
+    }
+}
+
+/// Starts a command buffer of a stepwise run. The first of the run copies the parameters'
+/// initial values and the zero moments up from `first`, the views `views` one after the other;
+/// every later one starts after the one before it, whose dispatches wrote what this one's read
+/// and read the views its copies overwrite.
+fn open<'r>(
+    recording: &mut Recording<'r>,
+    opened: &mut bool,
+    first: Option<&'r Buffer<'_>>,
+    views: &[BufferView],
+    buffers: &'r [Buffer<'_>],
+) -> Result<(), VulkanRunError> {
+    if *opened {
+        recording.barrier(Barrier::ComputeToCompute);
+        recording.barrier(Barrier::ComputeToTransfer);
+    } else if let Some(upload) = first {
+        let mut at = 0;
+        for view in views {
+            recording.copy_region(
+                upload,
+                at,
+                buffer(buffers, view)?,
+                view.offset,
+                view.size_bytes,
+            )?;
+            at += view.size_bytes;
+        }
+    }
+    *opened = true;
+    Ok(())
+}
+
 /// Copies the views `views` of `buffers`, one after the other, to the start of `download`.
 fn copy_state<'r>(
     recording: &mut Recording<'r>,
@@ -731,6 +805,17 @@ fn staging<'d>(device: &'d Device<'_>, bytes: u64) -> Result<Option<Buffer<'d>>,
         return Ok(None);
     }
     Ok(Some(device.staging_buffer(bytes)?))
+}
+
+/// A download buffer of `bytes`, or none for 0.
+fn download_buffer<'d>(
+    device: &'d Device<'_>,
+    bytes: u64,
+) -> Result<Option<Buffer<'d>>, VulkanRunError> {
+    if bytes == 0 {
+        return Ok(None);
+    }
+    Ok(Some(device.download_buffer(bytes)?))
 }
 
 fn check_count(view: &BufferView, count: usize) -> Result<(), VulkanRunError> {
