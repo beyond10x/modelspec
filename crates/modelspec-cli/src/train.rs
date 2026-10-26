@@ -33,9 +33,9 @@
 //! or `--eval-every`, runs stepwise instead ([`modelspec_runtime::vulkan::stepwise`]; coordinator
 //! decision D73, 2026-10-25, `.engineering/waves/bert-1.md`): one command buffer and one host
 //! wait per step and one for the final loss, the step's batch, RNG tokens and AdamW scalars
-//! uploaded before it and the moments kept on the device. An evaluated step runs the held-out
-//! batches without dropout in the step's own command buffer, so `--eval-every` adds no host wait,
-//! and `--profile` refuses a stepwise run on one line (exit 1). `--stats` prints the run's counters on stderr after it
+//! uploaded before it and the moments kept on the device. An evaluated step first runs each
+//! held-out batch without dropout in a command buffer of its own, one host wait per batch
+//! (coordinator decision D76, story:vulkan-eval-download-per-batch), and `--profile` refuses a stepwise run on one line (exit 1). `--stats` prints the run's counters on stderr after it
 //! (host waits, submits, dispatches, dispatches and barriers per step, bytes up and down, device
 //! allocations, peak device bytes, the numerics class, microseconds per step). `--profile` times
 //! every dispatch with GPU timestamp queries, read back after the one host wait, and prints on
@@ -233,8 +233,8 @@ pub struct Args {
     /// among the run's steps and at the run's last step, so a resumed run evaluates no step 0 of
     /// its own and starts at the first multiple of N at or after the step it resumes at. The
     /// last (count mod B) HeldOut sequences are never evaluated, count the split's sequences and
-    /// B the batch. With --backend vulkan the evaluation runs on the device in the step's own
-    /// command buffer.
+    /// B the batch. With --backend vulkan each HeldOut batch is evaluated on the device in its
+    /// own command buffer, one host wait per batch.
     #[arg(long, value_name = "N")]
     pub eval_every: Option<u64>,
     /// Run N steps instead of the steps of the file's train block; a resumed run ends at its

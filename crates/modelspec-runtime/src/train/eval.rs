@@ -32,7 +32,8 @@
 //!
 //! A Vulkan run computes the logits of each batch on the device, from the tensors
 //! [`HeldOut::batch`] gives, and [`HeldOut::metrics_of`] reduces them as above
-//! (coordinator decision D73).
+//! (coordinator decision D73), or [`HeldOut::tallying`] one batch at a time in batch order, to
+//! the same bits (coordinator decision D76).
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -264,18 +265,68 @@ impl<'p> HeldOut<'p> {
             }
             .into());
         }
-        let mut tally = Tally::default();
-        for (b, (batch, logits)) in self.batches.iter().zip(logits).enumerate() {
-            if logits.len() != batch.labels.len() * self.classes {
-                return Err(EvalError::Logits {
-                    batches: self.batches.len(),
-                    given: logits.len(),
-                }
-                .into());
-            }
-            tally.add(b, batch, logits, self.classes)?;
+        let mut tallying = self.tallying();
+        for logits in logits {
+            tallying.add(logits)?;
         }
-        Ok(tally.metrics())
+        tallying.metrics()
+    }
+
+    /// The reduction of [`HeldOut::metrics_of`] fed one batch's logits at a time, in batch
+    /// order: what a device run that reads back one batch's logits at a time reports, the same
+    /// bits as `metrics_of` on all of them at once.
+    pub fn tallying(&self) -> Tallying<'_, 'p> {
+        Tallying {
+            held_out: self,
+            tally: Tally::default(),
+            next: 0,
+        }
+    }
+}
+
+/// The held-out loss and accuracy of logits given one batch at a time ([`HeldOut::tallying`]).
+pub struct Tallying<'h, 'p> {
+    held_out: &'h HeldOut<'p>,
+    tally: Tally,
+    /// The batch the next logits are of.
+    next: usize,
+}
+
+impl Tallying<'_, '_> {
+    /// Adds `logits`, `[B·S, V]` row-major, as the logits of the next batch.
+    pub fn add(&mut self, logits: &[f32]) -> Result<(), RunError> {
+        let held_out = self.held_out;
+        let batches = held_out.batches.len();
+        let Some(batch) = held_out.batches.get(self.next) else {
+            return Err(EvalError::Logits {
+                batches,
+                given: self.next + 1,
+            }
+            .into());
+        };
+        if logits.len() != batch.labels.len() * held_out.classes {
+            return Err(EvalError::Logits {
+                batches,
+                given: logits.len(),
+            }
+            .into());
+        }
+        self.tally.add(self.next, batch, logits, held_out.classes)?;
+        self.next += 1;
+        Ok(())
+    }
+
+    /// The held-out loss and accuracy, once the logits of every batch were added.
+    pub fn metrics(&self) -> Result<HeldOutMetrics, RunError> {
+        let batches = self.held_out.batches.len();
+        if self.next != batches {
+            return Err(EvalError::Logits {
+                batches,
+                given: self.next,
+            }
+            .into());
+        }
+        Ok(self.tally.metrics())
     }
 }
 
