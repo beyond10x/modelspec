@@ -276,7 +276,8 @@ pub struct Args {
     /// query fails, then the run's counters (dispatches, submits, host waits, barriers per step, bytes
     /// copied up and down, device allocations, peak device bytes), compile and pipeline creation
     /// time, steady-state microseconds per step and the step's total FLOP, bytes, GFLOP/s and
-    /// GB/s on stderr after it.
+    /// GB/s on stderr after it. A stepwise run (a model with dropout or AdamW, or --data or
+    /// --eval-every on Vulkan) refuses --profile on one line, exit 1.
     #[arg(long)]
     pub profile: bool,
     /// With --backend vulkan, compile with fast_math (DESIGN.md ADR-008): the float multiplies,

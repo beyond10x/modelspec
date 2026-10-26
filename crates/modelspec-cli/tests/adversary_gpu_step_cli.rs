@@ -3,7 +3,8 @@
 //!
 //! Two kinds of ignore: a case whose name carries `device` needs a Vulkan device and is ignored
 //! as the M1 device tests are ("needs a Vulkan device"); a case whose name carries a finding id
-//! (`f1`, `f2`, ...) is red on the unit's commit and ignored with the finding id as its reason.
+//! (`f2`, `f3`) was red on the unit's commit and is green after fix pass 1 (coordinator decision
+//! D74), ignored only if it needs a device.
 //! The others run in the default suite and need no device: the compile commands below take
 //! `--device-profile` and open no loader.
 //!
@@ -24,7 +25,7 @@ mod common;
 #[path = "common/markov_corpus.rs"]
 mod markov_corpus;
 
-use common::{GPU_RUN_ATOL, GPU_RUN_RTOL, within};
+use common::{GPU_RUN_ATOL, GPU_RUN_RTOL, attention_key_biases, within, zero_gradient_bound};
 
 const TWIN: &str = "crates/modelspec-cli/tests/fixtures/bert_cpu.mspec";
 const ATTENTION: &str = "crates/modelspec-cli/tests/fixtures/attention_train.mspec";
@@ -297,9 +298,9 @@ fn adv_gpu_step_bert_tiny_schedules_the_eight_kernels() {
 
 /// Finding f3 (hypothesis 9): DESIGN.md § 8 says `--profile` refuses a stepwise run (one with
 /// dropout, AdamW, `--data` or `--eval-every`), but `train --help`, from which the generated CLI
-/// reference page is built, describes `--profile` without that limit. Red on the unit.
+/// reference page is built, describes `--profile` without that limit. Red on the unit; fix pass
+/// 1 names the refusal in the help (coordinator decision D74).
 #[test]
-#[ignore = "red: finding f3, --help does not name the --profile refusal of a stepwise run"]
 fn adv_gpu_step_f3_help_names_the_stepwise_profile_refusal() {
     let output = modelspec(&["train", "--help"]);
     assert_exit(&output, 0);
@@ -473,14 +474,20 @@ fn adv_gpu_step_device_twin_drift_over_10_20_and_40_steps() {
 /// computes is rounding noise, which AdamW's `m / (sqrt(v) + eps)` turns into an update of up to
 /// `lr_t * noise / eps` per step whose sign is the backend's own. Prints, per run length, the
 /// worst element and the worst element of every other parameter. Red on the unit.
+///
+/// Fix pass 1 (coordinator decision D74) amends the rule rather than widening it: a parameter
+/// whose exact gradient is zero by the model's structure, here an attention key bias, which the
+/// test finds in the twin's Tensor IR ([`common::attention_key_biases`]), passes when
+/// `|g - c| <= GPU_RUN_ATOL + steps · lr · 1e-3` ([`common::zero_gradient_bound`]); every other
+/// parameter keeps the element rule, and the worst ratio among them stays at or under 1.
 #[test]
-#[ignore = "red: finding f2, the twin leaves the run tolerance in its key biases over longer runs"]
+#[ignore = "needs a Vulkan device"]
 fn adv_gpu_step_f2_device_twin_run_tolerance_at_80_160_and_800_steps() {
     let case = scratch("drift_long");
     let data = packed(&case);
     let mut outside = Vec::new();
     eprintln!(
-        "steps | max |g-c| | bound | ratio | parameter [i] | cpu | gpu | elements outside | worst ratio outside the key biases"
+        "steps | max |g-c| | bound | ratio | parameter [i] | cpu | gpu | elements outside | worst ratio outside the key biases | key-bias max |g-c| | key-bias bound | key-bias ratio"
     );
     for steps in [80u64, 160, 800] {
         let file = variant(
@@ -505,29 +512,64 @@ fn adv_gpu_step_f2_device_twin_run_tolerance_at_80_160_and_800_steps() {
                 outside.push(format!("{steps} steps, step {k}: gpu {g} cpu {c}"));
             }
         }
+        let biases = key_biases(&file);
+        assert!(!biases.is_empty(), "the twin has attention key biases");
+        let biased = zero_gradient_bound(steps, learning_rate(&file));
         let (c_params, g_params) = (tensors(&cpu_out, "param"), tensors(&gpu_out, "param"));
-        let (mut count, mut rest) = (0usize, 0.0f64);
+        let (mut count, mut rest, mut bias_diff) = (0usize, 0.0f64, 0.0f64);
         for (name, c) in &c_params {
-            for (&g, &c) in g_params[name].iter().zip(c) {
-                let ratio = (f64::from(g) - f64::from(c)).abs() / bound(c);
+            for (i, (&g, &c)) in g_params[name].iter().zip(c).enumerate() {
+                let diff = (f64::from(g) - f64::from(c)).abs();
+                let ratio = diff / bound(c);
                 if ratio > 1.0 {
                     count += 1;
                 }
-                if !name.ends_with("_bk") {
+                let passes = if biases.contains(name) {
+                    bias_diff = bias_diff.max(diff);
+                    diff <= biased
+                } else {
                     rest = rest.max(ratio);
+                    ratio <= 1.0
+                };
+                if !passes && outside.len() < 16 {
+                    outside.push(format!(
+                        "{steps} steps, param @{name} [{i}]: gpu {g} cpu {c}"
+                    ));
                 }
             }
         }
-        let ((ratio, diff, name, i, c, g), mut out) = worst_parameter(&cpu_out, &gpu_out);
+        let ((ratio, diff, name, i, c, g), _) = worst_parameter(&cpu_out, &gpu_out);
         eprintln!(
-            "{steps} | {diff:.3e} | {:.3e} | {ratio:.3} | @{name} [{i}] | {c} | {g} | {count} | {rest:.3}",
-            bound(c)
+            "{steps} | {diff:.3e} | {:.3e} | {ratio:.3} | @{name} [{i}] | {c} | {g} | {count} | {rest:.3} | {bias_diff:.3e} | {biased:.3e} | {:.3}",
+            bound(c),
+            bias_diff / biased
         );
-        outside.truncate(16);
-        out.truncate(4);
-        outside.extend(out.into_iter().map(|line| format!("{steps} steps, {line}")));
+        assert!(
+            rest <= 1.0,
+            "{steps} steps: worst ratio outside the key biases {rest}"
+        );
     }
     assert!(outside.is_empty(), "{outside:#?}");
+}
+
+/// The attention key biases of `file`, from its Tensor IR (`ir --stage tensor`), by the
+/// structural rule of [`common::attention_key_biases`].
+fn key_biases(file: &str) -> std::collections::BTreeSet<String> {
+    let output = modelspec(&["ir", file, "--stage", "tensor"]);
+    assert_exit(&output, 0);
+    attention_key_biases(&text(&output.stdout))
+}
+
+/// The `lr` of the `adamw(...)` optimizer of `file`.
+fn learning_rate(file: &str) -> f64 {
+    let source = std::fs::read_to_string(file).expect("the file reads");
+    let (_, rest) = source
+        .split_once("adamw(lr = ")
+        .expect("an adamw optimizer");
+    let (lr, _) = rest
+        .split_once(',')
+        .expect("lr is followed by another argument");
+    lr.trim().parse().expect("lr is a float literal")
 }
 
 /// Finding f2 (hypothesis 1), the acceptance run itself: scenario 4's ten steps of the twin

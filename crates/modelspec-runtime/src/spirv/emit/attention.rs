@@ -294,6 +294,9 @@ impl Shell {
     /// `a / b` within 1 ulp of the CPU's correctly rounded quotient: the device's `q = a / b`
     /// corrected to `q + fma(0 - q, b, a) / b`, one residual step; `q` stands where the
     /// residual is 0 or NaN: an exact quotient, a zero or infinite `b`, an infinite or NaN `a`.
+    /// `q` also stands where it is not finite, so a quotient that overflows is the infinity the
+    /// CPU gives, not the NaN of `inf - inf` its residual step would make (coordinator decision
+    /// D74, F1).
     pub(super) fn quotient(&mut self, a: Word, b: Word) -> Result<Word, EmitError> {
         let zero = self.float(0.0);
         let q = self.f_div(a, b)?;
@@ -301,7 +304,11 @@ impl Shell {
         let residual = self.f_fma(neg_q, b, a)?;
         let step = self.f_div(residual, b)?;
         let corrected = self.f_add(q, step)?;
-        self.where_residual(residual, corrected, q)
+        let refined = self.where_residual(residual, corrected, q)?;
+        let infinite = self.b.is_inf(self.bool_ty, None, q)?;
+        let nan = self.b.is_nan(self.bool_ty, None, q)?;
+        let not_finite = self.b.logical_or(self.bool_ty, None, infinite, nan)?;
+        Ok(self.b.select(self.f32_ty, None, not_finite, q, refined)?)
     }
 
     /// `GLSL.std.450 Log` of `x`.

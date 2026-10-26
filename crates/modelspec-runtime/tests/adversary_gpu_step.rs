@@ -3,8 +3,9 @@
 //! not draw, each against the CPU interpreter.
 //!
 //! Every case needs a Vulkan device. A case whose name carries `device` is ignored as the M1
-//! device tests are ("needs a Vulkan device"); a case whose name carries a finding id (`f1`, ...)
-//! is red on the unit's commit and ignored with the finding id as its reason.
+//! device tests are ("needs a Vulkan device"), and so is a case whose name carries a finding id
+//! (`f1`, ...), which was red on the unit's commit and is green after fix pass 1 (coordinator
+//! decision D74).
 //!
 //! Run them with
 //! `MODELSPEC_VK_VALIDATION=1 cargo test -p modelspec-runtime --features vulkan --test adversary_gpu_step -- --ignored`.
@@ -561,9 +562,10 @@ fn adv_gpu_step_device_sqrt_and_div_within_one_ulp_over_a_wide_range() {
 /// Finding f1: `Div` of `1e30 / 1e-10`, whose correctly rounded quotient overflows to `+inf`, is
 /// NaN on the device: the device's quotient `q = +inf` makes the residual `fma(-q, b, a) = -inf`,
 /// which is not 0 or NaN, so the corrected `q + residual / b = inf - inf` is taken. Red on the
-/// unit; the CPU gives `+inf`, and so does an uncorrected division.
+/// unit; the CPU gives `+inf`, and so does an uncorrected division. Fix pass 1 keeps a quotient
+/// that is not finite as it is (coordinator decision D74).
 #[test]
-#[ignore = "red: finding f1, an overflowing Div is NaN on the device where the CPU gives inf"]
+#[ignore = "needs a Vulkan device"]
 fn adv_gpu_step_f1_div_overflow_is_inf_not_nan() {
     let ty = TensorType::f32(&[4]);
     let cases = vec![Case {

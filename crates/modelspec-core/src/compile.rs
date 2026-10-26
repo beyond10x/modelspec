@@ -40,7 +40,8 @@ pub mod codes {
     /// checks; reduce the shape.
     pub const TOO_LARGE_FOR_TARGET: Code = Code::new("E-TARGET-010");
 
-    /// An operator of the training step has no Vulkan kernel yet, or the optimizer `muon`, whose
+    /// An operator of the training step has no Vulkan kernel for its operands, such as an
+    /// `attention` over more than 512 keys per sequence, or the optimizer `muon`, whose
     /// step runs on the CPU interpreter only and is reported at the `train` block; and, refused by
     /// `infer --backend vulkan` rather than the schedule, `dropout`, whose inference runs the
     /// step plan with its dropouts (DESIGN.md § 8.1). The file checks; use `--backend cpu`.

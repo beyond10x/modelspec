@@ -2,7 +2,9 @@
 //! against `--backend cpu` (story:bert-vulkan-kernels-attention-loss-adamw, coordinator decision
 //! D73, 2026-10-25): ten training steps on the GPU, with dropout, attention, cross-entropy and
 //! AdamW, print `step` and `eval` losses and final parameters within the run tolerance of
-//! DESIGN.md § 9 gate 5, `|g - c| <= GPU_RUN_ATOL + GPU_RUN_RTOL * |c|`, accuracies within
+//! DESIGN.md § 9 gate 5, `|g - c| <= GPU_RUN_ATOL + GPU_RUN_RTOL * |c|`, an attention key bias,
+//! whose exact gradient is zero by the model's structure, within `GPU_RUN_ATOL + steps · lr ·
+//! 1e-3` instead (coordinator decision D74), accuracies within
 //! `1 / M` of the CPU's, `M` the selected `HeldOut` rows, and stream them as schema-valid events.
 //!
 //! The run is the twin with `steps = 10` and `warmup_steps = 2`, written beside the packed data:
@@ -36,12 +38,14 @@ mod common;
 #[path = "common/markov_corpus.rs"]
 mod markov_corpus;
 
-use common::{GPU_RUN_ATOL, GPU_RUN_RTOL, within};
+use common::{GPU_RUN_ATOL, GPU_RUN_RTOL, attention_key_biases, within, zero_gradient_bound};
 
 const TWIN: &str = "crates/modelspec-cli/tests/fixtures/bert_cpu.mspec";
 const RUN_EVENT_SCHEMA: &str =
     "crates/modelspec-observatory/schema/entities/modelspec.observatory.RunEvent.schema.json";
 const STEPS: u64 = 10;
+/// The `lr` of the twin's `adamw(...)`, which [`twin10`] checks the fixture holds.
+const LR: f64 = 3e-3;
 const EVAL_EVERY: &str = "5";
 const WAIT: Duration = Duration::from_secs(600);
 
@@ -131,6 +135,10 @@ fn packed(case: &Path) -> PathBuf {
 /// The twin with `steps = 10` and `warmup_steps = 2`, written to `<case>/twin10.mspec`.
 fn twin10(case: &Path) -> String {
     let mut source = std::fs::read_to_string(repo_root().join(TWIN)).expect("the fixture");
+    assert!(
+        source.contains(&format!("adamw(lr = {LR:e},")),
+        "the twin trains at lr {LR:e}"
+    );
     for (from, to) in [
         ("steps = 800;", "steps = 10;"),
         ("warmup_steps = 80)", "warmup_steps = 2)"),
@@ -278,7 +286,17 @@ fn steps() {
         cpu_params.keys().collect::<Vec<_>>(),
         gpu_params.keys().collect::<Vec<_>>()
     );
+    let tensor_ir = modelspec(&["ir", &file, "--stage", "tensor"]);
+    assert_exit(&tensor_ir, 0);
+    let biases = attention_key_biases(&stdout(&tensor_ir));
+    assert_eq!(
+        biases.len(),
+        2,
+        "one key bias per encoder layer: {biases:?}"
+    );
+    let biased = zero_gradient_bound(STEPS, LR);
     let (mut elements, mut max_abs, mut max_rel) = (0usize, 0.0f64, 0.0f64);
+    let (mut rest, mut bias_diff) = (0.0f64, 0.0f64);
     for (name, c) in &cpu_params {
         let g = &gpu_params[name];
         assert_eq!(g.len(), c.len(), "{name}");
@@ -289,13 +307,23 @@ fn steps() {
                 max_rel = max_rel.max(diff / f64::from(c).abs());
             }
             elements += 1;
-            if !within(g, c, c.abs(), GPU_RUN_ATOL, GPU_RUN_RTOL) && outside.len() < 16 {
+            let passes = if biases.contains(name) {
+                bias_diff = bias_diff.max(diff);
+                diff <= biased
+            } else {
+                rest = rest.max(diff / bound(c));
+                within(g, c, c.abs(), GPU_RUN_ATOL, GPU_RUN_RTOL)
+            };
+            if !passes && outside.len() < 16 {
                 outside.push(format!("param @{name} [{i}]: gpu {g} cpu {c}"));
             }
         }
     }
     eprintln!(
         "final parameters: {elements} elements, max |g-c| {max_abs:.3e}, max relative {max_rel:.3e}"
+    );
+    eprintln!(
+        "key biases {biases:?}: max |g-c| {bias_diff:.3e}, bound {biased:.3e}; worst ratio of every other parameter {rest:.3}"
     );
     assert_eq!(elements, 28_684);
     assert!(outside.is_empty(), "{outside:#?}");

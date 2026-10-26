@@ -26,6 +26,72 @@ pub const GPU_RUN_ATOL: f32 = 1e-4;
 /// The relative part of the run tolerance, scaled by `r = |c|`.
 pub const GPU_RUN_RTOL: f32 = 1e-3;
 
+/// The drift per step and unit of learning rate of a parameter whose exact gradient is zero by
+/// the model's structure (DESIGN.md § 9 gate 5, revision 0.53, coordinator decision D74).
+pub const GPU_RUN_ZERO_GRADIENT_RATE: f64 = 1e-3;
+
+/// The run bound of a parameter whose exact gradient is zero by the model's structure, after
+/// `steps` steps at the learning rate `lr`: `GPU_RUN_ATOL + steps · lr · 1e-3`. Its gradient is
+/// rounding noise on either backend, which AdamW normalises into updates whose sign is the
+/// noise's, so the two runs drift apart there by up to about `steps · lr · 1e-3`.
+pub fn zero_gradient_bound(steps: u64, lr: f64) -> f64 {
+    f64::from(GPU_RUN_ATOL) + steps as f64 * lr * GPU_RUN_ZERO_GRADIENT_RATE
+}
+
+/// The attention key biases of a Tensor IR listing (`modelspec ir --stage tensor`), by canonical
+/// path without the `@`: each parameter whose one reader is an `AddRows` whose one reader is an
+/// `Attention`, as its key operand (the second). Softmax ignores a constant added to every score
+/// of a query, and such a bias adds `q · b` to each, so its exact gradient is 0 (DESIGN.md
+/// revision 0.43) and the run compares it under [`zero_gradient_bound`].
+pub fn attention_key_biases(tensor_ir: &str) -> std::collections::BTreeSet<String> {
+    use std::collections::BTreeMap;
+    let mut ops: BTreeMap<&str, (&str, Vec<&str>)> = BTreeMap::new();
+    let mut params: BTreeMap<&str, &str> = BTreeMap::new();
+    for line in tensor_ir.lines() {
+        let Some((id, rest)) = line.split_once(": ") else {
+            continue;
+        };
+        if !id.starts_with('%') {
+            continue;
+        }
+        let Some((_, body)) = rest.split_once(" = ") else {
+            continue;
+        };
+        let mut words = body.split_whitespace();
+        let op = words.next().unwrap_or_default();
+        if op == "ParamRead" {
+            if let Some(path) = words.next().and_then(|w| w.strip_prefix('@')) {
+                params.insert(id, path);
+            }
+            continue;
+        }
+        let operands = words
+            .map(|w| w.trim_end_matches(','))
+            .filter(|w| w.starts_with('%'))
+            .collect();
+        ops.insert(id, (op, operands));
+    }
+    let readers = |value: &str| -> Vec<(&str, &str, usize)> {
+        ops.iter()
+            .flat_map(|(id, (op, operands))| {
+                operands
+                    .iter()
+                    .enumerate()
+                    .filter(move |(_, o)| **o == value)
+                    .map(move |(at, _)| (*id, *op, at))
+            })
+            .collect()
+    };
+    params
+        .iter()
+        .filter(|(id, _)| match readers(id)[..] {
+            [(add, "AddRows", 1)] => matches!(readers(add)[..], [(_, "Attention", 1)]),
+            _ => false,
+        })
+        .map(|(_, path)| (*path).to_owned())
+        .collect()
+}
+
 /// Whether `g` passes against `c` with reference `r` and the pair `atol`, `rtol`:
 /// `|g - c| <= atol + rtol * r`, computed in `f64` so the check itself does not round.
 pub fn within(g: f32, c: f32, r: f32, atol: f32, rtol: f32) -> bool {
