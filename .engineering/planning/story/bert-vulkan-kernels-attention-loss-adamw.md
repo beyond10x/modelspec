@@ -2,7 +2,7 @@
 format: aep.planning-md/3
 id: story:bert-vulkan-kernels-attention-loss-adamw
 kind: story
-status: active
+status: implemented
 title: Vulkan kernels for attention, cross-entropy and AdamW, and a full BERT step on the GPU
 summary: SPIR-V kernels for attention, cross-entropy and the AdamW update; ten GPU steps of the hidden-32 twin, with eval lines and streamed events, match the CPU run within 1e-4 absolute plus 1e-3 relative; device runs are operator-started.
 relations:
@@ -36,10 +36,11 @@ scope:
   path: website/data/status.json
 - confidence: cited
   path: website/docs/reference/
-revision: 6
+revision: 7
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-25T22:35:38Z", actor: "human:timo", revision: 5}
 - {from: "proposed", to: "active", at: "2026-10-25T22:35:38Z", actor: "human:timo", revision: 6}
+- {from: "active", to: "implemented", at: "2026-10-26T03:05:50Z", actor: "human:timo", revision: 7, decided_on: {"recorded":{"test_result":1,"review_outcome":1}}}
 ---
 # Vulkan kernels for attention, cross-entropy and AdamW, and a full BERT step on the GPU
 

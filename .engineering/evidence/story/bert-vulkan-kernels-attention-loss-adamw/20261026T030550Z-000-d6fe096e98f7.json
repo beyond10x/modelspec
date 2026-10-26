@@ -1,0 +1,13 @@
+{
+  "at": "2026-10-26T03:05:50Z",
+  "actor": "human:timo",
+  "artifact": "story:bert-vulkan-kernels-attention-loss-adamw",
+  "kind": "story",
+  "revision": 6,
+  "change": {
+    "change": "evidence",
+    "kind": "test_result",
+    "source": "task ci",
+    "reference": "bcfb9a963017af7e81567522d460ee0b20e509f6"
+  }
+}
