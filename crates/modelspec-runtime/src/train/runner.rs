@@ -485,14 +485,14 @@ pub fn run_checked(
 }
 
 /// The `f32` and the `i32` inputs of one step, by name.
-type StepInputs<'f> = (
+pub(crate) type StepInputs<'f> = (
     &'f BTreeMap<String, HostTensor<f32>>,
     &'f BTreeMap<String, HostTensor<i32>>,
 );
 
 /// Where the inputs of a step come from: synthetic data, the same every step, or dense or packed
 /// data and the one batch every step of the run is filled into.
-enum Feed<'a> {
+pub(crate) enum Feed<'a> {
     Synthetic(SyntheticData),
     Dense(&'a DenseData, DenseBatch),
     Packed(&'a PackedData, PackedBatch),
@@ -500,7 +500,7 @@ enum Feed<'a> {
 
 impl Feed<'_> {
     /// The inputs of step `step`: `f32` tensors, and the `i32` tensors only packed data has.
-    fn inputs(&mut self, step: u64) -> Result<StepInputs<'_>, DataError> {
+    pub(crate) fn inputs(&mut self, step: u64) -> Result<StepInputs<'_>, DataError> {
         match self {
             Feed::Synthetic(s) => Ok((&s.inputs, &NO_IDS)),
             Feed::Dense(data, batch) => {
@@ -515,7 +515,7 @@ impl Feed<'_> {
     }
 
     /// The teacher parameters of synthetic data; dense and packed data have none.
-    fn teacher(self) -> BTreeMap<ParamId, HostTensor<f32>> {
+    pub(crate) fn teacher(self) -> BTreeMap<ParamId, HostTensor<f32>> {
         match self {
             Feed::Synthetic(s) => s.teacher,
             Feed::Dense(..) | Feed::Packed(..) => BTreeMap::new(),

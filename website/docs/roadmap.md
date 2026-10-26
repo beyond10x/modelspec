@@ -9,8 +9,8 @@ The milestones are those of [DESIGN.md § 1](https://github.com/beyond10x/models
 M0 is built and released as 0.1.0. M1 is in progress; the latest release is 0.16.0. Some M2 items
 were done early, in M1. The current milestone is a small BERT, pre-trained from scratch, which is
 one of the two proof models of M3: its operators run on the CPU reference interpreter, the row-wise
-ones also have Vulkan kernels since 0.14.0, and the kernels of `attention`, `cross_entropy` and
-AdamW are planned. M4 is design.
+ones also have Vulkan kernels since 0.14.0, and `attention`, `cross_entropy` and AdamW have theirs
+on `main`, unreleased. M4 is design.
 
 ## M0: semantic core
 
@@ -97,9 +97,8 @@ check of every parameter and trains to the same output twice from one seed.
 
 :::caution[Planned]
 
-Vulkan kernels for `attention`, `cross_entropy` and AdamW (the row-wise operators have theirs since
-0.14.0), and BERT-tiny pre-trained on the GPU until its held-out
-loss is below the unigram baseline. `f16`, causal masks
+BERT-tiny pre-trained on the GPU until its held-out loss is below the unigram baseline (the BERT
+operators and AdamW have Vulkan kernels on `main`). `f16`, causal masks
 and the GPT-like model are design.
 
 :::

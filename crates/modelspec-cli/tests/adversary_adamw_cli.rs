@@ -58,29 +58,20 @@ fn adv_adamw_f1_compile_backend_cpu_writes_an_artifact() {
     assert!(out.join("artifact.json").exists());
 }
 
-/// `ir --stage kernel` and `train --backend vulkan` are E-TARGET-011 at the `train` block, exit
-/// 1 as for `embedding`, with nothing on stdout; `ir --stage training` prints the moments.
+/// `ir --stage kernel` prints the AdamW update as kernels, the `Sqrt` and the `Div` among them
+/// (coordinator decision D73); `ir --stage training` prints the moments.
 #[test]
-fn adamw_vulkan_paths_are_e_target_011_before_anything_runs() {
-    for args in [
-        vec!["ir", FIXTURE, "--stage", "kernel"],
-        vec!["train", FIXTURE, "--backend", "vulkan"],
-    ] {
-        let output = modelspec(&args);
-        let stderr = text(&output.stderr);
-        assert_eq!(output.status.code(), Some(1), "{args:?}: {stderr}");
+fn adamw_vulkan_paths_print_the_update_as_kernels() {
+    let output = modelspec(&["ir", FIXTURE, "--stage", "kernel"]);
+    let stderr = text(&output.stderr);
+    assert_eq!(output.status.code(), Some(0), "{stderr}");
+    let stdout = text(&output.stdout);
+    for op in [" elementwise Sqrt f32 ", " elementwise Div f32 "] {
         assert!(
-            output.stdout.is_empty(),
-            "{args:?}: {}",
-            text(&output.stdout)
-        );
-        assert_eq!(
-            stderr.lines().take(2).collect::<Vec<_>>(),
-            [
-                "E-TARGET-011: optimizer `adamw` has no Vulkan kernel yet",
-                &format!("  {FIXTURE}:10:1"),
-            ],
-            "{args:?}"
+            stdout
+                .lines()
+                .any(|line| line.starts_with("kernel ") && line.contains(op)),
+            "{op}: {stdout}"
         );
     }
     let output = modelspec(&["ir", FIXTURE, "--stage", "training"]);

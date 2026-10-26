@@ -87,11 +87,7 @@ fn mnist_mlp_on_vulkan_prints_the_lines_of_the_cpu_run() {
 
 #[test]
 fn the_data_flags_are_usage_errors_on_vulkan() {
-    for flags in [
-        &["--data", "data"][..],
-        &["--init", "init"],
-        &["--eval", "eval"],
-    ] {
+    for flags in [&["--init", "init"][..], &["--eval", "eval"]] {
         let mut args = vec!["train", "no-such-model.mspec", "--backend", "vulkan"];
         args.extend_from_slice(flags);
         let output = modelspec(&args, Some(NO_LOADER));

@@ -14,7 +14,8 @@
 //! command buffers behind one fence. Every host wait, submit, dispatch and staging copy is
 //! counted ([`Device::host_waits`], [`Device::submits`], [`Device::dispatches`],
 //! [`Device::bytes_uploaded`], [`Device::bytes_downloaded`]). [`runner`] trains a compiled
-//! artifact on the device.
+//! artifact on the device, and [`stepwise`] trains one whose step the host feeds before each
+//! step: dropout tokens, AdamW scalars and moments, `--data` batches and held-out evaluation.
 //!
 //! With [`VALIDATION_ENV`] set to `1`, the instance is created with the Khronos validation layer
 //! and a debug messenger that keeps every warning and error it reports
@@ -30,6 +31,7 @@ mod probe;
 pub mod profile;
 pub mod runner;
 pub mod select;
+pub mod stepwise;
 pub mod sync;
 
 use std::cell::Cell;

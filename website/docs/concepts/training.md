@@ -123,6 +123,7 @@ adds around it.
 
 :::caution[Planned]
 
-AdamW and Muon on a Vulkan device are planned; `--backend vulkan` answers `E-TARGET-011` for them.
+Muon on a Vulkan device is planned; `--backend vulkan` answers `E-TARGET-011` for it. AdamW trains
+on the device.
 
 :::

@@ -20,6 +20,12 @@ pub const GPU_ATOL: f32 = 1e-5;
 /// The relative part of the GPU tolerance, scaled by the reference `r`.
 pub const GPU_RTOL: f32 = 1e-4;
 
+/// The absolute part of the run tolerance: a device training run's step losses, held-out losses
+/// and final parameter elements against the CPU run's (DESIGN.md § 9 gate 5, revision 0.53).
+pub const GPU_RUN_ATOL: f32 = 1e-4;
+/// The relative part of the run tolerance, scaled by `r = |c|`.
+pub const GPU_RUN_RTOL: f32 = 1e-3;
+
 /// Whether `g` passes against `c` with reference `r` and the pair `atol`, `rtol`:
 /// `|g - c| <= atol + rtol * r`, computed in `f64` so the check itself does not round.
 pub fn within(g: f32, c: f32, r: f32, atol: f32, rtol: f32) -> bool {

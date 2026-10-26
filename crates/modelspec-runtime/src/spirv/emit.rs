@@ -1,6 +1,8 @@
 //! The SPIR-V compute module of one M1 kernel (DESIGN.md § 5.2): elementwise, broadcast, SGD,
 //! the two stages of a reduction, the `mse` loss sum, transpose and matmul, and the row-wise
-//! kernels of the BERT operators (`rowwise`, `per_element`, `per_row` and `per_column`).
+//! kernels of the BERT operators (`rowwise`, `per_element`, `per_row` and `per_column`), among
+//! them the attention and cross-entropy kernels and the `Sqrt` and `Div` of the
+//! AdamW update (`emit/attention.rs`).
 //!
 //! The module is SPIR-V 1.5, the version Vulkan 1.2 consumes, with capability `Shader`, the
 //! `GLSL450` logical memory model and one `GLCompute` entry point `main`, with `LocalSize` the
@@ -31,7 +33,8 @@
 //! `NonWritable`), then what it writes: the pre-activation of an epilogue that keeps it, then the
 //! result. A push constant holds the dispatch's count: the
 //! output elements of an elementwise, transpose or matmul kernel, the elements a reduction stage
-//! or a loss sum reads, the output rows of a `per_row` kernel and the output columns of a
+//! or a loss sum reads, the output rows of a `per_row` kernel (rows times heads for an attention
+//! kernel) and the output columns of a
 //! `per_column` one. A row-wise module reads an `i32` operand as `u32` words, and a dropout
 //! module the run key from two specialization constants. A rank-0 buffer operand of an
 //! elementwise kernel is read at element 0 by every invocation; an immediate operand is a
@@ -66,6 +69,7 @@ use rspirv::spirv::{
     FunctionControl, GlslStd450Op, LoopControl, MemoryModel, SelectionControl, StorageClass, Word,
 };
 
+mod attention;
 mod rowwise;
 
 /// Why a kernel has no module.
@@ -161,6 +165,17 @@ pub fn emit(kernel: &Kernel) -> Result<Vec<u32>, EmitError> {
 /// The module of `kernel` for a device with `profile`.
 pub fn emit_module(kernel: &Kernel, profile: &DeviceProfile) -> Result<KernelModule, EmitError> {
     module_for(kernel, profile, Variant::Plan, false)
+}
+
+/// [`emit_module`] under `fast_math` (DESIGN.md § 12 ADR-008), as [`emit_kernels`] emits a kernel
+/// of an artifact: what a runner needs for a kernel that is not in the plan, such as the `p = 0`
+/// copy of a `Dropout` the device run evaluates its loss without dropout with.
+pub fn emit_module_with(
+    kernel: &Kernel,
+    profile: &DeviceProfile,
+    fast_math: bool,
+) -> Result<KernelModule, EmitError> {
+    module_for(kernel, profile, Variant::Plan, fast_math)
 }
 
 /// The module of the loss-sum `kernel` without its division by the element count: the sum of
@@ -350,6 +365,9 @@ enum Body {
         /// Where the tile's values lie in workgroup memory ([`MatMulTile::layout_within`]).
         layout: MatMulLayout,
     },
+    /// An attention, cross-entropy or cross-entropy gradient kernel
+    /// ([`attention::AttentionLoss`]).
+    AttentionLoss(attention::AttentionLoss),
     /// A row-wise kernel ([`rowwise::Rowwise`]).
     Rowwise(rowwise::Rowwise),
 }
@@ -364,6 +382,18 @@ fn body_of(kernel: &Kernel, variant: Variant, shared_bytes: u32) -> Result<Body,
     let body = match (kernel.kind, kernel.op) {
         (KernelKind::Elementwise | KernelKind::Broadcast | KernelKind::SgdUpdate, _) => {
             elementwise(kernel)?
+        }
+        (
+            KernelKind::PerRow,
+            "Attention" | "AttentionGradQ" | "AttentionGradK" | "AttentionGradV"
+            | "CrossEntropyGrad",
+        )
+        | (KernelKind::LossSum, "CrossEntropy") => {
+            // Only the `mse` loss sum has an undivided module (DESIGN.md § 5.4).
+            if variant == Variant::Undivided {
+                return Err(unsupported());
+            }
+            Body::AttentionLoss(attention::AttentionLoss::of(kernel)?)
         }
         (KernelKind::PerElement | KernelKind::PerRow | KernelKind::PerColumn, _) => {
             Body::Rowwise(rowwise::Rowwise::of(kernel)?)
@@ -532,6 +562,11 @@ enum Arith {
     /// `a - (b * c)`, the SGD update with its scaled gradient: the product rounded, then the
     /// difference, both decorated `NoContraction`.
     ScaledSub,
+    /// `sqrt(a)`, the device's root corrected by one `Fma` residual step ([`Shell::root`]).
+    Sqrt,
+    /// `a / b`, the device's quotient corrected by one `Fma` residual step
+    /// ([`Shell::quotient`]).
+    Div,
     Copy,
 }
 
@@ -544,6 +579,8 @@ impl Arith {
             (KernelKind::Elementwise, "Mul") => Self::Mul,
             (KernelKind::Elementwise, "Relu") => Self::Relu,
             (KernelKind::Elementwise, "ReluGrad") => Self::ReluGrad,
+            (KernelKind::Elementwise, "Sqrt") => Self::Sqrt,
+            (KernelKind::Elementwise, "Div") => Self::Div,
             (KernelKind::Broadcast, "BroadcastScalar") => Self::Copy,
             (kind, op) => return Err(EmitError::Unsupported { kind, op }),
         };
@@ -552,8 +589,8 @@ impl Arith {
 
     fn arity(self) -> usize {
         match self {
-            Self::Relu | Self::Copy => 1,
-            Self::Add | Self::Sub | Self::Mul | Self::ReluGrad => 2,
+            Self::Relu | Self::Copy | Self::Sqrt => 1,
+            Self::Add | Self::Sub | Self::Mul | Self::ReluGrad | Self::Div => 2,
             Self::ScaledSub => 3,
         }
     }
@@ -706,14 +743,20 @@ fn build(
         Body::LossSum { chunk, .. } => Some((chunk, false)),
         Body::MatMul { layout, tile, .. } => Some((layout.shared_values(), tile.vector_reads())),
         Body::Rowwise(rowwise) => rowwise.shared().map(|values| (values, false)),
+        Body::AttentionLoss(body) => body.shared().map(|values| (values, false)),
         _ => None,
     };
     let matmul_vars = match body {
         Body::MatMul { k, tile, .. } => matmul_accumulators(&tile) + matmul_carried(k, &tile),
         Body::Rowwise(rowwise) => rowwise.f32_vars(),
+        Body::AttentionLoss(body) => body.f32_vars(),
         _ => 0,
     };
     let seeded = matches!(body, Body::Rowwise(rowwise) if rowwise.seeded());
+    let u32_vars = match body {
+        Body::AttentionLoss(body) => body.u32_vars(),
+        _ => 0,
+    };
     if kernel.epilogue.is_some() && !matches!(body, Body::MatMul { .. }) {
         return Err(operands_error(
             kernel,
@@ -721,12 +764,15 @@ fn build(
         ));
     }
     // Every float add, subtract, multiply and fused multiply-add of a reduction, loss-sum,
-    // transpose or matmul module, the product and difference of an SGD update with three
-    // operands, and each op of a fused elementwise chain, is decorated `NoContraction`; none is
-    // in a `fast_math` module (DESIGN.md § 3.1, § 5.4, § 12 ADR-008, ADR-009).
+    // transpose, matmul, row-wise, attention or cross-entropy module, the product and difference
+    // of an SGD update with three operands, each op of a fused elementwise chain and every one of
+    // a `Sqrt` or `Div` module is decorated `NoContraction`; none is in a `fast_math` module
+    // (DESIGN.md § 3.1, § 5.4, § 12 ADR-008, ADR-009).
     let exact = !fast_math
         && match body {
-            Body::Elementwise(arith, _) => arith == Arith::ScaledSub,
+            Body::Elementwise(arith, _) => {
+                matches!(arith, Arith::ScaledSub | Arith::Sqrt | Arith::Div)
+            }
             _ => true,
         };
     let mut m = Shell::new(
@@ -735,6 +781,7 @@ fn build(
         kernel.workgroup_size,
         shared,
         matmul_vars,
+        u32_vars,
         float_controls,
         exact,
         seeded,
@@ -760,6 +807,7 @@ fn build(
             layout,
         } => m.matmul([rows, k, n], epilogue, tile, transposed, layout)?,
         Body::Rowwise(rowwise) => m.rowwise(rowwise)?,
+        Body::AttentionLoss(body) => m.attention_loss(body)?,
     }
     m.finish()
 }
@@ -933,6 +981,10 @@ struct Shell {
     /// tiles its tile loop carries from one pass to the next ([`matmul_carried`]); of a
     /// row-wise kernel, the accumulators it keeps beside `f32_var`.
     matmul_vars: Vec<Word>,
+    /// The `u32` function variables a module keeps beside [`Shell::u32_vars`], declared after
+    /// the `f32` ones and only by an attention or cross-entropy module, so the words of every
+    /// other module are unchanged.
+    extra_u32_vars: Vec<Word>,
     /// The workgroup size, the `LocalSize` x of the entry point.
     group: Word,
     /// Whether [`Shell::f_add`], [`Shell::f_sub`], [`Shell::f_mul`], [`Shell::f_div`] and
@@ -962,6 +1014,7 @@ impl Shell {
         workgroup_size: u32,
         shared: Option<(u32, bool)>,
         matmul_vars: usize,
+        extra_u32: usize,
         float_controls: bool,
         exact: bool,
         seeded: bool,
@@ -1135,6 +1188,9 @@ impl Shell {
         let matmul_vars = (0..matmul_vars)
             .map(|_| b.variable(f32_fn_ptr, None, StorageClass::Function, None))
             .collect();
+        let extra_u32_vars = (0..extra_u32)
+            .map(|_| b.variable(u32_fn_ptr, None, StorageClass::Function, None))
+            .collect();
         let ids = b.load(v3u32, None, gid, None, [])?;
         let groups = b.load(v3u32, None, nwg, None, [])?;
         let x = b.composite_extract(u32_ty, None, ids, [0])?;
@@ -1174,6 +1230,7 @@ impl Shell {
             u32_vars,
             f32_var,
             matmul_vars,
+            extra_u32_vars,
             group,
             exact,
             glsl: None,
@@ -1519,6 +1576,8 @@ impl Shell {
                     let product = m.f_mul(values[1], values[2])?;
                     m.f_sub(values[0], product)?
                 }
+                Arith::Sqrt => m.root(values[0])?,
+                Arith::Div => m.quotient(values[0], values[1])?,
                 Arith::Copy => values[0],
             };
             m.write(index, result)
@@ -1558,7 +1617,9 @@ impl Shell {
                         let positive = m.b.f_ord_greater_than(bool_ty, None, values[0], f_zero)?;
                         m.b.select(f32_ty, None, positive, values[1], f_zero)?
                     }
-                    Arith::ScaledSub | Arith::Copy => unreachable!("no op of a chain"),
+                    Arith::ScaledSub | Arith::Sqrt | Arith::Div | Arith::Copy => {
+                        unreachable!("no op of a chain")
+                    }
                 };
                 previous = Some(result);
             }

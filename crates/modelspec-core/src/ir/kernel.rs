@@ -123,7 +123,8 @@ pub struct PlanStep {
 /// ([`Kernel::matmul_tile`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum KernelKind {
-    /// `Add`, `Sub`, `Mul`, `Relu` or `ReluGrad`, one invocation per output element.
+    /// `Add`, `Sub`, `Mul`, `Relu`, `ReluGrad`, `Sqrt` or `Div`, one invocation per output
+    /// element.
     Elementwise,
     /// `BroadcastScalar`, one invocation per output element.
     Broadcast,
@@ -132,7 +133,9 @@ pub enum KernelKind {
     /// The second stage: one workgroup reads every partial and writes the result.
     ReduceStage2,
     /// The `mse` loss: one workgroup stages its terms in workgroup memory and invocation 0 sums
-    /// them in row-major order (DESIGN.md § 5.2, § 5.4).
+    /// them in row-major order (DESIGN.md § 5.2, § 5.4); the `cross_entropy` loss: one workgroup
+    /// computes 64 row losses at a time into workgroup memory and invocation 0 adds their
+    /// weighted sum and the weight sum in ascending row order.
     LossSum,
     Transpose,
     /// One invocation per output element in the blocks of its [`MatMulTile`], with an optional
@@ -147,7 +150,9 @@ pub enum KernelKind {
     PerElement,
     /// A row-wise op computed one output row per invocation, its reductions over the row in
     /// ascending column order: `EmbeddingGrad` (each table row, its ids scanned in ascending
-    /// order), `LayerNorm`, `LayerNormGradX`, `Softmax` and `SoftmaxGrad`.
+    /// order), `LayerNorm`, `LayerNormGradX`, `Softmax`, `SoftmaxGrad` and `CrossEntropyGrad`;
+    /// and one invocation per row and head of `Attention` and its three gradients, the head
+    /// count a last, immediate operand ([`Kernel::heads`]).
     PerRow,
     /// A column reduction over the rows of its operands in ascending row order, one output
     /// column per invocation: `SumRows` and `LayerNormGradGamma`.
@@ -884,6 +889,51 @@ impl Kernel {
         }
     }
 
+    /// The head count of an `Attention`, `AttentionGradQ`, `AttentionGradK` or `AttentionGradV`
+    /// kernel: its last operand, an immediate whole number of at least 1
+    /// ([`crate::schedule::attention_loss_kernel`]); `None` for every other kernel.
+    pub fn heads(&self) -> Option<u64> {
+        if !matches!(
+            self.op,
+            "Attention" | "AttentionGradQ" | "AttentionGradK" | "AttentionGradV"
+        ) {
+            return None;
+        }
+        match self.operands.last()? {
+            Operand::Immediate(heads) if *heads >= 1.0 && heads.fract() == 0.0 => {
+                Some(*heads as u64)
+            }
+            _ => None,
+        }
+    }
+
+    /// The count of [`Kernel::flop`] for an attention kernel: `q` `[n, h]` its first operand and
+    /// the key mask `[b, s]` its fourth.
+    fn attention_flop(&self) -> Option<u64> {
+        let dims = |i: usize| match self.operands.get(i)? {
+            Operand::Buffer(ty) => match ty.shape[..] {
+                [Dim::Static(rows), Dim::Static(cols)] => Some((rows, cols)),
+                _ => None,
+            },
+            Operand::Immediate(_) => None,
+        };
+        let ((n, h), (_, s)) = (dims(0)?, dims(3)?);
+        let a = self.heads()?;
+        let d = h.checked_div(a)?;
+        let per_key = |per_column: u64, more: u64| per_column.checked_mul(d)?.checked_add(more);
+        let keys = n.checked_mul(a)?.checked_mul(s)?;
+        match self.op {
+            "Attention" | "AttentionGradV" => keys.checked_mul(per_key(4, 5)?),
+            "AttentionGradQ" => keys
+                .checked_mul(per_key(6, 9)?)?
+                .checked_add(n.checked_mul(a)?.checked_mul(d)?),
+            "AttentionGradK" => keys
+                .checked_mul(per_key(6, 9)?)?
+                .checked_add(n.checked_mul(h)?),
+            _ => None,
+        }
+    }
+
     /// `(m, k, n)` of a kernel whose operands are two static buffers `[m, k]` and `[k, n]`, and
     /// for a [`Epilogue::ReluGrad`] a third, the pre-activation, `[m, n]`.
     pub fn matmul_shape(operands: &[Operand]) -> Option<(u64, u64, u64)> {
@@ -916,8 +966,21 @@ impl Kernel {
     /// gradient for `EmbeddingGrad` and of the operand for `SumRows`; 10 per element for `Gelu`
     /// and 24 for `GeluGrad`; 5 per element for `Softmax` and 4 for `SoftmaxGrad`; for an
     /// `[n, h]` operand, `n·(8h + 3)` for `LayerNorm` and `LayerNormGradGamma` and
-    /// `n·(14h + 3)` for `LayerNormGradX` (DESIGN.md § 3.1). `None` for an op without a rule, a
-    /// shape with a dimension that is not static, or a count past `u64`.
+    /// `n·(14h + 3)` for `LayerNormGradX` (DESIGN.md § 3.1). One per output element for `Sqrt`
+    /// and `Div`. For `cross_entropy` over `[n, v]` logits, `n·(4v + 6) + 1`: per element a
+    /// compare, a subtraction, an `exp` and an add of the row softmax, per row a logarithm, an
+    /// add, a subtraction, the fused weighted term and the weight sum's add, and the one
+    /// division; `n·(9v + 3)` for its gradient, which recomputes the row softmax and takes per
+    /// element a subtraction, an `exp`, a division, the subtraction of the one-hot target and
+    /// the product with the row's scale. Each key the attention ops visit counts as unmasked:
+    /// with `A` heads of width `d` over `q` of `[n, h]` and `S` keys per sequence, a key costs a
+    /// score of `2d` (its dot product and the scale), the softmax's compare, subtraction, `exp`
+    /// and add, and the division of its probability, so `n·A·S·(4d + 5)` for `Attention` and
+    /// `AttentionGradV` with their fused `2d` per key, `n·A·(S·(6d + 9) + d)` for
+    /// `AttentionGradQ` (per key the probability's gradient `2d`, the row dot's fused term, the
+    /// score gradient's subtraction and product and its fused `2d`, then the scale of each
+    /// column) and `n·A·S·(6d + 9) + n·h` for `AttentionGradK`. `None` for an op without a rule,
+    /// a shape with a dimension that is not static, or a count past `u64`.
     pub fn flop(&self) -> Option<u64> {
         let elements = |ty: &TensorType| {
             ty.shape.iter().try_fold(1u64, |n, dim| match dim {
@@ -944,7 +1007,7 @@ impl Kernel {
                 2u64.checked_mul(m)?.checked_mul(k)?.checked_mul(n)
             }
             KernelKind::Elementwise => match self.op {
-                "Add" | "Sub" | "Mul" | "Relu" | "ReluGrad" => per_output(1),
+                "Add" | "Sub" | "Mul" | "Relu" | "ReluGrad" | "Sqrt" | "Div" => per_output(1),
                 chain => per_output(ElementwiseChain::parse(chain)?.ops().count() as u64),
             },
             KernelKind::SgdUpdate => match (self.op, self.operands.len()) {
@@ -952,6 +1015,7 @@ impl Kernel {
                 ("Sub", 2) => per_output(1),
                 _ => None,
             },
+            KernelKind::LossSum if self.op == "CrossEntropy" => rows(4, 6)?.checked_add(1),
             KernelKind::ReduceStage1 | KernelKind::ReduceStage2 | KernelKind::LossSum => self
                 .operands
                 .iter()
@@ -973,6 +1037,10 @@ impl Kernel {
                 "LayerNormGradX" => rows(14, 3),
                 "Softmax" => per_output(5),
                 "SoftmaxGrad" => per_output(4),
+                "CrossEntropyGrad" => rows(9, 3),
+                "Attention" | "AttentionGradQ" | "AttentionGradK" | "AttentionGradV" => {
+                    self.attention_flop()
+                }
                 _ => None,
             },
             KernelKind::PerColumn => match self.op {

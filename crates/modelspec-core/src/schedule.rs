@@ -12,6 +12,11 @@
 //! `AddRows`, `Gelu`, `GeluGrad`, `Dropout` and `DropoutGrad` one invocation per output element,
 //! `EmbeddingGrad`, `LayerNorm`, `LayerNormGradX`, `Softmax` and `SoftmaxGrad` one per output row,
 //! and the column reductions `SumRows` and `LayerNormGradGamma` one per output column.
+//! `Attention`, `AttentionGradQ`, `AttentionGradK` and `AttentionGradV` are one Dispatch each of
+//! workgroups of 64, one invocation per row and head, the head count a last immediate operand;
+//! `CrossEntropy` is a loss sum of one workgroup, `CrossEntropyGrad` one invocation per row, and
+//! `Sqrt` and `Div` elementwise kernels of one invocation per output element that no elementwise
+//! chain extends ([`attention_loss_kernel`], coordinator decision D73).
 //! `Input`, `ParamRead` and `Scalar` dispatch nothing: inputs and parameters are bound views, and a scalar
 //! is compiled into the kernels that read it.
 //!
@@ -41,8 +46,8 @@
 //! reads a folded transpose computes every output element as before (DESIGN.md § 3.1, § 5.2).
 //!
 //! A chain of elementwise ops (`Add`, `Sub`, `Mul`, `Relu`, `ReluGrad`) not fused above, each op
-//! but the last read once and by the next op alone, at that op's type, and neither the loss nor
-//! the prediction, is one `Elementwise` dispatch at the place of its last op
+//! but the last read once and by the next op alone, at that op's type, and neither the loss, the
+//! prediction nor a next optimizer state, is one `Elementwise` dispatch at the place of its last op
 //! (story:fuse-elementwise-chains-and-gradient-sums). Ops are taken in order: an op extends the
 //! chain of its first operand, by position, that qualifies while the chain's buffer operands stay
 //! within [`MAX_CHAIN_READS`] and no parameter it reads is updated before the op, and otherwise
@@ -52,7 +57,10 @@
 //! the bits of the unfused plan.
 //!
 //! There is no buffer reuse: every stored value has its own buffer, except that each SGD update
-//! writes its parameter's one view in place, a folded scalar is an immediate, the `lr * g` of a
+//! writes its parameter's one view in place, each next optimizer state (an AdamW moment's next
+//! value) is written in place into the buffer of the `Input` its state is read from
+//! ([`host_inputs`]) and is neither folded nor fused into a reader, a folded scalar is an
+//! immediate, the `lr * g` of a
 //! fused update has no buffer, a pre-activation that nothing but its epilogue `Relu` reads
 //! has none either, nor has a matmul output whose `ReluGrad` is its epilogue, and neither has a
 //! folded transpose nor a value inside an elementwise chain. A `Barrier` precedes any Dispatch that
@@ -104,9 +112,9 @@ pub enum ScheduleError {
     BufferTooLarge { buffer: u32, bytes: u64 },
     #[error("{value} dispatches {invocations} invocations, more than a 32-bit index counts")]
     TooManyInvocations { value: ValueId, invocations: u64 },
-    /// The op has no Vulkan kernel yet (`E-TARGET-011`): `Attention`, `AttentionGradQ`,
-    /// `AttentionGradK`, `AttentionGradV`, `CrossEntropy` and `CrossEntropyGrad` run on the CPU
-    /// interpreter only, and so does a row-wise op that reads an immediate operand.
+    /// The op has no Vulkan kernel for its operands (`E-TARGET-011`): a row-wise op that reads
+    /// an immediate operand, an attention op over more than [`MAX_ATTENTION_KEYS`] keys, or any
+    /// other operands [`rowwise_kernel`] and [`attention_loss_kernel`] do not take.
     #[error("{value} is {op}, which has no Vulkan kernel")]
     NoKernel { value: ValueId, op: &'static str },
 }
@@ -236,12 +244,13 @@ fn fold(op: &TensorOp, operands: &[f32]) -> Option<f32> {
 }
 
 /// The fusions of `nodes`, whose updates are `updates`, the update of each parameter
-/// `update_of`, and whose loss and prediction are `bound`.
+/// `update_of`, and whose loss, prediction and next optimizer states are `bound`: values a runner
+/// reads, which neither fold nor fuse into a reader.
 fn fusions(
     nodes: &[TensorNode],
     updates: &BTreeMap<ValueId, usize>,
     update_of: &BTreeMap<ParamId, ValueId>,
-    bound: [ValueId; 2],
+    bound: &BTreeSet<ValueId>,
 ) -> Fusions {
     let mut readers: BTreeMap<ValueId, Vec<&TensorNode>> = BTreeMap::new();
     for node in nodes {
@@ -501,7 +510,7 @@ pub fn schedule_for(
     config: &TrainConfig,
     limits: Option<MatMulLimits>,
 ) -> Result<ExecutionPlan, ScheduleError> {
-    schedule_with(step, prediction, config, limits, Kernels::Vulkan)
+    schedule_with(step, prediction, config, limits, Kernels::Vulkan).map(|(plan, _)| plan)
 }
 
 /// The views of [`schedule`] alone, for an artifact with no kernels (a Cpu artifact): its
@@ -514,11 +523,40 @@ pub fn schedule_views(
     prediction: ValueId,
     config: &TrainConfig,
 ) -> Result<ExecutionPlan, ScheduleError> {
-    let mut plan = schedule_with(step, prediction, config, None, Kernels::None)?;
+    let (mut plan, _) = schedule_with(step, prediction, config, None, Kernels::None)?;
     plan.kernels.clear();
     plan.step.clear();
     plan.forward.clear();
     Ok(plan)
+}
+
+/// One `Input` of a step that the training host supplies besides the data of the `train` block:
+/// the RNG token of a dropout site, an AdamW step's scheduled rate or bias correction, or the
+/// optimizer state of a parameter, and the view of the plan it is read from.
+#[derive(Clone, Debug, PartialEq)]
+pub struct HostInput {
+    /// The `Input` node.
+    pub value: ValueId,
+    /// Its name: the dropout site, [`crate::ir::training::LR_T_INPUT`],
+    /// [`crate::ir::training::C1_INPUT`], [`crate::ir::training::C2_INPUT`] or a
+    /// [`crate::ir::training::moment_input`].
+    pub name: String,
+    pub ty: TensorType,
+    /// A buffer of its own. The step plan writes each optimizer state's next value into it, so
+    /// the next step reads it there; it writes no other host input.
+    pub view: BufferView,
+}
+
+/// The host inputs of `step` in node order, each with the view of the plans [`schedule`],
+/// [`schedule_for`] and [`schedule_views`] give it: every buffer is numbered alike by the three,
+/// a buffer of each host input included. A runner uploads the tokens and the scalars before each
+/// step and the initial optimizer states once, and reads the states back from these views.
+pub fn host_inputs(
+    step: &TrainingStep,
+    prediction: ValueId,
+    config: &TrainConfig,
+) -> Result<Vec<HostInput>, ScheduleError> {
+    schedule_with(step, prediction, config, None, Kernels::None).map(|(_, inputs)| inputs)
 }
 
 /// Whether a schedule builds the Vulkan kernels of every op, or only the views.
@@ -534,7 +572,7 @@ fn schedule_with(
     config: &TrainConfig,
     limits: Option<MatMulLimits>,
     built: Kernels,
-) -> Result<ExecutionPlan, ScheduleError> {
+) -> Result<(ExecutionPlan, Vec<HostInput>), ScheduleError> {
     let program = &step.training.program;
     let mut buffers = Vec::new();
 
@@ -582,18 +620,26 @@ fn schedule_with(
         })
         .collect();
 
-    let fused = fusions(
-        &program.nodes,
-        &updates,
-        &step.optimizer.updates,
-        [step.training.loss, prediction],
-    );
+    // Each next optimizer state is written in place into the buffer its state is read from, so
+    // the next step reads it there; the runner reads it back from that view.
+    let in_place: BTreeMap<ValueId, ValueId> = step
+        .optimizer
+        .state_slots()
+        .iter()
+        .map(|slot| (slot.next, slot.input))
+        .collect();
+    let bound: BTreeSet<ValueId> = [step.training.loss, prediction]
+        .into_iter()
+        .chain(in_place.keys().copied())
+        .collect();
+    let fused = fusions(&program.nodes, &updates, &step.optimizer.updates, &bound);
     let tokens: BTreeSet<ValueId> = program
         .nodes
         .iter()
         .filter_map(|n| ops::token_operand(&n.op).and_then(|i| n.operands.get(i).copied()))
         .chain(step.optimizer.host_inputs())
         .collect();
+    let mut host_inputs = Vec::new();
     let mut places: BTreeMap<ValueId, Place> = BTreeMap::new();
     let mut works: Vec<Work> = Vec::new();
     let mut prediction_view = None;
@@ -643,11 +689,17 @@ fn schedule_with(
             });
         }
         match &node.op {
-            TensorOp::Input { .. } if tokens.contains(&node.id) => {
+            TensorOp::Input { name } if tokens.contains(&node.id) => {
                 // The RNG token of a dropout site and the AdamW scalars and moments, supplied by
                 // the host each step, are no data of the train block: each takes its own buffer.
                 let view = allocate(&mut buffers, &node.ty).ok_or_else(shape_error)?;
                 places.insert(node.id, Place::View(view));
+                host_inputs.push(HostInput {
+                    value: node.id,
+                    name: name.clone(),
+                    ty: node.ty.clone(),
+                    view,
+                });
                 continue;
             }
             TensorOp::Input { .. } | TensorOp::ParamRead { .. } => {
@@ -758,7 +810,16 @@ fn schedule_with(
                 values.push(activation);
             }
             (None, None) => {
-                writes.push(allocate(&mut buffers, &node.ty).ok_or_else(shape_error)?);
+                let view = match in_place.get(&node.id).map(|state| places.get(state)) {
+                    Some(Some(Place::View(view))) => *view,
+                    Some(_) => {
+                        return Err(ScheduleError::MissingValue {
+                            value: in_place[&node.id],
+                        });
+                    }
+                    None => allocate(&mut buffers, &node.ty).ok_or_else(shape_error)?,
+                };
+                writes.push(view);
                 let computed = match relu_grad {
                     Some((gradient, _)) => {
                         values.push(gradient);
@@ -885,10 +946,16 @@ fn schedule_with(
             | TensorOp::Div => match built {
                 Kernels::None => continue,
                 Kernels::Vulkan => {
-                    return Err(ScheduleError::NoKernel {
+                    let no_kernel = || ScheduleError::NoKernel {
                         value: node.id,
                         op: node.op.name(),
-                    });
+                    };
+                    let (_, invocations) = attention_loss_shape(&node.op, &operands, &node.ty)
+                        .ok_or_else(no_kernel)?;
+                    spread(node, invocations.div_ceil(ROWWISE_WORKGROUP))?;
+                    let built = attention_loss_kernel(&node.op, operands, node.ty.clone())
+                        .ok_or_else(no_kernel)?;
+                    (vec![built], None)
                 }
             },
             TensorOp::Input { .. } | TensorOp::ParamRead { .. } | TensorOp::Scalar(_) => {
@@ -956,7 +1023,7 @@ fn schedule_with(
         }
     }
 
-    Ok(ExecutionPlan {
+    let plan = ExecutionPlan {
         buffers,
         parameters,
         data,
@@ -965,7 +1032,8 @@ fn schedule_with(
         forward: forward_plan,
         loss_view,
         prediction_view,
-    })
+    };
+    Ok((plan, host_inputs))
 }
 
 /// The bound view an `Input` or `ParamRead` node reads.
@@ -1149,6 +1217,150 @@ pub fn rowwise_kernel(
     let workgroups = spread_groups(invocations.div_ceil(ROWWISE_WORKGROUP))?;
     if let Some(p) = op.dropout_rate() {
         operands.push(Operand::Immediate(p));
+    }
+    let mut kernel = Kernel {
+        id: crate::ir::kernel::KernelModuleId([0; 16]),
+        kind,
+        op: op.name(),
+        dtype: result.dtype,
+        operands,
+        result,
+        reduces: None,
+        epilogue: None,
+        transposed: [false, false],
+        workgroup_size: kind.workgroup_size(),
+        workgroups,
+    };
+    kernel.id = Kernel::module_id(&kernel.signature());
+    Some(kernel)
+}
+
+/// The most keys of one sequence an attention kernel reads: each invocation recomputes the
+/// softmax of a query row over them, and a gradient of `k` or `v` does so for every query of
+/// its sequence (coordinator decision D73).
+pub const MAX_ATTENTION_KEYS: u64 = 512;
+
+/// The kernel kind of `Attention`, its three gradients, `CrossEntropy`, `CrossEntropyGrad`,
+/// `Sqrt` or `Div` over `operands` into `result`, and the invocations its dispatch runs: one per
+/// row and head of an attention kernel ([`KernelKind::PerRow`]), one workgroup for the
+/// cross-entropy loss ([`KernelKind::LossSum`], 1), one per row of its gradient
+/// ([`KernelKind::PerRow`]), one per output element of `Sqrt` and `Div`
+/// ([`KernelKind::Elementwise`]). `None` for another op, a shape that is not static or has a
+/// zero dimension, or operands that are not the op's:
+///
+/// - attention: `q`, `k`, `v` (and the gradient `g` of a gradient op) `f32` buffers `[N, H]`, a
+///   key mask `f32` `[B, S]` with `B·S = N` and `S` at most [`MAX_ATTENTION_KEYS`], and `heads`
+///   dividing `H`;
+/// - cross-entropy: logits `f32` `[N, V]`, labels `i32` `[N]`, weights `f32` `[N]`, a rank-0
+///   result, and for the gradient a seed that is an immediate or a rank-0 `f32` buffer, into
+///   `[N, V]`;
+/// - `Sqrt` of one operand and `Div` of two, each an immediate, a rank-0 `f32` buffer or an `f32`
+///   buffer of the result's shape.
+fn attention_loss_shape(
+    op: &TensorOp,
+    operands: &[Operand],
+    result: &TensorType,
+) -> Option<(KernelKind, u64)> {
+    let out = static_dims(result)?;
+    if result.dtype != DType::F32 || out.contains(&0) {
+        return None;
+    }
+    let buffer = |at: usize, dtype: DType| match operands.get(at)? {
+        Operand::Buffer(ty) if ty.dtype == dtype => {
+            let dims = static_dims(ty)?;
+            (!dims.contains(&0)).then_some(dims)
+        }
+        _ => None,
+    };
+    let f32s = |at: usize| buffer(at, DType::F32);
+    match op {
+        TensorOp::Attention { heads }
+        | TensorOp::AttentionGradQ { heads }
+        | TensorOp::AttentionGradK { heads }
+        | TensorOp::AttentionGradV { heads } => {
+            let arity = if matches!(op, TensorOp::Attention { .. }) {
+                4
+            } else {
+                5
+            };
+            if operands.len() != arity || *heads == 0 {
+                return None;
+            }
+            let rows = f32s(0)?;
+            let [n, h] = rows[..] else {
+                return None;
+            };
+            let same = [1, 2].into_iter().chain((arity == 5).then_some(4));
+            for at in same {
+                if f32s(at)? != rows {
+                    return None;
+                }
+            }
+            let [b, s] = f32s(3)?[..] else {
+                return None;
+            };
+            let fits = out == rows
+                && h % heads == 0
+                && b.checked_mul(s) == Some(n)
+                && s <= MAX_ATTENTION_KEYS
+                && *heads <= 1 << 24;
+            fits.then_some((KernelKind::PerRow, n.checked_mul(*heads)?))
+        }
+        TensorOp::CrossEntropy | TensorOp::CrossEntropyGrad => {
+            let logits = f32s(0)?;
+            let [n, v] = logits[..] else {
+                return None;
+            };
+            if buffer(1, DType::I32)? != [n] || f32s(2)? != [n] {
+                return None;
+            }
+            if *op == TensorOp::CrossEntropy {
+                return (operands.len() == 3 && out.is_empty()).then_some((KernelKind::LossSum, 1));
+            }
+            let seed = match operands.get(3)? {
+                Operand::Immediate(_) => true,
+                Operand::Buffer(ty) => ty.dtype == DType::F32 && ty.rank() == 0,
+            };
+            (operands.len() == 4 && seed && out == [n, v]).then_some((KernelKind::PerRow, n))
+        }
+        TensorOp::Sqrt | TensorOp::Div => {
+            let arity = if *op == TensorOp::Sqrt { 1 } else { 2 };
+            if operands.len() != arity {
+                return None;
+            }
+            for operand in operands {
+                if let Operand::Buffer(ty) = operand {
+                    let dims = static_dims(ty)?;
+                    if ty.dtype != DType::F32 || (!dims.is_empty() && dims != out) {
+                        return None;
+                    }
+                }
+            }
+            Some((KernelKind::Elementwise, out.iter().product()))
+        }
+        _ => None,
+    }
+}
+
+/// The kernel record of `Attention`, `AttentionGradQ`, `AttentionGradK`, `AttentionGradV`,
+/// `CrossEntropy`, `CrossEntropyGrad`, `Sqrt` or `Div` over `operands`, in the op's operand
+/// order, into `result`, as [`schedule`] builds it (DESIGN.md § 5.2, coordinator decision D73):
+/// its kind and invocations by [`attention_loss_shape`], workgroups of 64 over the invocations
+/// (one workgroup for the cross-entropy loss), and its module id. An attention kernel carries
+/// its head count as a last, immediate operand ([`Kernel::heads`]), so it is in the module id.
+/// `None` for another op or for operands that are not the op's.
+pub fn attention_loss_kernel(
+    op: &TensorOp,
+    mut operands: Vec<Operand>,
+    result: TensorType,
+) -> Option<Kernel> {
+    let (kind, invocations) = attention_loss_shape(op, &operands, &result)?;
+    let workgroups = match kind {
+        KernelKind::LossSum => [1, 1, 1],
+        _ => spread_groups(invocations.div_ceil(ROWWISE_WORKGROUP))?,
+    };
+    if let Some(heads) = op.attention_heads() {
+        operands.push(Operand::Immediate(heads as f32));
     }
     let mut kernel = Kernel {
         id: crate::ir::kernel::KernelModuleId([0; 16]),

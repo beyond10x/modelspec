@@ -1116,7 +1116,7 @@ const KINDS: [(WireKind, KernelKind); 11] = [
 ];
 
 /// The Tensor IR op names a kernel can implement (`TensorOp::name`).
-const OPS: [&str; 27] = [
+const OPS: [&str; 35] = [
     "Input",
     "ParamRead",
     "Scalar",
@@ -1144,6 +1144,14 @@ const OPS: [&str; 27] = [
     "LayerNormGradGamma",
     "Softmax",
     "SoftmaxGrad",
+    "Attention",
+    "AttentionGradQ",
+    "AttentionGradK",
+    "AttentionGradV",
+    "CrossEntropy",
+    "CrossEntropyGrad",
+    "Sqrt",
+    "Div",
 ];
 
 /// A kernel operand: a buffer of a type, or an `f32` constant by its bits, so that it reads back

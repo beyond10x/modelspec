@@ -515,12 +515,12 @@ fn adversary_attention_a7_training_ir_gradient_operands() {
 // Attack 8: the Vulkan arm.
 // ---------------------------------------------------------------------------------------------
 
-/// Attack 8. On the unit's fixture, `ir --stage kernel`, `compile --backend vulkan
-/// --device-profile`, `train --backend vulkan` and `infer --backend vulkan` each exit 1 with
-/// `E-TARGET-011` naming `attention` at its call (line 7, column 16), print nothing on stdout
-/// and report no compiler bug.
+/// Attack 8. On the unit's fixture, `ir --stage kernel` and `compile --backend vulkan
+/// --device-profile` schedule `attention` and its three gradients as `per_row` kernels
+/// (story:bert-vulkan-kernels-attention-loss-adamw, coordinator decision D73): each exits 0 and
+/// reports no compiler bug, and the kernel stage prints the four records.
 #[test]
-fn adversary_attention_a8_every_vulkan_command_refuses_attention_at_its_call() {
+fn adversary_attention_a8_every_vulkan_compile_schedules_attention_kernels() {
     let fixture = root()
         .join("crates/modelspec-cli/tests/fixtures/attention_train.mspec")
         .display()
@@ -530,11 +530,7 @@ fn adversary_attention_a8_every_vulkan_command_refuses_attention_at_its_call() {
         .display()
         .to_string();
     let out = scratch("vulkan").join("artifact").display().to_string();
-    let missing = scratch("missing")
-        .join("no-such-checkpoint")
-        .display()
-        .to_string();
-    let commands: [Vec<&str>; 4] = [
+    let commands: [Vec<&str>; 2] = [
         vec!["ir", "--stage", "kernel", &fixture],
         vec![
             "compile",
@@ -546,30 +542,26 @@ fn adversary_attention_a8_every_vulkan_command_refuses_attention_at_its_call() {
             "--output",
             &out,
         ],
-        vec!["train", &fixture, "--backend", "vulkan"],
-        vec![
-            "infer",
-            &fixture,
-            "--backend",
-            "vulkan",
-            "--checkpoint",
-            &missing,
-        ],
     ];
-    for args in commands {
-        let output = modelspec(&args);
+    for args in &commands {
+        let output = modelspec(args);
         let text = stderr(&output);
-        assert_eq!(output.status.code(), Some(1), "{args:?}:\n{text}");
-        assert!(
-            text.contains("E-TARGET-011: operator `attention` has no Vulkan kernel yet"),
-            "{args:?}:\n{text}"
-        );
-        assert!(
-            text.contains(&format!("{fixture}:7:16")),
-            "{args:?}: not at 7:16:\n{text}"
-        );
+        assert_eq!(output.status.code(), Some(0), "{args:?}:\n{text}");
         assert!(!text.contains("E-INTERNAL"), "{args:?}:\n{text}");
-        assert!(stdout(&output).is_empty(), "{args:?}: printed a plan");
+    }
+    let printed = stdout(&modelspec(&commands[0]));
+    for op in [
+        "Attention",
+        "AttentionGradQ",
+        "AttentionGradK",
+        "AttentionGradV",
+    ] {
+        assert!(
+            printed.lines().any(
+                |line| line.starts_with("kernel ") && line.contains(&format!(" per_row {op} "))
+            ),
+            "{op}:\n{printed}"
+        );
     }
 }
 

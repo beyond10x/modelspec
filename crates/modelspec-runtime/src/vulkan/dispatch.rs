@@ -749,6 +749,7 @@ pub fn kernel_bindings(kernel: &Kernel) -> Result<KernelBindings, ExecError> {
                     });
                 }
             };
+            let rows = rows * kernel.heads().unwrap_or(1);
             (rows, rows)
         }
     };

@@ -9,6 +9,14 @@ history.
 
 ## [Unreleased]
 
+### Added
+
+- Vulkan kernels for `attention` and its gradients `AttentionGradQ`, `AttentionGradK` and `AttentionGradV`, for `cross_entropy` and its gradient `CrossEntropyGrad`, and for the `Sqrt` and `Div` of the AdamW update, naive, one dispatch per op, every sum in the CPU interpreter's ascending order; on the RTX 3090 each is within the GPU tolerance of the CPU interpreter, and `train --backend vulkan --data <dir> --eval-every <n>` trains the hidden-32 BERT twin with dropout and AdamW, one host wait per step and the evaluation in the step's command buffer, every step and eval line and every final parameter within the new run tolerance of the CPU run, streaming them with `--serve` and `--record`; `muon` still answers E-TARGET-011 (DESIGN.md revision 0.53, story:bert-vulkan-kernels-attention-loss-adamw).
+
+### Changed
+
+- `train --backend vulkan` no longer refuses a model with `dropout`: each step uploads the RNG token of every dropout site, so the device draws the CPU run's masks; `infer --backend vulkan` still refuses one with E-TARGET-011, because inference runs the step plan with its dropouts (story:bert-vulkan-kernels-attention-loss-adamw).
+
 ## [0.16.0] - 2026-10-25
 
 BERT-tiny written out in the language: `examples/bert_tiny.mspec` (2 post-layer-norm encoder layers, hidden 128, 2 heads, feed-forward 512, sequences of 128, the 8,192-token vocabulary; 1,486,720 parameters) passes `modelspec check` as part of `task check-examples`, and its hidden-32 twin passes a finite-difference check of every parameter in `f64` and trains reproducibly on the CPU from one seed. `train --data` on a packed directory refuses with `E-DATA-006`, before the first step, an `embedding` table or `cross_entropy` logits whose size differs from the packed vocabulary.

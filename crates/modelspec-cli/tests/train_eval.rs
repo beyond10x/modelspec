@@ -826,8 +826,9 @@ fn streamed_metric_samples_equal_the_printed_values() {
 }
 
 /// Scenario 5: `--eval-every 10` without `--data`, `--eval-every 0`, `--eval-every` beside a
-/// dense `--data` directory and `--eval-every` with `--backend vulkan` are usage errors, exit 2,
-/// on one line naming the flag, with nothing on stdout.
+/// dense `--data` directory and `--eval-every` with `--backend vulkan` and no `--data` are usage
+/// errors, exit 2, on one line naming the flag, with nothing on stdout; `--backend vulkan` takes
+/// `--eval-every` beside a packed `--data` (story:bert-vulkan-kernels-attention-loss-adamw).
 #[test]
 fn usage_errors_name_the_flag() {
     let case = scratch("usage");
@@ -873,7 +874,7 @@ fn usage_errors_name_the_flag() {
                 "--eval-every",
                 "10",
             ],
-            vec!["'--eval-every'", "'--backend vulkan'", "'--backend cpu'"],
+            vec!["'--eval-every'", "'--data <DIR>'"],
         ),
     ] {
         let output = modelspec(&args);

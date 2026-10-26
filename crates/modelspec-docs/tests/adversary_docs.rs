@@ -234,14 +234,17 @@ fn adversary_the_getting_started_transcript_equals_a_run_in_the_tree() {
 }
 
 /// The E-TARGET-011 output on the BERT operators page, and its exit status 1, for `ir --stage
-/// kernel` and the three other commands the page says answer the same.
+/// kernel` and for `compile --backend vulkan`, which the page says answers the same.
 #[test]
 fn adversary_the_bert_page_e_target_011_output_equals_a_run() {
     let fixture = repository().join("crates/modelspec-cli/tests/fixtures");
-    let model = fixture.join("mlm_bag.mspec");
+    let model = fixture.join("linear_regression_muon.mspec");
     let model = model.to_str().unwrap();
     let bert = page("concepts/bert-operators.md");
-    let pasted = output_after(&bert, "modelspec ir mlm_bag.mspec --stage kernel");
+    let pasted = output_after(
+        &bert,
+        "modelspec ir linear_regression_muon.mspec --stage kernel",
+    );
     let relative = |text: &str| text.replace(&format!("{}/", fixture.to_str().unwrap()), "");
     let (code, out, err) = modelspec(&["ir", model, "--stage", "kernel"]);
     assert_eq!(code, 1);
@@ -442,9 +445,9 @@ fn the_overview_mnist_claim_agrees_with_the_benchmark_history() {
 /// The status page says rows that start with "Since" name the release that added them and rows
 /// that start with "Not yet released" are on `main` only. Every "Since" names a release of
 /// `CHANGELOG.md`. The masked-language-model batches (`crates/modelspec-runtime/tests/mlm.rs`)
-/// and the E-TARGET-011 answer for the BERT operators
-/// (`crates/modelspec-cli/tests/embedding_no_kernel.rs`) are first in the 0.10.0 tree, so their
-/// rows say "Since 0.10.0".
+/// are first in the 0.10.0 tree, so their row says "Since 0.10.0", and the E-TARGET-011 answer
+/// for `muon` (`crates/modelspec-cli/tests/train_muon.rs`) is first in the 0.15.0 tree, so its
+/// row says "Since 0.15.0".
 #[test]
 fn shipped_rows_name_the_release_that_added_them() {
     let root = repository();
@@ -463,16 +466,16 @@ fn shipped_rows_name_the_release_that_added_them() {
             }
         }
     }
-    for label in [
-        "Masked-language-model batches",
-        "No Vulkan kernel yet for the BERT operators",
+    for (label, release) in [
+        ("Masked-language-model batches", "0.10.0"),
+        ("No Vulkan kernel yet for muon", "0.15.0"),
     ] {
         let row = items
             .iter()
             .find(|item| item["label"] == label)
             .unwrap_or_else(|| panic!("no row {label}"));
         let detail = row["detail"].as_str().unwrap();
-        if !detail.starts_with("Since 0.10.0: ") {
+        if !detail.starts_with(&format!("Since {release}: ")) {
             wrong.push(format!("{label} does not name its release: {detail}"));
         }
     }

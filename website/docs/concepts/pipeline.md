@@ -25,9 +25,9 @@ stage reads it. DESIGN.md § 3 draws the whole chain, and 0.16.0 builds every st
 
 Both IR levels are verified when they are built, and dead code is removed from the Tensor IR.
 `modelspec train --backend cpu` runs the Training IR on the CPU interpreter; `--backend vulkan`
-lowers it to Kernel IR and runs that on one Vulkan device. The operators added for BERT have no
-Vulkan kernel yet: a program that uses one runs on the CPU interpreter only, and the Kernel IR
-stage refuses it with `E-TARGET-011` ([BERT operators](./bert-operators.md)).
+lowers it to Kernel IR and runs that on one Vulkan device. The operators added for BERT have
+Vulkan kernels; the optimizer `muon` has none, so a file trained with it runs on the CPU interpreter
+only, and the Kernel IR stage refuses it with `E-TARGET-011` ([BERT operators](./bert-operators.md)).
 
 `modelspec check` runs the first three stages. `modelspec ir --stage tensor` and `--stage
 training` print the two IR levels, and the tests compare both byte for byte with their golden

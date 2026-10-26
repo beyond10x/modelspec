@@ -40,12 +40,10 @@ pub mod codes {
     /// checks; reduce the shape.
     pub const TOO_LARGE_FOR_TARGET: Code = Code::new("E-TARGET-010");
 
-    /// An operator of the training step has no Vulkan kernel yet: `attention` and
-    /// `cross_entropy`, which with their gradients run on the CPU interpreter only, or the
-    /// optimizers `adamw` and `muon`, whose steps run there too and are reported at the `train`
-    /// block; and, refused by the device run rather than the schedule, `dropout`, whose kernels
-    /// need an RNG token per step the run does not supply (DESIGN.md § 8.1). The file checks; use
-    /// `--backend cpu`.
+    /// An operator of the training step has no Vulkan kernel yet, or the optimizer `muon`, whose
+    /// step runs on the CPU interpreter only and is reported at the `train` block; and, refused by
+    /// `infer --backend vulkan` rather than the schedule, `dropout`, whose inference runs the
+    /// step plan with its dropouts (DESIGN.md § 8.1). The file checks; use `--backend cpu`.
     pub const NO_KERNEL: Code = Code::new("E-TARGET-011");
 }
 
@@ -90,7 +88,7 @@ pub fn compile_training(path: &str, source: &str) -> Result<CompiledTraining, Ve
 /// [`verify_plan`]: Kernel IR, the step plan and the forward plan, in an artifact for `backend`.
 /// A Cpu artifact keeps the views and has no kernels and empty plans: it takes the views of
 /// [`schedule::schedule_views`], so an op with no Vulkan kernel does not refuse it. For Vulkan,
-/// such an op is [`codes::NO_KERNEL`] at the op's source span, and an `adamw` or `muon` step is
+/// such an op is [`codes::NO_KERNEL`] at the op's source span, and a `muon` step is
 /// [`codes::NO_KERNEL`] at the `train` block before anything is scheduled.
 pub fn compile_artifact(
     path: &str,
@@ -115,8 +113,7 @@ pub fn compile_artifact_for(
 ) -> Result<CompiledArtifact, Vec<Diagnostic>> {
     let compiled = compile_training(path, source)?;
     let unsupported = match compiled.training.optimizer.rule {
-        OptimizerRule::Sgd => None,
-        OptimizerRule::AdamW(_) => Some("adamw"),
+        OptimizerRule::Sgd | OptimizerRule::AdamW(_) => None,
         OptimizerRule::Muon(_) => Some("muon"),
     };
     if backend == Backend::Vulkan
@@ -371,9 +368,10 @@ mod tests {
     }
 
     /// The example with `adamw(...)`: the step carries the rule, the moments and the step
-    /// inputs, and a Vulkan artifact is E-TARGET-011 at the `train` block.
+    /// inputs, and its Vulkan artifact dispatches the update as kernels (coordinator decision
+    /// D73).
     #[test]
-    fn an_adamw_file_compiles_its_step_for_the_cpu_and_has_no_vulkan_kernel() {
+    fn an_adamw_file_compiles_its_step_for_the_cpu_and_for_vulkan() {
         let source = EXAMPLE.replace(
             "sgd(lr = 0.1)",
             "adamw(lr = 0.1, weight_decay = 0.01, beta1 = 0.9, beta2 = 0.999, eps = 1e-8, \
@@ -386,14 +384,15 @@ mod tests {
         assert_eq!(adamw.warmup_steps, 10);
         assert_eq!(compiled.training.optimizer.moments.len(), 1);
         assert!(compiled.training.optimizer.step_inputs.is_some());
-        let refused = compile_artifact("adamw.mspec", &source, Backend::Vulkan)
-            .expect_err("no Vulkan kernel");
-        assert_eq!(refused.len(), 1, "{refused:?}");
-        assert_eq!(refused[0].code, codes::NO_KERNEL);
-        assert_eq!(
-            refused[0].span.as_ref().map(|s| s.line),
-            Some(compiled.config.span.line)
-        );
+        let artifact = compile_artifact("adamw.mspec", &source, Backend::Vulkan)
+            .expect("the AdamW step has Vulkan kernels");
+        let ops: Vec<&str> = artifact
+            .execution
+            .kernels
+            .iter()
+            .map(|kernel| kernel.op)
+            .collect();
+        assert!(ops.contains(&"Sqrt") && ops.contains(&"Div"), "{ops:?}");
     }
 
     #[test]

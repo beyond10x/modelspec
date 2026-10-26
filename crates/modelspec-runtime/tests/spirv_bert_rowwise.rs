@@ -12,7 +12,7 @@
 #[allow(dead_code)]
 mod common;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use common::words::{
     DECORATION_NO_CONTRACTION, GLSL_FMA, OP_DECORATE, OP_EXT_INST, OP_F_ADD, OP_F_MUL, OP_F_SUB,
@@ -27,7 +27,7 @@ use modelspec_core::ir::tensor::{Dim, TensorOp, TensorType};
 use modelspec_core::schedule::rowwise_kernel;
 use modelspec_runtime::spirv::emit::{emit, emit_kernels};
 use modelspec_runtime::spirv::validate::validate;
-use modelspec_runtime::vulkan::runner::{DeviceRunError, train_on_device};
+use modelspec_runtime::vulkan::runner::{DeviceRunError, infer_on_device};
 
 const FIXTURE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -334,17 +334,18 @@ fn every_rowwise_float_op_is_uncontracted_except_under_fast_math() {
     assert_eq!(fused, expected);
 }
 
-/// The dropout kernels compile, but the device runner uploads no RNG token per step yet: a
-/// training run of a program with dropout is `E-TARGET-011` at its `dropout` call, refused
-/// before Vulkan is loaded, so this needs no device.
+/// The dropout kernels compile and a training run uploads their RNG tokens
+/// (story:bert-vulkan-kernels-attention-loss-adamw), but inference runs the step plan with its
+/// dropouts: inference on the device of a program with dropout is `E-TARGET-011` at its
+/// `dropout` call, refused before Vulkan is loaded, so this needs no device.
 #[test]
-fn a_device_training_run_with_dropout_is_refused_before_vulkan_is_loaded() {
+fn device_inference_with_dropout_is_refused_before_vulkan_is_loaded() {
     let training = compile_training("block.mspec", BLOCK).expect("the block compiles");
     let artifact = block();
-    let refused = match train_on_device(None, &training, &artifact) {
+    let refused = match infer_on_device(None, &training, &artifact, &BTreeMap::new()) {
         Err(DeviceRunError::Refused(diagnostic)) => diagnostic,
         Err(other) => panic!("refused before the run, not {other}"),
-        Ok(_) => panic!("a run with dropout is refused"),
+        Ok(_) => panic!("inference with dropout is refused"),
     };
     assert_eq!(refused.code.to_string(), "E-TARGET-011", "{refused}");
     assert!(

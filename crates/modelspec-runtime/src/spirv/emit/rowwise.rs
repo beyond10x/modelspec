@@ -292,15 +292,15 @@ fn dropout(kernel: &Kernel, values: usize, token: usize, p: f32) -> Result<Rowwi
 }
 
 impl Shell {
-    fn sub(&mut self, a: Word, b: Word) -> Result<Word, EmitError> {
+    pub(super) fn sub(&mut self, a: Word, b: Word) -> Result<Word, EmitError> {
         Ok(self.b.i_sub(self.u32_ty, None, a, b)?)
     }
 
-    fn div(&mut self, a: Word, b: Word) -> Result<Word, EmitError> {
+    pub(super) fn div(&mut self, a: Word, b: Word) -> Result<Word, EmitError> {
         Ok(self.b.u_div(self.u32_ty, None, a, b)?)
     }
 
-    fn rem(&mut self, a: Word, b: Word) -> Result<Word, EmitError> {
+    pub(super) fn rem(&mut self, a: Word, b: Word) -> Result<Word, EmitError> {
         Ok(self.b.u_mod(self.u32_ty, None, a, b)?)
     }
 
@@ -460,7 +460,7 @@ impl Shell {
     }
 
     /// `corrected` where `residual` is ordered and not zero, else `raw`.
-    fn where_residual(
+    pub(super) fn where_residual(
         &mut self,
         residual: Word,
         corrected: Word,

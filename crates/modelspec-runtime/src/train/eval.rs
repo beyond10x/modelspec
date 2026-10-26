@@ -29,6 +29,10 @@
 //! - the accuracy is `correct / selected` in `f32` over the rows of positive weight, a row
 //!   correct when the first largest logit of its row, the lowest id among ties, is its label,
 //!   and never when its row holds a NaN; `0` when no row is selected.
+//!
+//! A Vulkan run computes the logits of each batch on the device, from the tensors
+//! [`HeldOut::batch`] gives, and [`HeldOut::metrics_of`] reduces them as above
+//! (coordinator decision D73).
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -71,6 +75,9 @@ pub enum EvalError {
     /// The forward program failed on a held-out batch.
     #[error("held-out batch {batch}: {source}")]
     Runtime { batch: usize, source: RuntimeError },
+    /// Device logits that are not one `[B·S, V]` tensor per batch ([`HeldOut::metrics_of`]).
+    #[error("{given} logits do not fill the {batches} held-out batches of [B·S, V] each")]
+    Logits { batches: usize, given: usize },
     /// A label outside the classes of the logits.
     #[error("held-out batch {batch}, row {row}: label {label} is not below the {classes} classes")]
     Label {
@@ -218,9 +225,7 @@ impl<'p> HeldOut<'p> {
         params: &BTreeMap<ParamId, HostTensor<f32>>,
     ) -> Result<HeldOutMetrics, RunError> {
         let Forward { prepared, outputs } = forward;
-        let mut numerator: Option<f32> = None;
-        let mut denominator: Option<f32> = None;
-        let (mut correct, mut selected) = (0u64, 0u64);
+        let mut tally = Tally::default();
         for (b, batch) in self.batches.iter().enumerate() {
             prepared
                 .run_into(batch.tensors.inputs(), batch.tensors.ids(), params, outputs)
@@ -231,46 +236,104 @@ impl<'p> HeldOut<'p> {
             let logits = prepared
                 .kept(prediction)
                 .ok_or(DataError::UndefinedPrediction(prediction))?;
-            let rows = logits.data().chunks_exact(v);
-            for (n, ((row, &label), &weight)) in
-                rows.zip(&batch.labels).zip(&batch.weights).enumerate()
-            {
-                let Some(target) = usize::try_from(label).ok().filter(|&l| l < v) else {
-                    return Err(EvalError::Label {
-                        batch: b,
-                        row: n,
-                        label,
-                        classes: v,
-                    }
-                    .into());
-                };
-                let nll = row_nll(row, target);
-                numerator = Some(match numerator {
-                    None => weight * nll,
-                    Some(sum) => weight.mul_add(nll, sum),
-                });
-                denominator = Some(denominator.map_or(weight, |sum| sum + weight));
-                if weight > 0.0 {
-                    selected += 1;
-                    if argmax(row) == Some(target) {
-                        correct += 1;
-                    }
+            tally.add(b, batch, logits.data(), v)?;
+        }
+        Ok(tally.metrics())
+    }
+
+    /// The classes `V` of the logits each batch's prediction holds.
+    pub fn classes(&self) -> usize {
+        self.classes
+    }
+
+    /// The tensors of batch `b`, `b` below [`HeldOut::batches`], by declaration name, as
+    /// [`HeldOut::evaluate`] binds them: what a device run uploads into the data views of its
+    /// plan before it evaluates the batch.
+    pub fn batch(&self, b: usize) -> Option<&PackedBatch> {
+        self.batches.get(b).map(|batch| &batch.tensors)
+    }
+
+    /// The held-out loss and accuracy of the logits `logits[b]` of every batch `b`, each
+    /// `[B·S, V]` row-major, reduced as [`HeldOut::evaluate`] reduces the logits of the CPU
+    /// interpreter: what a device run that computed the logits reports.
+    pub fn metrics_of(&self, logits: &[Vec<f32>]) -> Result<HeldOutMetrics, RunError> {
+        if logits.len() != self.batches.len() {
+            return Err(EvalError::Logits {
+                batches: self.batches.len(),
+                given: logits.len(),
+            }
+            .into());
+        }
+        let mut tally = Tally::default();
+        for (b, (batch, logits)) in self.batches.iter().zip(logits).enumerate() {
+            if logits.len() != batch.labels.len() * self.classes {
+                return Err(EvalError::Logits {
+                    batches: self.batches.len(),
+                    given: logits.len(),
+                }
+                .into());
+            }
+            tally.add(b, batch, logits, self.classes)?;
+        }
+        Ok(tally.metrics())
+    }
+}
+
+/// The running sums of the reduction of the module documentation.
+#[derive(Default)]
+struct Tally {
+    numerator: Option<f32>,
+    denominator: Option<f32>,
+    correct: u64,
+    selected: u64,
+}
+
+impl Tally {
+    /// Adds the rows of batch `b`, whose logits of `v` classes per row are `logits`.
+    fn add(&mut self, b: usize, batch: &Batch, logits: &[f32], v: usize) -> Result<(), RunError> {
+        let rows = logits.chunks_exact(v);
+        for (n, ((row, &label), &weight)) in rows.zip(&batch.labels).zip(&batch.weights).enumerate()
+        {
+            let Some(target) = usize::try_from(label).ok().filter(|&l| l < v) else {
+                return Err(EvalError::Label {
+                    batch: b,
+                    row: n,
+                    label,
+                    classes: v,
+                }
+                .into());
+            };
+            let nll = row_nll(row, target);
+            self.numerator = Some(match self.numerator {
+                None => weight * nll,
+                Some(sum) => weight.mul_add(nll, sum),
+            });
+            self.denominator = Some(self.denominator.map_or(weight, |sum| sum + weight));
+            if weight > 0.0 {
+                self.selected += 1;
+                if argmax(row) == Some(target) {
+                    self.correct += 1;
                 }
             }
         }
-        let (numerator, denominator) = (numerator.unwrap_or(0.0), denominator.unwrap_or(0.0));
-        Ok(HeldOutMetrics {
+        Ok(())
+    }
+
+    fn metrics(&self) -> HeldOutMetrics {
+        let numerator = self.numerator.unwrap_or(0.0);
+        let denominator = self.denominator.unwrap_or(0.0);
+        HeldOutMetrics {
             loss: if denominator == 0.0 {
                 0.0
             } else {
                 numerator / denominator
             },
-            accuracy: if selected == 0 {
+            accuracy: if self.selected == 0 {
                 0.0
             } else {
-                correct as f32 / selected as f32
+                self.correct as f32 / self.selected as f32
             },
-        })
+        }
     }
 }
 

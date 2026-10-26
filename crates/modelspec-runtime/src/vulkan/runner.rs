@@ -244,8 +244,10 @@ pub fn train_on_device_with(
 }
 
 /// [`train_on_device_with`], from the start and with the checkpoints of `options`
-/// ([`train_with`]). A training step with a dropout is refused before Vulkan is loaded
-/// ([`dropout_refused`]).
+/// ([`train_with`]). A step with a dropout or an AdamW update runs stepwise instead, one command
+/// buffer and one host wait per step ([`super::stepwise`]), on the synthetic data the run makes
+/// itself; such a run is not profiled, and `profiled` is refused with
+/// [`VulkanRunError::Plan`].
 pub fn train_on_device_from(
     device: Option<usize>,
     compiled: &CompiledTraining,
@@ -253,8 +255,33 @@ pub fn train_on_device_from(
     profiled: bool,
     options: RunOptions<'_>,
 ) -> Result<(Run, RunStats, Option<Profile>), DeviceRunError> {
-    if let Some(refused) = dropout_refused(compiled) {
-        return Err(DeviceRunError::Refused(refused));
+    if super::stepwise::needed(compiled, artifact) {
+        if profiled {
+            return Err(DeviceRunError::Failed(VulkanRunError::Plan(
+                super::stepwise::NOT_PROFILED.into(),
+            )));
+        }
+        let RunOptions {
+            start,
+            init,
+            checkpoints,
+            data: _,
+        } = options;
+        let options = super::stepwise::StepwiseOptions {
+            start,
+            init,
+            data: None,
+            eval: None,
+            checkpoints,
+        };
+        let (run, stats) = super::stepwise::train_stepwise_on_device(
+            device,
+            compiled,
+            artifact,
+            options,
+            &mut |_| Ok(()),
+        )?;
+        return Ok((run, stats, None));
     }
     on_device(device, profiled, artifact, |opened, profile, negotiated| {
         let job = Job {
@@ -269,11 +296,12 @@ pub fn train_on_device_from(
     })
 }
 
-/// `E-TARGET-011` at the first `dropout` of `compiled`'s training step, when it has one: the
-/// `Dropout` and `DropoutGrad` kernels exist, but the device run uploads no RNG token per step
-/// and no run key, and inference runs the step plan with its dropouts, so neither a training
-/// run nor inference on the device would compute what the CPU does (DESIGN.md § 2.3,
-/// § 5.2). `None` for a step without dropout.
+/// `E-TARGET-011` at the first `dropout` of `compiled`'s training step, when it has one, which
+/// [`infer_on_device`] refuses: inference runs the steps of the step plan the loss is computed
+/// from with their dropouts and uploads no RNG token, so it would not compute what the CPU
+/// does, whose inference has no dropout (DESIGN.md § 2.3, § 5.2). A training run uploads the
+/// tokens and the run key ([`super::stepwise`], coordinator decision D73), so
+/// [`train_on_device_from`] no longer refuses it. `None` for a step without dropout.
 pub fn dropout_refused(compiled: &CompiledTraining) -> Option<Diagnostic> {
     let node = compiled
         .training
@@ -327,7 +355,7 @@ pub fn device_profile(device: Option<usize>) -> Result<DeviceProfile, Diagnostic
 /// [`Negotiated::with_pipeline_statistics`] when it offers the extension. A device that reports less than the
 /// limits `artifact` was scheduled for is refused before it is opened ([`check_device`],
 /// E-ARTIFACT-005).
-fn on_device<T>(
+pub(super) fn on_device<T>(
     device: Option<usize>,
     statistics: bool,
     artifact: &CompiledArtifact,
@@ -354,7 +382,7 @@ fn on_device<T>(
 }
 
 /// One recorded command of the step plan.
-enum Action<'a> {
+pub(super) enum Action<'a> {
     /// A dispatch and the index of its step in the step plan.
     Dispatch(Bound<'a>, usize),
     Barrier,
@@ -531,7 +559,7 @@ struct Done {
 }
 
 /// The timestamps of one command buffer: its pool and the next query to write.
-struct Stamps<'p> {
+pub(super) struct Stamps<'p> {
     pool: &'p TimestampPool<'p>,
     next: u32,
 }
@@ -589,9 +617,17 @@ fn execute_runs(
     let plan = &artifact.execution;
     if let Some(kernel) = plan.kernels.iter().find(|kernel| reads_seed(kernel)) {
         return Err(VulkanRunError::Plan(format!(
-            "kernel {} draws a dropout mask; the device run supplies no RNG token per step",
+            "kernel {} draws a dropout mask; the chunked device run supplies no RNG token per \
+             step, the stepwise run does (super::stepwise)",
             kernel.id
         )));
+    }
+    if !compiled.training.optimizer.host_inputs().is_empty() {
+        return Err(VulkanRunError::Plan(
+            "the optimizer reads a scheduled rate and its moments; the chunked device run \
+             uploads neither, the stepwise run does (super::stepwise)"
+                .into(),
+        ));
     }
     let config = &compiled.config;
     let Job {
@@ -700,7 +736,12 @@ fn execute_runs(
         .count();
     let arena =
         device.descriptor_arena(count_u32(dispatch_steps)?, count_u32(descriptors(plan))?)?;
-    let (actions, loss_actions) = actions(plan, &arena, &pipelines, &buffers)?;
+    let (actions, loss_actions) = actions(
+        plan,
+        &arena,
+        &pipelines.iter().collect::<Vec<_>>(),
+        &buffers,
+    )?;
 
     // The dispatch sites a profile times, and one timestamp pool per chunk of `CHUNK_STEPS`
     // steps: two queries per dispatch it records.
@@ -1043,7 +1084,7 @@ fn execute_runs(
 }
 
 /// The state of `values` after `version` updates of each parameter the optimizer updates.
-fn state_of(
+pub(super) fn state_of(
     compiled: &CompiledTraining,
     values: BTreeMap<ParamId, HostTensor<f32>>,
     version: u64,
@@ -1102,7 +1143,7 @@ fn diverged(
 
 /// Each parameter's value by id from the first floats of a read-back, in plan order, shaped as
 /// its initial value.
-fn parameters(
+pub(super) fn parameters(
     plan: &ExecutionPlan,
     initial: &BTreeMap<ParamId, HostTensor<f32>>,
     read: &[f32],
@@ -1121,7 +1162,7 @@ fn parameters(
 }
 
 /// The plan buffer `view` lies in.
-fn buffer<'b, 'd>(
+pub(super) fn buffer<'b, 'd>(
     buffers: &'b [Buffer<'d>],
     view: &BufferView,
 ) -> Result<&'b Buffer<'d>, VulkanRunError> {
@@ -1132,7 +1173,7 @@ fn buffer<'b, 'd>(
 
 /// The storage-buffer descriptors the dispatches of the step plan bind, one set each: every view
 /// a dispatch reads and every view it writes ([`actions`]).
-fn descriptors(plan: &ExecutionPlan) -> usize {
+pub(super) fn descriptors(plan: &ExecutionPlan) -> usize {
     plan.step
         .iter()
         .filter(|step| step.op == PlanOp::Dispatch)
@@ -1140,7 +1181,7 @@ fn descriptors(plan: &ExecutionPlan) -> usize {
         .sum()
 }
 
-fn count_u32(count: usize) -> Result<u32, VulkanRunError> {
+pub(super) fn count_u32(count: usize) -> Result<u32, VulkanRunError> {
     u32::try_from(count)
         .map_err(|_| VulkanRunError::Plan(format!("{count} descriptors do not fit u32")))
 }
@@ -1148,11 +1189,11 @@ fn count_u32(count: usize) -> Result<u32, VulkanRunError> {
 /// The recorded commands of the step plan, every dispatch bound once in `arena`, and the
 /// positions among them of the ones that evaluate the loss: the steps of
 /// [`ExecutionPlan::loss_steps`], in plan order. No step up to the last that writes the loss view
-/// writes a parameter.
-fn actions<'a>(
+/// writes a parameter. `pipelines[i]` is the pipeline each dispatch of `plan.kernels[i]` binds.
+pub(super) fn actions<'a>(
     plan: &ExecutionPlan,
     arena: &'a DescriptorArena<'_>,
-    pipelines: &'a [Pipeline<'_>],
+    pipelines: &[&'a Pipeline<'_>],
     buffers: &'a [Buffer<'_>],
 ) -> Result<(Vec<Action<'a>>, Vec<usize>), VulkanRunError> {
     let parameters: BTreeSet<u32> = plan
@@ -1200,7 +1241,7 @@ fn actions<'a>(
                     bound.push(buffer(buffers, view)?);
                 }
                 actions.push(Action::Dispatch(
-                    arena.bind(&pipelines[index], &plan.kernels[index], &bound)?,
+                    arena.bind(pipelines[index], &plan.kernels[index], &bound)?,
                     at,
                 ));
             }
@@ -1250,7 +1291,7 @@ fn unexpected(at: usize, step: &PlanStep, reason: &str) -> VulkanRunError {
 /// Records `actions`: a plan barrier as a compute-to-compute barrier, a plan copy between the
 /// barriers that order it after the dispatches before it and before the ones after it. With
 /// `stamps`, a timestamp before and after each dispatch into its next two queries.
-fn record<'r, 'a: 'r>(
+pub(super) fn record<'r, 'a: 'r>(
     recording: &mut Recording<'r>,
     actions: impl IntoIterator<Item = &'r Action<'a>>,
     buffers: &'r [Buffer<'_>],
@@ -1289,7 +1330,10 @@ fn record<'r, 'a: 'r>(
 /// outputs and the `mse` loss sum before its division. A run reports its losses after the
 /// division and updates its parameters by SGD, so every M1 training run is in the tolerance class.
 /// A `fast_math` artifact is never in the bit-for-bit class (DESIGN.md § 12 ADR-008).
-fn numerics_class(negotiated: &Negotiated, artifact: &CompiledArtifact) -> NumericsClass {
+pub(super) fn numerics_class(
+    negotiated: &Negotiated,
+    artifact: &CompiledArtifact,
+) -> NumericsClass {
     let plan = &artifact.execution;
     let in_set = !artifact.fast_math
         && plan

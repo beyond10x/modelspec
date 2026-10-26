@@ -211,9 +211,18 @@ pub const CAPABILITIES: &[Capability] = &[
     shipped(
         "GPU",
         "SPIR-V kernels for the row-wise BERT operators",
-        "embedding, add_rows, gelu, dropout, layer_norm, softmax and their gradients are one per_element, per_row or per_column dispatch each, summed in the CPU interpreter's order, without atomics, the dropout mask computed by Philox4x32-10 on the device and bit-equal to the CPU's; spirv-val accepts every module. A device run of a model with dropout is refused with E-TARGET-011.",
+        "embedding, add_rows, gelu, dropout, layer_norm, softmax and their gradients are one per_element, per_row or per_column dispatch each, summed in the CPU interpreter's order, without atomics, the dropout mask computed by Philox4x32-10 on the device and bit-equal to the CPU's; spirv-val accepts every module. infer --backend vulkan refuses a model with dropout with E-TARGET-011.",
         Evidence::Test(
             "crates/modelspec-runtime/tests/spirv_bert_rowwise.rs::every_rowwise_kernel_on_unaligned_shapes_passes_spirv_val",
+        ),
+        "/docs/concepts/pipeline",
+    ),
+    shipped(
+        "GPU",
+        "SPIR-V kernels for attention, cross-entropy and AdamW",
+        "Not yet released: attention and its three gradients are one per_row dispatch each, an invocation per row and head, cross_entropy one loss_sum and its gradient one per_row dispatch, and the AdamW update runs as elementwise kernels with Sqrt and Div, one dispatch each; on the RTX 3090 every output lies within the GPU tolerance of the CPU interpreter, and spirv-val accepts every module.",
+        Evidence::Test(
+            "crates/modelspec-runtime/tests/vulkan_bert_attention_loss_adamw.rs::vulkan_attention_loss_and_optimizer_kernels_match_the_cpu_interpreter_within_tolerance",
         ),
         "/docs/concepts/pipeline",
     ),
@@ -469,10 +478,10 @@ pub const CAPABILITIES: &[Capability] = &[
     ),
     shipped(
         "BERT operators",
-        "No Vulkan kernel yet for the BERT operators",
-        "Since 0.10.0: every command that needs a Vulkan kernel answers E-TARGET-011 for `attention` at its call, since 0.11.0 for `cross_entropy` at its call and since 0.12.0 for an `adamw` step at its train block, before a device is opened; they train with --backend cpu. The other BERT operators have Vulkan kernels.",
+        "No Vulkan kernel yet for muon",
+        "Since 0.15.0: train --backend vulkan and ir --stage kernel answer E-TARGET-011 for a `muon` step at its train block, before a device is opened; it trains with --backend cpu. The BERT operators and AdamW have Vulkan kernels.",
         Evidence::Test(
-            "crates/modelspec-cli/tests/adversary_attention_cli.rs::adversary_attention_a8_every_vulkan_command_refuses_attention_at_its_call",
+            "crates/modelspec-cli/tests/train_muon.rs::muon_vulkan_paths_are_e_target_011_before_anything_runs",
         ),
         "/docs/reference/diagnostics",
     ),
@@ -554,12 +563,12 @@ pub const CAPABILITIES: &[Capability] = &[
         Evidence::Test("crates/modelspec-cli/tests/bert_cpu_train.rs::reproducible"),
         "/docs/examples/bert-tiny",
     ),
-    planned(
-        "GPU",
-        "Vulkan kernels for attention, cross-entropy and AdamW",
-        "A full BERT training step on the GPU.",
-        "story:bert-vulkan-kernels-attention-loss-adamw",
-        "/docs/roadmap",
+    shipped(
+        "Training",
+        "The hidden-32 BERT twin trained on the GPU",
+        "Not yet released: modelspec train --backend vulkan --data <dir> --eval-every <n> trains the twin with dropout and AdamW, one command buffer and one host wait per step, the evaluation in the same command buffer; every step and eval line and every final parameter lies within the GPU tolerance of the CPU run, and --serve and --record stream them from the device.",
+        Evidence::Test("crates/modelspec-cli/tests/vulkan_bert_cpu_steps.rs::steps"),
+        "/docs/reference/cli",
     ),
     planned(
         "Training",

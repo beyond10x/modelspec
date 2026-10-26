@@ -1,6 +1,6 @@
 //! `modelspec train <file> --backend cpu|vulkan`: compile a `.mspec` file for training and run
-//! its SGD steps on the CPU interpreter or on one Vulkan device with M0 synthetic data
-//! (DESIGN.md § 6, § 8, § 9 gates 4 and 5).
+//! its steps on the CPU interpreter or on one Vulkan device, with M0 synthetic data or the data
+//! of `--data` (DESIGN.md § 6, § 8, § 9 gates 4 and 5).
 //!
 //! The run takes its steps, learning rate and seed from the file's `train` block; the backend
 //! comes from `--backend`, not from the block's `device`. Both backends print the same lines,
@@ -28,7 +28,14 @@
 //! on the device `--device <index>` names, in the loader's enumeration order
 //! ([`modelspec_runtime::vulkan::runner`]): the host waits for the device once after the last
 //! step, and once after each step `--checkpoint-every` writes a checkpoint at, whose parameters it
-//! reads back then and no other step. `--stats` prints the run's counters on stderr after it
+//! reads back then and no other step. A run whose step plan has a `dropout` kernel or reads
+//! optimizer inputs (`adamw`'s rate, bias corrections and moments), and every run with `--data`
+//! or `--eval-every`, runs stepwise instead ([`modelspec_runtime::vulkan::stepwise`]; coordinator
+//! decision D73, 2026-10-25, `.engineering/waves/bert-1.md`): one command buffer and one host
+//! wait per step and one for the final loss, the step's batch, RNG tokens and AdamW scalars
+//! uploaded before it and the moments kept on the device. An evaluated step runs the held-out
+//! batches without dropout in the step's own command buffer, so `--eval-every` adds no host wait,
+//! and `--profile` refuses a stepwise run on one line (exit 1). `--stats` prints the run's counters on stderr after it
 //! (host waits, submits, dispatches, dispatches and barriers per step, bytes up and down, device
 //! allocations, peak device bytes, the numerics class, microseconds per step). `--profile` times
 //! every dispatch with GPU timestamp queries, read back after the one host wait, and prints on
@@ -52,8 +59,8 @@
 //! `E-TARGET-004`. A build without the `vulkan` feature refuses the backend
 //! with [`E_TARGET_001`] before the file is read. `--fast-math` compiles the artifact with
 //! `fast_math` set (DESIGN.md § 12 ADR-008): its kernels carry no `NoContraction`, the run is
-//! compared within tolerance, and `--stats` names the class `tolerance`. `--data`, `--init`,
-//! `--eval`, `--eval-every` and `--statistics-every` are CPU-only, and `--device`, `--stats`,
+//! compared within tolerance, and `--stats` names the class `tolerance`. `--init`, `--eval` and
+//! `--statistics-every` are CPU-only, and `--device`, `--stats`,
 //! `--profile` and `--fast-math` Vulkan-only: naming one with the other backend is a usage error
 //! (exit 2).
 //!
@@ -226,7 +233,8 @@ pub struct Args {
     /// among the run's steps and at the run's last step, so a resumed run evaluates no step 0 of
     /// its own and starts at the first multiple of N at or after the step it resumes at. The
     /// last (count mod B) HeldOut sequences are never evaluated, count the split's sequences and
-    /// B the batch. CPU only.
+    /// B the batch. With --backend vulkan the evaluation runs on the device in the step's own
+    /// command buffer.
     #[arg(long, value_name = "N")]
     pub eval_every: Option<u64>,
     /// Run N steps instead of the steps of the file's train block; a resumed run ends at its
@@ -291,10 +299,8 @@ fn misplaced_flag(args: &Args) -> Option<&'static str> {
         .into_iter()
         .find_map(|(flag, given)| given.then_some(flag)),
         Backend::Vulkan => [
-            ("--data", args.data.is_some()),
             ("--init", args.init.is_some()),
             ("--eval", args.eval.is_some()),
-            ("--eval-every", args.eval_every.is_some()),
             ("--statistics-every", args.statistics_every.is_some()),
         ]
         .into_iter()
@@ -823,6 +829,7 @@ fn train(
                 Checkpoints, DeviceRunError, DivergedOnDevice, RunOptions, RunStats,
                 VulkanRunError, train_on_device_from,
             };
+            use modelspec_runtime::vulkan::stepwise;
             // The `--stats` lines, then the `--profile` lines, of what the device ran.
             let counters = |counted: &RunStats, profiled: Option<Profile>| {
                 let mut out = String::new();
@@ -841,6 +848,100 @@ fn train(
                 Some(path) => checkpoint::write(&path, &Checkpoint::of_state(compiled, k, values)),
                 None => Ok(()),
             };
+            // A run the host feeds before each step: one command buffer and one host wait per
+            // step, each step streamed after its wait (coordinator decision D73).
+            if stepwise::needed(compiled, artifact)
+                || files.data.is_some()
+                || files.eval_every.is_some()
+            {
+                if profile.is_some() {
+                    break 'run Err(Failure::Failed(stepwise::NOT_PROFILED.to_owned()));
+                }
+                let loaded = match files.load(compiled) {
+                    Ok(loaded) => loaded,
+                    Err(failed) => {
+                        let (error, before) = *failed;
+                        if let Some(line) = before {
+                            end();
+                            let _ = writeln!(stderr, "modelspec train {file}: {line}");
+                        }
+                        break 'run Err(RunError::from(error).into());
+                    }
+                };
+                let held_out = match (files.eval_every, &loaded.data) {
+                    (Some(_), Some(TrainData::Packed(packed))) => {
+                        match HeldOut::new(compiled, packed) {
+                            Ok(held_out) => Some(held_out),
+                            Err(error) => break 'run Err(error.into()),
+                        }
+                    }
+                    _ => None,
+                };
+                let options = stepwise::StepwiseOptions {
+                    start: files.start(),
+                    init: loaded.init.clone(),
+                    data: loaded.data.as_ref().map(TrainData::as_data),
+                    eval: held_out
+                        .as_ref()
+                        .zip(files.eval_every)
+                        .map(|(held_out, every)| stepwise::Evaluation { held_out, every }),
+                    checkpoints: files.checkpoint_every.map(|every| Checkpoints {
+                        every,
+                        write: &mut write,
+                    }),
+                };
+                let mut observe = |seen: &stepwise::StepSeen<'_>| {
+                    let metrics = match seen.held_out {
+                        Some(measured) => {
+                            evals.insert(seen.step, measured);
+                            metric_samples(measured)
+                        }
+                        None => Vec::new(),
+                    };
+                    let parameters = seen
+                        .values
+                        .map(|values| statistics(&params, values, None))
+                        .unwrap_or_default();
+                    step_completed(seen.step, seen.loss, metrics, parameters);
+                    Ok(())
+                };
+                break 'run match stepwise::train_stepwise_on_device(
+                    *device,
+                    compiled,
+                    artifact,
+                    options,
+                    &mut observe,
+                ) {
+                    Ok((run, counted)) => {
+                        let _ = write!(stderr, "{}", counters(&counted, None));
+                        let end = run.start_step + counted.steps;
+                        match &files.checkpoint {
+                            Some(path) => checkpoint::write(
+                                path,
+                                &Checkpoint::of_state(compiled, end, &run.state.values),
+                            )
+                            .map(|()| (run, None))
+                            .map_err(|error| RunError::from(error).into()),
+                            None => Ok((run, None)),
+                        }
+                    }
+                    Err(DeviceRunError::Refused(diagnostic)) => Err(Failure::Refused(diagnostic)),
+                    Err(DeviceRunError::Failed(VulkanRunError::NonFinite(stopped))) => {
+                        // Its losses were streamed as the run went, through the failing step's.
+                        let DivergedOnDevice {
+                            diverged,
+                            stats: counted,
+                            profile: _,
+                        } = *stopped;
+                        Err(Failure::Diverged(
+                            Box::new(diverged),
+                            counters(&counted, None),
+                        ))
+                    }
+                    Err(DeviceRunError::Failed(VulkanRunError::Run(error))) => Err((*error).into()),
+                    Err(DeviceRunError::Failed(error)) => Err(Failure::Failed(error.to_string())),
+                };
+            }
             let options = RunOptions {
                 start: files.start(),
                 init: files

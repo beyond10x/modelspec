@@ -2,7 +2,8 @@
 //! shapes and drop probabilities the unit's suite does not emit, the `NoContraction` claim for
 //! every `OpFDiv` (DESIGN.md § 5.2, revision 0.46), the counting rule of DESIGN.md § 3.1
 //! recomputed by hand for one plan, the emitter's refusals of a kernel record the schedule
-//! never builds, and the E-TARGET-011 sites that remain (`attention`, `cross_entropy`).
+//! never builds, and the kernels of `cross_entropy` after an `embedding`, once an E-TARGET-011
+//! site.
 //! Needs `spirv-val` on the path.
 #![cfg(feature = "vulkan")]
 
@@ -360,18 +361,26 @@ const CROSS_ENTROPY: &str = include_str!(concat!(
     "/../modelspec-cli/tests/fixtures/cross_entropy_train.mspec"
 ));
 
-/// Hypothesis 7: `cross_entropy` is still E-TARGET-011 at its call for Vulkan now that the
-/// `embedding` before it has kernels; no test of the unit or its base asserted this site.
+/// Hypothesis 7: `cross_entropy` after an `embedding` schedules for Vulkan: the loss as one
+/// `loss_sum` kernel and its gradient as one `per_row` kernel
+/// (story:bert-vulkan-kernels-attention-loss-adamw), so the E-TARGET-011 site this case guarded
+/// is gone.
 #[test]
-fn adv_rowwise_cross_entropy_is_still_e_target_011_at_its_call() {
-    let errors = compile_artifact("cross_entropy_train.mspec", CROSS_ENTROPY, Backend::Vulkan)
-        .expect_err("cross_entropy has no Vulkan kernel");
-    assert_eq!(errors.len(), 1, "{errors:#?}");
-    let text = errors[0].to_string();
+fn adv_rowwise_cross_entropy_schedules_its_kernels() {
+    let artifact = compile_artifact("cross_entropy_train.mspec", CROSS_ENTROPY, Backend::Vulkan)
+        .expect("cross_entropy has Vulkan kernels");
+    let kinds: BTreeSet<(String, &str)> = artifact
+        .execution
+        .kernels
+        .iter()
+        .map(|kernel| (kernel.kind.to_string(), kernel.op))
+        .collect();
     assert!(
-        text.starts_with("E-TARGET-011: operator `cross_entropy` has no Vulkan kernel yet"),
-        "{text}"
+        kinds.contains(&("loss_sum".to_owned(), "CrossEntropy")),
+        "{kinds:?}"
     );
-    let span = errors[0].span.as_ref().expect("a span");
-    assert_eq!((span.line, span.column), (14, 12), "{text}");
+    assert!(
+        kinds.contains(&("per_row".to_owned(), "CrossEntropyGrad")),
+        "{kinds:?}"
+    );
 }
