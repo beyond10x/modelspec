@@ -6,7 +6,7 @@ description: Milestones M0 to M4 from DESIGN.md § 1. M0 is built; M1, GPU execu
 # Roadmap
 
 The milestones are those of [DESIGN.md § 1](https://github.com/beyond10x/modelspec/blob/main/DESIGN.md#1-scope-and-milestones).
-M0 is built and released as 0.1.0. M1 is in progress; the latest release is 0.17.0. Some M2 items
+M0 is built and released as 0.1.0. M1 is in progress; the latest release is 0.18.0. Some M2 items
 were done early, in M1. The current milestone is a small BERT, pre-trained from scratch, which is
 one of the two proof models of M3: its operators run on the CPU reference interpreter, the row-wise
 ones also have Vulkan kernels since 0.14.0, and `attention`, `cross_entropy` and AdamW have theirs
@@ -43,6 +43,7 @@ reference interpreter, and `modelspec check`, `ir` and `train --backend cpu`.
 | 0.15.0 | no change to the Vulkan backend; the `muon` optimizer trains on the CPU reference only |
 | 0.16.0 | no change to the Vulkan backend; BERT-tiny is a checked example, and its hidden-32 twin is gradient-checked and trains on the CPU reference only |
 | 0.17.0 | Vulkan kernels for `attention` and its three gradients, for `cross_entropy` and its gradient, and for the `Sqrt` and `Div` of the AdamW update, each within the GPU tolerance of the CPU interpreter; `train --backend vulkan --data --eval-every` trains the hidden-32 BERT twin with dropout and AdamW, one host wait per step and the held-out evaluation in the step's command buffer, within the run tolerance of the CPU run, and streams it with `--serve` and `--record`; a device run of a model with `dropout` trains, while `infer --backend vulkan` on one and `muon` still answer E-TARGET-011 |
+| 0.18.0 | `train --backend vulkan --eval-every` evaluates each held-out batch in a command buffer of its own through a download buffer of one batch's prediction, so BERT-tiny over the packed WikiText-103 corpus evaluates on the GPU where it exceeded `maxStorageBufferRange` before step 0; the `eval` lines and recorded metrics are unchanged |
 
 The 9 acceptance boxes of DESIGN.md § 9 are not ticked.
 

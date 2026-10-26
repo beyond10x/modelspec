@@ -9,6 +9,10 @@ history.
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-10-26
+
+Held-out evaluation on the GPU works at corpus scale: `train --backend vulkan --eval-every <n>` evaluates each held-out batch in a command buffer of its own through a download buffer of one batch's prediction, so `examples/bert_tiny.mspec` over the packed WikiText-103 corpus trains with `--eval-every` where it was refused before step 0 with `9126805508 bytes exceed maxStorageBufferRange 4294967295`. The `eval` lines and the recorded metrics are unchanged, and `--stats` counts the evaluation's submits and host waits.
+
 ### Fixed
 
 - `modelspec train --backend vulkan --eval-every <n>` evaluates each `HeldOut` batch in a command buffer of its own, one host wait per batch, through a download buffer of one batch's prediction (`modelspec_runtime::vulkan::stepwise::download_bytes`), where it downloaded every batch's logits at once: `examples/bert_tiny.mspec` over the packed WikiText-103 corpus at seq-len 128 exited 1 before step 0 with `9126805508 bytes exceed maxStorageBufferRange 4294967295` for any `--eval-every`; the `eval` lines and `StepCompleted` metric samples are reduced as before, in batch order, and `--stats` counts the evaluation's submits and host waits (DESIGN.md revision 0.54) (story:vulkan-eval-download-per-batch)
@@ -289,7 +293,8 @@ with `E-TARGET-001`.
 - `examples/linear_regression.mspec` checks and trains; `task check-examples` runs `modelspec check` on it
 - ESS contracts for the compiled artifact, checkpoint, device profile and training run in `spec/`
 
-[Unreleased]: https://github.com/beyond10x/modelspec/compare/0.17.0...HEAD
+[Unreleased]: https://github.com/beyond10x/modelspec/compare/0.18.0...HEAD
+[0.18.0]: https://github.com/beyond10x/modelspec/compare/0.17.0...0.18.0
 [0.17.0]: https://github.com/beyond10x/modelspec/compare/0.16.0...0.17.0
 [0.16.0]: https://github.com/beyond10x/modelspec/compare/0.15.0...0.16.0
 [0.15.0]: https://github.com/beyond10x/modelspec/compare/0.14.0...0.15.0

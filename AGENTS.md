@@ -12,7 +12,7 @@ A Rust compiler and runtime for `.mspec` tensor-program specifications. Humans s
 ## State
 
 Milestone M0 implemented (DESIGN.md revision 0.6, § 1 and § 11, iteration 1; wave `m0` closed);
-M1 (`epic:m1-vulkan-execution`) is in progress, latest release 0.17.0. The active milestone is
+M1 (`epic:m1-vulkan-execution`) is in progress, latest release 0.18.0. The active milestone is
 `epic:bert-from-scratch`, M3's BERT proof model: the operators `embedding` (with `i32` row ids),
 `add_rows`, `gelu`, `layer_norm`, `softmax` and `attention` (0.10.0), `cross_entropy` and
 `dropout` (0.11.0) run on the CPU interpreter, as do packed `--data` training and
