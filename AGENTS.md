@@ -85,6 +85,12 @@ output changes.
 CI: `check.yml` runs `task ci`; `shared-gates.yml` runs the
 common source gates; `pages.yml` and `b10x-docs-site.yml` build and publish the documentation site.
 
+## Paused (2026-10-26)
+
+Development paused after release 0.20.0 (Timo, 2026-10-26). A session that resumes it reads
+`.engineering/paused-2026-10-26.md` first: the state at the pause and the plan to run next, the
+transformer-block benchmark against PyTorch CUDA, with its brief and landing scripts beside it.
+
 ## Commands
 
 Entry points are the `Taskfile.yml` tasks (go-task):
