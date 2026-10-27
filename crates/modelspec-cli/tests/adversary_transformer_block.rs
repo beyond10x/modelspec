@@ -104,8 +104,10 @@ fn adv_tb_4_the_written_batch_of_the_example_is_one_f32_file_per_declaration_and
     );
     let mask = std::fs::read(batch.join("key_mask.f32")).expect("the key mask");
     assert!(
-        mask.chunks_exact(4)
-            .all(|bytes| f32::from_le_bytes(bytes.try_into().unwrap()) == 1.0),
+        mask.as_chunks::<4>()
+            .0
+            .iter()
+            .all(|bytes| f32::from_le_bytes(*bytes) == 1.0),
         "the key mask is all ones"
     );
 
