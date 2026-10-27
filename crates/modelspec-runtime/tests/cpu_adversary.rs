@@ -84,20 +84,27 @@ fn a_value_too_large_for_host_memory_is_a_runtime_error_not_a_panic() {
     }
 }
 
-/// DESIGN.md § 2.2: "`mean` is that sum divided by the element count converted to the element
-/// type". With 2^24 + 1 elements the count converts to 2^24 in `f32`; the sum here is 1, so the
-/// mean is `2^-24`, not `1 / (2^24 + 1)` rounded (`2^-24 - 2^-48`).
+/// DESIGN.md § 2.2 (coordinator decision D84): a whole-tensor `mean` divides its `f64` sum by the
+/// element count in `f64` and rounds the quotient to the element type once. With 2^24 + 1
+/// elements the count is exact in `f64`, though it converts to 2^24 in `f32`; the sum here is 1,
+/// so the mean is `1 / (2^24 + 1)` rounded to `f32` once, one ulp below `2^-24`, the mean a
+/// division by the count converted to `f32` would give.
 #[test]
-fn mean_divides_by_the_element_count_converted_to_the_element_type() {
+fn mean_divides_by_the_element_count_in_f64() {
     let n: u64 = (1 << 24) + 1;
     let mut x = vec![0.0f32; n as usize];
     x[0] = 1.0;
     let got = mean_of::<f32>(&[n], x);
-    let want = 1.0f32 / (n as f32);
+    let want = (1.0f64 / n as f64) as f32;
+    assert_ne!(
+        want,
+        1.0f32 / (n as f32),
+        "the case separates the two divisions"
+    );
     assert_eq!(
         got.to_bits(),
         want.to_bits(),
-        "got {got:e}, expected {want:e} = 1 / (2^24 + 1 converted to f32)"
+        "got {got:e}, expected {want:e} = 1 / (2^24 + 1) in f64, rounded to f32 once"
     );
 }
 

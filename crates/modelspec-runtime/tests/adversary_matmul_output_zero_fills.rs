@@ -53,6 +53,12 @@ impl Element for Plain {
     fn from_count(count: u64) -> Self {
         Plain(count as f64)
     }
+    fn to_f64(self) -> f64 {
+        self.0
+    }
+    fn from_f64(value: f64) -> Self {
+        Plain(value)
+    }
     fn exp(self) -> Self {
         Plain(self.0.exp())
     }

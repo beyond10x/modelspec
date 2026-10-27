@@ -1,7 +1,9 @@
 //! `story:deterministic-fma`, acceptance `oracle-matches`, on the CPU (DESIGN.md § 12 ADR-009):
 //! the CPU oracle computes every matmul element and the `mse` sum the way the Vulkan kernels do,
 //! the `k = 0` product (the first term) as a plain product and every later product fused into
-//! the sum with one rounding, `mul_add`, in ascending `k` (row-major term order).
+//! the sum with one rounding, `mul_add`, in ascending `k` (row-major term order); the `mse` sum,
+//! a whole-tensor sum, does so in `f64` and is rounded to the element type once at the end
+//! (DESIGN.md § 2.2, coordinator decision D84).
 //!
 //! The reference here is written out: `acc = a[i, 0] * b[0, j]`, then
 //! `acc = a[i, p].mul_add(b[p, j], acc)` for `p = 1 .. k`. Each kernel of `cpu::matmul` this CPU
@@ -217,7 +219,10 @@ fn run32(program: &TensorProgram, inputs: Vec<(&str, Vec<u64>, Vec<f32>)>) -> Ve
 /// The interpreter's `mse` sums the squares of `d = a - b` from the first term, each later
 /// square fused into the sum: for `d = [2^-12, 1 + 2^-12]` the sum is `2^-24`, then
 /// `fma(d1, d1, 2^-24) = 1 + 2^-11 + 2^-23` exactly, where a rounded square `1 + 2^-11` plus
-/// `2^-24` ties back to `1 + 2^-11`. Then the division by 2.
+/// `2^-24` ties back to `1 + 2^-11`. Then the division by 2. The sum is a whole-tensor sum, so it
+/// accumulates in `f64` and is rounded to `f32` once after the division (DESIGN.md § 2.2,
+/// coordinator decision D84): the hand case's sum is exact in `f64`, and the drawn cases are
+/// held to the written-out `f64` reference, the differences taken in `f64`.
 #[test]
 fn the_interpreter_mse_fuses_each_later_square_into_its_sum() {
     let p = program(|b| {
@@ -244,12 +249,12 @@ fn the_interpreter_mse_fuses_each_later_square_into_its_sum() {
         let count = (shape[0] * shape[1]) as usize;
         let a = values(7 + case, count);
         let t = values(17 + case, count);
-        let mut acc = 0.0f32;
+        let mut acc = 0.0f64;
         for (i, (&x, &y)) in a.iter().zip(&t).enumerate() {
-            let d = x - y;
+            let d = f64::from(x) - f64::from(y);
             acc = if i == 0 { d * d } else { d.mul_add(d, acc) };
         }
-        let want = acc / count as f32;
+        let want = (acc / count as f64) as f32;
         let p = program(|b| {
             let x = b.input("a", TensorType::f32(&shape)).unwrap();
             let y = b.input("b", TensorType::f32(&shape)).unwrap();

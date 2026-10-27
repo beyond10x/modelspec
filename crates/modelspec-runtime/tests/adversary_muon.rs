@@ -141,13 +141,14 @@ fn transpose(a: &[f32], m: usize, n: usize) -> Vec<f32> {
 }
 
 /// The orthogonalized `x` of `u` (`[rows, cols]`), before the scale: the story's update, each
-/// operation one rounded `f32` operation in the written order, transposed when `rows > cols`.
+/// operation one rounded `f32` operation in the written order, transposed when `rows > cols`;
+/// the sum of the squares adds them in `f64` and rounds once (coordinator decision D84).
 fn orthogonalize(u: &[f32], rows: usize, cols: usize, ns_steps: u32) -> Vec<f32> {
-    let mut sum = u[0] * u[0];
+    let mut sum = f64::from(u[0] * u[0]);
     for &e in &u[1..] {
-        sum += e * e;
+        sum += f64::from(e * e);
     }
-    let denominator = sum.sqrt() + 1e-7f32;
+    let denominator = (sum as f32).sqrt() + 1e-7f32;
     let mut x: Vec<f32> = u.iter().map(|&e| e / denominator).collect();
     let tall = rows > cols;
     let (r, c) = if tall {
@@ -486,7 +487,7 @@ fn adv_muon_rank_one_gradient_is_the_reference() {
 
 /// Hypothesis 1. A `[64, 32]` weight whose values span `1e-3` to `1e3`, so its gradient's
 /// squares span many orders and the order of `sum(u * u)` decides its bits: three steps are
-/// still the reference's, which sums from the first element in ascending order.
+/// still the reference's, which sums from the first element in ascending order in `f64`.
 #[test]
 fn adv_muon_wide_dynamic_range_sum_order_is_the_reference() {
     let (warmup, steps) = (1, 3);

@@ -10,7 +10,9 @@
 //!    signed zeros and values near the overflow bound, at shapes whose `k` is 1, 2, 3, 5, 33,
 //!    127 and 1000 and whose `n` leaves a partial vector.
 //! 3. The interpreter's `mse`, at 1 to 9 terms and at a count that is not a multiple of 8, gives
-//!    the bits of the written-out sum: the first square rounded, each later one fused.
+//!    the bits of the written-out sum: the first square rounded, each later one fused, in `f64`
+//!    as a whole-tensor sum is, the differences taken in `f64` and the mean rounded to `f32` once
+//!    (DESIGN.md § 2.2, coordinator decision D84).
 
 use std::collections::BTreeMap;
 
@@ -266,12 +268,12 @@ fn the_interpreter_mse_gives_the_fused_reference_bits_at_every_term_count() {
     for count in (1..=9).chain([63, 65, 1001]) {
         let a = hostile(5 + count as u64, count);
         let t = hostile(500 + count as u64, count);
-        let mut acc = 0.0f32;
+        let mut acc = 0.0f64;
         for (i, (&x, &y)) in a.iter().zip(&t).enumerate() {
-            let d = x - y;
+            let d = f64::from(x) - f64::from(y);
             acc = if i == 0 { d * d } else { d.mul_add(d, acc) };
         }
-        let want = acc / count as f32;
+        let want = (acc / count as f64) as f32;
         let got = mse(&a, &t);
         if got.to_bits() != want.to_bits() {
             wrong.push(format!("{count} terms: got {got:e} want {want:e}"));

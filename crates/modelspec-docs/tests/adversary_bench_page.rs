@@ -509,13 +509,16 @@ fn adversary_adv_bp_7_an_undeclared_workload_is_refused() {
     assert!(outcome.stderr.contains("workload"), "{}", outcome.stderr);
 }
 
-/// The first transformer-block runs in the shape its story asks for (batch 8, no hidden width,
-/// a FLOP count stated for both sides by one rule) leave "Not measured" and give the workload a
-/// section and a FLOP chart of its own, with no generator change.
+/// The first transformer-block runs in the shape its story asks for (batch 8 and its 1024 tokens
+/// per step, no hidden width, a FLOP count stated for both sides by one rule) leave "Not
+/// measured" and give the workload a section and a chart of its own, with no generator change;
+/// since fix pass 1 of story:transformer-block-benchmark (coordinator decision D84) a block run
+/// states its tokens per step, so the section is the sequence section and its chart is µs per
+/// step against batch.
 #[test]
 fn adversary_a_realistic_first_transformer_run_leaves_not_measured() {
     let root = sandbox("transformer-run");
-    let flop = "    batch: 8\n    flop_per_step: 1000000000\n    flop_rule: AllSites\n";
+    let flop = "    batch: 8\n    tokens_per_step: 1024\n    flop_per_step: 1000000000\n    flop_rule: AllSites\n";
     append_runs(
         &root,
         &format!(
@@ -537,7 +540,7 @@ fn adversary_a_realistic_first_transformer_run_leaves_not_measured() {
     );
     assert!(not_measured.contains("**BERT-tiny pre-training**"));
     assert!(
-        root.join("website/static/img/benchmarks/transformer-block-flop.svg")
+        root.join("website/static/img/benchmarks/transformer-block-batch.svg")
             .is_file()
     );
 }

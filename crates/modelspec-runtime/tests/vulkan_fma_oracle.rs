@@ -12,10 +12,10 @@
 //! operand the kernel reads transposed is bound as the row-major transpose of the drawn one.
 //! The CPU side is `cpu::matmul` with the kernel this CPU runs, checked at sampled elements
 //! against the written-out reference (`a[i, 0] * b[0, j]`, then `mul_add` per later `k`), and
-//! the interpreter's `mse` against the same reference over the terms. A `relu` epilogue's
-//! result is the compare and select of the CPU sum, and a `ReluGrad` epilogue's the compare of a
-//! drawn pre-activation and the select of the CPU sum (story:step-sites-beat-pytorch). The guard
-//! words after each view stay unchanged.
+//! the interpreter's `mse` against the same chain over the terms in `f64`, rounded once
+//! (coordinator decision D84). A `relu` epilogue's result is the compare and select of the CPU
+//! sum, and a `ReluGrad` epilogue's the compare of a drawn pre-activation and the select of the
+//! CPU sum (story:step-sites-beat-pytorch). The guard words after each view stay unchanged.
 //!
 //! Ignored by default: it creates a Vulkan instance, which `task ci` never does. Run it with
 //! `MODELSPEC_VK_VALIDATION=1 cargo test --release -p modelspec-runtime --features vulkan --test vulkan_fma_oracle -- --ignored`.
@@ -426,8 +426,15 @@ fn every_matmul_and_loss_sum_of_the_step_plans_gives_the_cpu_oracle_bits() {
                     let d = x - y;
                     want = if i == 0 { d * d } else { d.mul_add(d, want) };
                 }
+                // The interpreter sums the whole tensor in `f64` and rounds once (coordinator
+                // decision D84); the device sum stays the `f32` chain above.
+                let mut wide = 0.0f64;
+                for (i, (&x, &y)) in a.iter().zip(&b).enumerate() {
+                    let d = f64::from(x) - f64::from(y);
+                    wide = if i == 0 { d * d } else { d.mul_add(d, wide) };
+                }
                 let interpreted = cpu_mse(&shape, &a, &b);
-                let divided = want / count as f32;
+                let divided = (wide / count as f64) as f32;
                 if interpreted.to_bits() != divided.to_bits() {
                     oracle_wrong.push(format!(
                         "{name} mse {shape:?}: interpreter {interpreted:e}, reference {divided:e}"

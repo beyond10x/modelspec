@@ -101,9 +101,9 @@ modelspec train mlm_bag.mspec --backend cpu --data packed | cut -c 1-72
 ```text
 data dataset eecbf2be-db36-8673-ac07-792cc3366c87 tokenizer e337abc4-7dc
 init @MlmBag.table: Tensor<f32, [300, 16]> = [-0.11207246, -0.03667358, 
-step 0 loss 5.7054143
+step 0 loss 5.7054152
 step 50 loss 4.766625
-step 100 loss 5.1877227
+step 100 loss 5.187722
 step 150 loss 5.508473
 step 200 loss 4.231307
 param @MlmBag.table: Tensor<f32, [300, 16]> = [-0.07778824, -0.02267372,

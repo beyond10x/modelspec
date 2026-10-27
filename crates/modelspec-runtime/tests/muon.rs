@@ -20,7 +20,7 @@
 //! of coordinator decision D50 applied to `lr` for the Muon parameters and to `adam_lr` for the
 //! AdamW ones (coordinator decision D67 (d), 2026-10-25, `.engineering/waves/bert-1.md`). The
 //! reference below rounds every elementwise operation once in `f32` in the written order, sums
-//! `u * u` from the first element in order, computes each matmul element as the interpreter's
+//! `u * u` from the first element in order in `f64` and rounds the sum once (D84), computes each matmul element as the interpreter's
 //! fused chain in ascending `k`, and takes the host constants (`lr_t`, `c1`, `c2`, each
 //! `1 - beta` and the scale) in `f64` rounded once.
 
@@ -124,11 +124,12 @@ fn transpose(a: &[f32], (m, n): (usize, usize)) -> Vec<f32> {
 }
 
 /// The orthogonalized update `x` of `u` of shape `[rows, cols]`, before the scale, every
-/// operation one rounded `f32` operation in the written order.
+/// operation one rounded `f32` operation in the written order, except the sum of the
+/// squares, which adds them in `f64` and rounds once (coordinator decision D84).
 fn newton_schulz(u: &[f32], (rows, cols): (usize, usize), ns_steps: usize) -> Vec<f32> {
-    let mut squares = u.iter().map(|&e| e * e);
+    let mut squares = u.iter().map(|&e| f64::from(e * e));
     let first = squares.next().expect("a matrix");
-    let sum = squares.fold(first, |acc, s| acc + s);
+    let sum = squares.fold(first, |acc, s| acc + s) as f32;
     let norm = sum.sqrt();
     let denominator = norm + 1e-7f32;
     let mut x: Vec<f32> = u.iter().map(|&e| e / denominator).collect();

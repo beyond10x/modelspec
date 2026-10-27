@@ -119,15 +119,16 @@ impl Case<'_> {
         (max, total)
     }
 
-    /// D43 written as index loops in `T`.
+    /// D43 written as index loops: each row loss in `T`, the weighted sums over rows in `f64`
+    /// (coordinator decision D84), the quotient rounded to `T` once.
     fn reference_loss<T: Element>(&self) -> T {
-        let w = |n: usize| T::from_f32(self.weights[n]);
-        let mut numerator = T::ZERO;
-        let mut denominator = T::ZERO;
+        let w = |n: usize| f64::from(self.weights[n]);
+        let mut numerator = 0.0f64;
+        let mut denominator = 0.0f64;
         for n in 0..self.n() {
             let (max, total) = self.row::<T>(n);
             let label = T::from_f32(self.logits[n * self.v + self.labels[n] as usize]);
-            let loss = max + total.ln() - label;
+            let loss = (max + total.ln() - label).to_f64();
             if n == 0 {
                 numerator = w(0) * loss;
                 denominator = w(0);
@@ -136,20 +137,22 @@ impl Case<'_> {
                 denominator = denominator + w(n);
             }
         }
-        if denominator == T::ZERO {
+        if denominator == 0.0 {
             T::ZERO
         } else {
-            numerator / denominator
+            T::from_f64(numerator / denominator)
         }
     }
 
-    /// DESIGN.md § 4's gradient written as index loops in `T`.
+    /// DESIGN.md § 4's gradient written as index loops in `T`, the weight sum in `f64` rounded
+    /// to `T` once (coordinator decision D84).
     fn reference_grad<T: Element>(&self, g: f32) -> Vec<T> {
         let g = T::from_f32(g);
-        let mut denominator = T::from_f32(self.weights[0]);
+        let mut wide = f64::from(self.weights[0]);
         for n in 1..self.n() {
-            denominator = denominator + T::from_f32(self.weights[n]);
+            wide += f64::from(self.weights[n]);
         }
+        let denominator = T::from_f64(wide);
         let mut out = Vec::new();
         for n in 0..self.n() {
             let (max, total) = self.row::<T>(n);

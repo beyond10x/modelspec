@@ -229,12 +229,53 @@ fn matmul_only_problems(run: &Run, flop: u64) -> Option<(&'static str, String)> 
     problem.map(|problem| ("flop_per_step", problem))
 }
 
+/// What is wrong with the batch and tokens of a `transformer-block` run (coordinator decision
+/// D84): the run gives both, since its section is drawn against batch with a tokens-per-second
+/// column, and its tokens are `128·B`, a whole number of sequences of 128 whether or not it gives
+/// its batch.
+fn block_problems(run: &Run) -> Vec<(&'static str, String)> {
+    let mut problems = Vec::new();
+    if run.batch.is_none() {
+        problems.push((
+            "batch",
+            format!(
+                "is missing; a `{BLOCK}` run must give batch, the sequences of {BLOCK_SEQ} tokens of one step"
+            ),
+        ));
+    }
+    match (run.tokens_per_step, run.batch) {
+        (None, _) => problems.push((
+            "tokens_per_step",
+            format!(
+                "is missing; a `{BLOCK}` run must give tokens_per_step, the {BLOCK_SEQ}·B tokens of one step"
+            ),
+        )),
+        (Some(tokens), Some(batch)) if batch.checked_mul(BLOCK_SEQ) != Some(tokens) => {
+            problems.push((
+                "tokens_per_step",
+                format!(
+                    "{tokens} is not the tokens of a `{BLOCK}` step at batch {batch}, {batch}·{BLOCK_SEQ}"
+                ),
+            ));
+        }
+        (Some(tokens), None) if !tokens.is_multiple_of(BLOCK_SEQ) => problems.push((
+            "tokens_per_step",
+            format!(
+                "{tokens} is no whole number of `{BLOCK}` sequences of {BLOCK_SEQ} tokens, so it is no {BLOCK_SEQ}·B"
+            ),
+        )),
+        _ => {}
+    }
+    problems
+}
+
 /// What is wrong with a schema-valid run beyond the schema: the invariants of
 /// `modelspec.benchmark.BenchmarkRun` (spec/domains/benchmark.yaml), checked here too so that they
 /// hold whatever schema is read, its date, its repeats against its repeat count and its median
 /// against the median of its repeats; a `MatmulOnly` count against its workload's formula
-/// ([`matmul_only_problems`]); the tokens of a `transformer-block` step against its batch; and
-/// its workload against the workloads the page declares ([`WORKLOADS`]).
+/// ([`matmul_only_problems`]); the batch and tokens of a `transformer-block` run
+/// ([`block_problems`]); and its workload against the workloads the page declares
+/// ([`WORKLOADS`]).
 fn semantic_problems(run: &Run) -> Vec<(&'static str, String)> {
     let mut problems = Vec::new();
     if !is_date(&run.date) {
@@ -257,16 +298,8 @@ fn semantic_problems(run: &Run) -> Vec<(&'static str, String)> {
     if let (Some(flop), Some("MatmulOnly")) = (run.flop_per_step, run.flop_rule.as_deref()) {
         problems.extend(matmul_only_problems(run, flop));
     }
-    if let (BLOCK, Some(tokens), Some(batch)) =
-        (run.workload.as_str(), run.tokens_per_step, run.batch)
-        && batch.checked_mul(BLOCK_SEQ) != Some(tokens)
-    {
-        problems.push((
-            "tokens_per_step",
-            format!(
-                "{tokens} is not the tokens of a `{BLOCK}` step at batch {batch}, {batch}·{BLOCK_SEQ}"
-            ),
-        ));
+    if run.workload == BLOCK {
+        problems.extend(block_problems(run));
     }
     let counts = [
         ("threads", run.threads),
@@ -2470,11 +2503,15 @@ mod tests {
                 None,
                 900.0
             )
+            .replace(
+                "    mode: Timed\n",
+                "    mode: Timed\n    batch: 8\n    tokens_per_step: 1024\n"
+            )
         );
         let runs = read(&with_block, &schema()).unwrap();
         let (page, images) = render(&runs);
         assert!(page.contains("\n## Transformer block\n"), "{page}");
-        assert!(images.contains_key("transformer-block.svg"));
+        assert!(images.contains_key("transformer-block-batch.svg"));
         let section = not_measured(&page).unwrap();
         assert!(!section.contains("Transformer block"), "{section}");
         assert!(section.contains("**BERT-tiny pre-training**"), "{section}");
@@ -2713,6 +2750,66 @@ mod tests {
         );
         let error = read(&text, &schema()).err().unwrap();
         assert!(error.contains("field `tokens_per_step`"), "{error}");
+    }
+
+    /// ADV-TB-2 and ADV-TB-3 (coordinator decision D84): a `transformer-block` run without
+    /// `tokens_per_step` or without `batch` is refused at the entry's first line, naming the
+    /// missing field, and tokens that are no whole number of sequences of 128 are refused at
+    /// their field without a batch too.
+    #[test]
+    fn a_transformer_block_run_without_batch_or_tokens_is_refused_at_its_entry() {
+        let without_tokens = format!(
+            "runs:\n{}",
+            block_entry(
+                "no-tokens",
+                "ModelSpecVulkan",
+                Some(8),
+                None,
+                Some(2_717_908_992),
+                1.0
+            )
+        );
+        let error = read(&without_tokens, &schema()).err().unwrap();
+        assert_eq!(
+            error,
+            "benchmarks/runs.yaml:2: runs[0] (no-tokens) field `tokens_per_step`: is missing; a \
+             `transformer-block` run must give tokens_per_step, the 128·B tokens of one step"
+        );
+
+        let without_batch = format!(
+            "runs:\n{}",
+            block_entry("no-batch", "ModelSpecVulkan", None, Some(1024), None, 1.0)
+        );
+        let error = read(&without_batch, &schema()).err().unwrap();
+        assert_eq!(
+            error,
+            "benchmarks/runs.yaml:2: runs[0] (no-batch) field `batch`: is missing; a \
+             `transformer-block` run must give batch, the sequences of 128 tokens of one step"
+        );
+
+        let neither = format!(
+            "runs:\n{}",
+            block_entry("neither", "ModelSpecVulkan", None, Some(1000), None, 1.0)
+        );
+        let error = read(&neither, &schema()).err().unwrap();
+        let lines: Vec<&str> = error.lines().collect();
+        assert_eq!(lines.len(), 2, "{error}");
+        assert!(
+            lines[0].starts_with("benchmarks/runs.yaml:2: runs[0] (neither) field `batch`:"),
+            "{error}"
+        );
+        assert!(
+            lines[1].starts_with(
+                "benchmarks/runs.yaml:7: runs[0] (neither) field `tokens_per_step`: 1000 is no whole number"
+            ),
+            "{error}"
+        );
+
+        let whole = format!(
+            "runs:\n{}",
+            block_entry("whole", "ModelSpecVulkan", Some(8), Some(1024), None, 1.0)
+        );
+        assert!(read(&whole, &schema()).is_ok());
     }
 
     /// A workload whose runs state tokens per step gets a section of its own: a chart against

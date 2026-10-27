@@ -37,6 +37,13 @@ pub trait Element:
     /// An element count in this type, rounded to nearest.
     fn from_count(count: u64) -> Self;
 
+    /// `self` in `f64`, exact for `f32` and `f64`: a term of a whole-tensor sum, which the
+    /// interpreter accumulates in `f64` (DESIGN.md § 2.2).
+    fn to_f64(self) -> f64;
+
+    /// `value` in this type, rounded to nearest once: the result of a whole-tensor sum.
+    fn from_f64(value: f64) -> Self;
+
     /// `self * b + c`, the product fused into the sum: for `f32` and `f64` the IEEE 754 fused
     /// multiply-add, rounded once, as the GPU's `Fma` (DESIGN.md § 12 ADR-009). The interpreter
     /// computes every product after the first of a sum this way. The default, for a type with
@@ -90,6 +97,14 @@ impl Element for f32 {
         count as f32
     }
 
+    fn to_f64(self) -> f64 {
+        f64::from(self)
+    }
+
+    fn from_f64(value: f64) -> Self {
+        value as f32
+    }
+
     fn mul_add(self, b: Self, c: Self) -> Self {
         f32::mul_add(self, b, c)
     }
@@ -129,6 +144,14 @@ impl Element for f64 {
 
     fn from_count(count: u64) -> Self {
         count as f64
+    }
+
+    fn to_f64(self) -> f64 {
+        self
+    }
+
+    fn from_f64(value: f64) -> Self {
+        value
     }
 
     fn mul_add(self, b: Self, c: Self) -> Self {

@@ -276,6 +276,12 @@ impl Element for Wrapped {
     fn from_count(count: u64) -> Self {
         Wrapped(count as f64)
     }
+    fn to_f64(self) -> f64 {
+        self.0
+    }
+    fn from_f64(value: f64) -> Self {
+        Wrapped(value)
+    }
     /// The fused multiply-add of `f64`, so the reference of `f64` is this type's too.
     fn mul_add(self, b: Self, c: Self) -> Self {
         Wrapped(self.0.mul_add(b.0, c.0))

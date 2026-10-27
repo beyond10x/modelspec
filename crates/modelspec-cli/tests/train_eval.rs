@@ -272,7 +272,8 @@ struct Expected {
 /// The held-out loss and accuracy of `file` with the printed parameter `values` over the
 /// `HeldOut` batches `0..⌊n / B⌋` of `packed_dir`, each drawn with the fixture's seed: the
 /// weighted sum of every row's `nll` over every batch, the first product rounded and each later
-/// one fused into the sum, over the sum of every weight, and the share of rows of positive
+/// one fused into the sum, over the sum of every weight, both sums in `f64` and the quotient
+/// rounded to `f32` once (coordinator decision D84), and the share of rows of positive
 /// weight whose first largest logit is the label. Each batch's own weighted mean is checked
 /// against the forward program's `cross_entropy` output on the way.
 fn expected(file: &str, packed_dir: &Path, values: &BTreeMap<String, Vec<f32>>) -> Expected {
@@ -289,8 +290,8 @@ fn expected(file: &str, packed_dir: &Path, values: &BTreeMap<String, Vec<f32>>) 
     let packed = mlm::load(packed_dir).expect("the packed directory loads");
     let batches = packed.sequence_count(SplitRole::HeldOut) / B;
     assert!(batches >= 1, "the fixture holds a HeldOut batch of {B}");
-    let mut numerator: Option<f32> = None;
-    let mut denominator: Option<f32> = None;
+    let mut numerator: Option<f64> = None;
+    let mut denominator: Option<f64> = None;
     let (mut correct, mut selected) = (0u32, 0u32);
     let mut selected_labels = Vec::new();
     let mut all_logits = Vec::new();
@@ -321,17 +322,18 @@ fn expected(file: &str, packed_dir: &Path, values: &BTreeMap<String, Vec<f32>>) 
             .expect("the prediction value");
         assert_eq!(logits.shape(), [rows, 300]);
         let logits = logits.data().to_vec();
-        let (mut batch_num, mut batch_den): (Option<f32>, Option<f32>) = (None, None);
+        let (mut batch_num, mut batch_den): (Option<f64>, Option<f64>) = (None, None);
         for (n, row) in logits.as_chunks::<300>().0.iter().enumerate() {
             let (w, label) = (batch.weights[n], batch.labels[n]);
-            let term = nll(row, label as usize);
+            let term = f64::from(nll(row, label as usize));
+            let wide = f64::from(w);
             numerator = Some(match numerator {
-                None => w * term,
-                Some(acc) => w.mul_add(term, acc),
+                None => wide * term,
+                Some(acc) => wide.mul_add(term, acc),
             });
-            denominator = Some(denominator.map_or(w, |acc| acc + w));
-            batch_num = Some(batch_num.map_or(w * term, |acc| w.mul_add(term, acc)));
-            batch_den = Some(batch_den.map_or(w, |acc| acc + w));
+            denominator = Some(denominator.map_or(wide, |acc| acc + wide));
+            batch_num = Some(batch_num.map_or(wide * term, |acc| wide.mul_add(term, acc)));
+            batch_den = Some(batch_den.map_or(wide, |acc| acc + wide));
             if w > 0.0 {
                 selected += 1;
                 selected_labels.push(label);
@@ -344,7 +346,7 @@ fn expected(file: &str, packed_dir: &Path, values: &BTreeMap<String, Vec<f32>>) 
         let mean = if batch_den == 0.0 {
             0.0
         } else {
-            batch_num / batch_den
+            (batch_num / batch_den) as f32
         };
         let program_loss = evaluation.outputs[0].data()[0];
         assert!(
@@ -359,7 +361,7 @@ fn expected(file: &str, packed_dir: &Path, values: &BTreeMap<String, Vec<f32>>) 
         loss: if denominator == 0.0 {
             0.0
         } else {
-            numerator / denominator
+            (numerator / denominator) as f32
         },
         accuracy: correct as f32 / selected as f32,
         selected_labels,

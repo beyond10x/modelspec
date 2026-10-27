@@ -101,10 +101,12 @@
 //! `HeldOut` split of fewer sequences than a batch is reported on one line before the first step
 //! (exit 1).
 //!
-//! `--write-batch <dir>` writes the synthetic batch the run trains on before its first step,
-//! `<dir>/<name>.f32` for each input and target, row-major little-endian `f32` as a dense `--data`
-//! directory holds them, so that another implementation can compute its loss on the same data
-//! (story:transformer-block-benchmark); beside `--data` it is a usage error (exit 2).
+//! `--write-batch <dir>` writes the synthetic batch the run trains on before its first step, one
+//! file `<dir>/<name>.f32` per input and target declaration, the tensor's elements in row-major
+//! order as little-endian `f32` and nothing else, so that another implementation can compute on
+//! the same data (story:transformer-block-benchmark); the example's `x.f32`, `key_mask.f32` and
+//! `y.f32` are not a `--data` directory, which takes one input. Beside `--data` it is a usage
+//! error (exit 2).
 //!
 //! `--steps <n>` runs `n` steps instead of the block's. `--checkpoint <path>` writes the state
 //! after the last step as a `.msckpt` file ([`checkpoint`]; DESIGN.md § 6.2), and
@@ -253,9 +255,10 @@ pub struct Args {
     /// is a multiple of N and before the end.
     #[arg(long, value_name = "N", requires = "checkpoint", value_parser = clap::value_parser!(u64).range(1..))]
     pub checkpoint_every: Option<u64>,
-    /// Before the first step, write the synthetic batch the run trains on to DIR: DIR/NAME.f32
-    /// for each input and target declaration NAME, row-major little-endian f32, the layout of a
-    /// dense --data directory. DIR is created if it does not exist.
+    /// Before the first step, write the synthetic batch the run trains on to DIR, for another
+    /// implementation to compute on: one file DIR/NAME.f32 per input and target declaration
+    /// NAME, holding the tensor's elements in row-major order as little-endian f32 and nothing
+    /// else, 4 bytes per element of the declared shape. DIR is created if it does not exist.
     #[arg(long, value_name = "DIR", conflicts_with = "data")]
     pub write_batch: Option<PathBuf>,
     /// Continue from the .msckpt file PATH: its parameters and step instead of the initializers

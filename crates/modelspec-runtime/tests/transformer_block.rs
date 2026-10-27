@@ -101,21 +101,35 @@ fn measured(batch: u64, median_us: f64) -> BlockResult {
     BlockResult::measured("modelspec-vulkan", Point { batch }, 1000, runs, None)
 }
 
+/// Three distinct runs whose median, 2000 µs, is not their mean (3000 µs), in two orders that
+/// put the median last and first, so neither the mean nor a run picked by position gives these
+/// figures (ADV-TB-1).
 #[test]
 fn tokens_per_second_and_gflops_are_over_the_median_step_time() {
-    let result = measured(8, 2000.0);
-    let Outcome::Measured {
-        median_us_per_step,
-        tokens_per_s,
-        gflops,
-        ..
-    } = result.outcome
-    else {
-        panic!("measured");
-    };
-    assert_eq!(median_us_per_step, 2000.0);
-    assert_eq!(tokens_per_s, 1024.0 * 1e6 / 2000.0);
-    assert_eq!(gflops, 2_717_908_992.0 / (2000.0 * 1e3));
+    for order in [[6500.0, 500.0, 2000.0], [2000.0, 6500.0, 500.0]] {
+        let runs = order
+            .iter()
+            .map(|&us_per_step| TimedRun {
+                us_per_step,
+                seconds: 5.0,
+                span_unix_ms: [0, 5000],
+            })
+            .collect();
+        let result =
+            BlockResult::measured("modelspec-vulkan", Point { batch: 8 }, 1000, runs, None);
+        let Outcome::Measured {
+            median_us_per_step,
+            tokens_per_s,
+            gflops,
+            ..
+        } = result.outcome
+        else {
+            panic!("measured");
+        };
+        assert_eq!(median_us_per_step, 2000.0, "{order:?}");
+        assert_eq!(tokens_per_s, 1024.0 * 1e6 / 2000.0, "{order:?}");
+        assert_eq!(gflops, 2_717_908_992.0 / (2000.0 * 1e3), "{order:?}");
+    }
 }
 
 /// The line the bench writes and the opponent writes too: its fields in this order.

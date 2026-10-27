@@ -269,37 +269,38 @@ fn row_softmax(row: &[f32]) -> (f32, f32) {
     (max, terms.fold(first, |acc, e| acc + e))
 }
 
-/// D43 written out in `f32`: per row `max + ln(sum) - logits[n, labels[n]]`; the numerator
+/// D43 written out: per row `max + ln(sum) - logits[n, labels[n]]` in `f32`; the numerator
 /// `sum_n weights[n] * loss_n`, its first product rounded and each later one fused, and the
-/// denominator `sum_n weights[n]`, both in ascending `n`; their quotient, `0.0` when the
-/// denominator is `0.0`.
+/// denominator `sum_n weights[n]`, both in ascending `n` and in `f64` (coordinator decision
+/// D84); their quotient rounded to `f32` once, `0.0` when the denominator is `0.0`.
 fn reference_loss(logits: &[f32], labels: &[i32], weights: &[f32]) -> f32 {
-    let (mut numerator, mut denominator) = (0.0f32, 0.0f32);
+    let (mut numerator, mut denominator) = (0.0f64, 0.0f64);
     for (n, row) in logits.as_chunks::<{ V as usize }>().0.iter().enumerate() {
         let (max, total) = row_softmax(row);
-        let loss = max + total.ln() - row[labels[n] as usize];
+        let loss = f64::from(max + total.ln() - row[labels[n] as usize]);
+        let weight = f64::from(weights[n]);
         if n == 0 {
-            numerator = weights[0] * loss;
-            denominator = weights[0];
+            numerator = weight * loss;
+            denominator = weight;
         } else {
-            numerator = weights[n].mul_add(loss, numerator);
-            denominator += weights[n];
+            numerator = weight.mul_add(loss, numerator);
+            denominator += weight;
         }
     }
     if denominator == 0.0 {
         0.0
     } else {
-        numerator / denominator
+        (numerator / denominator) as f32
     }
 }
 
 /// D43's gradient written out in `f32`: `g * weights[n] / sum(weights) * (p[n, v] - [v ==
 /// labels[n]])`, left to right, `p` recomputed as `exp(x - max) / sum`; all `0.0` when the
-/// weight sum is `0.0`.
+/// weight sum is `0.0`; the weight sum in `f64`, rounded to `f32` once (coordinator decision D84).
 fn reference_grad(logits: &[f32], labels: &[i32], weights: &[f32], g: f32) -> Vec<f32> {
-    let mut terms = weights.iter().copied();
+    let mut terms = weights.iter().map(|&w| f64::from(w));
     let first = terms.next().unwrap();
-    let total_weight = terms.fold(first, |acc, w| acc + w);
+    let total_weight = terms.fold(first, |acc, w| acc + w) as f32;
     let mut out = Vec::new();
     for (n, row) in logits.as_chunks::<{ V as usize }>().0.iter().enumerate() {
         let (max, total) = row_softmax(row);

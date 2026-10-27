@@ -22,8 +22,9 @@ const MNIST_MLP: &str = "examples/mnist_mlp.mspec";
 
 /// The blake3 of the bits of the loss and of every gradient and parameter of three MNIST steps
 /// through `sgd_step` ([`digest_of_three_steps`]), recorded on the tree before this story and
-/// re-recorded once when DESIGN.md § 12 ADR-009 fused each later product into its sum.
-const THREE_STEPS_BLAKE3: &str = "432a1c821f71330fc17110d9fd7338090750d71ce0eee3e06e12883b4b9555a1";
+/// re-recorded when DESIGN.md § 12 ADR-009 fused each later product into its sum and when
+/// coordinator decision D84 summed the cross-entropy loss over the batch in `f64`.
+const THREE_STEPS_BLAKE3: &str = "757b4be2ce41c09e728396fbe7792bcc424ec6587b7439e8f8535f45ac95f62b";
 
 thread_local! {
     static ALLOCATIONS: Cell<u64> = const { Cell::new(0) };

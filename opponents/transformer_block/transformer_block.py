@@ -25,7 +25,16 @@ its refusal and the run goes on. Progress goes to stderr.
 
 --loss-check <path.msckpt> --batch <dir> prints instead the loss at step 0 of the parameters of a
 ModelSpec checkpoint on the batch ModelSpec wrote with `train --write-batch <dir>`, as the line
-`step 0 loss <v>` ModelSpec prints, and trains nothing.
+`step 0 loss <v>` ModelSpec prints, and trains nothing: a sanity check.
+
+--checkpoint <initial.msckpt> --batch <dir> --compare-step <step1.msckpt> takes one SGD step from
+the initial checkpoint on that batch and compares every parameter with ModelSpec's checkpoint of
+the next step, `train --steps 1 --checkpoint <step1.msckpt>` from the same seed: the check that
+shows the two sides compute the same function. It exits 1 when they differ (see compare_step
+for the two checks and their bounds).
+
+The .msckpt reader verifies the checksums ModelSpec's reader verifies and refuses the files it
+refuses with E-CKPT-001, E-CKPT-002 and E-CKPT-004.
 
 ModelSpec never runs this file (AGENTS.md, Rules: Python is for opponents only).
 """
@@ -60,6 +69,10 @@ CALIBRATIONS = 4
 FLOP_RULE = "matmul-only"
 MODEL = "TransformerBlock"
 HEADER = 56
+RUN_ATOL = 1e-4
+RUN_RTOL = 1e-3
+UPDATE_BOUND = 2e-5
+UPDATE_FLOOR = 1e-2
 
 
 def flop_per_step(batch):
@@ -112,16 +125,102 @@ def initial(device, seed):
     return params
 
 
+BLAKE3_IV = (0x6A09E667, 0xBB67AE85, 0x3C6EF372, 0xA54FF53A,
+             0x510E527F, 0x9B05688C, 0x1F83D9AB, 0x5BE0CD19)
+BLAKE3_PERMUTATION = (2, 6, 3, 10, 7, 0, 4, 13, 1, 11, 12, 5, 9, 14, 15, 8)
+BLAKE3_ROUND = ((0, 4, 8, 12, 0, 1), (1, 5, 9, 13, 2, 3), (2, 6, 10, 14, 4, 5),
+                (3, 7, 11, 15, 6, 7), (0, 5, 10, 15, 8, 9), (1, 6, 11, 12, 10, 11),
+                (2, 7, 8, 13, 12, 13), (3, 4, 9, 14, 14, 15))
+CHUNK_START, CHUNK_END, PARENT, ROOT = 1, 2, 4, 8
+WORD = 0xFFFFFFFF
+
+
+def blake3_compress(cv, words, counter, length, flags):
+    """The BLAKE3 compression function: 7 rounds over the 16-word state, the message permuted
+    between rounds; the 16 output words."""
+    s = list(cv) + list(BLAKE3_IV[:4]) + [counter & WORD, (counter >> 32) & WORD, length, flags]
+    m = list(words)
+    for _ in range(7):
+        for a, b, c, d, i, j in BLAKE3_ROUND:
+            s[a] = (s[a] + s[b] + m[i]) & WORD
+            v = s[d] ^ s[a]
+            s[d] = (v >> 16) | ((v << 16) & WORD)
+            s[c] = (s[c] + s[d]) & WORD
+            v = s[b] ^ s[c]
+            s[b] = (v >> 12) | ((v << 20) & WORD)
+            s[a] = (s[a] + s[b] + m[j]) & WORD
+            v = s[d] ^ s[a]
+            s[d] = (v >> 8) | ((v << 24) & WORD)
+            s[c] = (s[c] + s[d]) & WORD
+            v = s[b] ^ s[c]
+            s[b] = (v >> 7) | ((v << 25) & WORD)
+        m = [m[k] for k in BLAKE3_PERMUTATION]
+    for k in range(8):
+        s[k] ^= s[k + 8]
+        s[k + 8] ^= cv[k]
+    return s
+
+
+def blake3_node(data, first, last):
+    """The output node of chunks first .. last - 1 of `data`, 1024 bytes each: a chunk's last
+    block, or the parent of the largest power-of-two run of chunks on the left and the rest."""
+    count = last - first
+    if count == 1:
+        chunk = data[first * 1024:last * 1024]
+        blocks = [chunk[at:at + 64] for at in range(0, len(chunk), 64)] or [b""]
+        cv = BLAKE3_IV
+        for index, block in enumerate(blocks):
+            flags = (CHUNK_START if index == 0 else 0)
+            words = struct.unpack("<16I", bytes(block).ljust(64, b"\0"))
+            if index == len(blocks) - 1:
+                return cv, words, first, len(block), flags | CHUNK_END
+            cv = blake3_compress(cv, words, first, 64, flags)[:8]
+    left = 1 << ((count - 1).bit_length() - 1)
+    words = tuple(blake3_compress(*blake3_node(data, first, first + left))[:8]) + tuple(
+        blake3_compress(*blake3_node(data, first + left, last))[:8])
+    return BLAKE3_IV, words, 0, 64, PARENT
+
+
+def blake3_hex(data):
+    """BLAKE3 of `data`, the unkeyed 32-byte hash in lower-case hex, as the `blake3` crate
+    ModelSpec writes checksums with computes it; written out so the opponent needs only torch."""
+    data = memoryview(data)
+    cv, words, _, length, flags = blake3_node(data, 0, max(1, -(-len(data) // 1024)))
+    return struct.pack("<8I", *blake3_compress(cv, words, 0, length, flags | ROOT)[:8]).hex()
+
+
 def read_checkpoint(path, device):
-    """The parameters of a ModelSpec .msckpt (DESIGN.md section 6.2): the 56-byte header, the
-    compact JSON manifest at byte 56 and the little-endian f32 payload at the records' absolute
-    offsets. The header's magic, version and endian marker are checked; the checksums are not."""
+    """The parameters and step of a ModelSpec .msckpt (DESIGN.md section 6.2): the 56-byte
+    header, the compact JSON manifest at byte 56 and the little-endian f32 payload at the
+    records' absolute offsets. It refuses, as ModelSpec's reader does, a wrong magic, version or
+    endian marker or header checksum (E-CKPT-001: blake3 over the header, its checksum bytes 24 to
+    55 counted as zero, and the manifest), a file that is not the manifest's `file_size`
+    (E-CKPT-002), and a payload whose blake3 is not the manifest's `payload_hash` (E-CKPT-004:
+    the bytes from the payload start, the end of the manifest rounded up to 64, to the end of
+    the file)."""
     with open(path, "rb") as file:
         data = file.read()
+    if len(data) < HEADER:
+        raise ValueError(f"{path}: {len(data)} bytes, shorter than the {HEADER}-byte header")
     magic, version, endian, _reserved, size = struct.unpack_from("<4sIIIQ", data, 0)
     if magic != b"MSCK" or version != 1 or endian != 0x01020304:
         raise ValueError(f"{path}: not a version-1 little-endian .msckpt")
+    if HEADER + size > len(data):
+        raise ValueError(f"{path}: the manifest of {size} bytes runs past the end of the file")
+    signed = bytearray(data[:HEADER + size])
+    signed[24:HEADER] = bytes(HEADER - 24)
+    if blake3_hex(signed) != data[24:HEADER].hex():
+        raise ValueError(f"{path}: the header checksum differs from the header and manifest "
+                         "(ModelSpec refuses this file with E-CKPT-001)")
     manifest = json.loads(data[HEADER:HEADER + size])
+    if manifest.get("file_size") != len(data):
+        raise ValueError(f"{path}: {len(data)} bytes, not the manifest's file_size "
+                         f"{manifest.get('file_size')} (ModelSpec refuses this file with "
+                         "E-CKPT-002)")
+    payload_start = -(-(HEADER + size) // 64) * 64
+    if blake3_hex(data[payload_start:]) != manifest.get("payload_hash"):
+        raise ValueError(f"{path}: the payload hash differs from the payload (ModelSpec refuses "
+                         "this file with E-CKPT-004)")
     records = {record["path"]: record for record in manifest["parameters"]}
     params = {}
     for name, shape in shapes():
@@ -342,9 +441,8 @@ def f32_text(value):
     return repr(value)
 
 
-def loss_check(checkpoint, batch_dir, device):
-    """Prints `step 0 loss <v>`: the loss of the checkpoint's parameters on ModelSpec's batch."""
-    params, step = read_checkpoint(checkpoint, device)
+def read_batch(batch_dir, device):
+    """x, key_mask and y of the batch `modelspec train --write-batch` wrote to `batch_dir`."""
     size = os.path.getsize(os.path.join(batch_dir, "x.f32"))
     rows = size // (4 * HIDDEN)
     if rows % SEQ != 0 or rows == 0:
@@ -353,9 +451,79 @@ def loss_check(checkpoint, batch_dir, device):
     x = read_tensor(os.path.join(batch_dir, "x.f32"), (rows, HIDDEN), device)
     key_mask = read_tensor(os.path.join(batch_dir, "key_mask.f32"), (batch, SEQ), device)
     y = read_tensor(os.path.join(batch_dir, "y.f32"), (rows, HIDDEN), device)
+    return x, key_mask, y
+
+
+def loss_check(checkpoint, batch_dir, device):
+    """Prints `step 0 loss <v>`: the loss of the checkpoint's parameters on ModelSpec's batch."""
+    params, step = read_checkpoint(checkpoint, device)
+    x, key_mask, y = read_batch(batch_dir, device)
     with torch.no_grad():
         loss = loss_of(params, x, key_mask, y).item()
     print(f"step {step if step is not None else 0} loss {f32_text(loss)}", flush=True)
+
+
+def compare_step(checkpoint, batch_dir, stepped, device):
+    """One SGD step from the parameters of `checkpoint` on ModelSpec's batch, compared with the
+    parameters of `stepped`, ModelSpec's checkpoint of the next step from the same start on the
+    same batch. True when the two steps agree in both checks below; prints the step's loss, one
+    `compare <name>` line per parameter in file order and a `compare` summary line.
+
+    The run check: every element of our stepped parameters within the run tolerance of DESIGN.md
+    section 9 gate 5, |g - c| <= 1e-4 + 1e-3 |c| with c ModelSpec's value. At lr 0.01 one step
+    moves a parameter by about 1e-4 of its value, so this check catches a broken step but not a
+    changed function (README, "The one-step comparison").
+
+    The update check: ModelSpec's update u = c - initial, exact in f64, is its -lr g rounded
+    once to the f32 grid of c, so it lies within half an ulp of c of -lr g. Our update
+    o = -lr g is taken in f64 from our gradient. Per element the excess is
+    max(0, |u - o| - ulp(c) / 2): what the rounding does not explain. Per parameter the figure
+    is its largest excess over the scale max(its largest |o|, UPDATE_FLOOR times the largest
+    |o| over every parameter); the floor keeps a parameter whose gradient is zero by
+    construction (the key biases: softmax ignores a shift of a query's scores) at a scale its
+    rounding noise cannot reach. The check passes when every figure is at most UPDATE_BOUND."""
+    params, step = read_checkpoint(checkpoint, device)
+    expected, expected_step = read_checkpoint(stepped, device)
+    start = step if step is not None else 0
+    if expected_step != start + 1:
+        raise ValueError(f"{stepped}: step {expected_step}, not {start + 1}, the step after "
+                         f"{checkpoint}")
+    x, key_mask, y = read_batch(batch_dir, device)
+    initial = {name: value.detach().clone() for name, value in params.items()}
+    leaves = [params[name] for name, _ in shapes()]
+    optimizer = torch.optim.SGD(leaves, lr=LR, foreach=True)
+    optimizer.zero_grad(set_to_none=True)
+    loss = loss_of(params, x, key_mask, y)
+    loss.backward()
+    ours_update = {name: -LR * params[name].grad.detach().double() for name, _ in shapes()}
+    optimizer.step()
+    print(f"step {start} loss {f32_text(loss.item())}", flush=True)
+    whole = max(update.abs().max().item() for update in ours_update.values())
+    largest, largest_at = 0.0, None
+    figure, figure_at = 0.0, None
+    over = 0
+    infinity = torch.tensor(math.inf, device=device)
+    for name, _ in shapes():
+        ours = params[name].detach()
+        theirs = expected[name].detach()
+        diff = (ours - theirs).abs()
+        outside = int((diff > RUN_ATOL + RUN_RTOL * theirs.abs()).sum().item())
+        most = diff.max().item()
+        update = theirs.double() - initial[name].double()
+        ulp = (torch.nextafter(theirs.abs(), infinity) - theirs.abs()).double()
+        excess = ((update - ours_update[name]).abs() - ulp / 2).clamp(min=0.0).max().item()
+        scale = max(ours_update[name].abs().max().item(), UPDATE_FLOOR * whole)
+        ratio = excess / scale if scale > 0 else (0.0 if excess == 0 else math.inf)
+        print(f"compare {name} max_abs_diff {most:.3e} over_tolerance {outside} "
+              f"update_excess {ratio:.3e}", flush=True)
+        over += outside
+        if most >= largest:
+            largest, largest_at = most, name
+        if ratio >= figure:
+            figure, figure_at = ratio, name
+    print(f"compare max_abs_diff {largest:.3e} at {largest_at} over_tolerance {over} "
+          f"update_excess {figure:.3e} at {figure_at} bound {UPDATE_BOUND:g}", flush=True)
+    return over == 0 and figure <= UPDATE_BOUND
 
 
 def main():
@@ -376,8 +544,15 @@ def main():
                         help="print `step 0 loss <v>` of this checkpoint's parameters on the "
                              "batch in --batch and train nothing")
     parser.add_argument("--batch", metavar="DIR",
-                        help="with --loss-check: the directory `modelspec train --write-batch` "
-                             "wrote (x.f32, key_mask.f32, y.f32)")
+                        help="with --loss-check or --compare-step: the directory `modelspec "
+                             "train --write-batch` wrote (x.f32, key_mask.f32, y.f32)")
+    parser.add_argument("--compare-step", metavar="STEP1.msckpt",
+                        help="with --checkpoint and --batch: take one SGD step from the "
+                             "checkpoint's parameters on the batch, print per parameter the "
+                             "largest absolute difference against the parameters of this "
+                             "ModelSpec checkpoint of the next step, and exit 1 when an element "
+                             "is outside the run tolerance or an update differs by more than "
+                             f"{UPDATE_BOUND:g} of its scale; trains nothing else")
     parser.add_argument("--profile", action="store_true",
                         help="run the timed runs under torch.profiler and print the CUDA time of "
                              "each kernel over them to stderr; the timed figures then carry the "
@@ -388,6 +563,16 @@ def main():
     torch.backends.cudnn.allow_tf32 = False
     torch.set_float32_matmul_precision("highest")
     device = torch.device(args.device)
+
+    if args.compare_step is not None:
+        if args.checkpoint is None or args.batch is None:
+            parser.error("--compare-step needs --checkpoint PATH.msckpt and --batch DIR")
+        try:
+            same = compare_step(args.checkpoint, args.batch, args.compare_step, device)
+        except (OSError, ValueError, KeyError) as error:
+            print(f"transformer_block: refused: {type(error).__name__}: {error}", file=sys.stderr)
+            sys.exit(1)
+        sys.exit(0 if same else 1)
 
     if args.loss_check is not None:
         if args.batch is None:

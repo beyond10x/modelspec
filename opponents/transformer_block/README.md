@@ -65,16 +65,63 @@ profiler's cost and are not benchmark figures.
 ## The first-step loss check
 
 `--loss-check PATH.msckpt --batch DIR` trains nothing: it prints `step 0 loss <v>`, the loss of the
-checkpoint's parameters on the batch ModelSpec drew, in the line ModelSpec prints, so the two
-sides are shown to compute the same function before their times are compared. ModelSpec writes
-both with `train --steps 0`: the checkpoint of its initial parameters, and with `--write-batch DIR`
-its synthetic batch as `DIR/x.f32`, `DIR/key_mask.f32` and `DIR/y.f32`, little-endian `f32`:
+checkpoint's parameters on the batch ModelSpec drew, in the line ModelSpec prints. It is a sanity
+check: it shows the opponent reads the checkpoint and the batch, not that the two sides compute
+the same function. A GELU of another form moves the loss by less than the run tolerance (below).
+ModelSpec writes both inputs with `train --steps 0`: the checkpoint of its initial parameters, and
+with `--write-batch DIR` its synthetic batch, one file per input and target declaration,
+`DIR/x.f32`, `DIR/key_mask.f32` and `DIR/y.f32`, each the tensor's elements in row-major order as
+little-endian `f32` and nothing else:
 
 ```console
 modelspec train examples/transformer_block.mspec --backend cpu --steps 0 --checkpoint initial.msckpt --write-batch batch
 ~/.cache/modelspec-opponents-venv/bin/python opponents/transformer_block/transformer_block.py --loss-check initial.msckpt --batch batch
 ```
 
-The two losses agree within the run tolerance of DESIGN.md § 9, `|g − c| ≤ 1e-4 + 1e-3·|c|`. The
-reader checks the checkpoint header's magic, version and endian marker and reads the manifest and
-payload; it does not verify the checksums, which ModelSpec's own reader does.
+The two losses agree within the run tolerance of DESIGN.md § 9, `|g − c| ≤ 1e-4 + 1e-3·|c|`.
+
+## The one-step comparison
+
+`--compare-step STEP1.msckpt --checkpoint initial.msckpt --batch DIR` is the check that the two
+sides compute the same function. It takes one SGD step from the initial checkpoint on ModelSpec's
+batch and compares the result with ModelSpec's own checkpoint of that step, written from the same
+seed:
+
+```console
+modelspec train examples/transformer_block.mspec --backend cpu --steps 1 --checkpoint step1.msckpt
+~/.cache/modelspec-opponents-venv/bin/python opponents/transformer_block/transformer_block.py --compare-step step1.msckpt --checkpoint initial.msckpt --batch batch
+```
+
+It prints the step's loss, one `compare <name>` line per parameter and a summary line, and exits 1
+when either check fails:
+
+- The run check: every element of the stepped parameters within the run tolerance of § 9. At lr
+  0.01 one step moves a parameter by about `1e-4` of its value, so this check catches a broken
+  step, not a changed function.
+- The update check: ModelSpec's update `c − initial` is its `−lr·g` rounded once to the `f32` grid
+  of `c`. Per element, what half an ulp of `c` does not explain of its difference from the
+  opponent's `−lr·g`, taken in `f64`, is the excess. Per parameter, the largest excess over the
+  parameter's largest update (at least `1e-2` of the largest update of any parameter, so the key
+  biases, whose gradient is zero by construction, are not judged on their rounding noise) must be
+  at most `2e-5`.
+
+Measured on 2026-10-27 on an RTX 3090 against `train --backend cpu` at the example's batch of 8
+sequences:
+
+| Opponent | `step 0 loss` | Largest run-check difference | Elements outside § 9 | Update excess | Exit |
+|---|---|---|---|---|---|
+| as written | 0.74829835 | 1.490e-08 | 0 | 1.139e-06 | 0 |
+| GELU `0.5·x·(1 + erf(x/√2))` | 0.7483432 | 1.192e-07 | 0 | 4.696e-04 | 1 |
+| GELU cubic coefficient 0.04 for 0.044715 | 0.74788797 | 3.576e-07 | 0 | 3.663e-03 | 1 |
+
+ModelSpec printed `step 0 loss 0.74829835`. Both changed functions pass the loss check and the run
+check and fail the update check, 23 and 183 times its bound; the opponent as written stays 17 times
+under it.
+
+## The checkpoint reader
+
+The reader checks the header's magic, version and endian marker, the header checksum (ModelSpec
+refuses a mismatch with E-CKPT-001), the file size the manifest states (E-CKPT-002) and the BLAKE3
+hash of the payload (E-CKPT-004). It refuses a file that fails one with a line naming the
+condition and ModelSpec's code: `--loss-check` and `--compare-step` exit 1, a timed point is
+refused. The hash is computed in pure Python, about 2 s per checkpoint of the example.

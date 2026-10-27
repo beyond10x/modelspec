@@ -5,14 +5,18 @@
 //! (DESIGN.md § 7.1). The element type is the interpreter's type parameter, so a program typed
 //! `f32` also runs in `f64`.
 //!
-//! Reduction order (DESIGN.md § 2.2): a sum accumulates sequentially in row-major index order in
-//! the element type, starting from its first term; `matmul` accumulates each output element over
-//! the contracting index in ascending order the same way; `mean` is that sum divided by the
-//! element count converted to the element type; `mse` is the same sum of `(a - b)^2` divided by
-//! the element count converted to the element type. Every difference is rounded to the element
-//! type; the first product of a `matmul` or `mse` sum is rounded and starts the sum, and each later
-//! product is fused into the sum with [`Element::mul_add`], rounded once, as the GPU's `Fma`
-//! (DESIGN.md § 12 ADR-009). The partial sums of `reduce_sum` and `mean` are rounded each.
+//! Reduction order (DESIGN.md § 2.2): a sum accumulates sequentially in row-major index order,
+//! starting from its first term; `matmul` accumulates each output element over the contracting
+//! index in ascending order in the element type. A sum of a whole tensor into one scalar,
+//! `reduce_sum`, `mean`, `mse` and the numerator and denominator of `cross_entropy` (and the
+//! denominator of its gradient), accumulates in `f64` and is rounded to the element type once at
+//! the end (coordinator decision D84): each term is widened to `f64`, an `mse` difference is
+//! taken in `f64`, every partial sum is rounded in `f64`, and `mean` and `mse` divide by the
+//! element count in `f64` before that one rounding. The first product of a `matmul`, `mse` or
+//! other sum of products is rounded and starts the sum, and each later product is fused into
+//! the sum with [`Element::mul_add`], rounded once, as the GPU's `Fma` (DESIGN.md § 12
+//! ADR-009). Every reduction over a row or a column, and every per-element op, stays in the
+//! element type.
 //! `SumRows`, the bias gradient of `add_rows`, starts each column from row 0 and adds every later
 //! row in ascending order, each partial sum rounded; `EmbeddingGrad` adds rows in ascending `n`.
 //! `gelu` and its gradient are computed in the element type, with its `exp` (DESIGN.md § 4).
@@ -28,7 +32,8 @@
 //! [`RuntimeError::NoUnmaskedKey`]. `cross_entropy` and its gradient op recompute each row's
 //! maximum and sum of `exp(x - max)` through one code path, every reduction in ascending index
 //! order; the loss is the weighted sum of the row losses, its first product rounded and each
-//! later one fused, over the plain sum of the weights, and a weight sum of 0 gives a loss and a
+//! later one fused, over the plain sum of the weights, both sums in `f64`, and a weight sum of 0
+//! gives a loss and a
 //! gradient of `+0` (DESIGN.md § 4, coordinator decision D43). Its labels and weights are checked
 //! before the op runs, row by row: a label outside the classes is
 //! [`RuntimeError::LabelOutOfRange`], a negative or non-finite weight
@@ -842,19 +847,18 @@ impl<'p, T: Element> Prepared<'p, T> {
             }
             TensorOp::Relu => data.extend(arg(0).data.iter().map(|&x| relu_where(x, x))),
             TensorOp::Transpose => transpose(data, arg(0)),
-            TensorOp::ReduceSum => data.push(sum(arg(0).data.iter().copied())),
+            TensorOp::ReduceSum => data.push(T::from_f64(wide_sum(arg(0).data))),
             TensorOp::ReduceMean => {
                 let a = arg(0);
-                data.push(sum(a.data.iter().copied()) / count(a));
+                data.push(T::from_f64(wide_sum(a.data) / wide_count(a)));
             }
             TensorOp::Mse => {
                 let (a, b) = (arg(0), arg(1));
-                let mut diffs = a.data.iter().zip(b.data).map(|(&x, &y)| x - y);
-                let total = match diffs.next() {
-                    Some(first) => diffs.fold(first * first, |acc, d| d.mul_add(d, acc)),
-                    None => T::ZERO,
-                };
-                data.push(total / count(a));
+                let diffs = a.data.iter().zip(b.data).map(|(&x, &y)| {
+                    let d = x.to_f64() - y.to_f64();
+                    (d, d)
+                });
+                data.push(T::from_f64(sum_of_products(diffs) / wide_count(a)));
             }
             TensorOp::ReluGrad => {
                 let (a, g) = (arg(0), arg(1));
@@ -1115,8 +1119,10 @@ fn row_softmax<T: Element>(row: &[T]) -> (T, T) {
 }
 
 /// `sum_n weights[n] * loss_n / sum_n weights[n]` over the rows of `logits` (D43): the row loss
-/// `max + ln(sum) - logits[n, labels[n]]`, the numerator a [`sum_of_products`] and the
-/// denominator a [`sum`], both in ascending `n`, and `+0` when the denominator is 0 (D30).
+/// `max + ln(sum) - logits[n, labels[n]]` in the element type, the numerator a
+/// [`sum_of_products`] and the denominator a [`wide_sum`], both whole-tensor sums in `f64` in
+/// ascending `n`, their quotient rounded to the element type once, and `+0` when the
+/// denominator is 0 (D30, D84).
 fn cross_entropy<T: Element>(logits: View<'_, T>, labels: &[i32], weights: &[T]) -> T {
     let v = logits.shape[1] as usize;
     let losses = logits
@@ -1125,20 +1131,21 @@ fn cross_entropy<T: Element>(logits: View<'_, T>, labels: &[i32], weights: &[T])
         .zip(labels)
         .map(|(row, &label)| {
             let (max, total) = row_softmax(row);
-            max + total.ln() - row[label as usize]
+            (max + total.ln() - row[label as usize]).to_f64()
         });
-    let numerator = sum_of_products(weights.iter().copied().zip(losses));
-    let denominator = sum(weights.iter().copied());
-    if denominator == T::ZERO {
+    let numerator = sum_of_products(weights.iter().map(|w| w.to_f64()).zip(losses));
+    let denominator = wide_sum(weights);
+    if denominator == 0.0 {
         T::ZERO
     } else {
-        numerator / denominator
+        T::from_f64(numerator / denominator)
     }
 }
 
 /// The gradient of [`cross_entropy`] with respect to `logits`, into `data`: per element
 /// `g * weights[n] / sum(weights) * (p[n, v] - [v == labels[n]])` left to right, `p` recomputed
-/// through [`row_softmax`]; every element `+0` when the weight sum is 0 (D30, D43).
+/// through [`row_softmax`], `sum(weights)` the [`wide_sum`] rounded to the element type once;
+/// every element `+0` when the weight sum is 0 (D30, D43, D84).
 fn cross_entropy_grad<T: Element>(
     data: &mut Vec<T>,
     logits: View<'_, T>,
@@ -1146,7 +1153,7 @@ fn cross_entropy_grad<T: Element>(
     weights: &[T],
     g: T,
 ) {
-    let denominator = sum(weights.iter().copied());
+    let denominator = T::from_f64(wide_sum(weights));
     if denominator == T::ZERO {
         data.resize(logits.len(), T::ZERO);
         return;
@@ -1627,8 +1634,16 @@ fn sum<T: Element>(mut terms: impl Iterator<Item = T>) -> T {
     }
 }
 
-fn count<T: Element>(a: View<'_, T>) -> T {
-    T::from_count(a.len() as u64)
+/// A whole-tensor sum (DESIGN.md § 2.2, coordinator decision D84): the terms widened to `f64`,
+/// each exactly, and added in iteration order from the first term, each partial sum rounded in
+/// `f64`; `+0` for no terms. The caller rounds the result to the element type once.
+fn wide_sum<T: Element>(terms: &[T]) -> f64 {
+    sum(terms.iter().map(|&x| x.to_f64()))
+}
+
+/// The element count of `a` in `f64`, the divisor of a whole-tensor `mean` or `mse`.
+fn wide_count<T: Element>(a: View<'_, T>) -> f64 {
+    a.len() as f64
 }
 
 #[cfg(test)]

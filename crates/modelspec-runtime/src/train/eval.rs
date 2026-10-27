@@ -21,11 +21,12 @@
 //! batch, so no batch's values outlive the next batch. Over every row `n` of every batch, in
 //! batch order and then row order:
 //!
-//! - the loss is `Σ weight_n · nll_n / Σ weight_n` in `f32`, `nll_n` the row's `max + ln(Σ
-//!   exp(x - max)) - x[label_n]` as `cross_entropy` computes it (DESIGN.md § 2.2), the
-//!   numerator's first product rounded and each later one fused into the sum, the denominator
-//!   summed from its first term, and `0` when the weight sum is 0, so over one batch it is the
-//!   bits of that batch's `cross_entropy`;
+//! - the loss is `Σ weight_n · nll_n / Σ weight_n`, `nll_n` the row's `max + ln(Σ
+//!   exp(x - max)) - x[label_n]` in `f32` as `cross_entropy` computes it (DESIGN.md § 2.2),
+//!   both sums whole-split sums in `f64` (coordinator decision D84), the numerator's first
+//!   product rounded and each later one fused into the sum, the denominator summed from its
+//!   first term, the quotient rounded to `f32` once, and `0` when the weight sum is 0, so over
+//!   one batch it is the bits of that batch's `cross_entropy`;
 //! - the accuracy is `correct / selected` in `f32` over the rows of positive weight, a row
 //!   correct when the first largest logit of its row, the lowest id among ties, is its label,
 //!   and never when its row holds a NaN; `0` when no row is selected.
@@ -333,8 +334,8 @@ impl Tallying<'_, '_> {
 /// The running sums of the reduction of the module documentation.
 #[derive(Default)]
 struct Tally {
-    numerator: Option<f32>,
-    denominator: Option<f32>,
+    numerator: Option<f64>,
+    denominator: Option<f64>,
     correct: u64,
     selected: u64,
 }
@@ -354,12 +355,12 @@ impl Tally {
                 }
                 .into());
             };
-            let nll = row_nll(row, target);
+            let (wide, nll) = (f64::from(weight), f64::from(row_nll(row, target)));
             self.numerator = Some(match self.numerator {
-                None => weight * nll,
-                Some(sum) => weight.mul_add(nll, sum),
+                None => wide * nll,
+                Some(sum) => wide.mul_add(nll, sum),
             });
-            self.denominator = Some(self.denominator.map_or(weight, |sum| sum + weight));
+            self.denominator = Some(self.denominator.map_or(wide, |sum| sum + wide));
             if weight > 0.0 {
                 self.selected += 1;
                 if argmax(row) == Some(target) {
@@ -377,7 +378,7 @@ impl Tally {
             loss: if denominator == 0.0 {
                 0.0
             } else {
-                numerator / denominator
+                (numerator / denominator) as f32
             },
             accuracy: if self.selected == 0 {
                 0.0

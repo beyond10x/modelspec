@@ -73,6 +73,14 @@ impl Element for Counted {
         Counted(count as f32)
     }
 
+    fn to_f64(self) -> f64 {
+        f64::from(self.0)
+    }
+
+    fn from_f64(value: f64) -> Self {
+        Counted(value as f32)
+    }
+
     fn exp(self) -> Self {
         Counted(self.0.exp())
     }

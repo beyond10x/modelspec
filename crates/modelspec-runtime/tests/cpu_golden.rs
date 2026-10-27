@@ -392,8 +392,11 @@ fn mse_of_two_tensors<T: Real>() {
 
 /// Squares `[s, L, s, s]` with `s` below half an ulp of `L` and `2s` above it: summed in
 /// row-major order each `s` is absorbed and the result is `L / 4`; column-major, reverse or
-/// pairwise order adds `2s` first and lands one ulp higher. The first case decides `f64`
-/// (`L = 2^54`, `s = 1.5625`), the second `f32` (`L = 2^24`, `s = 0.765625`).
+/// pairwise order adds `2s` first and lands one ulp higher. The first case decides the order of
+/// the `f64` sum (`L = 2^54`, `s = 1.5625`), which both element types accumulate in (DESIGN.md
+/// § 2.2, coordinator decision D84). The second (`L = 2^24`, `s = 0.765625`) is exact in `f64`,
+/// `16,777,218.296875 / 4`, which `f32` rounds once to `4,194,304.5`; a running `f32` sum would
+/// absorb each `s` and give `4,194,304`.
 fn mse_sums_squared_differences_in_row_major_order<T: Real>() {
     let wide = eval_binary::<T>(
         (&[2, 2], &[1.5, 134_217_728.0, 1.5, 1.5]),
@@ -406,7 +409,7 @@ fn mse_sums_squared_differences_in_row_major_order<T: Real>() {
         (&[2, 2], &[0.125, 0.0, 0.125, 0.125]),
         |b, x, y| b.mse(x, y).unwrap(),
     );
-    assert_bits(&narrow, &[], &[T::pick(4_194_304.0, 4_194_304.574_218_75)]);
+    assert_bits(&narrow, &[], &[T::pick(4_194_304.5, 4_194_304.574_218_75)]);
 }
 
 // ---- whole programs ----
