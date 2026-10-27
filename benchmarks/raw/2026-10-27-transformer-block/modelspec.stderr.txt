@@ -1,0 +1,21 @@
+b10x-build-slot: slot 1 of 3, 130G free
+    Finished `bench` profile [optimized] target(s) in 0.03s
+     Running benches/transformer_block.rs (target/release/deps/transformer_block-18334fcfb24be5d9)
+transformer_block: batch 8 (1024 tokens): 2717908992 FLOP per step
+transformer_block:   warm-up: 20 steps in 1.861 s
+transformer_block:   calibration: 65 steps in 6.058 s
+transformer_block:   timed: 65 steps in 6.048 s, 93041.260 us per step
+transformer_block:   timed: 65 steps in 6.106 s, 93942.107 us per step
+transformer_block:   timed: 65 steps in 6.101 s, 93868.400 us per step
+transformer_block: batch 32 (4096 tokens): 10871635968 FLOP per step
+transformer_block:   warm-up: 20 steps in 3.757 s
+transformer_block:   calibration: 32 steps in 6.017 s
+transformer_block:   timed: 32 steps in 5.996 s, 187387.659 us per step
+transformer_block:   timed: 32 steps in 6.047 s, 188963.351 us per step
+transformer_block:   timed: 32 steps in 6.027 s, 188352.069 us per step
+transformer_block: batch 128 (16384 tokens): 43486543872 FLOP per step
+transformer_block:   warm-up: 20 steps in 13.101 s
+transformer_block:   calibration: 20 steps in 12.873 s
+transformer_block:   timed: 20 steps in 12.808 s, 640411.904 us per step
+transformer_block:   timed: 20 steps in 12.836 s, 641794.458 us per step
+transformer_block:   timed: 20 steps in 12.880 s, 644005.774 us per step

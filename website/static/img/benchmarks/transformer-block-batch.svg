@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="440" height="510" viewBox="0 0 440 510" font-family="system-ui, -apple-system, Segoe UI, Roboto, sans-serif" font-size="15" role="img" aria-label="Transformer block: µs per step against batch">
+<title>Transformer block: µs per step against batch</title>
+<style>@media (prefers-color-scheme: dark){[fill="#111827"]{fill:#f4f5ed}[stroke="#111827"]{stroke:#f4f5ed}[fill="#374151"]{fill:#c3ccd0}[stroke="#374151"]{stroke:#c3ccd0}[fill="#d1d5db"]{fill:#3a4b57}[stroke="#d1d5db"]{stroke:#3a4b57}[fill="#e5e7eb"]{fill:#22333f}[stroke="#e5e7eb"]{stroke:#22333f}[fill="#8b95a1"]{fill:#6b7c86}[stroke="#8b95a1"]{stroke:#6b7c86}[fill="#f4f2eb"]{fill:#0c1924}[stroke="#f4f2eb"]{stroke:#0c1924}[fill="#1d4ed8"]{fill:#60a5fa}[stroke="#1d4ed8"]{stroke:#60a5fa}[fill="#059669"]{fill:#34d399}[stroke="#059669"]{stroke:#34d399}[fill="#7c3aed"]{fill:#a78bfa}[stroke="#7c3aed"]{stroke:#a78bfa}[fill="#0891b2"]{fill:#22d3ee}[stroke="#0891b2"]{stroke:#22d3ee}[fill="#dc2626"]{fill:#f87171}[stroke="#dc2626"]{stroke:#f87171}[fill="#ea580c"]{fill:#fb923c}[stroke="#ea580c"]{stroke:#fb923c}[fill="#a16207"]{fill:#facc15}[stroke="#a16207"]{stroke:#facc15}[fill="#db2777"]{fill:#f472b6}[stroke="#db2777"]{stroke:#f472b6}[fill="#4b5563"]{fill:#cbd5e1}[stroke="#4b5563"]{stroke:#cbd5e1}[fill="#92400e"]{fill:#d6a35c}[stroke="#92400e"]{stroke:#d6a35c}[fill="#be123c"]{fill:#fb7185}[stroke="#be123c"]{stroke:#fb7185}[fill="#ca8a04"]{fill:#fde047}[stroke="#ca8a04"]{stroke:#fde047}[fill="#9ca3af"]{fill:#e5e7eb}[stroke="#9ca3af"]{stroke:#e5e7eb}[fill="#f97316"]{fill:#fdba74}[stroke="#f97316"]{stroke:#fdba74}}</style>
+<text x="16" y="24" font-size="17" font-weight="600" fill="#111827">Transformer block:</text>
+<text x="16" y="46" font-size="17" font-weight="600" fill="#111827">µs per step against batch</text>
+<line x1="88" y1="362.0" x2="424.0" y2="362.0" stroke="#d1d5db"/>
+<text x="80.0" y="367.0" text-anchor="end" fill="#374151">1,000</text>
+<line x1="88" y1="331.9" x2="424.0" y2="331.9" stroke="#e5e7eb"/>
+<line x1="88" y1="292.1" x2="424.0" y2="292.1" stroke="#e5e7eb"/>
+<line x1="88" y1="262.0" x2="424.0" y2="262.0" stroke="#d1d5db"/>
+<text x="80.0" y="267.0" text-anchor="end" fill="#374151">10,000</text>
+<line x1="88" y1="231.9" x2="424.0" y2="231.9" stroke="#e5e7eb"/>
+<line x1="88" y1="192.1" x2="424.0" y2="192.1" stroke="#e5e7eb"/>
+<line x1="88" y1="162.0" x2="424.0" y2="162.0" stroke="#d1d5db"/>
+<text x="80.0" y="167.0" text-anchor="end" fill="#374151">100,000</text>
+<line x1="88" y1="131.9" x2="424.0" y2="131.9" stroke="#e5e7eb"/>
+<line x1="88" y1="92.1" x2="424.0" y2="92.1" stroke="#e5e7eb"/>
+<line x1="88" y1="62.0" x2="424.0" y2="62.0" stroke="#d1d5db"/>
+<text x="80.0" y="67.0" text-anchor="end" fill="#374151">1,000,000</text>
+<rect x="88" y="62" width="336.0" height="300" fill="none" stroke="#8b95a1"/>
+<line x1="144.0" y1="362.0" x2="144.0" y2="367.0" stroke="#8b95a1"/>
+<text x="144.0" y="384.0" text-anchor="middle" fill="#374151">8</text>
+<line x1="256.0" y1="362.0" x2="256.0" y2="367.0" stroke="#8b95a1"/>
+<text x="256.0" y="384.0" text-anchor="middle" fill="#374151">32</text>
+<line x1="368.0" y1="362.0" x2="368.0" y2="367.0" stroke="#8b95a1"/>
+<text x="368.0" y="384.0" text-anchor="middle" fill="#374151">128</text>
+<text x="256.0" y="408.0" text-anchor="middle" fill="#111827">batch, sequences</text>
+<text transform="translate(18 212.0) rotate(-90)" text-anchor="middle" fill="#111827">µs per step, log scale</text>
+<polyline points="144.0,164.7 256.0,134.5 368.0,81.3" fill="none" stroke="#1d4ed8" stroke-width="2.5"/>
+<circle cx="144.0" cy="164.7" r="4.5" fill="#1d4ed8"/>
+<circle cx="256.0" cy="134.5" r="4.5" fill="#1d4ed8"/>
+<circle cx="368.0" cy="81.3" r="4.5" fill="#1d4ed8"/>
+<polyline points="144.0,302.5 256.0,301.3 368.0,253.8" fill="none" stroke="#dc2626" stroke-width="1.8" stroke-dasharray="6 4"/>
+<rect x="140.0" y="298.5" width="8" height="8" fill="#f4f2eb" stroke="#dc2626" stroke-width="2"/>
+<rect x="252.0" y="297.3" width="8" height="8" fill="#f4f2eb" stroke="#dc2626" stroke-width="2"/>
+<rect x="364.0" y="249.8" width="8" height="8" fill="#f4f2eb" stroke="#dc2626" stroke-width="2"/>
+<polyline points="144.0,332.5 256.0,333.5 368.0,290.9" fill="none" stroke="#ea580c" stroke-width="1.8" stroke-dasharray="6 4"/>
+<rect x="140.0" y="328.5" width="8" height="8" fill="#f4f2eb" stroke="#ea580c" stroke-width="2"/>
+<rect x="252.0" y="329.5" width="8" height="8" fill="#f4f2eb" stroke="#ea580c" stroke-width="2"/>
+<rect x="364.0" y="286.9" width="8" height="8" fill="#f4f2eb" stroke="#ea580c" stroke-width="2"/>
+<line x1="16" y1="438.0" x2="44" y2="438.0" stroke="#1d4ed8" stroke-width="2"/>
+<circle cx="30.0" cy="438.0" r="4.5" fill="#1d4ed8"/>
+<text x="52" y="443.0" fill="#111827">ModelSpec Vulkan</text>
+<line x1="16" y1="462.0" x2="44" y2="462.0" stroke="#dc2626" stroke-width="2" stroke-dasharray="6 4"/>
+<rect x="26.0" y="458.0" width="8" height="8" fill="#f4f2eb" stroke="#dc2626" stroke-width="2"/>
+<text x="52" y="467.0" fill="#111827">PyTorch CUDA eager</text>
+<line x1="16" y1="486.0" x2="44" y2="486.0" stroke="#ea580c" stroke-width="2" stroke-dasharray="6 4"/>
+<rect x="26.0" y="482.0" width="8" height="8" fill="#f4f2eb" stroke="#ea580c" stroke-width="2"/>
+<text x="52" y="491.0" fill="#111827">PyTorch CUDA torch.compile</text>
+</svg>

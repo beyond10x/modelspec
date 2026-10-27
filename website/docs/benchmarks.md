@@ -87,6 +87,28 @@ Latest median µs per step per side, runs of 2026-10-25 unless the cell says oth
 | 1024 | 26,809,991,168 | 2,385.658 | 1,773.976 | 1,828.654 | 11,238.0 | 15,112.9 | 14,661.1 |
 | 4096 | 107,239,964,672 | 6,858.914 | 6,568.501 | 6,782.021 | 15,635.1 | 16,326.4 | 15,812.4 |
 
+## Transformer block
+
+`transformer-block`: per batch of sequences, the median µs per step of the latest run of each side, ModelSpec solid with filled circles and the opponents dashed with open squares.
+
+![Transformer block: µs per step against batch, log scale](/img/benchmarks/transformer-block-batch.svg)
+
+### Latest median per side and batch
+
+Tokens per second are the run's tokens per step · 10⁶ / µs per step, GFLOP/s its FLOP per step / µs per step / 1000, blank where the run states no tokens or FLOP per step. FLOP are counted by `MatmulOnly`, 339,738,624·B, the matrix products of a step of the two encoder layers, forward and backward, at a batch of B sequences of 128.
+
+| Batch | Tokens per step | Side | Date | Build | µs per step | Tokens per second | GFLOP/s | Repeats |
+|---|---|---|---|---|---|---|---|---|
+| 8 | 1,024 | ModelSpec Vulkan | 2026-10-27 | 0.20.0 (`a123c1a`) | 93,868.4 | 10,908.889 | 29.0 | 3 |
+| 8 | 1,024 | PyTorch CUDA eager | 2026-10-27 | torch 2.14.1+cu130, CUDA 13.0 | 3,937.184 | 260,084.353 | 690.3 | 3 |
+| 8 | 1,024 | PyTorch CUDA torch.compile | 2026-10-27 | torch 2.14.1+cu130, CUDA 13.0 | 1,971.859 | 519,306.914 | 1,378.3 | 3 |
+| 32 | 4,096 | ModelSpec Vulkan | 2026-10-27 | 0.20.0 (`a123c1a`) | 188,352.069 | 21,746.509 | 57.7 | 3 |
+| 32 | 4,096 | PyTorch CUDA eager | 2026-10-27 | torch 2.14.1+cu130, CUDA 13.0 | 4,046.869 | 1,012,140.555 | 2,686.4 | 3 |
+| 32 | 4,096 | PyTorch CUDA torch.compile | 2026-10-27 | torch 2.14.1+cu130, CUDA 13.0 | 1,926.75 | 2,125,859.797 | 5,642.5 | 3 |
+| 128 | 16,384 | ModelSpec Vulkan | 2026-10-27 | 0.20.0 (`a123c1a`) | 641,794.458 | 25,528.422 | 67.8 | 3 |
+| 128 | 16,384 | PyTorch CUDA eager | 2026-10-27 | torch 2.14.1+cu130, CUDA 13.0 | 12,091.141 | 1,355,041.638 | 3,596.6 | 3 |
+| 128 | 16,384 | PyTorch CUDA torch.compile | 2026-10-27 | torch 2.14.1+cu130, CUDA 13.0 | 5,138.515 | 3,188,469.97 | 8,462.9 | 3 |
+
 ## Every run
 
 | Run | Date | Workload | Side | Threads | Mode | Batch | H | Build | µs per step | Repeats | Source |
@@ -192,10 +214,18 @@ Latest median µs per step per side, runs of 2026-10-25 unless the cell says oth
 | `sweep-b8192-h4096-pytorch-cuda-compile-0.10.0` | 2026-10-25 | `mlp-784-H-10` | PyTorch CUDA torch.compile |  | Timed | 8192 | 4096 | torch 2.14.1+cu130, CUDA 13.0 | 6,782.021 | 3 | `verification-report:mlp-size-sweep-2026-10-25, raw records benchmarks/raw/2026-10-25-sweep-0.10.0/pytorch.jsonl` |
 | `sweep-b8192-h4096-modelspec-vulkan-step-sites` | 2026-10-25 | `mlp-784-H-10` | ModelSpec Vulkan |  | Timed | 8192 | 4096 | 0.10.0 (`3ef38aa`) | 6,858.914 | 3 | `story:step-sites-beat-pytorch judgement session, the median of 3 back-to-back runs on the uncommitted tree over 3ef38aa, raw records benchmarks/raw/2026-10-25-step-sites/judgement/r2-modelspec.jsonl` |
 | `sweep-b8192-h4096-pytorch-cuda-eager-step-sites` | 2026-10-25 | `mlp-784-H-10` | PyTorch CUDA eager |  | Timed | 8192 | 4096 | torch 2.14.1+cu130, CUDA 13.0 | 6,568.501 | 3 | `story:step-sites-beat-pytorch judgement session, the median of 3 back-to-back runs, raw records benchmarks/raw/2026-10-25-step-sites/judgement/r3-pytorch-eager.jsonl` |
+| `transformer-block-b8-modelspec-vulkan-0.20.0` | 2026-10-27 | `transformer-block` | ModelSpec Vulkan |  | Timed | 8 |  | 0.20.0 (`a123c1a`) | 93,868.4 | 3 | `verification-report:transformer-block-benchmark-2026-10-27, raw records benchmarks/raw/2026-10-27-transformer-block/modelspec.jsonl` |
+| `transformer-block-b32-modelspec-vulkan-0.20.0` | 2026-10-27 | `transformer-block` | ModelSpec Vulkan |  | Timed | 32 |  | 0.20.0 (`a123c1a`) | 188,352.069 | 3 | `verification-report:transformer-block-benchmark-2026-10-27, raw records benchmarks/raw/2026-10-27-transformer-block/modelspec.jsonl` |
+| `transformer-block-b128-modelspec-vulkan-0.20.0` | 2026-10-27 | `transformer-block` | ModelSpec Vulkan |  | Timed | 128 |  | 0.20.0 (`a123c1a`) | 641,794.458 | 3 | `verification-report:transformer-block-benchmark-2026-10-27, raw records benchmarks/raw/2026-10-27-transformer-block/modelspec.jsonl` |
+| `transformer-block-b8-pytorch-cuda-eager-0.20.0` | 2026-10-27 | `transformer-block` | PyTorch CUDA eager |  | Timed | 8 |  | torch 2.14.1+cu130, CUDA 13.0 | 3,937.184 | 3 | `verification-report:transformer-block-benchmark-2026-10-27, raw records benchmarks/raw/2026-10-27-transformer-block/pytorch.jsonl` |
+| `transformer-block-b32-pytorch-cuda-eager-0.20.0` | 2026-10-27 | `transformer-block` | PyTorch CUDA eager |  | Timed | 32 |  | torch 2.14.1+cu130, CUDA 13.0 | 4,046.869 | 3 | `verification-report:transformer-block-benchmark-2026-10-27, raw records benchmarks/raw/2026-10-27-transformer-block/pytorch.jsonl` |
+| `transformer-block-b128-pytorch-cuda-eager-0.20.0` | 2026-10-27 | `transformer-block` | PyTorch CUDA eager |  | Timed | 128 |  | torch 2.14.1+cu130, CUDA 13.0 | 12,091.141 | 3 | `verification-report:transformer-block-benchmark-2026-10-27, raw records benchmarks/raw/2026-10-27-transformer-block/pytorch.jsonl` |
+| `transformer-block-b8-pytorch-cuda-compile-0.20.0` | 2026-10-27 | `transformer-block` | PyTorch CUDA torch.compile |  | Timed | 8 |  | torch 2.14.1+cu130, CUDA 13.0 | 1,971.859 | 3 | `verification-report:transformer-block-benchmark-2026-10-27, raw records benchmarks/raw/2026-10-27-transformer-block/pytorch.jsonl` |
+| `transformer-block-b32-pytorch-cuda-compile-0.20.0` | 2026-10-27 | `transformer-block` | PyTorch CUDA torch.compile |  | Timed | 32 |  | torch 2.14.1+cu130, CUDA 13.0 | 1,926.75 | 3 | `verification-report:transformer-block-benchmark-2026-10-27, raw records benchmarks/raw/2026-10-27-transformer-block/pytorch.jsonl` |
+| `transformer-block-b128-pytorch-cuda-compile-0.20.0` | 2026-10-27 | `transformer-block` | PyTorch CUDA torch.compile |  | Timed | 128 |  | torch 2.14.1+cu130, CUDA 13.0 | 5,138.515 | 3 | `verification-report:transformer-block-benchmark-2026-10-27, raw records benchmarks/raw/2026-10-27-transformer-block/pytorch.jsonl` |
 
 ## Not measured
 
 Workloads the page declares that have no run in `benchmarks/runs.yaml` yet, so no figure. Each gets a section of its own above with its first run.
 
-- **Transformer block** (`transformer-block`): the transformer-block benchmark on synthetic data against PyTorch CUDA: the two BERT-tiny encoder blocks (hidden 128, 2 heads, sequence 128) on random `f32` inputs.
 - **BERT-tiny pre-training** (`bert-tiny-pretrain`): BERT-tiny pre-training timed to the same held-out loss as PyTorch CUDA with the same corpus, batches, initial weights and optimizer.

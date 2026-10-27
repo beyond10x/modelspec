@@ -166,24 +166,36 @@ fn adversary_every_published_gflops_cell_follows_its_run() {
     assert!(wrong.is_empty(), "{wrong:#?}");
 }
 
-/// Every run that counts by `MatmulOnly` states `3196·B·H` (spec/domains/benchmark.yaml,
-/// FlopRule), so the sides of one point state one count.
+/// Every run that counts by `MatmulOnly` states its workload's count (spec/domains/benchmark.yaml,
+/// FlopRule): `3196·B·H` for the sweep and `339,738,624·B` for `transformer-block`, so the sides
+/// of one point state one count; `MatmulOnly` on any other workload is wrong.
 #[test]
 fn adversary_every_matmul_only_run_states_3196_b_h() {
     let runs = runs(&repository());
-    let mut counted = 0;
+    let mut counted = BTreeMap::<&str, usize>::new();
     let mut wrong = Vec::new();
     for run in &runs {
         if run.rule.as_deref() != Some("MatmulOnly") {
             continue;
         }
-        counted += 1;
-        let expected = 3196 * run.batch.unwrap() * run.hidden.unwrap();
-        if run.flop != Some(expected) {
-            wrong.push(format!("{}: {:?}, rule says {expected}", run.id, run.flop));
+        *counted.entry(run.workload.as_str()).or_default() += 1;
+        let expected = match run.workload.as_str() {
+            SWEEP => run
+                .batch
+                .zip(run.hidden)
+                .map(|(batch, hidden)| 3196 * batch * hidden),
+            "transformer-block" => run.batch.map(|batch| 339_738_624 * batch),
+            _ => None,
+        };
+        if expected.is_none() || run.flop != expected {
+            wrong.push(format!(
+                "{} ({}): {:?}, rule says {expected:?}",
+                run.id, run.workload, run.flop
+            ));
         }
     }
-    assert!(counted >= 36, "only {counted} MatmulOnly runs");
+    let sweep = counted.get(SWEEP).copied().unwrap_or(0);
+    assert!(sweep >= 36, "only {sweep} MatmulOnly runs of the sweep");
     assert!(wrong.is_empty(), "{wrong:#?}");
 }
 

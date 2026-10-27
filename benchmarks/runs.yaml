@@ -2237,3 +2237,216 @@ runs:
     note: the opponent's record says dirty, the tree then held the uncommitted change of story:step-sites-beat-pytorch, committed as 91e9bbd, whose bench binary the same session ran; opponents/ is the same at 3ef38aa and 91e9bbd
     source: story:step-sites-beat-pytorch judgement session, the median of 3 back-to-back runs, raw records benchmarks/raw/2026-10-25-step-sites/judgement/r3-pytorch-eager.jsonl
     state: Recorded
+  - run_id: transformer-block-b8-modelspec-vulkan-0.20.0
+    date: "2026-10-27"
+    workload: transformer-block
+    side: ModelSpecVulkan
+    modelspec_version: "0.20.0"
+    commit: a123c1a5046e6069dc4f341e110d58fad2e02b76
+    mode: Timed
+    batch: 8
+    tokens_per_step: 1024
+    flop_per_step: 2717908992
+    flop_rule: MatmulOnly
+    timed_steps: 65
+    repeat_count: 3
+    repeats_us_per_step:
+      - 93041.26027692309
+      - 93942.10693846153
+      - 93868.39976923076
+    median_us_per_step: 93868.39976923076
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1950–1965 (median 1950, n=182) in the 3 timed spans"
+    source: verification-report:transformer-block-benchmark-2026-10-27, raw records benchmarks/raw/2026-10-27-transformer-block/modelspec.jsonl
+    state: Recorded
+  - run_id: transformer-block-b32-modelspec-vulkan-0.20.0
+    date: "2026-10-27"
+    workload: transformer-block
+    side: ModelSpecVulkan
+    modelspec_version: "0.20.0"
+    commit: a123c1a5046e6069dc4f341e110d58fad2e02b76
+    mode: Timed
+    batch: 32
+    tokens_per_step: 4096
+    flop_per_step: 10871635968
+    flop_rule: MatmulOnly
+    timed_steps: 32
+    repeat_count: 3
+    repeats_us_per_step:
+      - 187387.65925
+      - 188963.3510625
+      - 188352.06853125
+    median_us_per_step: 188352.06853125
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1935–1950 (median 1950, n=181) in the 3 timed spans"
+    source: verification-report:transformer-block-benchmark-2026-10-27, raw records benchmarks/raw/2026-10-27-transformer-block/modelspec.jsonl
+    state: Recorded
+  - run_id: transformer-block-b128-modelspec-vulkan-0.20.0
+    date: "2026-10-27"
+    workload: transformer-block
+    side: ModelSpecVulkan
+    modelspec_version: "0.20.0"
+    commit: a123c1a5046e6069dc4f341e110d58fad2e02b76
+    mode: Timed
+    batch: 128
+    tokens_per_step: 16384
+    flop_per_step: 43486543872
+    flop_rule: MatmulOnly
+    timed_steps: 20
+    repeat_count: 3
+    repeats_us_per_step:
+      - 640411.9035
+      - 641794.4582
+      - 644005.7737499999
+    median_us_per_step: 641794.4582
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1905–1935 (median 1920, n=385) in the 3 timed spans"
+    source: verification-report:transformer-block-benchmark-2026-10-27, raw records benchmarks/raw/2026-10-27-transformer-block/modelspec.jsonl
+    state: Recorded
+  - run_id: transformer-block-b8-pytorch-cuda-eager-0.20.0
+    date: "2026-10-27"
+    workload: transformer-block
+    side: PyTorchCudaEager
+    commit: a123c1a5046e6069dc4f341e110d58fad2e02b76
+    opponent_version: torch 2.14.1+cu130, CUDA 13.0
+    mode: Timed
+    batch: 8
+    tokens_per_step: 1024
+    flop_per_step: 2717908992
+    flop_rule: MatmulOnly
+    timed_steps: 1474
+    repeat_count: 3
+    repeats_us_per_step:
+      - 3883.838770769567
+      - 3937.184172170679
+      - 4026.6427692920574
+    median_us_per_step: 3937.184172170679
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1860–1860 (median 1860, n=175) in the 3 timed spans"
+    note: tf32 off
+    source: verification-report:transformer-block-benchmark-2026-10-27, raw records benchmarks/raw/2026-10-27-transformer-block/pytorch.jsonl
+    state: Recorded
+  - run_id: transformer-block-b32-pytorch-cuda-eager-0.20.0
+    date: "2026-10-27"
+    workload: transformer-block
+    side: PyTorchCudaEager
+    commit: a123c1a5046e6069dc4f341e110d58fad2e02b76
+    opponent_version: torch 2.14.1+cu130, CUDA 13.0
+    mode: Timed
+    batch: 32
+    tokens_per_step: 4096
+    flop_per_step: 10871635968
+    flop_rule: MatmulOnly
+    timed_steps: 1419
+    repeat_count: 3
+    repeats_us_per_step:
+      - 3943.150151597101
+      - 4046.868766875251
+      - 4079.8637414793466
+    median_us_per_step: 4046.868766875251
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1920–1935 (median 1920, n=171) in the 3 timed spans"
+    note: tf32 off
+    source: verification-report:transformer-block-benchmark-2026-10-27, raw records benchmarks/raw/2026-10-27-transformer-block/pytorch.jsonl
+    state: Recorded
+  - run_id: transformer-block-b128-pytorch-cuda-eager-0.20.0
+    date: "2026-10-27"
+    workload: transformer-block
+    side: PyTorchCudaEager
+    commit: a123c1a5046e6069dc4f341e110d58fad2e02b76
+    opponent_version: torch 2.14.1+cu130, CUDA 13.0
+    mode: Timed
+    batch: 128
+    tokens_per_step: 16384
+    flop_per_step: 43486543872
+    flop_rule: MatmulOnly
+    timed_steps: 497
+    repeat_count: 3
+    repeats_us_per_step:
+      - 12126.854500945065
+      - 12091.141362755112
+      - 12031.883931713144
+    median_us_per_step: 12091.141362755112
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1875–1890 (median 1875, n=180) in the 3 timed spans"
+    note: tf32 off
+    source: verification-report:transformer-block-benchmark-2026-10-27, raw records benchmarks/raw/2026-10-27-transformer-block/pytorch.jsonl
+    state: Recorded
+  - run_id: transformer-block-b8-pytorch-cuda-compile-0.20.0
+    date: "2026-10-27"
+    workload: transformer-block
+    side: PyTorchCudaCompile
+    commit: a123c1a5046e6069dc4f341e110d58fad2e02b76
+    opponent_version: torch 2.14.1+cu130, CUDA 13.0
+    mode: Timed
+    batch: 8
+    tokens_per_step: 1024
+    flop_per_step: 2717908992
+    flop_rule: MatmulOnly
+    timed_steps: 3219
+    repeat_count: 3
+    repeats_us_per_step:
+      - 1939.112863018206
+      - 1971.8589775875307
+      - 2008.5939422594663
+    median_us_per_step: 1971.8589775875307
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1935–1935 (median 1935, n=191) in the 3 timed spans"
+    note: torch.compile mode default, tf32 off
+    source: verification-report:transformer-block-benchmark-2026-10-27, raw records benchmarks/raw/2026-10-27-transformer-block/pytorch.jsonl
+    state: Recorded
+  - run_id: transformer-block-b32-pytorch-cuda-compile-0.20.0
+    date: "2026-10-27"
+    workload: transformer-block
+    side: PyTorchCudaCompile
+    commit: a123c1a5046e6069dc4f341e110d58fad2e02b76
+    opponent_version: torch 2.14.1+cu130, CUDA 13.0
+    mode: Timed
+    batch: 32
+    tokens_per_step: 4096
+    flop_per_step: 10871635968
+    flop_rule: MatmulOnly
+    timed_steps: 3177
+    repeat_count: 3
+    repeats_us_per_step:
+      - 1926.7498290410742
+      - 1941.9487749851085
+      - 1874.0728819085566
+    median_us_per_step: 1926.7498290410742
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1890–1920 (median 1890, n=182) in the 3 timed spans"
+    note: torch.compile mode default, tf32 off
+    source: verification-report:transformer-block-benchmark-2026-10-27, raw records benchmarks/raw/2026-10-27-transformer-block/pytorch.jsonl
+    state: Recorded
+  - run_id: transformer-block-b128-pytorch-cuda-compile-0.20.0
+    date: "2026-10-27"
+    workload: transformer-block
+    side: PyTorchCudaCompile
+    commit: a123c1a5046e6069dc4f341e110d58fad2e02b76
+    opponent_version: torch 2.14.1+cu130, CUDA 13.0
+    mode: Timed
+    batch: 128
+    tokens_per_step: 16384
+    flop_per_step: 43486543872
+    flop_rule: MatmulOnly
+    timed_steps: 1173
+    repeat_count: 3
+    repeats_us_per_step:
+      - 5128.767869363
+      - 5138.711740627237
+      - 5138.514759550974
+    median_us_per_step: 5138.514759550974
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 1740–1770 (median 1755, n=181) in the 3 timed spans"
+    note: torch.compile mode default, tf32 off
+    source: verification-report:transformer-block-benchmark-2026-10-27, raw records benchmarks/raw/2026-10-27-transformer-block/pytorch.jsonl
+    state: Recorded

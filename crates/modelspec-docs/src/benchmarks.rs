@@ -1945,13 +1945,24 @@ mod tests {
 
     #[test]
     fn every_sweep_entry_repeats_the_raw_record_it_cites() {
+        assert_entries_repeat_their_raw_records("mlp-784-H-10", 86);
+    }
+
+    /// The nine runs of verification-report:transformer-block-benchmark-2026-10-27 (3 batches ×
+    /// ModelSpec Vulkan, PyTorch CUDA eager and `torch.compile`) each repeat their raw record.
+    #[test]
+    fn every_transformer_block_entry_repeats_the_raw_record_it_cites() {
+        assert_entries_repeat_their_raw_records(BLOCK, 9);
+    }
+
+    /// Every committed run of `workload`, `count` of them, cites one raw record of its side, batch
+    /// and hidden width under `benchmarks/raw/`, no record twice, and states that record's repeats,
+    /// median, timed steps, FLOP and tokens per step, and its commit.
+    fn assert_entries_repeat_their_raw_records(workload: &str, count: usize) {
         let text = fs::read_to_string(root().join(RUNS)).unwrap();
         let runs = read(&text, &schema()).unwrap();
-        let sweep: Vec<&Run> = runs
-            .iter()
-            .filter(|run| run.workload == "mlp-784-H-10")
-            .collect();
-        assert_eq!(sweep.len(), 86);
+        let sweep: Vec<&Run> = runs.iter().filter(|run| run.workload == workload).collect();
+        assert_eq!(sweep.len(), count, "{workload}");
         let mut used = std::collections::BTreeSet::new();
         for run in sweep {
             let (_, path) = run
@@ -2013,8 +2024,20 @@ mod tests {
                 "{}",
                 run.run_id
             );
+            assert_eq!(
+                run.tokens_per_step,
+                record["tokens_per_step"].as_u64(),
+                "{}",
+                run.run_id
+            );
+            assert_eq!(
+                run.commit.as_deref(),
+                record["build"]["commit"].as_str(),
+                "{}",
+                run.run_id
+            );
         }
-        assert_eq!(used.len(), 86, "every raw record is cited once");
+        assert_eq!(used.len(), count, "every raw record is cited once");
     }
 
     #[test]
@@ -2584,8 +2607,49 @@ mod tests {
         assert!(images.contains_key("mlp-784-h-10-flop.svg"));
         assert!(!page.contains("the sides count by different rules"));
         let section = not_measured(&page).unwrap();
-        assert!(section.contains("**Transformer block**"));
+        assert!(!section.contains("Transformer block"), "{section}");
         assert!(section.contains("**BERT-tiny pre-training**"));
+        assert_eq!(section.matches("\n- ").count(), 1, "{section}");
+    }
+
+    /// The published transformer-block section holds the nine medians of
+    /// verification-report:transformer-block-benchmark-2026-10-27, with the tokens per second and
+    /// GFLOP/s of its results table, in one chart series per side.
+    #[test]
+    fn the_published_page_has_the_transformer_block_figures_of_the_report() {
+        let (page, images) = files(&root()).unwrap();
+        let start = page
+            .find("\n## Transformer block\n")
+            .unwrap_or_else(|| panic!("no transformer-block section"));
+        let end = page[start + 1..]
+            .find("\n## ")
+            .map_or(page.len(), |at| start + 1 + at);
+        let section = &page[start..end];
+        // Batch, tokens per step, side, build, µs per step, tokens per second, GFLOP/s.
+        let expected = [
+            "| 8 | 1,024 | ModelSpec Vulkan | 2026-10-27 | 0.20.0 (`a123c1a`) | 93,868.4 | 10,908.889 | 29.0 | 3 |",
+            "| 8 | 1,024 | PyTorch CUDA eager | 2026-10-27 | torch 2.14.1+cu130, CUDA 13.0 | 3,937.184 | 260,084.353 | 690.3 | 3 |",
+            "| 8 | 1,024 | PyTorch CUDA torch.compile | 2026-10-27 | torch 2.14.1+cu130, CUDA 13.0 | 1,971.859 | 519,306.914 | 1,378.3 | 3 |",
+            "| 32 | 4,096 | ModelSpec Vulkan | 2026-10-27 | 0.20.0 (`a123c1a`) | 188,352.069 | 21,746.509 | 57.7 | 3 |",
+            "| 32 | 4,096 | PyTorch CUDA eager | 2026-10-27 | torch 2.14.1+cu130, CUDA 13.0 | 4,046.869 | 1,012,140.555 | 2,686.4 | 3 |",
+            "| 32 | 4,096 | PyTorch CUDA torch.compile | 2026-10-27 | torch 2.14.1+cu130, CUDA 13.0 | 1,926.75 | 2,125,859.797 | 5,642.5 | 3 |",
+            "| 128 | 16,384 | ModelSpec Vulkan | 2026-10-27 | 0.20.0 (`a123c1a`) | 641,794.458 | 25,528.422 | 67.8 | 3 |",
+            "| 128 | 16,384 | PyTorch CUDA eager | 2026-10-27 | torch 2.14.1+cu130, CUDA 13.0 | 12,091.141 | 1,355,041.638 | 3,596.6 | 3 |",
+            "| 128 | 16,384 | PyTorch CUDA torch.compile | 2026-10-27 | torch 2.14.1+cu130, CUDA 13.0 | 5,138.515 | 3,188,469.97 | 8,462.9 | 3 |",
+        ];
+        let table: Vec<&str> = section
+            .lines()
+            .filter(|line| line.starts_with("| ") && !line.starts_with("| Batch"))
+            .collect();
+        assert_eq!(table, expected, "{section}");
+        let chart = &images["transformer-block-batch.svg"];
+        for label in [
+            "ModelSpec Vulkan",
+            "PyTorch CUDA eager",
+            "PyTorch CUDA torch.compile",
+        ] {
+            assert!(chart.contains(label), "{label}");
+        }
     }
 
     #[test]

@@ -1,0 +1,42 @@
+<venv>/lib/python3.14/site-packages/torch/_subclasses/functional_tensor.py:368: UserWarning: Failed to initialize NumPy: No module named 'numpy' (Triggered internally at /__w/pytorch/pytorch/torch/csrc/utils/tensor_numpy.cpp:84.)
+  cpu = _conversion_method_template(device=torch.device("cpu"))
+transformer_block: pytorch-eager batch 8 (1024 tokens): 2717908992 FLOP per step
+transformer_block:   warm-up: 20 steps in 0.184 s
+transformer_block:   calibration: 653 steps in 2.659 s
+transformer_block:   calibration: 1474 steps in 5.837 s
+transformer_block:   timed: 1474 steps in 5.725 s, 3883.839 us per step
+transformer_block:   timed: 1474 steps in 5.803 s, 3937.184 us per step
+transformer_block:   timed: 1474 steps in 5.935 s, 4026.643 us per step
+transformer_block: pytorch-compile batch 8 (1024 tokens): 2717908992 FLOP per step
+transformer_block:   warm-up: 20 steps in 9.108 s
+transformer_block:   calibration: 20 steps in 0.037 s
+transformer_block:   calibration: 3219 steps in 6.302 s
+transformer_block:   timed: 3219 steps in 6.242 s, 1939.113 us per step
+transformer_block:   timed: 3219 steps in 6.347 s, 1971.859 us per step
+transformer_block:   timed: 3219 steps in 6.466 s, 2008.594 us per step
+transformer_block: pytorch-eager batch 32 (4096 tokens): 10871635968 FLOP per step
+transformer_block:   warm-up: 20 steps in 0.085 s
+transformer_block:   calibration: 1419 steps in 5.684 s
+transformer_block:   timed: 1419 steps in 5.595 s, 3943.150 us per step
+transformer_block:   timed: 1419 steps in 5.743 s, 4046.869 us per step
+transformer_block:   timed: 1419 steps in 5.789 s, 4079.864 us per step
+transformer_block: pytorch-compile batch 32 (4096 tokens): 10871635968 FLOP per step
+transformer_block:   warm-up: 20 steps in 6.191 s
+transformer_block:   calibration: 20 steps in 0.038 s
+transformer_block:   calibration: 3177 steps in 6.024 s
+transformer_block:   timed: 3177 steps in 6.121 s, 1926.750 us per step
+transformer_block:   timed: 3177 steps in 6.170 s, 1941.949 us per step
+transformer_block:   timed: 3177 steps in 5.954 s, 1874.073 us per step
+transformer_block: pytorch-eager batch 128 (16384 tokens): 43486543872 FLOP per step
+transformer_block:   warm-up: 20 steps in 0.241 s
+transformer_block:   calibration: 497 steps in 6.019 s
+transformer_block:   timed: 497 steps in 6.027 s, 12126.855 us per step
+transformer_block:   timed: 497 steps in 6.009 s, 12091.141 us per step
+transformer_block:   timed: 497 steps in 5.980 s, 12031.884 us per step
+transformer_block: pytorch-compile batch 128 (16384 tokens): 43486543872 FLOP per step
+transformer_block:   warm-up: 20 steps in 6.625 s
+transformer_block:   calibration: 20 steps in 0.102 s
+transformer_block:   calibration: 1173 steps in 6.008 s
+transformer_block:   timed: 1173 steps in 6.016 s, 5128.768 us per step
+transformer_block:   timed: 1173 steps in 6.028 s, 5138.712 us per step
+transformer_block:   timed: 1173 steps in 6.027 s, 5138.515 us per step
