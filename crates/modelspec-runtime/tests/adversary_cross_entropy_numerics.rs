@@ -134,7 +134,7 @@ impl Case<'_> {
                 denominator = w(0);
             } else {
                 numerator = w(n).mul_add(loss, numerator);
-                denominator = denominator + w(n);
+                denominator += w(n);
             }
         }
         if denominator == 0.0 {
