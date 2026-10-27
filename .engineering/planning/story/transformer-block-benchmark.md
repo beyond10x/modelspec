@@ -2,7 +2,7 @@
 format: aep.planning-md/3
 id: story:transformer-block-benchmark
 kind: story
-status: draft
+status: active
 title: Transformer-block benchmark on synthetic data against PyTorch CUDA
 relations:
 - decomposes: epic:transformer-vs-pytorch-cuda
@@ -14,7 +14,11 @@ relations:
 - depends_on: story:bert-vulkan-kernels-attention-loss-adamw
 - depends_on: story:mlp-size-sweep-vs-pytorch-cuda
 - depends_on: story:benchmark-results-page
-revision: 2
+- serves: vision:modelspec
+revision: 4
+transitions:
+- {from: "draft", to: "proposed", at: "2026-10-27T13:28:00Z", actor: "human:timo", revision: 3}
+- {from: "proposed", to: "active", at: "2026-10-27T13:28:01Z", actor: "human:timo", revision: 4}
 ---
 # Transformer-block benchmark on synthetic data
 
