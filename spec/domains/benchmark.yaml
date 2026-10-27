@@ -13,7 +13,7 @@ types:
     kind: newtype
     of: Integer
     naming:
-      summary: A whole number of at least 1, the type of every count and size of a BenchmarkRun (threads, batch, hidden, flop_per_step, timed_steps, repeat_count); the generated JSON Schema carries it as `minimum` 1.
+      summary: A whole number of at least 1, the type of every count and size of a BenchmarkRun (threads, batch, hidden, tokens_per_step, flop_per_step, timed_steps, repeat_count); the generated JSON Schema carries it as `minimum` 1.
     invariants:
       - value >= 1
 
@@ -32,7 +32,7 @@ types:
   - name: modelspec.benchmark.FlopRule
     kind: enum
     naming:
-      summary: What flop_per_step counts. MatmulOnly is `3196·B·H`, the matmuls of a 784 → H → 10 step at batch B; AllSites is the `profile step_total` count over every dispatch site of the step (DESIGN.md § 3.1 counting rule).
+      summary: What flop_per_step counts. MatmulOnly counts the matrix products of a step, forward and backward, by workload, `3196·B·H` for `mlp-784-H-10`, the matmuls of a 784 → H → 10 step at batch B, and `N·(42·H² + 24·H·F + 24·S·H)` with `N = B·S`, `H = 128`, `F = 512` and `S = 128`, that is `339,738,624·B`, for `transformer-block` at a batch of B sequences (benches/transformer_block/block.rs); AllSites is the `profile step_total` count over every dispatch site of the step (DESIGN.md § 3.1 counting rule).
     variants: [MatmulOnly, AllSites]
 
 entities:
@@ -48,7 +48,7 @@ entities:
         summary: The day of the run, `YYYY-MM-DD`; for a figure that only a CHANGELOG release states, that release's date.
       - name: workload
         type: String
-        summary: What was trained, `mnist-784-64-10` (examples/mnist_mlp.mspec on MNIST, batch 100) or `mlp-784-H-10` (the `mlp_sweep` bench, 784 → H ReLU → 10 at the batch and hidden width of the run).
+        summary: What was trained, `mnist-784-64-10` (examples/mnist_mlp.mspec on MNIST, batch 100), `mlp-784-H-10` (the `mlp_sweep` bench, 784 → H ReLU → 10 at the batch and hidden width of the run) or `transformer-block` (the `transformer_block` bench, examples/transformer_block.mspec at the batch of the run, in sequences of 128).
       - name: side
         type: modelspec.benchmark.Side
       - name: threads
@@ -71,6 +71,9 @@ entities:
       - name: hidden
         type: Optional<modelspec.benchmark.PositiveInteger>
         summary: The hidden width H of a workload that takes one as a parameter.
+      - name: tokens_per_step
+        type: Optional<modelspec.benchmark.PositiveInteger>
+        summary: The tokens of one step of a sequence workload, batch times sequence length, such as `1024` for `transformer-block` at a batch of 8 sequences of 128; with it the page shows tokens per second, tokens_per_step · 10⁶ / median_us_per_step.
       - name: flop_per_step
         type: Optional<modelspec.benchmark.PositiveInteger>
         summary: The FLOP of one step by flop_rule, where the source states it.

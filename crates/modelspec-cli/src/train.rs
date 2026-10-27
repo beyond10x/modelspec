@@ -101,6 +101,11 @@
 //! `HeldOut` split of fewer sequences than a batch is reported on one line before the first step
 //! (exit 1).
 //!
+//! `--write-batch <dir>` writes the synthetic batch the run trains on before its first step,
+//! `<dir>/<name>.f32` for each input and target, row-major little-endian `f32` as a dense `--data`
+//! directory holds them, so that another implementation can compute its loss on the same data
+//! (story:transformer-block-benchmark); beside `--data` it is a usage error (exit 2).
+//!
 //! `--steps <n>` runs `n` steps instead of the block's. `--checkpoint <path>` writes the state
 //! after the last step as a `.msckpt` file ([`checkpoint`]; DESIGN.md § 6.2), and
 //! `--checkpoint-every <n>` also writes `<stem>-<k>.msckpt` beside it at every step `k` after the
@@ -248,6 +253,11 @@ pub struct Args {
     /// is a multiple of N and before the end.
     #[arg(long, value_name = "N", requires = "checkpoint", value_parser = clap::value_parser!(u64).range(1..))]
     pub checkpoint_every: Option<u64>,
+    /// Before the first step, write the synthetic batch the run trains on to DIR: DIR/NAME.f32
+    /// for each input and target declaration NAME, row-major little-endian f32, the layout of a
+    /// dense --data directory. DIR is created if it does not exist.
+    #[arg(long, value_name = "DIR", conflicts_with = "data")]
+    pub write_batch: Option<PathBuf>,
     /// Continue from the .msckpt file PATH: its parameters and step instead of the initializers
     /// and step 0, refused unless it matches the compiled file and its optimizer.
     #[arg(long, value_name = "PATH", conflicts_with = "init")]
@@ -470,6 +480,24 @@ fn vulkan_artifact(
     Ok(artifact)
 }
 
+/// `--write-batch <dir>`: the synthetic batch of `compiled` ([`data::synthetic`]), each input and
+/// target `<dir>/<name>.f32`, row-major little-endian `f32`. Data the file's declarations cannot
+/// have writes nothing here; the run refuses it with its own diagnostic.
+fn write_batch(dir: &Path, compiled: &CompiledTraining) -> Result<(), String> {
+    let Ok(batch) = data::synthetic(&compiled.config, &compiled.forward) else {
+        return Ok(());
+    };
+    std::fs::create_dir_all(dir)
+        .map_err(|error| format!("cannot create {}: {error}", dir.display()))?;
+    for (name, tensor) in &batch.inputs {
+        let file = dir.join(format!("{name}.f32"));
+        let bytes: Vec<u8> = tensor.data().iter().flat_map(|v| v.to_le_bytes()).collect();
+        std::fs::write(&file, bytes)
+            .map_err(|error| format!("cannot write {}: {error}", file.display()))?;
+    }
+    Ok(())
+}
+
 /// Runs `modelspec train` and returns the process exit code.
 pub fn run(args: Args, stdout: &mut dyn Write, stderr: &mut dyn Write) -> u8 {
     if let Some(flag) = misplaced_flag(&args) {
@@ -592,6 +620,12 @@ pub fn run(args: Args, stdout: &mut dyn Write, stderr: &mut dyn Write) -> u8 {
             }
         }
     };
+    if let Some(dir) = &args.write_batch
+        && let Err(message) = write_batch(dir, &compiled)
+    {
+        let _ = writeln!(stderr, "modelspec train {file}: {message}");
+        return crate::EXIT_FAILURE;
+    }
     let binding = match &args.data {
         None => None,
         Some(dir) => match data::source(dir, &compiled.config) {

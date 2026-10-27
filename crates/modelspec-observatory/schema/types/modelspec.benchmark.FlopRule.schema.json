@@ -4,14 +4,14 @@
   "x-ess-provenance": {
     "system": "modelspec",
     "specification_version": "v1",
-    "source_digest": "d594b677a3ce41f3a13954344cd7b7e24f2b98b3050de66c5bdbb9554060c669",
-    "contract_digest": "slice-sha256/2:93bbddf0619767b80b48a6a9593957195a8ab5c834bf6803f2cba3f2def02759",
+    "source_digest": "99c6aab814720fd964fd2d81cf10c6edea444770db2ce865ce83d33f811ec212",
+    "contract_digest": "slice-sha256/2:1b1b8f29ea0429766726108722aac33e213e34ee467b96c327854fd8f2219fe2",
     "regenerate": "ess generate"
   },
   "$defs": {
     "modelspec.benchmark.FlopRule": {
       "title": "FlopRule",
-      "description": "What flop_per_step counts. MatmulOnly is `3196·B·H`, the matmuls of a 784 → H → 10 step at batch B; AllSites is the `profile step_total` count over every dispatch site of the step (DESIGN.md § 3.1 counting rule).",
+      "description": "What flop_per_step counts. MatmulOnly counts the matrix products of a step, forward and backward, by workload, `3196·B·H` for `mlp-784-H-10`, the matmuls of a 784 → H → 10 step at batch B, and `N·(42·H² + 24·H·F + 24·S·H)` with `N = B·S`, `H = 128`, `F = 512` and `S = 128`, that is `339,738,624·B`, for `transformer-block` at a batch of B sequences (benches/transformer_block/block.rs); AllSites is the `profile step_total` count over every dispatch site of the step (DESIGN.md § 3.1 counting rule).",
       "x-ess-name": "modelspec.benchmark.FlopRule",
       "x-ess-kind": "enum",
       "type": "string",

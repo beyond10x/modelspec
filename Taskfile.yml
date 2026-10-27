@@ -30,6 +30,7 @@ tasks:
       - cargo run -q -p modelspec-cli -- check examples/linear_regression.mspec
       - cargo run -q -p modelspec-cli -- check examples/mnist_mlp.mspec
       - cargo run -q -p modelspec-cli -- check examples/bert_tiny.mspec
+      - cargo run -q -p modelspec-cli -- check examples/transformer_block.mspec
 
   docs-generate:
     cmds:

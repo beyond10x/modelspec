@@ -207,6 +207,7 @@ Usage: modelspec train [OPTIONS] --backend <BACKEND> <PATH>
 | `--steps <N>` | no | none | Run N steps instead of the steps of the file's train block; a resumed run ends at its checkpoint's step plus N. |
 | `--checkpoint <PATH>` | no | none | After the last step, write the parameters, step and optimizer to the .msckpt file PATH. |
 | `--checkpoint-every <N>` | no | none | Also write STEM-K.msckpt beside the --checkpoint file at every step K after the start that is a multiple of N and before the end. |
+| `--write-batch <DIR>` | no | none | Before the first step, write the synthetic batch the run trains on to DIR: DIR/NAME.f32 for each input and target declaration NAME, row-major little-endian f32, the layout of a dense --data directory. DIR is created if it does not exist. |
 | `--resume <PATH>` | no | none | Continue from the .msckpt file PATH: its parameters and step instead of the initializers and step 0, refused unless it matches the compiled file and its optimizer. |
 | `--statistics-every <N>` | no | none | Take the norm and histogram of every parameter and its gradient for the event stream at the first step, every step that is a multiple of N and the last, instead of every 100; CPU only: a Vulkan run sends the Value entries of its first and last step and every other step's list empty. |
 | `--device <INDEX>` | no | none | With --backend vulkan, train on the physical device INDEX, in the order the Vulkan loader lists them, instead of device 0. |

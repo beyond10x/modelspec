@@ -6,7 +6,9 @@
 //! model's prediction for it under teacher parameters drawn by each parameter's initializer on
 //! [`Stream::Teacher`]. The teacher parameters are the known solution training should approach.
 //! The prediction is read as the intermediate value `prediction` of the forward program, run on
-//! the CPU interpreter with a zero target.
+//! the CPU interpreter with a zero target. An `input` the forward program reads only as the key
+//! mask of `attention` ([`key_masks`]) is all ones, draws nothing and is not counted as the one
+//! input (story:transformer-block-benchmark).
 //!
 //! Dense data ([`dense`], [`dense_eval`]): the declaration `name: Tensor<f32, [B, d1, …]>` reads
 //! `<dir>/<name>.f32`, row-major little-endian `f32` with no header, one sample per `d1 × …`
@@ -116,22 +118,30 @@ pub enum DataError {
 /// The synthetic data of `config` for the forward program `lowered`, whose value
 /// `lowered.prediction` is the model output.
 ///
-/// Refused, in this order, with [`E_DATA_001`] unless the block declares exactly one `input` and
-/// one `target`, with [`E_DATA_004`] at the input, else the target, when it is `i32`, with
-/// [`E_DATA_002`] unless the target has the type of the prediction, and with
-/// [`E_DATA_003`] at the first declaration of `lowered.declared_inputs` the program has no
+/// An `input` that the forward program reads only as the key mask of `attention` (its fourth
+/// operand, [`key_masks`]) is a tensor of ones, every key of every sequence unmasked, and draws
+/// nothing; it does not count as the one input (story:transformer-block-benchmark).
+///
+/// Refused, in this order, with [`E_DATA_001`] unless the block declares exactly one `input`
+/// besides its key masks and one `target`, with [`E_DATA_004`] at the input, else the target,
+/// when it is `i32`, with [`E_DATA_002`] unless the target has the type of the prediction, and
+/// with [`E_DATA_003`] at the first declaration of `lowered.declared_inputs` the program has no
 /// `Input` node for.
 pub fn synthetic(
     config: &TrainConfig,
     lowered: &LoweredProgram,
 ) -> Result<SyntheticData, DataError> {
-    let (input, target) = declarations(config, lowered, "M0 synthetic data")?;
+    let masks = key_masks(lowered);
+    let (input, target) = declarations(config, lowered, "M0 synthetic data", &masks)?;
     let prediction = lowered.prediction;
     let forward = &lowered.program;
     let teacher = initialize(forward, config.seed, Stream::Teacher)?;
     let x = standard_normal(config.seed, Stream::Data, &input.name, &input.ty)?;
     let zero = zeros(&target.name, &target.ty)?;
     let mut inputs = BTreeMap::from([(input.name.clone(), x), (target.name.clone(), zero)]);
+    for mask in config.inputs.iter().filter(|d| masks.contains(&d.name)) {
+        inputs.insert(mask.name.clone(), filled(&mask.name, &mask.ty, 1.0)?);
+    }
     let mut values = evaluate_all(forward, &inputs, &teacher)?.values;
     let y = values
         .remove(&prediction)
@@ -140,26 +150,63 @@ pub fn synthetic(
     Ok(SyntheticData { inputs, teacher })
 }
 
-/// The one `input` and one `target` of `config`, refused as [`synthetic`] documents; `what`
-/// names the data in the [`E_DATA_001`] message.
+/// The names of the `Input` nodes of `lowered`'s forward program that are read, and read only,
+/// as the key mask of an `attention` (its fourth operand), however many attentions read them.
+pub fn key_masks(lowered: &LoweredProgram) -> BTreeSet<String> {
+    let forward = &lowered.program;
+    forward
+        .inputs
+        .iter()
+        .filter_map(|&value| match &forward.node(value)?.op {
+            TensorOp::Input { name } => Some((value, name)),
+            _ => None,
+        })
+        .filter(|&(value, _)| {
+            let mut uses = forward.nodes.iter().flat_map(|node| {
+                node.operands
+                    .iter()
+                    .enumerate()
+                    .filter(move |&(_, &operand)| operand == value)
+                    .map(move |(index, _)| (&node.op, index))
+            });
+            let mut any = false;
+            let only_masks = uses.all(|(op, index)| {
+                any = true;
+                matches!(op, TensorOp::Attention { .. }) && index == 3
+            });
+            any && only_masks
+        })
+        .map(|(_, name)| name.clone())
+        .collect()
+}
+
+/// The one `input` besides the key masks `masks` and the one `target` of `config`, refused as
+/// [`synthetic`] documents; `what` names the data in the [`E_DATA_001`] message.
 fn declarations<'c>(
     config: &'c TrainConfig,
     lowered: &LoweredProgram,
     what: &str,
+    masks: &BTreeSet<String>,
 ) -> Result<(&'c DataDecl, &'c DataDecl), DataError> {
     let prediction = lowered.prediction;
     let forward = &lowered.program;
-    let ([input], [target]) = (&config.inputs[..], &config.targets[..]) else {
+    let drawn: Vec<&DataDecl> = config
+        .inputs
+        .iter()
+        .filter(|d| !masks.contains(&d.name))
+        .collect();
+    let ([input], [target]) = (&drawn[..], &config.targets[..]) else {
         return Err(DataError::Refused(
             Diagnostic::new(
                 E_DATA_001,
                 format!("{what} needs exactly one input and one target"),
             )
             .at(config.span.clone())
-            .with("inputs", config.inputs.len().to_string())
+            .with("inputs", drawn.len().to_string())
             .with("targets", config.targets.len().to_string()),
         ));
     };
+    let input: &DataDecl = input;
     for (decl, role) in [(input, "input"), (target, "target")] {
         if decl.ty.dtype != DType::F32 {
             return Err(DataError::Refused(
@@ -428,7 +475,7 @@ fn read_dense(
     config: &TrainConfig,
     lowered: &LoweredProgram,
 ) -> Result<DenseData, DataError> {
-    let (input, target) = declarations(config, lowered, "dense data")?;
+    let (input, target) = declarations(config, lowered, "dense data", &BTreeSet::new())?;
     let batch = match (input.ty.shape.first(), target.ty.shape.first()) {
         (Some(&Dim::Static(a)), Some(&Dim::Static(b))) if a == b && a > 0 => a,
         _ => {
@@ -1051,6 +1098,11 @@ fn mismatch(decl: &DataDecl, role: &str, expected: String) -> DataError {
 
 /// A zero tensor of type `ty`.
 fn zeros(name: &str, ty: &TensorType) -> Result<HostTensor<f32>, InitError> {
+    filled(name, ty, 0.0)
+}
+
+/// A tensor of type `ty` with every element `value`.
+fn filled(name: &str, ty: &TensorType, value: f32) -> Result<HostTensor<f32>, InitError> {
     let shape = ty
         .shape
         .iter()
@@ -1068,7 +1120,7 @@ fn zeros(name: &str, ty: &TensorType) -> Result<HostTensor<f32>, InitError> {
             .iter()
             .fold(1u128, |acc, &n| acc.saturating_mul(u128::from(n))),
     })?;
-    Ok(HostTensor::from_parts(shape, vec![0.0; count]))
+    Ok(HostTensor::from_parts(shape, vec![value; count]))
 }
 
 #[cfg(test)]
@@ -1342,6 +1394,110 @@ mod tests {
         assert_eq!(refused(synthetic(&two, &forward)).code, E_DATA_001);
         let wide = config(42, vec![decl("x", &[8, 4], 3)], vec![decl("y", &[8, 2], 4)]);
         assert_eq!(refused(synthetic(&wide, &forward)).code, E_DATA_002);
+    }
+
+    const MASKED: &str = "model M {
+    param wq: Tensor<f32, [4, 4]> = xavier_uniform();
+    fn forward(x: Tensor<f32, [6, 4]>, key_mask: Tensor<f32, [2, 3]>) -> Tensor<f32, [6, 4]> {
+        let q = matmul(x, wq);
+        return attention(q, q, x, key_mask, heads = 2);
+    }
+}
+train T {
+    model = M;
+    input x: Tensor<f32, [6, 4]>;
+    input key_mask: Tensor<f32, [2, 3]>;
+    target y: Tensor<f32, [6, 4]>;
+    loss = mse(model.forward(x, key_mask), y);
+    optimizer = sgd(lr = 0.1);
+    steps = 1;
+    seed = 7;
+    device = cpu;
+}
+";
+
+    /// story:transformer-block-benchmark: an `f32` input the forward program reads only as the
+    /// key mask of `attention` is all ones, every key unmasked, and draws nothing; the one other
+    /// input is the standard normal draw it is without the mask, and the target the teacher's
+    /// prediction on both.
+    #[test]
+    fn a_key_mask_input_is_all_ones_beside_the_one_drawn_input() {
+        let compiled = modelspec_core::compile::compile_training("m.mspec", MASKED).unwrap();
+        let data = synthetic(&compiled.config, &compiled.forward).unwrap();
+        assert_eq!(
+            data.inputs.keys().collect::<Vec<_>>(),
+            vec!["key_mask", "x", "y"]
+        );
+        let mask = &data.inputs["key_mask"];
+        assert_eq!(mask.shape(), &[2, 3]);
+        assert_eq!(mask.data(), &[1.0; 6]);
+        let x_ty = TensorType::f32(&[6, 4]);
+        assert_eq!(
+            data.inputs["x"],
+            standard_normal(7, Stream::Data, "x", &x_ty).unwrap()
+        );
+        let teacher = initialize(&compiled.forward.program, 7, Stream::Teacher).unwrap();
+        assert_eq!(data.teacher, teacher);
+        let mut inputs = data.inputs.clone();
+        inputs.insert("y".into(), zeros("y", &x_ty).unwrap());
+        let mut values = evaluate_all(&compiled.forward.program, &inputs, &teacher)
+            .unwrap()
+            .values;
+        let prediction = values.remove(&compiled.forward.prediction).unwrap();
+        assert_eq!(data.inputs["y"], prediction);
+    }
+
+    /// An input read as a key mask and also by any other operation is an ordinary input, so a
+    /// block with it and one more input still declares two: E-DATA-001.
+    #[test]
+    fn an_input_read_beside_its_key_mask_use_is_not_a_key_mask() {
+        let mut b = TensorProgramBuilder::new();
+        let x = b.input("x", TensorType::f32(&[4, 2])).unwrap();
+        let m = b.input("m", TensorType::f32(&[2, 2])).unwrap();
+        let y = b.input("y", TensorType::f32(&[4, 2])).unwrap();
+        let a = b.attention(x, x, x, m, 1).unwrap();
+        let r = b.relu(m).unwrap();
+        let a2 = b.attention(x, x, x, r, 1).unwrap();
+        let h = b.add(a, a2).unwrap();
+        let loss = b.mse(h, y).unwrap();
+        b.output(loss).unwrap();
+        let lowered = LoweredProgram {
+            program: b.finish(),
+            prediction: h,
+            declared_inputs: vec![
+                data(DataRole::Input, "x", &[4, 2], 3),
+                data(DataRole::Input, "m", &[2, 2], 4),
+                data(DataRole::Target, "y", &[4, 2], 5),
+            ],
+        };
+        let c = config(
+            42,
+            vec![decl("x", &[4, 2], 3), decl("m", &[2, 2], 4)],
+            vec![decl("y", &[4, 2], 5)],
+        );
+        let d = refused(synthetic(&c, &lowered));
+        assert_eq!(d.code, E_DATA_001);
+        assert_eq!(
+            d.to_string(),
+            "E-DATA-001: M0 synthetic data needs exactly one input and one target\n  \
+             fit.mspec:1:5\n  \
+             inputs: 2\n  \
+             targets: 1"
+        );
+    }
+
+    /// Dense data reads every input from a file, so a key mask is a second input there.
+    #[test]
+    fn dense_data_takes_no_key_mask_from_the_program() {
+        let compiled = modelspec_core::compile::compile_training("m.mspec", MASKED).unwrap();
+        let Err(DataError::Refused(d)) = dense(
+            Path::new("no-such-directory"),
+            &compiled.config,
+            &compiled.forward,
+        ) else {
+            panic!("dense data is refused");
+        };
+        assert_eq!(d.code, E_DATA_001);
     }
 
     const EMBEDDING: &str = "model M {

@@ -31,6 +31,7 @@ pub struct Run {
     pub mode: String,
     pub batch: Option<u64>,
     pub hidden: Option<u64>,
+    pub tokens_per_step: Option<u64>,
     pub flop_per_step: Option<u64>,
     pub flop_rule: Option<String>,
     pub timed_steps: Option<u64>,
@@ -124,10 +125,11 @@ fn median(values: &[f64]) -> Option<f64> {
 }
 
 /// The fields of `modelspec.benchmark.BenchmarkRun` typed `PositiveInteger`.
-const POSITIVE_INTEGERS: [&str; 6] = [
+const POSITIVE_INTEGERS: [&str; 7] = [
     "threads",
     "batch",
     "hidden",
+    "tokens_per_step",
     "flop_per_step",
     "timed_steps",
     "repeat_count",
@@ -172,10 +174,66 @@ fn schema_field(error: &jsonschema::ValidationError<'_>) -> String {
     }
 }
 
+/// The MLP sweep's workload, whose `MatmulOnly` count is `3196·B·H`.
+const SWEEP_WORKLOAD: &str = "mlp-784-H-10";
+/// The transformer-block workload, whose `MatmulOnly` count is [`BLOCK_FLOP_PER_SEQUENCE`]·B.
+const BLOCK: &str = "transformer-block";
+/// The sequence length of a `transformer-block` step.
+const BLOCK_SEQ: u64 = 128;
+/// The `MatmulOnly` FLOP of a `transformer-block` step per sequence: `S·(42·H² + 24·H·F + 24·S·H)`
+/// with `S = H = 128` and `F = 512`, the closed form of
+/// `crates/modelspec-runtime/benches/transformer_block/block.rs`.
+const BLOCK_FLOP_PER_SEQUENCE: u64 = 339_738_624;
+
+/// What is wrong with a `MatmulOnly` count of `flop` FLOP per step: the rule is a formula per
+/// workload (`modelspec.benchmark.FlopRule`), `3196·B·H` for `mlp-784-H-10` and
+/// `339,738,624·B` for `transformer-block`, and is defined for no other workload.
+fn matmul_only_problems(run: &Run, flop: u64) -> Option<(&'static str, String)> {
+    let problem = match run.workload.as_str() {
+        SWEEP_WORKLOAD => match (run.batch, run.hidden) {
+            (Some(batch), Some(hidden)) => {
+                let expected = 3196u64
+                    .checked_mul(batch)
+                    .and_then(|n| n.checked_mul(hidden));
+                (expected != Some(flop)).then(|| {
+                    format!(
+                        "{flop} is not what flop_rule MatmulOnly counts, 3196·B·H = {} at batch {batch}, hidden {hidden}",
+                        expected.map_or("more than 2^64".to_owned(), |n| n.to_string())
+                    )
+                })
+            }
+            _ => Some(
+                "flop_rule MatmulOnly counts 3196·B·H, so the run must give batch and hidden"
+                    .to_owned(),
+            ),
+        },
+        BLOCK => match run.batch {
+            Some(batch) => {
+                let expected = BLOCK_FLOP_PER_SEQUENCE.checked_mul(batch);
+                (expected != Some(flop)).then(|| {
+                    format!(
+                        "{flop} is not what flop_rule MatmulOnly counts for `{BLOCK}`, \
+                         {BLOCK_FLOP_PER_SEQUENCE}·B = {} at batch {batch}",
+                        expected.map_or("more than 2^64".to_owned(), |n| n.to_string())
+                    )
+                })
+            }
+            None => Some(format!(
+                "flop_rule MatmulOnly counts {BLOCK_FLOP_PER_SEQUENCE}·B for `{BLOCK}`, so the run must give batch"
+            )),
+        },
+        other => Some(format!(
+            "flop_rule MatmulOnly is a formula of `{SWEEP_WORKLOAD}` and `{BLOCK}`, not of `{other}`"
+        )),
+    };
+    problem.map(|problem| ("flop_per_step", problem))
+}
+
 /// What is wrong with a schema-valid run beyond the schema: the invariants of
 /// `modelspec.benchmark.BenchmarkRun` (spec/domains/benchmark.yaml), checked here too so that they
 /// hold whatever schema is read, its date, its repeats against its repeat count and its median
-/// against the median of its repeats; a `MatmulOnly` count against `3196·B·H` (`FlopRule`); and
+/// against the median of its repeats; a `MatmulOnly` count against its workload's formula
+/// ([`matmul_only_problems`]); the tokens of a `transformer-block` step against its batch; and
 /// its workload against the workloads the page declares ([`WORKLOADS`]).
 fn semantic_problems(run: &Run) -> Vec<(&'static str, String)> {
     let mut problems = Vec::new();
@@ -197,32 +255,24 @@ fn semantic_problems(run: &Run) -> Vec<(&'static str, String)> {
         ));
     }
     if let (Some(flop), Some("MatmulOnly")) = (run.flop_per_step, run.flop_rule.as_deref()) {
-        match (run.batch, run.hidden) {
-            (Some(batch), Some(hidden)) => {
-                let expected = 3196u64
-                    .checked_mul(batch)
-                    .and_then(|n| n.checked_mul(hidden));
-                if expected != Some(flop) {
-                    problems.push((
-                        "flop_per_step",
-                        format!(
-                            "{flop} is not what flop_rule MatmulOnly counts, 3196·B·H = {} at batch {batch}, hidden {hidden}",
-                            expected.map_or("more than 2^64".to_owned(), |n| n.to_string())
-                        ),
-                    ));
-                }
-            }
-            _ => problems.push((
-                "flop_per_step",
-                "flop_rule MatmulOnly counts 3196·B·H, so the run must give batch and hidden"
-                    .to_owned(),
-            )),
-        }
+        problems.extend(matmul_only_problems(run, flop));
+    }
+    if let (BLOCK, Some(tokens), Some(batch)) =
+        (run.workload.as_str(), run.tokens_per_step, run.batch)
+        && batch.checked_mul(BLOCK_SEQ) != Some(tokens)
+    {
+        problems.push((
+            "tokens_per_step",
+            format!(
+                "{tokens} is not the tokens of a `{BLOCK}` step at batch {batch}, {batch}·{BLOCK_SEQ}"
+            ),
+        ));
     }
     let counts = [
         ("threads", run.threads),
         ("batch", run.batch),
         ("hidden", run.hidden),
+        ("tokens_per_step", run.tokens_per_step),
         ("flop_per_step", run.flop_per_step),
         ("timed_steps", run.timed_steps),
         ("repeat_count", Some(run.repeat_count)),
@@ -1396,16 +1446,21 @@ fn flop_points(runs: &[&Run]) -> FlopChart {
 }
 
 /// What a `flop_rule` counts, as the caption says it (`modelspec.benchmark.FlopRule`).
-fn rule_text(rule: &str) -> String {
-    match rule {
-        "MatmulOnly" => {
+fn rule_text(rule: &str, workload: &str) -> String {
+    match (rule, workload) {
+        ("MatmulOnly", BLOCK) => format!(
+            "`MatmulOnly`, {}·B, the matrix products of a step of the two encoder layers, \
+             forward and backward, at a batch of B sequences of {BLOCK_SEQ}",
+            grouped(&BLOCK_FLOP_PER_SEQUENCE.to_string())
+        ),
+        ("MatmulOnly", _) => {
             "`MatmulOnly`, 3196·B·H, the matmuls of a 784 → H → 10 step at batch B".to_owned()
         }
-        "AllSites" => {
+        ("AllSites", _) => {
             "`AllSites`, the `profile step_total` count over every dispatch site of the step"
                 .to_owned()
         }
-        other => format!("`{other}`"),
+        (other, _) => format!("`{other}`"),
     }
 }
 
@@ -1468,7 +1523,11 @@ fn flop_section(workload: &str, runs: &[&Run], images: &mut Pages) -> String {
             log_x: true,
         }),
     );
-    let rules: Vec<String> = chart.rules.iter().map(|rule| rule_text(rule)).collect();
+    let rules: Vec<String> = chart
+        .rules
+        .iter()
+        .map(|rule| rule_text(rule, workload))
+        .collect();
     let mut out = format!(
         "\n### Against FLOP per step\n\n![{title}: µs per step against FLOP per step{at_batches}, both axes log scale](/img/benchmarks/{name})\n\n\
          Every batch and hidden width in one chart: the median µs per step of each side's latest \
@@ -1492,6 +1551,103 @@ fn flop_section(workload: &str, runs: &[&Run], images: &mut Pages) -> String {
         " The tables below give each run's GFLOP/s; [Every run](#every-run) names the source \
          of each.\n",
     );
+    out
+}
+
+/// The tokens per second of `run`, its tokens per step · 10⁶ / µs per step; none when it states
+/// no tokens per step.
+fn tokens_per_s(run: &Run) -> Option<f64> {
+    run.tokens_per_step
+        .map(|tokens| tokens as f64 * 1e6 / run.median_us_per_step)
+}
+
+/// The section of a sequence workload, one whose runs state `tokens_per_step`: a chart of µs per
+/// step against batch at the latest run of each side and batch, and those runs in a table with
+/// their tokens per second and GFLOP/s.
+fn sequence_section(workload: &str, runs: &[&Run], images: &mut Pages) -> String {
+    let title = workload_title(workload);
+    let batches: Vec<Option<u64>> = runs
+        .iter()
+        .map(|run| run.batch)
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let points = latest(runs, |run| {
+        (side_rank(&run.side), run.side.clone(), run.batch)
+    });
+    let mut sides: Vec<(usize, String)> = points.keys().map(|(r, s, _)| (*r, s.clone())).collect();
+    sides.dedup();
+    let batch_label = |batch: &Option<u64>| batch.map_or("none".to_owned(), |b| b.to_string());
+    let series = sides
+        .iter()
+        .map(|(rank, side)| Series {
+            label: side_label(side).to_owned(),
+            modelspec: is_modelspec(side),
+            points: batches
+                .iter()
+                .enumerate()
+                .filter_map(|(i, batch)| {
+                    points.get(&(*rank, side.clone(), *batch)).map(|run| Point {
+                        x: i as f64,
+                        us: run.median_us_per_step,
+                        label: None,
+                    })
+                })
+                .collect(),
+        })
+        .collect();
+    let name = format!("{}-batch.svg", slug(workload));
+    images.insert(
+        name.clone(),
+        svg(&Chart {
+            title: format!("{title}: µs per step against batch"),
+            x_label: "batch, sequences".to_owned(),
+            ticks: batches.iter().map(batch_label).collect(),
+            series,
+            carry_forward: false,
+            log_x: false,
+        }),
+    );
+    let rules: std::collections::BTreeSet<&str> = runs
+        .iter()
+        .filter_map(|run| run.flop_rule.as_deref())
+        .collect();
+    let rules: Vec<String> = rules.iter().map(|rule| rule_text(rule, workload)).collect();
+    let mut out = format!(
+        "## {title}\n\n`{workload}`: per batch of sequences, the median µs per step of the latest \
+         run of each side, ModelSpec solid with filled circles and the opponents dashed with open \
+         squares.\n\n![{title}: µs per step against batch, log scale](/img/benchmarks/{name})\n\n\
+         ### Latest median per side and batch\n\n\
+         Tokens per second are the run's tokens per step · 10⁶ / µs per step, GFLOP/s its FLOP \
+         per step / µs per step / 1000, blank where the run states no tokens or FLOP per step."
+    );
+    if !rules.is_empty() {
+        out.push_str(&format!(" FLOP are counted by {}.", rules.join(" and by ")));
+    }
+    out.push_str(
+        "\n\n| Batch | Tokens per step | Side | Date | Build | µs per step | Tokens per second | GFLOP/s | Repeats |\n\
+         |---|---|---|---|---|---|---|---|---|\n",
+    );
+    for batch in &batches {
+        for (rank, side) in &sides {
+            let Some(run) = points.get(&(*rank, side.clone(), *batch)) else {
+                continue;
+            };
+            out.push_str(&format!(
+                "| {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
+                batch_label(batch),
+                run.tokens_per_step
+                    .map_or(String::new(), |tokens| grouped(&tokens.to_string())),
+                side_label(&run.side),
+                run.date,
+                crate::cell(&build(run)),
+                number(run.median_us_per_step),
+                tokens_per_s(run).map_or(String::new(), number),
+                gflops_text(gflops(run)),
+                repeats(run)
+            ));
+        }
+    }
     out
 }
 
@@ -1542,7 +1698,9 @@ fn render(runs: &[Run]) -> (String, Pages) {
             .iter()
             .filter(|run| run.workload == *workload)
             .collect();
-        let section = if of_workload
+        let section = if of_workload.iter().any(|run| run.tokens_per_step.is_some()) {
+            sequence_section(workload, &of_workload, &mut images)
+        } else if of_workload
             .iter()
             .any(|run| run.batch.is_some() || run.hidden.is_some())
         {
@@ -2414,6 +2572,202 @@ mod tests {
         );
         assert!(error.contains("`transformer_block`"), "{error}");
         assert!(error.contains("transformer-block"), "{error}");
+    }
+
+    /// A `transformer-block` run at `batch` sequences, with its tokens and `MatmulOnly` FLOP per
+    /// step where given.
+    fn block_entry(
+        id: &str,
+        side: &str,
+        batch: Option<u64>,
+        tokens: Option<u64>,
+        flop: Option<u64>,
+        median: f64,
+    ) -> String {
+        let mut text = format!(
+            "  - run_id: {id}\n    date: \"2026-10-27\"\n    workload: transformer-block\n    side: {side}\n    mode: Timed\n"
+        );
+        if let Some(batch) = batch {
+            text.push_str(&format!("    batch: {batch}\n"));
+        }
+        if let Some(tokens) = tokens {
+            text.push_str(&format!("    tokens_per_step: {tokens}\n"));
+        }
+        if let Some(flop) = flop {
+            text.push_str(&format!(
+                "    flop_per_step: {flop}\n    flop_rule: MatmulOnly\n"
+            ));
+        }
+        text.push_str(&format!(
+            "    repeat_count: 1\n    repeats_us_per_step: null\n    median_us_per_step: {median}\n    source: verification-report:fixture\n    state: Recorded\n"
+        ));
+        text
+    }
+
+    /// `MatmulOnly` is `339,738,624·B` for `transformer-block`: 2,717,908,992 at batch 8 stands,
+    /// another count or a run without a batch is refused, and so is `MatmulOnly` on a workload
+    /// it has no formula for.
+    #[test]
+    fn a_transformer_block_matmul_only_count_is_its_formula_at_the_batch() {
+        let at_8 = format!(
+            "runs:\n{}",
+            block_entry(
+                "b8",
+                "ModelSpecVulkan",
+                Some(8),
+                Some(1024),
+                Some(2_717_908_992),
+                1024.0
+            )
+        );
+        assert_eq!(
+            read(&at_8, &schema()).unwrap()[0].tokens_per_step,
+            Some(1024)
+        );
+        let at_128 = format!(
+            "runs:\n{}",
+            block_entry(
+                "b128",
+                "PyTorchCudaCompile",
+                Some(128),
+                Some(16_384),
+                Some(43_486_543_872),
+                1.0
+            )
+        );
+        assert!(read(&at_128, &schema()).is_ok());
+
+        let wrong = format!(
+            "runs:\n{}",
+            block_entry(
+                "wrong",
+                "ModelSpecVulkan",
+                Some(8),
+                None,
+                Some(3196 * 8 * 128),
+                1.0
+            )
+        );
+        let error = read(&wrong, &schema()).err().unwrap();
+        assert!(
+            error.starts_with("benchmarks/runs.yaml:8: runs[0] (wrong) field `flop_per_step`:"),
+            "{error}"
+        );
+        assert!(
+            error.contains("339738624·B = 2717908992 at batch 8"),
+            "{error}"
+        );
+
+        let no_batch = format!(
+            "runs:\n{}",
+            block_entry(
+                "no-batch",
+                "ModelSpecVulkan",
+                None,
+                None,
+                Some(2_717_908_992),
+                1.0
+            )
+        );
+        let error = read(&no_batch, &schema()).err().unwrap();
+        assert!(
+            error.starts_with("benchmarks/runs.yaml:7: runs[0] (no-batch) field `flop_per_step`:"),
+            "{error}"
+        );
+        assert!(error.contains("must give batch"), "{error}");
+
+        let mnist = format!(
+            "runs:\n{}",
+            entry(
+                "mnist",
+                "2026-10-27",
+                "mnist-784-64-10",
+                "ModelSpecVulkan",
+                None,
+                Some((1_000, "MatmulOnly")),
+                10.0
+            )
+        );
+        let error = read(&mnist, &schema()).err().unwrap();
+        assert!(
+            error.starts_with("benchmarks/runs.yaml:7: runs[0] (mnist) field `flop_per_step`:"),
+            "{error}"
+        );
+        assert!(error.contains("not of `mnist-784-64-10`"), "{error}");
+    }
+
+    #[test]
+    fn transformer_block_tokens_that_are_not_128_per_sequence_are_refused() {
+        let text = format!(
+            "runs:\n{}",
+            block_entry("tokens", "ModelSpecVulkan", Some(8), Some(1000), None, 1.0)
+        );
+        let error = read(&text, &schema()).err().unwrap();
+        assert!(
+            error.starts_with("benchmarks/runs.yaml:8: runs[0] (tokens) field `tokens_per_step`:"),
+            "{error}"
+        );
+        let text = format!(
+            "runs:\n{}",
+            block_entry("zero", "ModelSpecVulkan", None, Some(0), None, 1.0)
+        );
+        let error = read(&text, &schema()).err().unwrap();
+        assert!(error.contains("field `tokens_per_step`"), "{error}");
+    }
+
+    /// A workload whose runs state tokens per step gets a section of its own: a chart against
+    /// batch and the latest run of each side and batch with its tokens per second and GFLOP/s.
+    #[test]
+    fn a_transformer_block_section_shows_tokens_per_second_per_side_and_batch() {
+        let text = format!(
+            "{}{}{}",
+            flop_fixture(),
+            block_entry(
+                "block-ms-8",
+                "ModelSpecVulkan",
+                Some(8),
+                Some(1024),
+                Some(2_717_908_992),
+                1024.0
+            ),
+            block_entry(
+                "block-pt-8",
+                "PyTorchCudaEager",
+                Some(8),
+                Some(1024),
+                Some(2_717_908_992),
+                4096.0
+            )
+        );
+        let runs = read(&text, &schema()).unwrap();
+        let (page, images) = render(&runs);
+        let start = page
+            .find("\n## Transformer block\n")
+            .unwrap_or_else(|| panic!("{page}"));
+        let end = page[start + 1..]
+            .find("\n## ")
+            .map_or(page.len(), |at| start + 1 + at);
+        let section = &page[start..end];
+        assert!(images.contains_key("transformer-block-batch.svg"));
+        assert!(!images.contains_key("transformer-block.svg"));
+        assert!(
+            section.contains("| Batch | Tokens per step | Side | Date | Build | µs per step | Tokens per second | GFLOP/s | Repeats |"),
+            "{section}"
+        );
+        assert!(
+            section.contains("| 8 | 1,024 | ModelSpec Vulkan | 2026-10-27 |  | 1,024 | 1,000,000 | 2,654.2 | 1, not recorded |"),
+            "{section}"
+        );
+        assert!(
+            section.contains("| 8 | 1,024 | PyTorch CUDA eager | 2026-10-27 |  | 4,096 | 250,000 | 663.6 | 1, not recorded |"),
+            "{section}"
+        );
+        assert!(section.contains("339,738,624·B"), "{section}");
+        let not_measured = not_measured(&page).unwrap();
+        assert!(
+            !not_measured.contains("Transformer block"),
+            "{not_measured}"
+        );
     }
 
     #[test]

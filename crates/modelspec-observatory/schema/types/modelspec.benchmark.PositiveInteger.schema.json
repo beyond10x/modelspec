@@ -4,14 +4,14 @@
   "x-ess-provenance": {
     "system": "modelspec",
     "specification_version": "v1",
-    "source_digest": "d594b677a3ce41f3a13954344cd7b7e24f2b98b3050de66c5bdbb9554060c669",
-    "contract_digest": "slice-sha256/2:d44a8cecbcfc1f3e40faabee35887a439949a140d8429f0774f92b1f0a89f73b",
+    "source_digest": "99c6aab814720fd964fd2d81cf10c6edea444770db2ce865ce83d33f811ec212",
+    "contract_digest": "slice-sha256/2:d65fb61204558c77413b1f7936a8533079d890d86423737a9555d452bcec559f",
     "regenerate": "ess generate"
   },
   "$defs": {
     "modelspec.benchmark.PositiveInteger": {
       "title": "PositiveInteger",
-      "description": "A whole number of at least 1, the type of every count and size of a BenchmarkRun (threads, batch, hidden, flop_per_step, timed_steps, repeat_count); the generated JSON Schema carries it as `minimum` 1.",
+      "description": "A whole number of at least 1, the type of every count and size of a BenchmarkRun (threads, batch, hidden, tokens_per_step, flop_per_step, timed_steps, repeat_count); the generated JSON Schema carries it as `minimum` 1.",
       "x-ess-name": "modelspec.benchmark.PositiveInteger",
       "x-ess-kind": "newtype",
       "type": "integer",
