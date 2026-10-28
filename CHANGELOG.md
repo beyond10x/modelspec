@@ -22,6 +22,7 @@ history.
 ### Changed
 
 - The CPU interpreter accumulates every sum of a whole tensor into one scalar, `reduce_sum`, `mean`, `mse`, the two sums of `cross_entropy` and the held-out loss, in `f64` and rounds it to the element type once; rows, columns and `matmul` elements keep the element type. The step-0 loss of `examples/transformer_block.mspec` at batch 128 is now within the run tolerance of PyTorch's, and the losses a CPU run prints can change in their last digits (DESIGN.md revision 0.55, coordinator decision D84) (story:transformer-block-benchmark).
+- The specification and CI use ESS 0.72.0 (was 0.68.0); the JSON Schemas under `crates/modelspec-observatory/schema` and `crates/modelspec-runtime/schema` regenerate unchanged.
 
 ## [0.20.0] - 2026-10-26
 
