@@ -55,9 +55,10 @@ pub struct CompiledTraining {
     /// The verified training step: forward, loss, backward and the SGD subgraph, with its effect
     /// tokens and state versions.
     pub training: TrainingStep,
-    /// The Tensor IR before autodiff, with its `prediction` value and every dropout the identity
-    /// ([`lower::without_dropout`]): what the data loader, the final loss line, evaluation and
-    /// inference run. Its node ids are those of the training step.
+    /// The Tensor IR before autodiff, with its `prediction` value, every dropout the identity
+    /// ([`lower::without_dropout`]) and every `stop_gradient` removed as dropout is, each use
+    /// reading its operand ([`stop_gradient::eliminate`]): what the data loader, the final loss
+    /// line, evaluation and inference run. Its node ids are those of the training step.
     pub forward: LoweredProgram,
     /// The `train` block's learning rate, steps, seed and data declarations; its optimizer rule
     /// is the step's.

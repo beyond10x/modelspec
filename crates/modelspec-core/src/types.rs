@@ -149,7 +149,9 @@ pub mod codes {
         INITIALIZER_RANK = "E-TYPE-014";
         /// A tensor type with a dimension of 0 (DESIGN.md § 2.2).
         ZERO_DIMENSION = "E-TYPE-015";
-        /// A tensor type whose element or byte count overflows `u64` (DESIGN.md § 2.2).
+        /// A tensor type whose element or byte count overflows `u64`, declared or derived by an
+        /// operator from a named argument, such as the projection `sigreg` derives from `slices`
+        /// (DESIGN.md § 2.2).
         COUNT_OVERFLOW = "E-TYPE-016";
         /// A train block's loss that does not call `model.forward` exactly once: the prediction
         /// is the value of that one call.
@@ -236,6 +238,19 @@ pub fn check(ast: &ast::Ast) -> Result<Hir, Vec<Diagnostic>> {
 
 /// Sorts diagnostics by line, then column; a stable sort, so diagnostics at one position keep
 /// the order they were reported in.
+/// Whether the element and byte counts of `ty` fit `u64` (DESIGN.md § 2.2), a symbolic
+/// dimension counting as 1.
+fn counts_fit_u64(ty: &TensorType) -> bool {
+    ty.shape
+        .iter()
+        .try_fold(1u64, |count, dim| match dim {
+            crate::ir::tensor::Dim::Static(n) => count.checked_mul(*n),
+            crate::ir::tensor::Dim::Symbol(_) => Some(count),
+        })
+        .and_then(|elements| elements.checked_mul(ty.dtype.size_bytes()))
+        .is_some()
+}
+
 fn source_order(mut diagnostics: Vec<Diagnostic>) -> Vec<Diagnostic> {
     diagnostics.sort_by_key(|d| d.span.as_ref().map(|s| (s.line, s.column)));
     diagnostics
@@ -426,15 +441,7 @@ impl Checker {
 
     /// Whether the element and byte counts of `ty` fit `u64`; E-TYPE-016 at `span` if not.
     fn counts_fit(&mut self, ty: &TensorType, span: &SourceSpan) -> bool {
-        let fits = ty
-            .shape
-            .iter()
-            .try_fold(1u64, |count, dim| match dim {
-                crate::ir::tensor::Dim::Static(n) => count.checked_mul(*n),
-                crate::ir::tensor::Dim::Symbol(_) => Some(count),
-            })
-            .and_then(|elements| elements.checked_mul(ty.dtype.size_bytes()))
-            .is_some();
+        let fits = counts_fit_u64(ty);
         if !fits {
             self.report(
                 codes::COUNT_OVERFLOW,
@@ -1288,6 +1295,25 @@ impl Checker {
         match ops::infer(&op, &types, None) {
             Ok(ty) => {
                 if !self.counts_fit(&ty, &call.span) {
+                    return None;
+                }
+                if let Some(derived) = ops::derived_types(&op, &types)
+                    .into_iter()
+                    .find(|derived| !counts_fit_u64(derived))
+                {
+                    let argument = call.args.iter().rev().find(|a| a.name.is_some());
+                    let (name, span) = argument.map_or(("", &call.span), |a| {
+                        (a.name.as_ref().map_or("", |n| n.name.as_str()), &a.span)
+                    });
+                    self.report(
+                        codes::COUNT_OVERFLOW,
+                        format!(
+                            "`{name}` of `{}` makes it compute {derived}, whose element or byte \
+                             count overflows u64",
+                            call.callee.name
+                        ),
+                        span,
+                    );
                     return None;
                 }
                 for &(index, operand) in ops::constant_operands(&op) {
