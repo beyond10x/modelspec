@@ -21,7 +21,10 @@
 //! after the last update reads. A file that cannot be read as samples, or an `f32` file that
 //! holds a NaN or an infinity, is [`E_DATA_007`], an order that does not cover the run is
 //! [`E_DATA_008`], and an eval directory that is not a whole number of batches is
-//! [`E_DATA_009`].
+//! [`E_DATA_009`]. `infer --data <dir> --function <name>` reads the same layout with the
+//! arguments of the model function in place of the declarations ([`dense_function`];
+//! story:decider-infer-on-data), and a name that is no function of the model, or a function
+//! whose result is not one row per sample ([`row_elements`]), is [`E_DATA_010`].
 //!
 //! A declaration the loss does not read has no `Input` node after dead-code elimination, so the
 //! program could not take a value for it; it is refused at its declaration ([`E_DATA_003`])
@@ -95,8 +98,14 @@ pub const E_DATA_006: Code = Code::new("E-DATA-006");
 pub const E_DATA_007: Code = Code::new("E-DATA-007");
 /// `order.u32` holds fewer than `steps · B` indices, or an index not below the sample count.
 pub const E_DATA_008: Code = Code::new("E-DATA-008");
-/// The `--eval` sample count is not a multiple of the batch dimension `B`.
+/// The `--eval` sample count, or the sample count of the `--data` directory of
+/// `infer --function`, is not a multiple of the batch dimension `B`.
 pub const E_DATA_009: Code = Code::new("E-DATA-009");
+/// The `--function` of `infer --data` names no function of the model (the refusal names the
+/// ones it declares), or a function whose result is not one row per sample of the data: one
+/// that takes no argument, or, when the arguments share a leading dimension `B` above 1, one
+/// whose result does not have it (story:decider-infer-on-data).
+pub const E_DATA_010: Code = Code::new("E-DATA-010");
 
 /// The data of a synthetic run.
 #[derive(Clone, Debug, PartialEq)]
@@ -579,6 +588,92 @@ fn read_dense(
         }
     }
     refuse_unread(lowered)?;
+    let mut data = read_files(dir, &decls)?;
+    data.compared = compared
+        .filter(|t| t.ty.dtype == DType::F32)
+        .map(|t| t.name.clone());
+    Ok(data)
+}
+
+/// The data of `infer --data <dir> --function <name>` (story:decider-infer-on-data): the file
+/// of every argument of the function, the `input` declarations of `function`, the
+/// configuration of [`modelspec_core::compile::compile_function`], read as [`dense_eval`]
+/// reads the declarations of a `train` block, with no order and no compared target. Refused
+/// with [`E_DATA_010`] at the function when it takes no argument, so no file binds a sample to
+/// it; with [`E_DATA_007`] as [`read_tensor`] refuses an argument's file and when the files
+/// differ in sample count; and with [`E_DATA_009`] when the sample count is not a multiple of
+/// `B`.
+pub fn dense_function(
+    dir: &Path,
+    name: &str,
+    function: &TrainConfig,
+) -> Result<DenseData, DataError> {
+    let decls: Vec<(&DataDecl, &'static str)> =
+        function.inputs.iter().map(|d| (d, "argument")).collect();
+    if decls.is_empty() {
+        return Err(DataError::Refused(
+            Diagnostic::new(
+                E_DATA_010,
+                format!("the function `{name}` takes no argument a data file could bind"),
+            )
+            .at(function.span.clone())
+            .with("function", name),
+        ));
+    }
+    let data = read_files(dir, &decls)?;
+    if !data.samples.is_multiple_of(data.batch) {
+        return Err(DataError::Refused(
+            Diagnostic::new(E_DATA_009, "the data is not a whole number of blocks")
+                .with("directory", dir.display().to_string())
+                .with("samples", data.samples.to_string())
+                .with("batch", data.batch.to_string()),
+        ));
+    }
+    Ok(data)
+}
+
+/// [`E_DATA_010`]: the model declares no function `name`; `functions` are those it declares.
+pub fn unknown_function(name: &str, functions: &[String]) -> DataError {
+    DataError::Refused(
+        Diagnostic::new(
+            E_DATA_010,
+            format!("the model declares no function `{name}`"),
+        )
+        .with("function", name)
+        .with("functions", functions.join(", ")),
+    )
+}
+
+/// The values of one row of the output of `infer --data --function` (`spec/domains/data.yaml`,
+/// `InferenceOutputFile`): one row per sample of a block of `batch` samples, so the result of
+/// the function `name`, of type `output`, is `[B, d1, …]` when `batch` is above 1, a row
+/// `d1 × …` values, and a row is the whole result when `batch` is 1. A result whose leading
+/// dimension is not `B`, when `B` is above 1, is not one row per sample and is refused with
+/// [`E_DATA_010`].
+pub fn row_elements(name: &str, output: &TensorType, batch: usize) -> Result<usize, DataError> {
+    let (shape, elements) = static_shape(name, output)?;
+    if batch == 1 {
+        return Ok(elements);
+    }
+    match shape.first() {
+        Some(&leading) if leading == batch as u64 => Ok(elements / batch),
+        _ => Err(DataError::Refused(
+            Diagnostic::new(
+                E_DATA_010,
+                format!("the result of the function `{name}` is not one row per sample"),
+            )
+            .with("function", name)
+            .with("result", output.to_string())
+            .with("batch", batch.to_string()),
+        )),
+    }
+}
+
+/// The files of `dir` of the declarations `decls`, each with its role, in that order: `B` and
+/// the samples of each, without an order or a compared target. Refused with [`E_DATA_007`] at
+/// the first file that cannot be read as samples ([`read_tensor`]), and when the files differ in
+/// sample count.
+fn read_files(dir: &Path, decls: &[(&DataDecl, &'static str)]) -> Result<DenseData, DataError> {
     let shapes = decls
         .iter()
         .map(|(decl, _)| static_shape(&decl.name, &decl.ty))
@@ -615,9 +710,7 @@ fn read_dense(
         samples,
         tensors,
         order: None,
-        compared: compared
-            .filter(|t| t.ty.dtype == DType::F32)
-            .map(|t| t.name.clone()),
+        compared: None,
     })
 }
 

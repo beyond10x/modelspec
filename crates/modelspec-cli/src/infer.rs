@@ -20,16 +20,35 @@
 //! refuses `--backend vulkan` with [`E_TARGET_001`] before the file is read. `--device` with
 //! `--backend cpu` is a usage error (exit 2). A file that does not compile, or data the file's
 //! declarations cannot have, prints its diagnostics and exits 1.
+//!
+//! `--data <dir> --function <name> --out <path>` (story:decider-infer-on-data;
+//! `spec/domains/data.yaml`, `InferenceOutputFile`) runs the model function `name` instead,
+//! compiled as an entry of its own ([`compile::compile_function`]): it need not be `forward`
+//! and need not return a loss. Each argument binds the dense file of `<dir>` with its name,
+//! `<name>.f32` or `<name>.i32` by its dtype, as `train --eval` binds a declaration; the function
+//! runs with the checkpoint's parameters on every block of `B` samples in block order, and its
+//! results, one row per sample, are written to `<path>` once every block has run, row-major
+//! little-endian `f32` with no header. Stdout is one line,
+//! `function <name> blocks <blocks> rows <rows> out <path>`. Refused before anything is written,
+//! exit 1: a name that is not a function of the model with E-DATA-010 naming its functions; an
+//! argument without its file, or files that cannot be read as samples, with E-DATA-007; a sample
+//! count that is not a multiple of `B` with E-DATA-009; a function whose result is not one row
+//! per sample with E-DATA-010. `--function` or `--out` without `--data`, and `--data` without
+//! both, is a usage error (exit 2). On `--backend vulkan` the function's step runs stepwise
+//! with 0 steps ([`modelspec_runtime::vulkan::stepwise`]): one command buffer and host wait per
+//! block, each block's result read back before the next, then one for step 0.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use modelspec_core::compile;
+use modelspec_core::compile::{self, CompiledTraining, FunctionError};
 #[cfg(not(feature = "vulkan"))]
 use modelspec_core::diag::Diagnostic;
-use modelspec_runtime::cpu::evaluate_all;
+use modelspec_core::ir::tensor::{ParamId, TensorOp};
+use modelspec_runtime::cpu::{HostTensor, evaluate_all, evaluate_all_with_ids};
 use modelspec_runtime::train::checkpoint;
-use modelspec_runtime::train::data::{self, DataError};
+use modelspec_runtime::train::data::{self, DataError, DenseBatch, DenseData};
 
 use crate::train::Backend;
 #[cfg(not(feature = "vulkan"))]
@@ -50,6 +69,22 @@ pub struct Args {
     /// lists them, instead of device 0.
     #[arg(long, value_name = "INDEX")]
     pub device: Option<usize>,
+    /// Run the model function --function over every block of B samples of the dense directory
+    /// DIR instead of the forward program on the synthetic batch: each argument NAME of the
+    /// function reads DIR/NAME.f32 or DIR/NAME.i32 by its dtype, row-major little-endian, a
+    /// sample one row along the leading dimension B every argument shares, else the whole
+    /// argument (B = 1), and the sample count a multiple of B.
+    #[arg(long, value_name = "DIR", requires_all = ["function", "out"])]
+    pub data: Option<PathBuf>,
+    /// With --data, the model function to run: any function of the model, not only forward,
+    /// returning a loss or not.
+    #[arg(long, value_name = "NAME", requires = "data")]
+    pub function: Option<String>,
+    /// With --data, write the function's result for every block, in block order, to FILE: one
+    /// row per sample, row-major little-endian f32 with no header, written once every block has
+    /// run and not at all on a refusal.
+    #[arg(long, value_name = "FILE", requires = "data")]
+    pub out: Option<PathBuf>,
 }
 
 /// Runs `modelspec infer` and returns the process exit code.
@@ -93,6 +128,17 @@ pub fn run(args: Args, stdout: &mut dyn Write, stderr: &mut dyn Write) -> u8 {
             return crate::EXIT_FAILURE;
         }
     };
+    if let (Some(dir), Some(name), Some(out)) = (&args.data, &args.function, &args.out) {
+        let run = FunctionRun {
+            file: &file,
+            source: &source,
+            compiled: &compiled,
+            dir,
+            name,
+            out,
+        };
+        return run.run(&args, stdout, stderr);
+    }
     #[cfg(feature = "vulkan")]
     let artifact = match args.backend {
         Backend::Cpu => None,
@@ -206,5 +252,230 @@ fn print(
             );
             crate::EXIT_FAILURE
         }
+    }
+}
+
+/// Why a run of `infer --data --function` stopped: a diagnostic, or another error, printed
+/// after `modelspec infer <file>: `.
+enum Stop {
+    Refused(Vec<String>),
+    Failed(String),
+}
+
+impl From<DataError> for Stop {
+    fn from(error: DataError) -> Self {
+        match error {
+            DataError::Refused(diagnostic) => Stop::Refused(vec![diagnostic.to_string()]),
+            other => Stop::Failed(other.to_string()),
+        }
+    }
+}
+
+/// The refusal of a function [`compile::compile_function`] did not compile: E-DATA-010 for a
+/// name the model does not declare, else the file's diagnostics.
+fn function_stop(error: FunctionError) -> Stop {
+    match error {
+        FunctionError::Unknown { name, functions } => {
+            Stop::from(data::unknown_function(&name, &functions))
+        }
+        FunctionError::Diagnostics(diagnostics) => {
+            Stop::Refused(diagnostics.iter().map(ToString::to_string).collect())
+        }
+    }
+}
+
+/// `infer --data <dir> --function <name> --out <out>` of `file`, whose source is `source` and
+/// whose `train` block compiled to `compiled`.
+struct FunctionRun<'a> {
+    file: &'a str,
+    source: &'a str,
+    compiled: &'a CompiledTraining,
+    dir: &'a Path,
+    name: &'a str,
+    out: &'a Path,
+}
+
+impl FunctionRun<'_> {
+    /// Runs it and returns the exit code.
+    fn run(&self, args: &Args, stdout: &mut dyn Write, stderr: &mut dyn Write) -> u8 {
+        match self.results(args) {
+            Ok((blocks, rows, values)) => self.write(blocks, rows, &values, stdout, stderr),
+            Err(Stop::Refused(diagnostics)) => {
+                for diagnostic in diagnostics {
+                    let _ = writeln!(stderr, "{diagnostic}");
+                }
+                crate::EXIT_FAILURE
+            }
+            Err(Stop::Failed(error)) => {
+                let _ = writeln!(stderr, "modelspec infer {}: {error}", self.file);
+                crate::EXIT_FAILURE
+            }
+        }
+    }
+
+    /// The block count, the row count and the function's result for every block, in block
+    /// order: refused in the order of the module documentation, the checkpoint read after the
+    /// function compiles and before the data is read.
+    fn results(&self, args: &Args) -> Result<(usize, usize, Vec<f32>), Stop> {
+        let mut function =
+            compile::compile_function(self.file, self.source, self.name).map_err(function_stop)?;
+        function.config.steps = 0;
+        #[cfg(feature = "vulkan")]
+        let artifact = match args.backend {
+            Backend::Cpu => None,
+            Backend::Vulkan => {
+                use modelspec_core::artifact::Backend as Target;
+                Some(
+                    compile::compile_function_artifact(
+                        self.file,
+                        self.source,
+                        self.name,
+                        Target::Vulkan,
+                    )
+                    .map_err(function_stop)?,
+                )
+            }
+        };
+        let params = checkpoint::read(&args.checkpoint)
+            .and_then(|c| c.parameters_for(self.compiled))
+            .map_err(|error| Stop::Refused(vec![error.to_string()]))?;
+        let dense = data::dense_function(self.dir, self.name, &function.config)?;
+        let forward = &function.forward;
+        let node = forward
+            .program
+            .node(forward.prediction)
+            .ok_or_else(|| Stop::Failed("the function's program defines no result value".into()))?;
+        let row = data::row_elements(self.name, &node.ty, dense.batch())?;
+        let blocks = dense.samples() / dense.batch();
+        #[cfg(feature = "vulkan")]
+        let values = match &artifact {
+            Some(artifact) => on_device(args.device, &function, artifact, &params, &dense)?,
+            None => on_cpu(&function, &dense, &params)?,
+        };
+        #[cfg(not(feature = "vulkan"))]
+        let values = on_cpu(&function, &dense, &params)?;
+        if values.len() != dense.samples() * row {
+            return Err(Stop::Failed(format!(
+                "the function's results hold {} values, not {} rows of {row}",
+                values.len(),
+                dense.samples()
+            )));
+        }
+        Ok((blocks, dense.samples(), values))
+    }
+
+    /// Writes `values` to the output file, then the stdout line, and returns the exit code.
+    fn write(
+        &self,
+        blocks: usize,
+        rows: usize,
+        values: &[f32],
+        stdout: &mut dyn Write,
+        stderr: &mut dyn Write,
+    ) -> u8 {
+        let bytes: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
+        if let Err(error) = std::fs::write(self.out, bytes) {
+            let _ = writeln!(
+                stderr,
+                "modelspec infer {}: cannot write {}: {error}",
+                self.file,
+                self.out.display()
+            );
+            return crate::EXIT_FAILURE;
+        }
+        let line = format!(
+            "function {} blocks {blocks} rows {rows} out {}\n",
+            self.name,
+            self.out.display()
+        );
+        match stdout
+            .write_all(line.as_bytes())
+            .and_then(|()| stdout.flush())
+        {
+            Ok(()) => crate::EXIT_SUCCESS,
+            Err(error) => {
+                let _ = writeln!(
+                    stderr,
+                    "modelspec infer {}: cannot write the result: {error}",
+                    self.file
+                );
+                crate::EXIT_FAILURE
+            }
+        }
+    }
+}
+
+/// The result of `function`, compiled by [`compile::compile_function`], on every block of
+/// `dense` on the CPU interpreter with the parameters `params`, in block order. Each block
+/// feeds the arguments the function's program reads.
+fn on_cpu(
+    function: &CompiledTraining,
+    dense: &DenseData,
+    params: &BTreeMap<ParamId, HostTensor<f32>>,
+) -> Result<Vec<f32>, Stop> {
+    let forward = &function.forward;
+    let program = &forward.program;
+    let read: BTreeSet<&str> = program
+        .inputs
+        .iter()
+        .filter_map(|&value| match &program.node(value)?.op {
+            TensorOp::Input { name } => Some(name.as_str()),
+            _ => None,
+        })
+        .collect();
+    let mut batch = DenseBatch::default();
+    let mut values = Vec::with_capacity(dense.samples());
+    for b in 0..dense.samples() / dense.batch() {
+        dense.fill_eval_batch(b, &mut batch);
+        let inputs: BTreeMap<String, HostTensor<f32>> = batch
+            .inputs()
+            .iter()
+            .filter(|(name, _)| read.contains(name.as_str()))
+            .map(|(name, value)| (name.clone(), value.clone()))
+            .collect();
+        let ids: BTreeMap<String, HostTensor<i32>> = batch
+            .ids()
+            .iter()
+            .filter(|(name, _)| read.contains(name.as_str()))
+            .map(|(name, value)| (name.clone(), value.clone()))
+            .collect();
+        let mut evaluated = evaluate_all_with_ids(program, &inputs, &ids, params)
+            .map_err(|error| Stop::Failed(error.to_string()))?;
+        let result = evaluated
+            .values
+            .remove(&forward.prediction)
+            .ok_or_else(|| Stop::Failed(format!("block {b} has no result value")))?;
+        values.extend_from_slice(result.data());
+    }
+    Ok(values)
+}
+
+/// [`on_cpu`] on Vulkan device `device` (0 when `None`): the step of `function` runs stepwise
+/// with 0 steps and `dense` as its data and its dense eval data, each block's prediction kept.
+#[cfg(feature = "vulkan")]
+fn on_device(
+    device: Option<usize>,
+    function: &CompiledTraining,
+    artifact: &modelspec_core::artifact::CompiledArtifact,
+    params: &BTreeMap<ParamId, HostTensor<f32>>,
+    dense: &DenseData,
+) -> Result<Vec<f32>, Stop> {
+    use modelspec_runtime::train::runner::Data;
+    use modelspec_runtime::vulkan::runner::DeviceRunError;
+    use modelspec_runtime::vulkan::stepwise::{StepwiseOptions, train_stepwise_on_device};
+    let mut kept = Vec::with_capacity(dense.samples());
+    let options = StepwiseOptions {
+        init: params.clone(),
+        data: Some(Data::Dense(dense)),
+        dense_eval: Some(dense),
+        dense_predictions: Some(&mut kept),
+        ..StepwiseOptions::default()
+    };
+    match train_stepwise_on_device(device, function, artifact, options, &mut |_| Ok(())) {
+        Ok(_) => Ok(kept),
+        Err(DeviceRunError::Refused(diagnostic)) => {
+            Err(Stop::Refused(vec![diagnostic.to_string()]))
+        }
+        Err(DeviceRunError::Failed(error)) => Err(Stop::Failed(error.to_string())),
     }
 }

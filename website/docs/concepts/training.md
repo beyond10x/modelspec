@@ -76,8 +76,14 @@ block `k` of every file, wrapping at the end.
 `--eval <dir>` runs the forward program over every sample of a dense directory after the last
 step and prints the mean batch loss, with an accuracy only when the loss compares the model
 output with the block's one target. `--init` runs on `--backend cpu` only, `--data` and `--eval`
-on both backends; `--eval` beside a packed `--data` is a usage error. Each refusal of a data source has its code, `E-DATA-001` to
-`E-DATA-009` ([Diagnostics](../reference/diagnostics.md#training-data)).
+on both backends; `--eval` beside a packed `--data` is a usage error.
+
+`modelspec infer --data <dir> --function <name> --out <file>` runs one model function, which need
+not be `forward` and need not return a loss, with a checkpoint's parameters over every block of a
+dense directory. Each argument of the function reads `<dir>/<argument>.f32` or `.i32` as a
+declaration of `--eval` does, and the file receives the function's result for every block in block
+order, one row per sample, little-endian `f32` with no header. Each refusal of a data source has its code, `E-DATA-001` to
+`E-DATA-010` ([Diagnostics](../reference/diagnostics.md#training-data)).
 
 ## Reproducible to the byte
 

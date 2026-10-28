@@ -63,12 +63,14 @@ pub struct LoweredProgram {
 /// is a compiler bug (DESIGN.md § 8.1), never a fault of the source.
 #[derive(Clone, Debug, PartialEq, Eq, Error)]
 pub enum LowerError {
-    /// The loss does not call `model.forward` exactly once, which E-TYPE-017 guarantees.
+    /// The loss does not call the predicted function, `model.forward` unless [`lower_predicting`]
+    /// names another, exactly once, which E-TYPE-017 guarantees for `forward`.
     #[error(
-        "{span}: the loss of train block `{train}` calls `model.forward` {count} time(s), not once"
+        "{span}: the loss of train block `{train}` calls `model.{function}` {count} time(s), not once"
     )]
     ForwardCalls {
         train: String,
+        function: String,
         count: usize,
         span: SourceSpan,
     },
@@ -83,6 +85,13 @@ pub enum LowerError {
 
 /// Lowers the train block of `hir` with its model inlined.
 pub fn lower(hir: &Hir) -> Result<LoweredProgram, LowerError> {
+    lower_predicting(hir, "forward")
+}
+
+/// [`lower`] with the value of the loss's one call of `model.<function>(...)` as the
+/// prediction instead of `model.forward`'s: what [`crate::compile::compile_function`] lowers,
+/// whose loss calls the function it runs once (story:decider-infer-on-data).
+pub fn lower_predicting(hir: &Hir, function: &str) -> Result<LoweredProgram, LowerError> {
     let model = &hir.model;
     let train = &hir.train;
     let mut builder = TensorProgramBuilder::new();
@@ -117,7 +126,7 @@ pub fn lower(hir: &Hir) -> Result<LoweredProgram, LowerError> {
         builder,
         model,
         reads,
-        forward: model.function("forward").map(|(f, _)| f),
+        forward: model.function(function).map(|(f, _)| f),
         predictions: Vec::new(),
         inlining: Vec::new(),
         inlined: vec![0; model.functions.len()],
@@ -134,6 +143,7 @@ pub fn lower(hir: &Hir) -> Result<LoweredProgram, LowerError> {
         calls => {
             return Err(LowerError::ForwardCalls {
                 train: train.name.clone(),
+                function: function.to_owned(),
                 count: calls.len(),
                 span: train.loss.span.clone(),
             });

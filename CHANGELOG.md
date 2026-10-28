@@ -9,6 +9,10 @@ history.
 
 ## [Unreleased]
 
+### Added
+
+- `modelspec infer FILE --backend cpu|vulkan --checkpoint PATH --data DIR --function NAME --out FILE` runs any model function, not only `forward` and not only one that returns a loss, with the checkpoint's parameters over every block of the dense directory `DIR`, each argument reading `DIR/NAME.f32` or `DIR/NAME.i32`, and writes its results, one row per sample, as row-major little-endian `f32` to `FILE`, printing `function NAME blocks N rows R out FILE`; a name the model does not declare, or a result that is not one row per sample, is `E-DATA-010` (`InferenceOutputFile`, DESIGN.md revision 0.60) (story:decider-infer-on-data).
+
 ### Changed
 
 - `modelspec train --data DIR` on a dense directory binds every `input` and `target` declaration by name, however many there are: `NAME.f32` for an `f32` declaration and `NAME.i32` for an `i32` one, a sample one row along the leading dimension all declarations share, else the whole declared tensor; step k feeds block k of every file, on the CPU and on Vulkan. `--eval DIR` takes the same layout, runs on Vulkan too, and prints `accuracy=` only when the loss compares the model output with the block's one target. For dense data `E-DATA-001` now means a block with no declaration, `E-DATA-002` applies only to that one compared target, `E-DATA-004` no longer applies, and a missing file is `E-DATA-007` naming it and, when only that exists, the file of the other dtype (DESIGN.md revision 0.56) (story:decider-dense-named-data).
