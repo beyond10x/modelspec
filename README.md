@@ -1,6 +1,11 @@
 # ModelSpec
 
-A declarative, statically typed language and a Rust compiler for differentiable tensor programs.
+ModelSpec is for training models faster than a general-purpose framework: because the whole
+training step is one declared program, the compiler can build a runtime for one target (one use
+case, one operating system, one GPU chipset), and every optimization is held to a CPU reference.
+That speed is planned; today a transformer step is still many times slower than PyTorch's on the
+same GPU ([Why ModelSpec](https://beyond10x.github.io/modelspec/docs/concepts/north-star)). It is a
+declarative, statically typed language and a Rust compiler for differentiable tensor programs.
 You write the model, the loss and the optimizer in a `.mspec` file; the compiler builds the whole
 training step, derives its gradients, optimizes the graph and runs it on a GPU through Vulkan and
 SPIR-V. No Python, PyTorch or CUDA.

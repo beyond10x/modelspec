@@ -1,9 +1,32 @@
 ---
 title: Roadmap
-description: Milestones M0 to M4 from DESIGN.md § 1. M0 is built; M1, GPU execution through Vulkan, is in progress and trains on the GPU since 0.4.0; the BERT operators of M3 run on the CPU reference.
+description: The north star and the BERT-tiny speed ladder against PyTorch (planned), then milestones M0 to M4 from DESIGN.md § 1. M0 is built; M1, GPU execution through Vulkan, is in progress and trains on the GPU since 0.4.0; the BERT operators of M3 run on the CPU reference.
 ---
 
 # Roadmap
+
+The north star: train models faster than a general-purpose framework, by compiling one declared
+training program into a runtime built for one target, every optimization held to the CPU reference
+([Why ModelSpec](./concepts/north-star.md)). It is planned, and BERT-tiny on one RTX 3090 against
+PyTorch measures the way there.
+
+## Near term: the speed ladder
+
+:::planned[Planned]
+
+| Step | Done when |
+|---|---|
+| Baseline | BERT-tiny timed against PyTorch CUDA eager and `torch.compile` on the same RTX 3090, per step and to a held-out loss. The transformer block's figures are released in 0.21.0 ([Benchmarks](/docs/benchmarks#transformer-block)); the full model's timed runs are in progress. |
+| A | The transformer block within 3× of PyTorch eager, measured the same day on the same device and driver. At batch 8 it is 23.8× today. |
+| E | Full BERT-tiny at parity with PyTorch eager. |
+| F | Faster than `torch.compile`, per step and to the held-out target. |
+
+Each step is a sequence of measured units: profile where the step's time goes, change the largest
+site, keep the CPU-reference tests green, time it, publish the row on the Benchmarks page.
+
+:::
+
+## Milestones
 
 The milestones are those of [DESIGN.md § 1](https://github.com/beyond10x/modelspec/blob/main/DESIGN.md#1-scope-and-milestones).
 M0 is built and released as 0.1.0. M1 is in progress; the latest release is 0.21.0. Some M2 items
