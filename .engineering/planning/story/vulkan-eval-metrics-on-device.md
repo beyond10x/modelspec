@@ -9,6 +9,7 @@ relations:
 - decomposes: epic:bert-from-scratch
 - serves: vision:modelspec
 - depends_on: story:vulkan-eval-download-per-batch
+- decomposes: epic:bert-tiny-step-tenth
 revision: 1
 ---
 # Held-out evaluation tallied on the device
