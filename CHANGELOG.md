@@ -11,6 +11,7 @@ history.
 
 ### Changed
 
+- ESS 0.74.0 (was 0.72.0): `spec/ess-inputs.yaml` requires it and CI installs it.
 - The documentation, README and pitch deck lead with what ModelSpec is for: one declared training program compiled into a runtime built for one target (use case, operating system, GPU chipset), to train faster than a general-purpose framework, with every optimization held to the CPU reference. The new page Why ModelSpec (`website/docs/concepts/north-star.md`) states the claim, labels the speed planned, quotes the released transformer-block figures and lays out the BERT-tiny steps against PyTorch; the Roadmap opens with the same north star (story:north-star-public-claim).
 
 ## [0.21.0] - 2026-10-28
