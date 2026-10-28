@@ -11,7 +11,7 @@ history.
 
 ### Added
 
-- `modelspec infer FILE --backend cpu|vulkan --checkpoint PATH --data DIR --function NAME --out FILE` runs any model function, not only `forward` and not only one that returns a loss, with the checkpoint's parameters over every block of the dense directory `DIR`, each argument reading `DIR/NAME.f32` or `DIR/NAME.i32`, and writes its results, one row per sample, as row-major little-endian `f32` to `FILE`, printing `function NAME blocks N rows R out FILE`; a name the model does not declare, or a result that is not one row per sample, is `E-DATA-010` (`InferenceOutputFile`, DESIGN.md revision 0.60) (story:decider-infer-on-data).
+- `modelspec infer FILE --backend cpu|vulkan --checkpoint PATH --data DIR --function NAME --out FILE` runs any model function, not only `forward` and not only one that returns a loss, with the checkpoint's parameters over every block of the dense directory `DIR`, each argument reading `DIR/NAME.f32` or `DIR/NAME.i32`, and writes its results, one row per sample, as row-major little-endian `f32` to `FILE`, printing `function NAME blocks N rows R out FILE`; a name the model does not declare, or a result that is not one row per sample, is `E-DATA-010` naming the model's functions; `FILE` is written to a temporary file beside it and renamed over it, so an existing `FILE` is replaced whole or kept, and a `FILE` that resolves to the model file, the checkpoint or an argument's file is `E-DATA-010` naming `--out` and that file (`InferenceOutputFile`, DESIGN.md revision 0.60) (story:decider-infer-on-data).
 
 ### Changed
 

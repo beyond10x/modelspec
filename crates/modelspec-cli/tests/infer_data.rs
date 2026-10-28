@@ -343,7 +343,155 @@ fn infer_function_or_out_without_data_is_a_usage_error() {
     }
 }
 
-/// infer-function-vulkan: the same run on `--backend vulkan` writes `3·B·C` values, each within
+/// The names of the entries of `dir`, sorted.
+fn entries(dir: &Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(dir)
+        .expect("the dir is readable")
+        .map(|entry| {
+            entry
+                .expect("the entry is readable")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    names.sort();
+    names
+}
+
+/// infer-function-refusals: an `--out` that resolves to a file the run reads (the checkpoint,
+/// the model file, or an argument's file of `--data`, however the path spells it: through `..`
+/// or a symbolic link) is E-DATA-010 naming `--out` and that file, before the function runs;
+/// every input keeps its bytes and nothing is created beside them.
+#[cfg(unix)]
+#[test]
+fn infer_function_refuses_an_out_that_names_a_file_the_run_reads_with_e_data_010() {
+    let d = dir("out-reads");
+    let ckpt = checkpoint(&d);
+    let data = data(&d, SAMPLES);
+    let model = d.join("model.mspec");
+    std::fs::copy(repo_root().join(FIXTURE), &model).expect("the fixture copies");
+    let link = d.join("link.f32");
+    std::os::unix::fs::symlink(data.join("x.f32"), &link).expect("a symlink");
+    let inputs = [ckpt.clone(), model.clone(), data.join("x.f32")];
+    let before: Vec<Vec<u8>> = inputs.iter().map(|p| std::fs::read(p).unwrap()).collect();
+    let (top, inside) = (entries(&d), entries(&data));
+    for out in [
+        ckpt.clone(),
+        model.clone(),
+        data.join("x.f32"),
+        data.join("..").join("data").join("x.f32"),
+        link.clone(),
+    ] {
+        let output = modelspec(&[
+            "infer",
+            path(&model),
+            "--backend",
+            "cpu",
+            "--checkpoint",
+            path(&ckpt),
+            "--data",
+            path(&data),
+            "--function",
+            "scores",
+            "--out",
+            path(&out),
+        ]);
+        refused(&output, 1, &["E-DATA-010", "--out", path(&out)]);
+        for (input, bytes) in inputs.iter().zip(&before) {
+            assert_eq!(
+                &std::fs::read(input).unwrap(),
+                bytes,
+                "--out {}: {} changed",
+                out.display(),
+                input.display()
+            );
+        }
+        assert_eq!(entries(&d), top, "--out {}", out.display());
+        assert_eq!(entries(&data), inside, "--out {}", out.display());
+    }
+}
+
+/// infer-function-refusals: a function that takes no argument is E-DATA-010, and its refusal
+/// names the model's functions, as every E-DATA-010 that refuses a function does
+/// (`spec/domains/data.yaml`, `InferenceOutputFile`).
+#[test]
+fn infer_function_refuses_a_function_without_arguments_naming_the_functions() {
+    let d = dir("no-arguments");
+    let source = std::fs::read_to_string(repo_root().join(FIXTURE)).expect("the fixture reads");
+    let source = source.replacen(
+        "    fn scores(",
+        "    fn table() -> Tensor<f32, [3, 2]> {\n        return relu(w);\n    }\n\n    fn scores(",
+        1,
+    );
+    let model = d.join("table.mspec");
+    std::fs::write(&model, source).expect("the model is writable");
+    let ckpt = d.join("table.msckpt");
+    ok(&[
+        "train",
+        path(&model),
+        "--backend",
+        "cpu",
+        "--steps",
+        "0",
+        "--checkpoint",
+        path(&ckpt),
+    ]);
+    let data = data(&d, SAMPLES);
+    let out = d.join("table.f32");
+    let output = modelspec(&[
+        "infer",
+        path(&model),
+        "--backend",
+        "cpu",
+        "--checkpoint",
+        path(&ckpt),
+        "--data",
+        path(&data),
+        "--function",
+        "table",
+        "--out",
+        path(&out),
+    ]);
+    refused(&output, 1, &["E-DATA-010", "forward", "table", "scores"]);
+    assert!(!out.exists(), "nothing is written on a refusal");
+}
+
+/// infer-function-cpu: FILE is written beside itself and renamed over it, so a run that cannot
+/// replace it (here FILE is a directory) exits 1 and leaves FILE and its directory as they
+/// were, and a run that succeeds leaves FILE and nothing else beside it.
+#[test]
+fn infer_function_replaces_out_whole_and_leaves_no_temporary_file() {
+    let d = dir("replace");
+    let ckpt = checkpoint(&d);
+    let data = data(&d, SAMPLES);
+    let blocked = d.join("blocked.f32");
+    std::fs::create_dir_all(&blocked).unwrap();
+    std::fs::write(blocked.join("inside"), b"kept").unwrap();
+    let top = entries(&d);
+    let output = infer_scores("cpu", &ckpt, &data, &blocked);
+    refused(&output, 1, &[path(&blocked)]);
+    assert_eq!(
+        entries(&d),
+        top,
+        "a failed write leaves nothing beside FILE"
+    );
+    assert_eq!(std::fs::read(blocked.join("inside")).unwrap(), b"kept");
+    let out = d.join("scores.f32");
+    std::fs::write(&out, b"old").unwrap();
+    let top = entries(&d);
+    let output = infer_scores("cpu", &ckpt, &data, &out);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stderr: {}",
+        text(&output.stderr)
+    );
+    assert_eq!(entries(&d), top, "a run leaves FILE and nothing else");
+    assert_eq!(read_f32(&out).len(), SAMPLES * C);
+}
+
+/// infer-function-vulkan:the same run on `--backend vulkan` writes `3·B·C` values, each within
 /// the DESIGN.md § 9 gate 5 matmul tolerance of the CPU file: `|g - c| <= 1e-5 + 1e-4 · r`, `r`
 /// the sum of the absolute values of the element's `D` products.
 #[cfg(feature = "vulkan")]

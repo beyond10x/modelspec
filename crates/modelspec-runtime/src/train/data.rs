@@ -24,7 +24,9 @@
 //! [`E_DATA_009`]. `infer --data <dir> --function <name>` reads the same layout with the
 //! arguments of the model function in place of the declarations ([`dense_function`];
 //! story:decider-infer-on-data), and a name that is no function of the model, or a function
-//! whose result is not one row per sample ([`row_elements`]), is [`E_DATA_010`].
+//! whose result is not one row per sample ([`row_elements`]), is [`E_DATA_010`] naming the
+//! model's functions; so is an output file that resolves to a file the run reads, naming
+//! `--out` and that file ([`refuse_out_reading`]).
 //!
 //! A declaration the loss does not read has no `Input` node after dead-code elimination, so the
 //! program could not take a value for it; it is refused at its declaration ([`E_DATA_003`])
@@ -101,10 +103,12 @@ pub const E_DATA_008: Code = Code::new("E-DATA-008");
 /// The `--eval` sample count, or the sample count of the `--data` directory of
 /// `infer --function`, is not a multiple of the batch dimension `B`.
 pub const E_DATA_009: Code = Code::new("E-DATA-009");
-/// The `--function` of `infer --data` names no function of the model (the refusal names the
-/// ones it declares), or a function whose result is not one row per sample of the data: one
-/// that takes no argument, or, when the arguments share a leading dimension `B` above 1, one
-/// whose result does not have it (story:decider-infer-on-data).
+/// The `--function` of `infer --data` names no function of the model, or a function whose
+/// result is not one row per sample of the data: one that takes no argument, or, when the
+/// arguments share a leading dimension `B` above 1, one whose result does not have it; each of
+/// these refusals names the functions the model declares. Also the `--out` of
+/// `infer --data`, resolved, names a file the run reads: the model file, the checkpoint or an
+/// argument's file; the refusal names `--out` and that file (story:decider-infer-on-data).
 pub const E_DATA_010: Code = Code::new("E-DATA-010");
 
 /// The data of a synthetic run.
@@ -599,14 +603,15 @@ fn read_dense(
 /// of every argument of the function, the `input` declarations of `function`, the
 /// configuration of [`modelspec_core::compile::compile_function`], read as [`dense_eval`]
 /// reads the declarations of a `train` block, with no order and no compared target. Refused
-/// with [`E_DATA_010`] at the function when it takes no argument, so no file binds a sample to
-/// it; with [`E_DATA_007`] as [`read_tensor`] refuses an argument's file and when the files
-/// differ in sample count; and with [`E_DATA_009`] when the sample count is not a multiple of
-/// `B`.
+/// with [`E_DATA_010`] at the function, naming the model's `functions`, when it takes no
+/// argument, so no file binds a sample to it; with [`E_DATA_007`] as [`read_tensor`] refuses an
+/// argument's file and when the files differ in sample count; and with [`E_DATA_009`] when the
+/// sample count is not a multiple of `B`.
 pub fn dense_function(
     dir: &Path,
     name: &str,
     function: &TrainConfig,
+    functions: &[String],
 ) -> Result<DenseData, DataError> {
     let decls: Vec<(&DataDecl, &'static str)> =
         function.inputs.iter().map(|d| (d, "argument")).collect();
@@ -617,7 +622,8 @@ pub fn dense_function(
                 format!("the function `{name}` takes no argument a data file could bind"),
             )
             .at(function.span.clone())
-            .with("function", name),
+            .with("function", name)
+            .with("functions", functions.join(", ")),
         ));
     }
     let data = read_files(dir, &decls)?;
@@ -649,8 +655,13 @@ pub fn unknown_function(name: &str, functions: &[String]) -> DataError {
 /// the function `name`, of type `output`, is `[B, d1, …]` when `batch` is above 1, a row
 /// `d1 × …` values, and a row is the whole result when `batch` is 1. A result whose leading
 /// dimension is not `B`, when `B` is above 1, is not one row per sample and is refused with
-/// [`E_DATA_010`].
-pub fn row_elements(name: &str, output: &TensorType, batch: usize) -> Result<usize, DataError> {
+/// [`E_DATA_010`] naming the model's `functions`.
+pub fn row_elements(
+    name: &str,
+    output: &TensorType,
+    batch: usize,
+    functions: &[String],
+) -> Result<usize, DataError> {
     let (shape, elements) = static_shape(name, output)?;
     if batch == 1 {
         return Ok(elements);
@@ -664,9 +675,81 @@ pub fn row_elements(name: &str, output: &TensorType, batch: usize) -> Result<usi
             )
             .with("function", name)
             .with("result", output.to_string())
-            .with("batch", batch.to_string()),
+            .with("batch", batch.to_string())
+            .with("functions", functions.join(", ")),
         )),
     }
+}
+
+/// The files `infer --data <dir> --function` reads for the arguments of `function`, the
+/// configuration of [`modelspec_core::compile::compile_function`], each with what it binds:
+/// [`dense_file`] of every argument.
+pub fn function_files(dir: &Path, function: &TrainConfig) -> Vec<(String, PathBuf)> {
+    function
+        .inputs
+        .iter()
+        .map(|decl| (format!("argument `{}`", decl.name), dense_file(dir, decl)))
+        .collect()
+}
+
+/// [`E_DATA_010`] when the output file `out` of `infer --data --function` resolves to one of
+/// `reads`, the files the run reads, each with what it is: the run would overwrite its own
+/// input. Both sides are canonicalized, a missing file by its canonical parent and its name,
+/// and on Unix an existing `out` also matches a file with its device and inode (a hard link).
+/// A file that cannot be resolved matches nothing.
+pub fn refuse_out_reading(out: &Path, reads: &[(String, PathBuf)]) -> Result<(), DataError> {
+    let Some(target) = resolved(out) else {
+        return Ok(());
+    };
+    for (what, file) in reads {
+        if resolved(file).as_ref() == Some(&target) || same_file(out, file) {
+            return Err(DataError::Refused(
+                Diagnostic::new(E_DATA_010, "`--out` names a file the run reads")
+                    .with("--out", out.display().to_string())
+                    .with(what.as_str(), file.display().to_string()),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// `path` canonicalized, or, when it does not exist, its canonical parent joined with its
+/// name; `None` when neither resolves.
+fn resolved(path: &Path) -> Option<PathBuf> {
+    if let Ok(path) = path.canonicalize() {
+        return Some(path);
+    }
+    let name = path.file_name()?;
+    let parent = match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
+    };
+    parent.canonicalize().ok().map(|parent| parent.join(name))
+}
+
+/// Whether `a` and `b` both exist and are one file: the same device and inode.
+#[cfg(unix)]
+fn same_file(a: &Path, b: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match (std::fs::metadata(a), std::fs::metadata(b)) {
+        (Ok(a), Ok(b)) => a.dev() == b.dev() && a.ino() == b.ino(),
+        _ => false,
+    }
+}
+
+/// Without device and inode numbers, canonical paths alone decide.
+#[cfg(not(unix))]
+fn same_file(_: &Path, _: &Path) -> bool {
+    false
+}
+
+/// The dense file of `decl` in `dir`: `<name>.f32` when it is `f32`, `<name>.i32` when `i32`.
+fn dense_file(dir: &Path, decl: &DataDecl) -> PathBuf {
+    let extension = match decl.ty.dtype {
+        DType::F32 => "f32",
+        DType::I32 => "i32",
+    };
+    dir.join(format!("{}.{extension}", decl.name))
 }
 
 /// The files of `dir` of the declarations `decls`, each with its role, in that order: `B` and
@@ -724,11 +807,11 @@ fn read_tensor(
     shape: Vec<u64>,
     sample: usize,
 ) -> Result<DenseTensor, DataError> {
-    let (extension, other) = match decl.ty.dtype {
-        DType::F32 => ("f32", "i32"),
-        DType::I32 => ("i32", "f32"),
+    let other = match decl.ty.dtype {
+        DType::F32 => "i32",
+        DType::I32 => "f32",
     };
-    let path = dir.join(format!("{}.{extension}", decl.name));
+    let path = dense_file(dir, decl);
     let what = format!("the data file of the {role} `{}`", decl.name);
     let read = match decl.ty.dtype {
         DType::F32 => read_f32(&path).map(DenseValues::F32),

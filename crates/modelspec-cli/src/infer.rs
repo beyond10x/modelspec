@@ -28,14 +28,17 @@
 //! `<name>.f32` or `<name>.i32` by its dtype, as `train --eval` binds a declaration; the function
 //! runs with the checkpoint's parameters on every block of `B` samples in block order, and its
 //! results, one row per sample, are written to `<path>` once every block has run, row-major
-//! little-endian `f32` with no header. Stdout is one line,
-//! `function <name> blocks <blocks> rows <rows> out <path>`. Refused before anything is written,
-//! exit 1: a name that is not a function of the model with E-DATA-010 naming its functions; an
-//! argument without its file, or files that cannot be read as samples, with E-DATA-007; a sample
-//! count that is not a multiple of `B` with E-DATA-009; a function whose result is not one row
-//! per sample with E-DATA-010. `--function` or `--out` without `--data`, and `--data` without
-//! both, is a usage error (exit 2). On `--backend vulkan` the function's step runs stepwise
-//! with 0 steps ([`modelspec_runtime::vulkan::stepwise`]): one command buffer and host wait per
+//! little-endian `f32` with no header, through a temporary file in its directory renamed over
+//! it, so an existing `<path>` is replaced whole or not at all ([`replace`]). Stdout is one
+//! line, `function <name> blocks <blocks> rows <rows> out <path>`. Refused before anything is
+//! written, exit 1: a name that is not a function of the model with E-DATA-010 naming its
+//! functions; a `<path>` that resolves to a file the run reads (the model file, the checkpoint
+//! or an argument's file) with E-DATA-010 naming `--out` and that file, before the checkpoint is
+//! read; an argument without its file, or files that cannot be read as samples, with
+//! E-DATA-007; a sample count that is not a multiple of `B` with E-DATA-009; a function whose
+//! result is not one row per sample with E-DATA-010 naming the model's functions. `--function`
+//! or `--out` without `--data`, and `--data` without both, is a usage error (exit 2). On
+//! `--backend vulkan` the function's step runs stepwise with 0 steps ([`modelspec_runtime::vulkan::stepwise`]): one command buffer and host wait per
 //! block, each block's result read back before the next, then one for step 0.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -82,7 +85,8 @@ pub struct Args {
     pub function: Option<String>,
     /// With --data, write the function's result for every block, in block order, to FILE: one
     /// row per sample, row-major little-endian f32 with no header, written once every block has
-    /// run and not at all on a refusal.
+    /// run and not at all on a refusal; an existing FILE is replaced whole or kept. A FILE that
+    /// is the model file, the checkpoint or an argument's file of DIR is refused.
     #[arg(long, value_name = "FILE", requires = "data")]
     pub out: Option<PathBuf>,
 }
@@ -314,12 +318,28 @@ impl FunctionRun<'_> {
     }
 
     /// The block count, the row count and the function's result for every block, in block
-    /// order: refused in the order of the module documentation, the checkpoint read after the
-    /// function compiles and before the data is read.
+    /// order: refused in the order of the module documentation, an `--out` that names a file
+    /// the run reads once the function compiles and before anything else is read, the
+    /// checkpoint read before the data.
     fn results(&self, args: &Args) -> Result<(usize, usize, Vec<f32>), Stop> {
         let mut function =
             compile::compile_function(self.file, self.source, self.name).map_err(function_stop)?;
         function.config.steps = 0;
+        let mut reads = vec![
+            ("model".to_owned(), args.path.clone()),
+            ("checkpoint".to_owned(), args.checkpoint.clone()),
+        ];
+        reads.extend(data::function_files(self.dir, &function.config));
+        data::refuse_out_reading(self.out, &reads)?;
+        let functions: Vec<String> = compile::compile_hir(self.file, self.source)
+            .map_err(|diagnostics| {
+                Stop::Refused(diagnostics.iter().map(ToString::to_string).collect())
+            })?
+            .model
+            .functions
+            .iter()
+            .map(|f| f.name.clone())
+            .collect();
         #[cfg(feature = "vulkan")]
         let artifact = match args.backend {
             Backend::Cpu => None,
@@ -339,13 +359,13 @@ impl FunctionRun<'_> {
         let params = checkpoint::read(&args.checkpoint)
             .and_then(|c| c.parameters_for(self.compiled))
             .map_err(|error| Stop::Refused(vec![error.to_string()]))?;
-        let dense = data::dense_function(self.dir, self.name, &function.config)?;
+        let dense = data::dense_function(self.dir, self.name, &function.config, &functions)?;
         let forward = &function.forward;
         let node = forward
             .program
             .node(forward.prediction)
             .ok_or_else(|| Stop::Failed("the function's program defines no result value".into()))?;
-        let row = data::row_elements(self.name, &node.ty, dense.batch())?;
+        let row = data::row_elements(self.name, &node.ty, dense.batch(), &functions)?;
         let blocks = dense.samples() / dense.batch();
         #[cfg(feature = "vulkan")]
         let values = match &artifact {
@@ -364,7 +384,8 @@ impl FunctionRun<'_> {
         Ok((blocks, dense.samples(), values))
     }
 
-    /// Writes `values` to the output file, then the stdout line, and returns the exit code.
+    /// Writes `values` to the output file ([`replace`]), then the stdout line, and returns the
+    /// exit code.
     fn write(
         &self,
         blocks: usize,
@@ -374,7 +395,7 @@ impl FunctionRun<'_> {
         stderr: &mut dyn Write,
     ) -> u8 {
         let bytes: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
-        if let Err(error) = std::fs::write(self.out, bytes) {
+        if let Err(error) = replace(self.out, &bytes) {
             let _ = writeln!(
                 stderr,
                 "modelspec infer {}: cannot write {}: {error}",
@@ -403,6 +424,40 @@ impl FunctionRun<'_> {
             }
         }
     }
+}
+
+/// Replaces `out` with `bytes` whole or not at all: the bytes go to a new temporary file
+/// `.<name>.<pid>.tmp` in `out`'s directory, which is synced and renamed over `out`. On any
+/// error the temporary file is removed and an existing `out` keeps its bytes; a process killed
+/// part of the way (`SIGXFSZ` past a file-size limit) leaves `out` as it was and the temporary
+/// file beside it.
+fn replace(out: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let name = out.file_name().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "the path names no file")
+    })?;
+    let dir = match out.parent() {
+        Some(dir) if !dir.as_os_str().is_empty() => dir,
+        _ => Path::new("."),
+    };
+    let mut temporary = std::ffi::OsString::from(".");
+    temporary.push(name);
+    temporary.push(format!(".{}.tmp", std::process::id()));
+    let temporary = dir.join(temporary);
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temporary)?;
+    let written = file
+        .write_all(bytes)
+        .and_then(|()| file.sync_all())
+        .and_then(|()| {
+            drop(file);
+            std::fs::rename(&temporary, out)
+        });
+    if written.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    written
 }
 
 /// The result of `function`, compiled by [`compile::compile_function`], on every block of

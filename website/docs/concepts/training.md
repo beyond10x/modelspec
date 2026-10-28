@@ -82,7 +82,9 @@ on both backends; `--eval` beside a packed `--data` is a usage error.
 not be `forward` and need not return a loss, with a checkpoint's parameters over every block of a
 dense directory. Each argument of the function reads `<dir>/<argument>.f32` or `.i32` as a
 declaration of `--eval` does, and the file receives the function's result for every block in block
-order, one row per sample, little-endian `f32` with no header. Each refusal of a data source has its code, `E-DATA-001` to
+order, one row per sample, little-endian `f32` with no header. The file is written beside itself
+and renamed into place, so an existing file is replaced whole or kept, and a `--out` that is the
+model file, the checkpoint or one of the argument files is refused. Each refusal of a data source has its code, `E-DATA-001` to
 `E-DATA-010` ([Diagnostics](../reference/diagnostics.md#training-data)).
 
 ## Reproducible to the byte
