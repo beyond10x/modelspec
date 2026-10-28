@@ -216,7 +216,7 @@ body.all .hud, body.all .narrow { display: none; }
 <!-- 1 -->
 <section class="slide" data-n="1">
   <div class="title-wrap">
-    <div class="kicker">Vision · 2026-10-26 · release 0.20.0</div>
+    <div class="kicker">Vision · 2026-10-28 · release 0.21.0</div>
     <h1>ModelSpec</h1>
     <p class="promise">Specify <b>what</b> the model computes.<br>The compiler decides <b>how</b> it runs.</p>
     <p class="sub">A declarative language and a Rust compiler for differentiable tensor programs. One <code>.mspec</code> file is the whole training step.</p>
@@ -227,7 +227,7 @@ body.all .hud, body.all .narrow { display: none; }
       <span class="chip">no Python · PyTorch · CUDA</span>
     </div>
   </div>
-  <aside class="notes">Vision objective; DESIGN.md header principle and section 0. Date and version: the 0.20.0 release, 2026-10-26 (CHANGELOG.md § 0.20.0).</aside>
+  <aside class="notes">Vision objective; DESIGN.md header principle and section 0. Date and version: the 0.21.0 release, 2026-10-28 (CHANGELOG.md § 0.21.0).</aside>
 </section>
 
 <!-- 2 -->
@@ -549,13 +549,13 @@ body.all .hud, body.all .narrow { display: none; }
 
 <!-- 13 -->
 <section class="slide" data-n="13">
-  <div class="kicker">Status · 2026-10-26</div>
-  <h2>0.20.0 trains on the RTX 3090 through Vulkan</h2>
+  <div class="kicker">Status · 2026-10-28</div>
+  <h2>0.21.0 trains on the RTX 3090 through Vulkan</h2>
   <div class="stats">
-    <div class="stat"><div class="v">0.20.0</div><div class="l">latest of 22 releases, 2026-10-26, with a Linux x86_64 binary</div></div>
+    <div class="stat"><div class="v">0.21.0</div><div class="l">latest of 23 releases, 2026-10-28, with a Linux x86_64 binary</div></div>
     <div class="stat"><div class="v">58</div><div class="l">capabilities shipped, each held by a named test or task</div></div>
-    <div class="stat"><div class="v">75</div><div class="l">stories implemented</div></div>
-    <div class="stat"><div class="v">2718</div><div class="l">tests passed in <code>task ci</code>, 0 failed, 320 ignored</div></div>
+    <div class="stat"><div class="v">76</div><div class="l">stories implemented</div></div>
+    <div class="stat"><div class="v">2771</div><div class="l">tests passed in <code>task ci</code>, 0 failed, 321 ignored</div></div>
   </div>
   <div class="grid3" style="gap:24px">
     <div class="card" style="padding:22px 26px">
@@ -563,15 +563,15 @@ body.all .hud, body.all .narrow { display: none; }
       <p style="font-size:21px"><code>train --backend vulkan</code> with one host wait · checkpoints, resume and <code>infer</code> on CPU and Vulkan · <code>compile</code> to a sealed artifact · <code>--serve</code>, <code>--record</code>, <code>observe</code> and the observatory UI · <code>--profile</code> · tiled GPU matmul</p>
     </div>
     <div class="card" style="padding:22px 26px">
-      <h3 style="font-size:26px">Released, 0.8.0 to 0.20.0</h3>
-      <p style="font-size:21px">Register-blocked matmul · elementwise chain fusion · deterministic fused multiply-adds · <code>--fast-math</code> · <code>embedding</code>, <code>layer_norm</code>, <code>softmax</code>, <code>attention</code>, <code>cross_entropy</code>, <code>dropout</code> on the CPU · <code>data prepare</code>, <code>tokenizer</code>, <code>pack</code> · <code>train --data</code> with <code>--eval-every</code> · <code>adamw</code> with a warm-up schedule · <code>relu_grad</code> as a matmul epilogue · Vulkan kernels for the row-wise BERT operators · <code>muon</code> on the CPU · BERT-tiny as a checked example, its twin trained on the CPU · Vulkan kernels for <code>attention</code>, <code>cross_entropy</code> and AdamW, the twin trained on the GPU · held-out evaluation on the GPU at corpus scale · BERT-tiny pre-trained on the GPU below the unigram baseline · the benchmarks page in its FLOP view</p>
+      <h3 style="font-size:26px">Released, 0.8.0 to 0.21.0</h3>
+      <p style="font-size:21px">Register-blocked matmul · elementwise chain fusion · deterministic fused multiply-adds · <code>--fast-math</code> · <code>embedding</code>, <code>layer_norm</code>, <code>softmax</code>, <code>attention</code>, <code>cross_entropy</code>, <code>dropout</code> on the CPU · <code>data prepare</code>, <code>tokenizer</code>, <code>pack</code> · <code>train --data</code> with <code>--eval-every</code> · <code>adamw</code> with a warm-up schedule · <code>relu_grad</code> as a matmul epilogue · Vulkan kernels for the row-wise BERT operators · <code>muon</code> on the CPU · BERT-tiny as a checked example, its twin trained on the CPU · Vulkan kernels for <code>attention</code>, <code>cross_entropy</code> and AdamW, the twin trained on the GPU · held-out evaluation on the GPU at corpus scale · BERT-tiny pre-trained on the GPU below the unigram baseline · the benchmarks page in its FLOP view · the transformer-block benchmark against PyTorch CUDA</p>
     </div>
     <div class="card" style="padding:22px 26px">
       <h3 style="font-size:26px">Not built</h3>
       <p style="font-size:21px">M4: the Tensor Core path</p>
     </div>
   </div>
-  <aside class="notes">Releases: 22 tags, 0.1.0 to 0.20.0; 0.20.0 dated 2026-10-26 (CHANGELOG.md § 0.20.0); the Linux x86_64 binary: the opening paragraph of CHANGELOG.md and .github/workflows/release.yml. 58 shipped, 1 planned: website/data/status.json (asOf 2026-10-26). 75 implemented, none in progress: the stories of the repository's planning store, 2026-10-26. 2718 / 0 / 320: the sum of the cargo "test result" lines of the 410 suites of task ci on 811420e, 2026-10-26; the ignored tests include the device tests and the browser tests that task ui-browser then runs (AGENTS.md "Commands"); the node --test cases of pnpm test are not counted. Released, 0.2.0 to 0.7.1: --serve in CHANGELOG.md § 0.2.0; train --backend vulkan with one host wait and --profile in CHANGELOG.md § 0.4.0; the tiled GPU matmul in CHANGELOG.md § 0.5.0; checkpoints, resume, infer, compile, --record and observe in CHANGELOG.md § 0.6.0; the observatory UI in CHANGELOG.md § 0.7.0. Released, 0.8.0 to 0.20.0: CHANGELOG.md § 0.9.0, § 0.10.0, § 0.11.0, § 0.12.0, § 0.13.0, § 0.14.0, § 0.15.0, § 0.16.0, § 0.17.0, § 0.18.0, § 0.19.0 and § 0.20.0; data prepare, tokenizer and pack are in the 0.10.0 tag without a CHANGELOG.md entry (website/docs/guides/prepare-training-data.md). Not built: DESIGN.md section 1 M4 row; BERT-tiny pre-training on the GPU left this card with the run of 2026-10-26 (website/docs/runs/bert-tiny-gpu-pretraining.md).</aside>
+  <aside class="notes">Releases: 23 tags, 0.1.0 to 0.21.0; 0.21.0 dated 2026-10-28 (CHANGELOG.md § 0.21.0); the Linux x86_64 binary: the opening paragraph of CHANGELOG.md and .github/workflows/release.yml. 58 shipped, 1 planned: website/data/status.json (asOf 2026-10-28). 76 implemented, none in progress: the stories of the repository's planning store, 2026-10-28. 2771 / 0 / 321: the sum of the cargo "test result" lines of the 417 suites of task ci on e389c39; the ignored tests include the device tests and the browser tests that task ui-browser then runs (AGENTS.md "Commands"); the node --test cases of pnpm test are not counted. Released, 0.2.0 to 0.7.1: --serve in CHANGELOG.md § 0.2.0; train --backend vulkan with one host wait and --profile in CHANGELOG.md § 0.4.0; the tiled GPU matmul in CHANGELOG.md § 0.5.0; checkpoints, resume, infer, compile, --record and observe in CHANGELOG.md § 0.6.0; the observatory UI in CHANGELOG.md § 0.7.0. Released, 0.8.0 to 0.21.0: CHANGELOG.md § 0.9.0, § 0.10.0, § 0.11.0, § 0.12.0, § 0.13.0, § 0.14.0, § 0.15.0, § 0.16.0, § 0.17.0, § 0.18.0, § 0.19.0, § 0.20.0 and § 0.21.0; data prepare, tokenizer and pack are in the 0.10.0 tag without a CHANGELOG.md entry (website/docs/guides/prepare-training-data.md). Not built: DESIGN.md section 1 M4 row; BERT-tiny pre-training on the GPU left this card with the run of 2026-10-26 (website/docs/runs/bert-tiny-gpu-pretraining.md).</aside>
 </section>
 
 <!-- 14 -->
@@ -691,7 +691,7 @@ body.all .hud, body.all .narrow { display: none; }
 
 <!-- 18 -->
 <section class="slide" data-n="18">
-  <div class="kicker">2026-10-26</div>
+  <div class="kicker">2026-10-28</div>
   <h2>Next steps</h2>
   <div style="display:grid;grid-template-columns:1fr 1.25fr 1fr;gap:40px;align-items:start">
     <div>
@@ -704,7 +704,7 @@ body.all .hud, body.all .narrow { display: none; }
       </ul>
     </div>
     <div>
-      <div class="kicker" style="color:var(--m1)">2 · Released, 0.7.0 to 0.20.0</div>
+      <div class="kicker" style="color:var(--m1)">2 · Released, 0.7.0 to 0.21.0</div>
       <ul class="bul" style="font-size:0">
         <li style="font-size:24px;margin-bottom:12px">0.7.0: the observatory UI; Vulkan refuses a NaN or ±inf run</li>
         <li style="font-size:24px;margin-bottom:12px">0.8.0: a CPU run prepares its step once; per-step device counters</li>
@@ -720,6 +720,7 @@ body.all .hud, body.all .narrow { display: none; }
         <li style="font-size:24px;margin-bottom:12px">0.18.0: held-out evaluation on the GPU works at corpus scale (BERT-tiny over WikiText-103, 68 held-out batches), the fix the first real GPU run found</li>
         <li style="font-size:24px;margin-bottom:12px">0.19.0: BERT-tiny pre-trained on the GPU below the unigram baseline (10,000 steps, 45 min on an RTX 3090, held-out loss 6.7675 against 6.9265), the run record on the site</li>
         <li style="font-size:24px;margin-bottom:12px">0.20.0: the benchmarks page in its FLOP view, the "Not measured" section and the sweep slide</li>
+        <li style="font-size:24px;margin-bottom:12px">0.21.0: the transformer-block benchmark against PyTorch CUDA (batch 8: 93.9 ms/step against eager 3.9 ms and compile 2.0 ms), the opponent's one-step comparison, f64 whole-tensor sums on the CPU</li>
       </ul>
     </div>
     <div>
@@ -731,7 +732,7 @@ body.all .hud, body.all .narrow { display: none; }
       </ul>
     </div>
   </div>
-  <aside class="notes">Done: CHANGELOG.md § 0.1.0 (2026-10-21), CHANGELOG.md § 0.4.0 (2026-10-22, train --backend vulkan), CHANGELOG.md § 0.5.0 (2026-10-23, 27.282 µs from 40.225 µs), CHANGELOG.md § 0.6.0 (2026-10-23, Vulkan checkpoints, infer --backend vulkan, compile). Released: CHANGELOG.md § 0.7.0, § 0.8.0, § 0.9.0, § 0.10.0, § 0.11.0, § 0.12.0, § 0.13.0, § 0.14.0, § 0.15.0, § 0.16.0, § 0.17.0, § 0.18.0, § 0.19.0 and § 0.20.0; 0.13.0 at b8192 h4096, 6,858.9 µs against 6,568.5 µs for PyTorch eager (1.044): benchmarks/raw/2026-10-25-step-sites/verdict.md. Open: DESIGN.md:551-559 nine unticked boxes; CHANGELOG.md § 0.6.0 "ADR-007's accuracy and final-weight conditions were not measured for this release". BERT-tiny: website/docs/runs/bert-tiny-gpu-pretraining.md, eval 10000 loss 6.7674994 against the baseline 6.926537926202018 of packed.json, 2026-10-26.</aside>
+  <aside class="notes">Done: CHANGELOG.md § 0.1.0 (2026-10-21), CHANGELOG.md § 0.4.0 (2026-10-22, train --backend vulkan), CHANGELOG.md § 0.5.0 (2026-10-23, 27.282 µs from 40.225 µs), CHANGELOG.md § 0.6.0 (2026-10-23, Vulkan checkpoints, infer --backend vulkan, compile). Released: CHANGELOG.md § 0.7.0, § 0.8.0, § 0.9.0, § 0.10.0, § 0.11.0, § 0.12.0, § 0.13.0, § 0.14.0, § 0.15.0, § 0.16.0, § 0.17.0, § 0.18.0, § 0.19.0, § 0.20.0 and § 0.21.0; 0.13.0 at b8192 h4096, 6,858.9 µs against 6,568.5 µs for PyTorch eager (1.044): benchmarks/raw/2026-10-25-step-sites/verdict.md. Open: DESIGN.md:551-559 nine unticked boxes; CHANGELOG.md § 0.6.0 "ADR-007's accuracy and final-weight conditions were not measured for this release". BERT-tiny: website/docs/runs/bert-tiny-gpu-pretraining.md, eval 10000 loss 6.7674994 against the baseline 6.926537926202018 of packed.json, 2026-10-26. 0.21.0 transformer block at batch 8: the runs transformer-block-b8-modelspec-vulkan-0.20.0, transformer-block-b8-pytorch-cuda-eager-0.20.0 and transformer-block-b8-pytorch-cuda-compile-0.20.0 of benchmarks/runs.yaml (2026-10-27, medians 93,868.4, 3,937.2 and 1,971.9 µs per step), raw records in benchmarks/raw/2026-10-27-transformer-block/.</aside>
 </section>
 
 <div class="narrow">The slides are 16:9: turn the device sideways to read them. Tap the right or left half, or swipe, to change slides.</div>

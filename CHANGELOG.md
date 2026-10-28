@@ -9,6 +9,10 @@ history.
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-10-28
+
+ModelSpec measures its first workload beyond the MLP sweep. `examples/transformer_block.mspec`, the two encoder layers of BERT-tiny, trains on the CPU and through Vulkan, and the bench `transformer_block` times it at batches of 8, 32 and 128 sequences against the same program in PyTorch CUDA, eager and `torch.compile` (`opponents/transformer_block/`), whose `--compare-step` takes one SGD step from a ModelSpec checkpoint and compares every parameter with ModelSpec's checkpoint of the next step. On an RTX 3090 at batch 8, ModelSpec Vulkan takes a median of 93.9 ms per step against 3.9 ms for PyTorch eager and 2.0 ms for `torch.compile`, and the Benchmarks page gains a Transformer block section with the figures of all three batches. `modelspec train --write-batch` writes the synthetic batch a run trains on, synthetic data feeds an input read only as an attention key mask with all ones, and the CPU interpreter accumulates every whole-tensor sum in `f64`, so the losses a CPU run prints can change in their last digits. The specification and CI use ESS 0.72.0.
+
 ### Added
 
 - `examples/transformer_block.mspec`: the two encoder layers of BERT-tiny (hidden 128, 2 heads, feed-forward 512, sequences of 128, post layer norm, no dropout) on batches of 8 sequences, an MSE loss against a target of the same shape and SGD at lr 0.01. It passes `modelspec check` (now part of `task check-examples`) and trains on the CPU and through Vulkan, ten Vulkan steps within the run tolerance of the CPU run (story:transformer-block-benchmark).
@@ -326,7 +330,8 @@ with `E-TARGET-001`.
 - `examples/linear_regression.mspec` checks and trains; `task check-examples` runs `modelspec check` on it
 - ESS contracts for the compiled artifact, checkpoint, device profile and training run in `spec/`
 
-[Unreleased]: https://github.com/beyond10x/modelspec/compare/0.20.0...HEAD
+[Unreleased]: https://github.com/beyond10x/modelspec/compare/0.21.0...HEAD
+[0.21.0]: https://github.com/beyond10x/modelspec/compare/0.20.0...0.21.0
 [0.20.0]: https://github.com/beyond10x/modelspec/compare/0.19.0...0.20.0
 [0.19.0]: https://github.com/beyond10x/modelspec/compare/0.18.0...0.19.0
 [0.18.0]: https://github.com/beyond10x/modelspec/compare/0.17.0...0.18.0
