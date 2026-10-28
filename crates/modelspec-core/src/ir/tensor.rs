@@ -392,6 +392,145 @@ pub struct ParamDecl {
     pub init: Initializer,
 }
 
+/// The identity of an entry in a program's [`ScopeTable`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ScopeId(pub u32);
+
+/// One step of a scope path (DESIGN.md § 13.2): where a node came from.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum ScopeSegment {
+    /// The train block, by name: the root of every scope path.
+    Program(String),
+    /// One inlining of a model function: `instance` counts the function's inlinings in the
+    /// program from 0, as the dropout sites do (DESIGN.md § 2.3), and `call_span` is the call's.
+    Function {
+        name: String,
+        instance: u32,
+        call_span: Option<SourceSpan>,
+    },
+    /// The nodes the gradient rule of the forward node `%k` emitted, and the sum of its adjoint.
+    Adjoint(ValueId),
+    /// The optimizer nodes of one parameter, by canonical path.
+    Update(String),
+    /// A module instance (DESIGN.md § 11 iteration 3); no compiler emits one yet.
+    Module(String),
+    /// A layer instance (DESIGN.md § 11 iteration 3); no compiler emits one yet.
+    Layer(String),
+}
+
+impl ScopeSegment {
+    /// The segment's part of a scope key: a Program its name, a Function `<fn>` for instance 0
+    /// and `<fn>@<c>` from 1, an Adjoint `grad%<k>`, an Update `update@<path>`, a Module or
+    /// Layer its name (`modelspec.diagram.ScopeKey`).
+    pub fn key(&self) -> String {
+        match self {
+            ScopeSegment::Program(name)
+            | ScopeSegment::Module(name)
+            | ScopeSegment::Layer(name) => name.clone(),
+            ScopeSegment::Function { name, instance, .. } => match instance {
+                0 => name.clone(),
+                c => format!("{name}@{c}"),
+            },
+            ScopeSegment::Adjoint(k) => format!("grad{k}"),
+            ScopeSegment::Update(path) => format!("update@{path}"),
+        }
+    }
+}
+
+/// One scope: its parent, absent on the Program scope, and its segment.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScopeEntry {
+    pub parent: Option<ScopeId>,
+    pub segment: ScopeSegment,
+}
+
+/// Where each node of a program came from (DESIGN.md § 3.2, § 13.2): a tree of scopes and the
+/// scope of every value. Lowering, autodiff and the optimizer attach stamp it, every pass keeps
+/// the entry of each node it keeps, and nothing prints it.
+///
+/// A table with no scope and no value is a program built without provenance, as a
+/// [`TensorProgramBuilder`] makes when no scope is entered; once it has any, every node has a
+/// scope and every scope's parent chain ends in a Program scope ([`crate::ir::verify::verify`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ScopeTable {
+    /// The scopes, indexed by [`ScopeId`]; a parent comes before its children.
+    pub entries: Vec<ScopeEntry>,
+    /// The scope of each value.
+    pub values: BTreeMap<ValueId, ScopeId>,
+}
+
+impl ScopeTable {
+    /// No scope and no value: a program without provenance.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty() && self.values.is_empty()
+    }
+
+    pub fn entry(&self, scope: ScopeId) -> Option<&ScopeEntry> {
+        self.entries.get(scope.0 as usize)
+    }
+
+    /// The scope `value` was stamped with.
+    pub fn scope_of(&self, value: ValueId) -> Option<ScopeId> {
+        self.values.get(&value).copied()
+    }
+
+    /// The first scope without a parent: the Program scope.
+    pub fn root(&self) -> Option<ScopeId> {
+        self.entries
+            .iter()
+            .position(|e| e.parent.is_none())
+            .map(|i| ScopeId(i as u32))
+    }
+
+    /// The scope `segment` under `parent`, added when the table does not hold it yet.
+    pub fn child(&mut self, parent: Option<ScopeId>, segment: ScopeSegment) -> ScopeId {
+        if let Some(i) = self
+            .entries
+            .iter()
+            .position(|e| e.parent == parent && e.segment == segment)
+        {
+            return ScopeId(i as u32);
+        }
+        self.entries.push(ScopeEntry { parent, segment });
+        ScopeId(self.entries.len() as u32 - 1)
+    }
+
+    /// Records `scope` as the scope of `value`.
+    pub fn stamp(&mut self, value: ValueId, scope: ScopeId) {
+        self.values.insert(value, scope);
+    }
+
+    /// The segments from the outermost scope to `scope`. A chain that names a missing scope or
+    /// does not end within the table's size stops there.
+    pub fn path(&self, scope: ScopeId) -> Vec<&ScopeSegment> {
+        let mut path = Vec::new();
+        let mut at = Some(scope);
+        while let Some(scope) = at {
+            let Some(entry) = self.entry(scope) else {
+                break;
+            };
+            if path.len() > self.entries.len() {
+                break;
+            }
+            path.push(&entry.segment);
+            at = entry.parent;
+        }
+        path.reverse();
+        path
+    }
+
+    /// The scope key of `scope`: its path's segment keys joined by `/`.
+    pub fn key(&self, scope: ScopeId) -> String {
+        let keys: Vec<String> = self.path(scope).iter().map(|s| s.key()).collect();
+        keys.join("/")
+    }
+
+    /// The scope key of the scope of `value`.
+    pub fn key_of(&self, value: ValueId) -> Option<String> {
+        self.scope_of(value).map(|scope| self.key(scope))
+    }
+}
+
 /// A Tensor IR program.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct TensorProgram {
@@ -401,6 +540,8 @@ pub struct TensorProgram {
     /// The program's `Input` nodes, in declaration order; each carries its name.
     pub inputs: Vec<ValueId>,
     pub outputs: Vec<ValueId>,
+    /// Where each node came from; beside the nodes, as `TrainingProgram::subgraphs` is.
+    pub scopes: ScopeTable,
 }
 
 impl TensorProgram {
@@ -425,16 +566,39 @@ pub enum BuildError {
     Op(#[from] OpError),
 }
 
-/// Builds a [`TensorProgram`], typing each result through the operator registry.
+/// Builds a [`TensorProgram`], typing each result through the operator registry. Each node it
+/// adds is stamped with the scope entered last ([`Self::enter_scope`]); before any is entered,
+/// none.
 #[derive(Debug, Default)]
 pub struct TensorProgramBuilder {
     program: TensorProgram,
     types: BTreeMap<ValueId, TensorType>,
+    /// The scopes entered and not yet exited, innermost last.
+    scopes: Vec<ScopeId>,
 }
 
 impl TensorProgramBuilder {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Enters `segment` inside the current scope: every node added until the matching
+    /// [`Self::exit_scope`] is stamped with it.
+    pub fn enter_scope(&mut self, segment: ScopeSegment) -> ScopeId {
+        let parent = self.scopes.last().copied();
+        let scope = self.program.scopes.child(parent, segment);
+        self.scopes.push(scope);
+        scope
+    }
+
+    /// Leaves the scope entered last and returns it.
+    pub fn exit_scope(&mut self) -> Option<ScopeId> {
+        self.scopes.pop()
+    }
+
+    /// The scope a node added now is stamped with.
+    pub fn current_scope(&self) -> Option<ScopeId> {
+        self.scopes.last().copied()
     }
 
     /// Adds a parameter table entry; paths are unique.
@@ -719,6 +883,9 @@ impl TensorProgramBuilder {
         source_span: Option<SourceSpan>,
     ) -> ValueId {
         let id = ValueId(self.program.nodes.len() as u32);
+        if let Some(&scope) = self.scopes.last() {
+            self.program.scopes.stamp(id, scope);
+        }
         self.types.insert(id, ty.clone());
         self.program.nodes.push(TensorNode {
             id,

@@ -31,7 +31,9 @@ impl Replacements {
 
 /// Removes every `StopGradient` node of `program`, each use of one reading its operand instead,
 /// and returns the program and what was replaced. Outputs that named a removed value name its
-/// replacement; inputs and the parameter table are unchanged.
+/// replacement; inputs and the parameter table are unchanged. Each surviving node keeps its
+/// scope and the scope entry of each removed node is dropped, as [`crate::passes::dce`] does
+/// (DESIGN.md § 13.2).
 ///
 /// Precondition: every operand is defined by an earlier node, as [`crate::ir::verify::verify`]
 /// requires; one forward sweep then resolves chains.
@@ -52,6 +54,10 @@ pub fn eliminate(mut program: TensorProgram) -> (TensorProgram, Replacements) {
     for output in &mut program.outputs {
         *output = replaced.of(*output);
     }
+    program
+        .scopes
+        .values
+        .retain(|value, _| !replaced.0.contains_key(value));
     (program, replaced)
 }
 

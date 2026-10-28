@@ -3,7 +3,9 @@
 //! A node is live when a program output depends on it through operands; [`eliminate`] removes
 //! every other node. Surviving nodes keep their ids, so printed ids stay those lowering assigned.
 //! An `Input` node that is removed leaves the program's input list too. The parameter table is
-//! not changed: a parameter no output reads keeps its entry, and its initial value.
+//! not changed: a parameter no output reads keeps its entry, and its initial value. Each surviving
+//! node keeps its scope; the scope of every node no longer in the program is dropped, the scopes
+//! themselves stay (DESIGN.md § 13.2).
 
 use std::collections::BTreeSet;
 
@@ -22,6 +24,11 @@ pub fn eliminate(mut program: TensorProgram) -> TensorProgram {
     }
     program.nodes.retain(|node| live.contains(&node.id));
     program.inputs.retain(|value| live.contains(value));
+    let kept: BTreeSet<ValueId> = program.nodes.iter().map(|node| node.id).collect();
+    program
+        .scopes
+        .values
+        .retain(|value, _| kept.contains(value));
     program
 }
 

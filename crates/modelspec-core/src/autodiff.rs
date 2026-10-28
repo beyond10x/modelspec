@@ -13,13 +13,20 @@
 //! gives the adjoint of named inputs instead, in a separate program; [`output_element_target`]
 //! builds such a target for one element of a model's prediction. The training program
 //! [`differentiate`] produces does not change.
+//!
+//! In a forward program that records scopes, every node these add is stamped (DESIGN.md § 13.2):
+//! the sum of the adjoint of a forward node `%k` and every node its gradient rule emits, the
+//! `Forward`-tagged constants and transposes among them, `Adjoint(%k)` under `%k`'s scope; the
+//! seed, the zero adjoint of an input the target does not read and the nodes of an output-element
+//! target the Program scope.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use thiserror::Error;
 
 use crate::ir::tensor::{
-    DType, Dim, ParamId, TensorNode, TensorOp, TensorProgram, TensorType, ValueId,
+    DType, Dim, ParamId, ScopeId, ScopeSegment, TensorNode, TensorOp, TensorProgram, TensorType,
+    ValueId,
 };
 use crate::ir::training::{Subgraph, TrainingProgram};
 use crate::ir::verify::{TrainingVerifyError, VerifyError, verify, verify_training};
@@ -78,15 +85,16 @@ pub fn differentiate(
         matches!(node.op, TensorOp::ParamRead { .. })
     });
     let mut sink = Sink::new(forward, loss);
-    let mut reads: BTreeMap<ParamId, Vec<ValueId>> = BTreeMap::new();
+    let mut reads: BTreeMap<ParamId, (ValueId, Vec<ValueId>)> = BTreeMap::new();
     for (leaf, g) in reverse_walk(&mut sink, nodes, &position, &trainable, loss_at)? {
         if let TensorOp::ParamRead { param } = nodes[position[&leaf]].op {
-            reads.entry(param).or_default().push(g);
+            reads.entry(param).or_insert((leaf, Vec::new())).1.push(g);
         }
     }
 
     let mut gradients = BTreeMap::new();
-    for (param, read_adjoints) in reads {
+    for (param, (read, read_adjoints)) in reads {
+        sink.stamp = Stamp::AdjointOf(read);
         let g = sink.sum(&read_adjoints).map_err(rule_error(loss))?;
         gradients.insert(param, g);
     }
@@ -124,6 +132,7 @@ fn reverse_walk(
     let mut leaves = Vec::new();
     if reaches[target_at] {
         sink.tag = Subgraph::Loss;
+        sink.stamp = Stamp::Program;
         let seed = sink
             .push(TensorOp::Scalar(1.0), &[])
             .map_err(rule_error(target))?;
@@ -136,6 +145,7 @@ fn reverse_walk(
         let Some(contributions) = adjoints.remove(&node.id) else {
             continue;
         };
+        sink.stamp = Stamp::AdjointOf(node.id);
         let g = sink.sum(&contributions).map_err(rule_error(node.id))?;
         if matches!(node.op, TensorOp::ParamRead { .. } | TensorOp::Input { .. }) {
             leaves.push((node.id, g));
@@ -285,6 +295,7 @@ pub fn differentiate_inputs(
             .into_iter()
             .collect();
     let mut zero = None;
+    sink.stamp = Stamp::Program;
     let mut adjoints = Vec::with_capacity(asked.len());
     for (name, value) in asked {
         let adjoint = match resolved.get(&value) {
@@ -401,6 +412,9 @@ pub fn output_element_target(
             ty: result,
             source_span: None,
         });
+        if let Some(root) = program.scopes.root() {
+            program.scopes.stamp(id, root);
+        }
         Ok(id)
     };
     let mask = append(
@@ -459,6 +473,9 @@ impl From<OpError> for SinkError {
 /// or a value it computes from forward values alone (`transpose(B)`, `Y - T`) does not depend on
 /// the loss. Value ids continue above the forward program's largest; `next` is `None` once
 /// `u32::MAX` is handed out.
+///
+/// Each emitted node is stamped with the scope [`Sink::stamp`] names, when the forward program
+/// records scopes (DESIGN.md § 13.2).
 struct Sink {
     program: TensorProgram,
     subgraphs: BTreeMap<ValueId, Subgraph>,
@@ -466,6 +483,17 @@ struct Sink {
     next: Option<u32>,
     seed: Option<ValueId>,
     tag: Subgraph,
+    stamp: Stamp,
+}
+
+/// The scope a [`Sink`] stamps on the nodes it emits now.
+#[derive(Clone, Copy)]
+enum Stamp {
+    /// The Program scope: the seed, and the zero adjoint of an input the target does not read.
+    Program,
+    /// `Adjoint(%k)` under the scope of the forward node `%k`: the sum of `%k`'s adjoint and
+    /// every node `%k`'s gradient rule emits, those tagged `Forward` alike.
+    AdjointOf(ValueId),
 }
 
 impl Sink {
@@ -494,6 +522,20 @@ impl Sink {
             next,
             seed: None,
             tag: Subgraph::Gradient,
+            stamp: Stamp::Program,
+        }
+    }
+
+    /// The scope [`Self::stamp`] names, added to the table at its first node; `None` when the
+    /// program records no scopes.
+    fn scope(&mut self) -> Option<ScopeId> {
+        let scopes = &mut self.program.scopes;
+        match self.stamp {
+            Stamp::Program => scopes.root(),
+            Stamp::AdjointOf(k) => {
+                let parent = scopes.scope_of(k)?;
+                Some(scopes.child(Some(parent), ScopeSegment::Adjoint(k)))
+            }
         }
     }
 
@@ -519,6 +561,9 @@ impl Sink {
             ty,
             source_span: None,
         });
+        if let Some(scope) = self.scope() {
+            self.program.scopes.stamp(id, scope);
+        }
         Ok(id)
     }
 

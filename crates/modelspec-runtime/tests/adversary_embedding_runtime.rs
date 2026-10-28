@@ -411,6 +411,7 @@ fn hand_built(rest: Vec<TensorNode>, outputs: &[u32]) -> TensorProgram {
         params: BTreeMap::new(),
         inputs: vec![ValueId(0), ValueId(1)],
         outputs: outputs.iter().map(|&o| ValueId(o)).collect(),
+        scopes: Default::default(),
     }
 }
 

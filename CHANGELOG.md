@@ -9,6 +9,10 @@ history.
 
 ## [Unreleased]
 
+### Added
+
+- `TensorProgram.scopes`, a `ScopeTable` recording where every Tensor IR node came from: the train block, each inlined function with its instance and call site, the gradient rule of one forward node and the update of one parameter, stamped by lowering, autodiff and the optimizer attach, kept by dead-code elimination and checked by the verifier (`V-SCOPE-001`, `V-SCOPE-002`); `modelspec ir` prints nothing new (story:diagram-scope-provenance).
+
 ## [0.22.0] - 2026-10-28
 
 This release unblocks the decider, whose JEPA decision model needs named `i32` data, `stop_gradient`, `sigreg` and inference over a dataset. `modelspec train --data DIR` on a dense directory binds every `input` and `target` declaration by name, `NAME.f32` or `NAME.i32`, on the CPU and through Vulkan, `--eval DIR` takes the same layout, and the new `E-DATA-011` refuses an `i32` value outside the `embedding` table or `cross_entropy` logits that read it before the first step. Two JEPA operators join the language: `stop_gradient(x)`, which returns `x` and passes no gradient back, and the loss `sigreg(z, slices = M)`, LeJEPA's SIGReg, on the CPU and through Vulkan kernels of its own. `modelspec infer --checkpoint PATH --data DIR --function NAME --out FILE` runs any model function with a checkpoint's parameters over every block of a dense directory and writes its results as `f32` rows. The documentation, README and pitch deck lead with what ModelSpec is for, on a new page Why ModelSpec, and the specification and CI use ESS 0.75.0.

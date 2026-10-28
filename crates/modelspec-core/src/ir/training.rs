@@ -23,6 +23,11 @@
 //! included.
 //!
 //! The subgraph tags are for analysis and are not execution boundaries (DESIGN.md § 3.1).
+//!
+//! In a program that records scopes, each attach stamps a parameter's update nodes, its state
+//! inputs among them, `Update(<path>)` inside the Program scope; a value created before any one
+//! parameter's update and shared by all of them (the learning-rate `Scalar`, the constants and
+//! host inputs of an AdamW or Muon step) stays in the Program scope (DESIGN.md § 13.2).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -31,7 +36,9 @@ use thiserror::Error;
 
 use crate::diag::SourceSpan;
 use crate::hir::{HirData, HirTrain};
-use crate::ir::tensor::{Dim, ParamId, TensorNode, TensorOp, TensorProgram, TensorType, ValueId};
+use crate::ir::tensor::{
+    Dim, ParamId, ScopeId, ScopeSegment, TensorNode, TensorOp, TensorProgram, TensorType, ValueId,
+};
 use crate::ir::verify::{TrainingVerifyError, verify_step, verify_training};
 use crate::ops::{self, OpError};
 
@@ -607,9 +614,12 @@ pub fn sigreg_sites(program: &TensorProgram) -> Vec<String> {
         .collect()
 }
 
-/// Appends optimizer nodes to a training program, numbering them after its largest value id.
+/// Appends optimizer nodes to a training program, numbering them after its largest value id and
+/// stamping each with [`Appender::scope`] when the program records scopes (DESIGN.md § 13.2).
 struct Appender {
     next: Option<u32>,
+    /// The Program scope until [`Appender::update_of`] names a parameter's `Update` scope.
+    scope: Option<ScopeId>,
 }
 
 impl Appender {
@@ -618,7 +628,19 @@ impl Appender {
             Some(largest) => largest.checked_add(1),
             None => Some(0),
         };
-        Self { next }
+        let scope = training.program.scopes.root();
+        Self { next, scope }
+    }
+
+    /// Stamps the nodes appended from now on `Update(<path>)`, `param`'s update, inside the
+    /// Program scope.
+    fn update_of(&mut self, training: &mut TrainingProgram, param: ParamId) {
+        let scopes = &mut training.program.scopes;
+        let Some(root) = scopes.root() else {
+            return;
+        };
+        let path = training.program.params[&param].path.clone();
+        self.scope = Some(scopes.child(Some(root), ScopeSegment::Update(path)));
     }
 
     /// Appends `op` over `operands`, tagged [`Subgraph::Optimizer`]; an `Input` takes the type
@@ -650,6 +672,9 @@ impl Appender {
         });
         if input {
             training.program.inputs.push(id);
+        }
+        if let Some(scope) = self.scope {
+            training.program.scopes.stamp(id, scope);
         }
         training.subgraphs.insert(id, Subgraph::Optimizer);
         Ok(id)
@@ -745,6 +770,7 @@ pub fn attach_sgd(training: TrainingProgram, lr: f32) -> Result<TrainingStep, At
     if let Some(&(first, _)) = gradients.first() {
         let rate = append.op(&mut training, first, TensorOp::Scalar(lr), &[])?;
         for (param, grad) in gradients {
+            append.update_of(&mut training, param);
             let read = first_read(&training, param);
             let scaled = append.op(&mut training, param, TensorOp::Mul, &[rate, grad])?;
             let update = append.op(&mut training, param, TensorOp::Sub, &[read, scaled])?;
@@ -948,6 +974,7 @@ fn adamw_update(
 ) -> Result<(ValueId, Moments), AttachError> {
     let decl = &t.program.params[&param];
     let (ty, path) = (decl.ty.clone(), decl.path.clone());
+    append.update_of(t, param);
     let p = first_read(t, param);
     let m = append.input(t, param, moment_input(Moment::First, &path), &ty)?;
     let v = append.input(t, param, moment_input(Moment::Second, &path), &ty)?;
@@ -1189,6 +1216,7 @@ fn muon_update(
     let decl = &t.program.params[&param];
     let (ty, path) = (decl.ty.clone(), decl.path.clone());
     let (rows, cols) = matrix_shape(&ty).expect("a Muon parameter is a static matrix");
+    append.update_of(t, param);
     let p = first_read(t, param);
     let buffer = append.input(t, param, moment_input(Moment::Momentum, &path), &ty)?;
     let scale = append.op(t, param, TensorOp::Scalar(Muon::scale(rows, cols)), &[])?;
