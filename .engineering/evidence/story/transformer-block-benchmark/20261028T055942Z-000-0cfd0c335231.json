@@ -1,0 +1,15 @@
+{
+  "at": "2026-10-28T05:59:42Z",
+  "actor": "human:timo",
+  "artifact": "story:transformer-block-benchmark",
+  "kind": "story",
+  "revision": 4,
+  "change": {
+    "change": "evidence",
+    "kind": "review_outcome",
+    "source": "fix pass 1 (a123c1a): ADV-TB-5 f64 whole-tensor sums, ADV-TB-6 one-step opponent comparison, ADV-TB-2/3 block rows refused without batch or tokens_per_step, ADV-TB-1 distinct runs in the median test, ADV-TB-4 write-batch wording, ADV-TB-7 checkpoint digests verified",
+    "reference": "e389c3900a30567736e98acba3aaa96e2947affd",
+    "review": "review-result:adversary-transformer-block-pass-1",
+    "outcome": "fixed"
+  }
+}

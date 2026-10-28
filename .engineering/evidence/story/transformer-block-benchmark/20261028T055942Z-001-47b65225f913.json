@@ -1,0 +1,13 @@
+{
+  "at": "2026-10-28T05:59:42Z",
+  "actor": "human:timo",
+  "artifact": "story:transformer-block-benchmark",
+  "kind": "story",
+  "revision": 4,
+  "change": {
+    "change": "evidence",
+    "kind": "test_result",
+    "source": "task ci",
+    "reference": "e389c3900a30567736e98acba3aaa96e2947affd"
+  }
+}
