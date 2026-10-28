@@ -194,6 +194,8 @@ fixtures! {
     e_type_023_adamw_beta1_one => "E-TYPE-023-adamw-beta1-one.mspec",
     e_type_024_warmup_not_below_steps => "E-TYPE-024-warmup-not-below-steps.mspec",
     e_type_025_muon_momentum_one => "E-TYPE-025-muon-momentum-one.mspec",
+    e_type_026_parameter_only_through_stop_gradient =>
+        "E-TYPE-026-parameter-only-through-stop-gradient.mspec",
     rule_seed_fits_u64 => "rule-seed-fits-u64.mspec",
     rule_optimizer_is_sgd => "rule-optimizer-is-sgd.mspec",
     rule_learning_rate_finite => "rule-learning-rate-finite.mspec",

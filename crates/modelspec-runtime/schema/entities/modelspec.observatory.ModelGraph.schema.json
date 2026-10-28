@@ -44,8 +44,8 @@
   "x-ess-provenance": {
     "system": "modelspec",
     "specification_version": "v1",
-    "source_digest": "3006f5f89b4c301acce0c17c17442555f361161eab069813dde73e0deb7b84d6",
-    "contract_digest": "slice-sha256/2:aa2cb7c07009eb325dc81289f163dc22e66d1bc2c7ed30a9841a330db54b2c9a",
+    "source_digest": "3132045390cfab4a8671704018c2f0da7e68040cb68e76416491411e5b15f88a",
+    "contract_digest": "slice-sha256/2:6d52c2aabc2e9cf56725c7e05db4d56fd31346f2909d73702f1d34d6c8f80437",
     "regenerate": "ess generate"
   },
   "$defs": {
@@ -207,7 +207,7 @@
     },
     "modelspec.observatory.TensorOperator": {
       "title": "TensorOperator",
-      "description": "The Tensor IR operations, ReluGrad, BroadcastScalar, EmbeddingGrad, SumRows, GeluGrad, LayerNormGradX, LayerNormGradGamma, SoftmaxGrad, AttentionGradQ, AttentionGradK, AttentionGradV, CrossEntropyGrad and DropoutGrad being internal gradient ops and Sqrt and Div internal ops of the optimizer subgraph of an AdamW step (DESIGN.md § 3.1, § 4; `TensorOp` in `modelspec-core/src/ir/tensor.rs`). The operators of epic:bert-from-scratch join as the compiler gains them.",
+      "description": "The Tensor IR operations, ReluGrad, BroadcastScalar, EmbeddingGrad, SumRows, GeluGrad, LayerNormGradX, LayerNormGradGamma, SoftmaxGrad, AttentionGradQ, AttentionGradK, AttentionGradV, CrossEntropyGrad, DropoutGrad and SigregColumnsGrad being internal gradient ops, StopGradient a source op that the pass after autodiff removes so that no training step holds it, Sqrt and Div internal ops of the optimizer subgraph of an AdamW step, SigregColumns the internal op that sigreg lowers to, and Sigreg the source operator, which no verified program holds (DESIGN.md § 3.1, § 4; `TensorOp` in `modelspec-core/src/ir/tensor.rs`). The operators of epic:bert-from-scratch join as the compiler gains them.",
       "x-ess-name": "modelspec.observatory.TensorOperator",
       "x-ess-kind": "enum",
       "type": "string",
@@ -245,8 +245,12 @@
         "CrossEntropyGrad",
         "Dropout",
         "DropoutGrad",
+        "StopGradient",
         "Sqrt",
-        "Div"
+        "Div",
+        "Sigreg",
+        "SigregColumns",
+        "SigregColumnsGrad"
       ]
     }
   }

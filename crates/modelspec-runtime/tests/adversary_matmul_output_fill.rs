@@ -295,6 +295,11 @@ impl Element for Wrapped {
     fn ln(self) -> Self {
         Wrapped(self.0.ln())
     }
+
+    fn sin_cos(self) -> (Self, Self) {
+        let (sin, cos) = <f64 as Element>::sin_cos(self.0);
+        (Wrapped(sin), Wrapped(cos))
+    }
 }
 
 /// The portable kernel writes every element for a type with no AVX2 code; under `Kernel::Avx2`

@@ -17,6 +17,8 @@
     "attention",
     "cross_entropy",
     "dropout",
+    "stop_gradient",
+    "sigreg",
     "xavier_uniform",
     "zeros",
     "ones",

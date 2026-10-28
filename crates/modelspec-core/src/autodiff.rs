@@ -5,7 +5,9 @@
 //! op's gradient rule ([`crate::ops::gradient`]) and sums every incoming adjoint of a value
 //! exactly once per use. Only nodes the loss depends on and that depend on a parameter read take
 //! part, so inputs and targets receive no gradient and a parameter the loss does not reach has
-//! none. Every gradient is `f32`, the program's dtype.
+//! none. A `StopGradient` node depends on nothing for this purpose, so nothing it reads receives
+//! an adjoint through it; [`crate::passes::stop_gradient`] removes it afterwards. Every gradient
+//! is `f32`, the program's dtype.
 //!
 //! [`differentiate_inputs`] runs the same walk with the same rules from any rank-0 target and
 //! gives the adjoint of named inputs instead, in a separate program; [`output_element_target`]
@@ -155,7 +157,9 @@ fn reverse_walk(
     Ok(leaves)
 }
 
-/// Per node position: the node is a source or depends on one through its operands.
+/// Per node position: the node is a source or depends on one through its operands. A
+/// `StopGradient` never does, whatever its operand: no gradient flows back through it, so the
+/// walk asks no adjoint of it and builds none for what it reads.
 fn dependent_nodes(
     nodes: &[TensorNode],
     position: &BTreeMap<ValueId, usize>,
@@ -163,7 +167,8 @@ fn dependent_nodes(
 ) -> Vec<bool> {
     let mut reaches = vec![false; nodes.len()];
     for (i, node) in nodes.iter().enumerate() {
-        reaches[i] = is_source(node) || node.operands.iter().any(|o| reaches[position[o]]);
+        reaches[i] = node.op != TensorOp::StopGradient
+            && (is_source(node) || node.operands.iter().any(|o| reaches[position[o]]));
     }
     reaches
 }

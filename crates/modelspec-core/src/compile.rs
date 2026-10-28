@@ -2,11 +2,12 @@
 //! training step (DESIGN.md § 3, § 3.1, § 3.3 passes 1–5).
 //!
 //! [`compile_hir`] parses, resolves and checks; [`compile_tensor`] then lowers, removes dead code
-//! and verifies; [`compile_training`] then differentiates the loss, attaches SGD and verifies the
-//! step, legal effects included. A source fault is reported as the diagnostics of the stage that
-//! found it. A program the verifier refuses after lowering, a lowering failure on checked HIR, or
-//! an autodiff or SGD failure on verified Tensor IR is a compiler bug and is reported under
-//! [`codes::COMPILER_BUG`], never as a user code (DESIGN.md § 8.1).
+//! and verifies; [`compile_training`] then differentiates the loss, removes every `stop_gradient`,
+//! attaches SGD and verifies the step, legal effects included. A source fault is reported as the
+//! diagnostics of the stage that found it. A program the verifier refuses after lowering, a
+//! lowering failure on checked HIR, or an autodiff or SGD failure on verified Tensor IR is a
+//! compiler bug and is reported under [`codes::COMPILER_BUG`], never as a user code (DESIGN.md
+//! § 8.1).
 
 use crate::artifact::{Backend, CompiledArtifact, E_ARTIFACT_005};
 use crate::autodiff::differentiate;
@@ -18,7 +19,7 @@ use crate::ir::tensor::{TensorProgram, ValueId};
 use crate::ir::training::{OptimizerRule, TrainConfig, TrainingStep, attach};
 use crate::ir::verify::{verify, verify_plan_for, verify_step};
 use crate::lower::{self, LoweredProgram};
-use crate::passes::dce;
+use crate::passes::{dce, stop_gradient};
 use crate::resolve::OPERATORS;
 use crate::schedule::{self, ScheduleError};
 
@@ -63,15 +64,16 @@ pub struct CompiledTraining {
     pub config: TrainConfig,
 }
 
-/// [`compile_tensor`], then [`differentiate`] of its loss, [`attach`] of the `train` block's
-/// optimizer, `sgd`, `adamw` or `muon`, and [`verify_step`]. The step keeps every dropout; the
-/// forward program is the same Tensor IR with each dropout the identity, verified.
+/// [`compile_tensor`], then [`differentiate`] of its loss, the removal of every `StopGradient`
+/// ([`stop_gradient::eliminate_training`]), [`attach`] of the `train` block's optimizer, `sgd`,
+/// `adamw` or `muon`, and [`verify_step`]. The step keeps every dropout; the forward program is
+/// the same Tensor IR with each dropout the identity and no `StopGradient`, verified.
 pub fn compile_training(path: &str, source: &str) -> Result<CompiledTraining, Vec<Diagnostic>> {
     let hir = compile_hir(path, source)?;
     let config = TrainConfig::from_hir(&hir.train);
     let lowered = tensor_stage(&hir, dce::eliminate)?;
     let training = training_stage(&lowered.program, config.lr, hir.train.optimizer)?;
-    let forward = lower::without_dropout(lowered);
+    let forward = without_stop_gradient(lower::without_dropout(lowered));
     if let Err(error) = verify(&forward.program) {
         return Err(vec![compiler_bug(
             "the Tensor IR without dropout does not verify",
@@ -182,8 +184,20 @@ pub fn compile_artifact_for(
     Ok(artifact)
 }
 
-/// Differentiates the single output of `forward`, its loss, attaches the optimizer `rule` at
-/// `lr` and verifies the step.
+/// `lowered` with every `StopGradient` replaced by its operand ([`stop_gradient::eliminate`]),
+/// the prediction too, so the forward program names the values the training step names.
+fn without_stop_gradient(lowered: LoweredProgram) -> LoweredProgram {
+    let (program, replaced) = stop_gradient::eliminate(lowered.program);
+    LoweredProgram {
+        program,
+        prediction: replaced.of(lowered.prediction),
+        declared_inputs: lowered.declared_inputs,
+    }
+}
+
+/// Differentiates the single output of `forward`, its loss, removes every `StopGradient`
+/// ([`stop_gradient::eliminate_training`]), attaches the optimizer `rule` at `lr` and verifies
+/// the step.
 fn training_stage(
     forward: &TensorProgram,
     lr: f32,
@@ -197,6 +211,7 @@ fn training_stage(
     };
     let training = differentiate(forward, loss)
         .map_err(|error| vec![compiler_bug("autodiff refused verified Tensor IR", &error)])?;
+    let training = stop_gradient::eliminate_training(training);
     let step = attach(training, lr, rule).map_err(|error| {
         vec![compiler_bug(
             "optimizer attachment refused the training program",

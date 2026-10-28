@@ -774,6 +774,99 @@ fn decider_small_cpu_trains_on_its_19_tensors() {
     assert!(losses.values().all(|l| l.is_finite()), "{losses:?}");
 }
 
+/// A JEPA-shaped program on dense data: an `i32` token input read by `embedding`, an `f32`
+/// target of the model output type, and the loss
+/// `mse(predict, stop_gradient(target_embedding)) + 0.1 * sigreg(embedding output, slices = 4)`.
+/// The target branch shares the encoder with the context branch and passes it no gradient
+/// (story:jepa-stop-gradient, story:jepa-sigreg-cpu, story:decider-dense-named-data).
+const JEPA: &str = "\
+model Jepa {
+    param table: Tensor<f32, [16, 8]> = xavier_uniform();
+    param encoder: Tensor<f32, [8, 8]> = xavier_uniform();
+    param predictor: Tensor<f32, [8, 8]> = xavier_uniform();
+
+    fn embed(tokens: Tensor<i32, [32]>) -> Tensor<f32, [32, 8]> {
+        return embedding(table, tokens);
+    }
+
+    fn target_embedding(y: Tensor<f32, [32, 8]>) -> Tensor<f32, [32, 8]> {
+        return matmul(y, encoder);
+    }
+
+    fn forward(tokens: Tensor<i32, [32]>) -> Tensor<f32, [32, 8]> {
+        return matmul(matmul(embedding(table, tokens), encoder), predictor);
+    }
+}
+
+train Fit {
+    model = Jepa;
+    input tokens: Tensor<i32, [32]>;
+    target y: Tensor<f32, [32, 8]>;
+    loss = add(mse(model.forward(tokens), stop_gradient(model.target_embedding(y))), mul(sigreg(model.embed(tokens), slices = 4), 0.1));
+    optimizer = sgd(lr = 0.1);
+    steps = 5;
+    seed = 13;
+    device = cpu;
+}
+";
+
+/// The `JEPA` data: `samples` token ids below 16 and `samples` rows of 8 target values.
+fn jepa_data(seed: u64, samples: usize) -> BTreeMap<&'static str, Values> {
+    let mut s = Stream(seed);
+    let tokens = (0..samples).map(|_| s.below(16)).collect();
+    let y = (0..8 * samples).map(|_| s.f32()).collect();
+    BTreeMap::from([("tokens", Values::I32(tokens)), ("y", Values::F32(y))])
+}
+
+/// The loss of `eval loss=<v>` or `eval loss=<v> accuracy=<a>`.
+fn eval_loss(stdout: &str) -> f64 {
+    eval_line(stdout)
+        .strip_prefix("eval loss=")
+        .and_then(|rest| rest.split(' ').next())
+        .expect("`eval loss=<mean>`")
+        .parse()
+        .expect("a loss")
+}
+
+/// dense-named-jepa-cpu: the JEPA-shaped program trains 5 steps on the CPU from a dense
+/// directory of `tokens.i32` and `y.f32`; every recorded loss and the `--eval` loss are finite,
+/// and two runs from one seed record bit-identical losses and print the same lines.
+#[test]
+fn dense_named_jepa_sigreg_stop_gradient_cpu_trains_reproducibly() {
+    let (root, file) = case("jepa_cpu", JEPA);
+    let data = root.join("data");
+    write_dir(&data, &jepa_data(31, 64));
+    let eval = root.join("eval");
+    write_dir(&eval, &jepa_data(32, 32));
+    let run = |name: &str| {
+        let record = root.join(format!("{name}.jsonl"));
+        let stdout = ok(&train(
+            &file,
+            "cpu",
+            &data,
+            &["--record", path(&record), "--eval", path(&eval)],
+        ));
+        (stdout, recorded_losses(&record))
+    };
+    let (first, first_losses) = run("first");
+    let (second, second_losses) = run("second");
+    assert_eq!(
+        first_losses.keys().copied().collect::<Vec<_>>(),
+        (0..=5).collect::<Vec<u64>>(),
+        "{first}"
+    );
+    assert!(
+        first_losses.values().all(|l| l.is_finite()),
+        "{first_losses:?}"
+    );
+    let bits = |losses: &BTreeMap<u64, f64>| -> Vec<u64> {
+        losses.values().map(|l| l.to_bits()).collect()
+    };
+    assert_eq!(bits(&first_losses), bits(&second_losses));
+    assert!(eval_loss(&first).is_finite(), "{first}");
+    assert_eq!(first, second);
+}
+
 #[cfg(feature = "vulkan")]
 #[allow(dead_code)]
 #[path = "../../modelspec-runtime/tests/common/mod.rs"]
@@ -852,5 +945,31 @@ mod device {
         };
         let (c, g) = (loss(&cpu), loss(&gpu));
         assert!((g - c).abs() <= bound(c), "eval: vulkan {g}, cpu {c}");
+    }
+
+    /// dense-named-jepa-vulkan: `sigreg` has no Vulkan kernel in this branch
+    /// (story:jepa-sigreg-vulkan), so the JEPA-shaped program on the device is refused with
+    /// E-TARGET-011 naming the operator, and records no step. When that story lands this case
+    /// fails and becomes an agreement test with the CPU run.
+    #[test]
+    #[ignore = "needs a Vulkan device"]
+    fn dense_named_jepa_vulkan_is_refused_until_sigreg_has_a_kernel() {
+        let (root, file) = case("jepa_vulkan", JEPA);
+        let data = root.join("data");
+        write_dir(&data, &jepa_data(31, 64));
+        let record = root.join("gpu.jsonl");
+        let output = train(&file, "vulkan", &data, &["--record", path(&record)]);
+        let stderr = text(&output.stderr);
+        assert_eq!(output.status.code(), Some(1), "stderr: {stderr}");
+        assert!(
+            stderr.starts_with("E-TARGET-011: operator `sigreg` has no Vulkan kernel yet\n"),
+            "stderr: {stderr}"
+        );
+        let steps = if record.exists() {
+            recorded_losses(&record).len()
+        } else {
+            0
+        };
+        assert_eq!(steps, 0, "stderr: {stderr}");
     }
 }

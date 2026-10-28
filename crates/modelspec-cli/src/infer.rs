@@ -30,6 +30,7 @@ use modelspec_core::diag::Diagnostic;
 use modelspec_runtime::cpu::evaluate_all;
 use modelspec_runtime::train::checkpoint;
 use modelspec_runtime::train::data::{self, DataError};
+use modelspec_runtime::train::init::sigreg_projections;
 
 use crate::train::Backend;
 #[cfg(not(feature = "vulkan"))]
@@ -109,15 +110,15 @@ pub fn run(args: Args, stdout: &mut dyn Write, stderr: &mut dyn Write) -> u8 {
             }
         }
     };
-    let params = match checkpoint::read(&args.checkpoint).and_then(|c| c.parameters_for(&compiled))
-    {
-        Ok(params) => params,
+    let read = checkpoint::read(&args.checkpoint);
+    let (params, step) = match read.and_then(|c| Ok((c.parameters_for(&compiled)?, c.step))) {
+        Ok(read) => read,
         Err(error) => {
             let _ = writeln!(stderr, "{error}");
             return crate::EXIT_FAILURE;
         }
     };
-    let batch = match data::synthetic(&compiled.config, &compiled.forward) {
+    let mut batch = match data::synthetic(&compiled.config, &compiled.forward) {
         Ok(batch) => batch,
         Err(DataError::Refused(diagnostic)) => {
             let _ = writeln!(stderr, "{diagnostic}");
@@ -128,6 +129,15 @@ pub fn run(args: Args, stdout: &mut dyn Write, stderr: &mut dyn Write) -> u8 {
             return crate::EXIT_FAILURE;
         }
     };
+    // Every `sigreg` site reads its projection of the checkpoint's step, the step whose
+    // parameters these are (story:jepa-sigreg-cpu).
+    match sigreg_projections(&compiled.forward.program, compiled.config.seed, step) {
+        Ok(projections) => batch.inputs.extend(projections),
+        Err(error) => {
+            let _ = writeln!(stderr, "modelspec infer {file}: {error}");
+            return crate::EXIT_FAILURE;
+        }
+    }
     let forward = &compiled.forward;
     let Some(node) = forward.program.node(forward.prediction) else {
         let _ = writeln!(

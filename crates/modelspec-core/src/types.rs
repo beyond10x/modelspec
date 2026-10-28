@@ -30,7 +30,10 @@
 //! dataflow (E-TYPE-021, coordinator decisions D41 and D43):
 //! not through a `let`, an operator, the result of a `model.<function>(...)` call whose body
 //! reads one, nor an argument of such a call that reaches the result or reaches such an operand
-//! inside the function, which is refused at that argument. The parser already enforces that `seed` fits `u64`, that the optimizer is
+//! inside the function, which is refused at that argument. Each parameter the loss reads must
+//! reach it on at least one path without a `stop_gradient`: a parameter read only through
+//! `stop_gradient` would get no gradient, and is refused at that call (E-TYPE-026,
+//! story:jepa-stop-gradient). The parser already enforces that `seed` fits `u64`, that the optimizer is
 //! `sgd`, `adamw` or `muon`, that `sgd` takes `lr` alone, and that literals are finite `f64`s. A
 //! `vulkan(<index>)` device is not validated.
 
@@ -189,6 +192,10 @@ pub mod codes {
         /// such as `momentum = 1.0`, or an `ns_steps` outside `[1, 10]`, such as `ns_steps = 0`
         /// or `ns_steps = 11` (DESIGN.md § 2.1, coordinator decision D67).
         MUON_HYPERPARAMETER = "E-TYPE-025";
+        /// A parameter that reaches the train block's loss only through `stop_gradient`: it
+        /// would receive no gradient, and training needs one for every parameter the loss reads.
+        /// Reported at the `stop_gradient` call (DESIGN.md § 2.2, § 8.1).
+        PARAMETER_ONLY_THROUGH_STOP_GRADIENT = "E-TYPE-026";
     }
 
     /// A compiler verification failure, not a user error (DESIGN.md § 8.1): the checker reached a
@@ -321,7 +328,7 @@ impl Checker {
             .map(|(f, sig)| self.function(f, sig, &names, &param_types))
             .unzip();
         let train = self.train(&ast.train, &names, &signatures, &flows);
-        Some(Hir {
+        let hir = Hir {
             model: HirModel {
                 name: ast.model.name.name.clone(),
                 params: params.into_iter().collect::<Option<_>>()?,
@@ -329,7 +336,47 @@ impl Checker {
                 span: ast.model.span.clone(),
             },
             train: train?,
-        })
+        };
+        self.stopped_params(&hir);
+        Some(hir)
+    }
+
+    /// E-TYPE-026 at the `stop_gradient` call for each parameter that the loss of `hir` reads
+    /// only through `stop_gradient` ([`GradientReads`]), in parameter order.
+    fn stopped_params(&mut self, hir: &Hir) {
+        let mut summaries: Vec<GradientReads> = Vec::new();
+        for function in &hir.model.functions {
+            let mut lets: Vec<GradientReads> = Vec::new();
+            for l in &function.lets {
+                let value = gradient_reads(&l.value, &lets, &summaries);
+                lets.push(value);
+            }
+            let result = gradient_reads(&function.result, &lets, &summaries);
+            summaries.push(result);
+        }
+        let loss = gradient_reads(&hir.train.loss, &[], &summaries);
+        for (source, span) in &loss.stopped {
+            let Source::Param(index) = *source else {
+                continue;
+            };
+            if loss.live.contains(source) {
+                continue;
+            }
+            let name = hir
+                .model
+                .params
+                .get(index)
+                .map_or("a parameter", |p| p.name.as_str());
+            self.report(
+                codes::PARAMETER_ONLY_THROUGH_STOP_GRADIENT,
+                format!(
+                    "parameter `{name}` reaches the loss only through `stop_gradient`, so it \
+                     would receive no gradient; training needs one for every parameter the loss \
+                     reads"
+                ),
+                span,
+            );
+        }
     }
 
     // -----------------------------------------------------------------------------------------
@@ -1428,6 +1475,124 @@ fn constant_args(expr: &HirExpr, let_reads: &[Reads], out: &mut BTreeMap<usize, 
     }
 }
 
+/// A model parameter or an argument of the enclosing model function, as a value's source.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Source {
+    Param(usize),
+    Arg(usize),
+}
+
+/// What a value reads by dataflow, split by whether a gradient flows back along the read:
+/// `live` reads carry one, `stopped` reads pass through a `stop_gradient` on every path that
+/// reaches them from this value, each at the span of one such call.
+#[derive(Clone, Debug, Default)]
+struct GradientReads {
+    live: BTreeSet<Source>,
+    stopped: BTreeMap<Source, SourceSpan>,
+}
+
+impl GradientReads {
+    /// Both reads; a source stopped on both sides keeps the earlier span in source order.
+    fn join(mut self, other: GradientReads) -> GradientReads {
+        self.live.extend(other.live);
+        for (source, span) in other.stopped {
+            match self.stopped.get(&source) {
+                Some(kept) if (kept.line, kept.column) <= (span.line, span.column) => {}
+                _ => {
+                    self.stopped.insert(source, span);
+                }
+            }
+        }
+        self
+    }
+
+    /// Every read, stopped at `span`: what a `stop_gradient` call at `span` reads.
+    fn stopped_at(self, span: &SourceSpan) -> GradientReads {
+        let stopped = self
+            .live
+            .into_iter()
+            .chain(self.stopped.into_keys())
+            .map(|source| (source, span.clone()))
+            .collect();
+        GradientReads {
+            live: BTreeSet::new(),
+            stopped,
+        }
+    }
+}
+
+/// What `expr` reads by dataflow, as [`GradientReads`]: a `param` and an argument read
+/// themselves, live; a `let` reads what its value reads (`lets`); `stop_gradient` reads what its
+/// operand reads, all stopped at the call; another operator reads what any operand reads; a
+/// `model.<function>(...)` call reads the parameters its function's result reads (`summaries`),
+/// and for each argument of the function that the result reads, what the call's argument reads,
+/// stopped at the function's `stop_gradient` when the function stops it.
+fn gradient_reads(
+    expr: &HirExpr,
+    lets: &[GradientReads],
+    summaries: &[GradientReads],
+) -> GradientReads {
+    match &expr.kind {
+        HirExprKind::Param(r) => GradientReads {
+            live: BTreeSet::from([Source::Param(r.0)]),
+            stopped: BTreeMap::new(),
+        },
+        HirExprKind::Arg(r) => GradientReads {
+            live: BTreeSet::from([Source::Arg(r.0)]),
+            stopped: BTreeMap::new(),
+        },
+        HirExprKind::Let(r) => lets.get(r.0).cloned().unwrap_or_default(),
+        HirExprKind::Op {
+            op: TensorOp::StopGradient,
+            args,
+        } => args
+            .iter()
+            .map(|a| gradient_reads(a, lets, summaries))
+            .fold(GradientReads::default(), GradientReads::join)
+            .stopped_at(&expr.span),
+        HirExprKind::Op { args, .. } => args
+            .iter()
+            .map(|a| gradient_reads(a, lets, summaries))
+            .fold(GradientReads::default(), GradientReads::join),
+        HirExprKind::Call { function, args } => {
+            let Some(summary) = summaries.get(function.0) else {
+                return GradientReads::default();
+            };
+            let mut out = GradientReads {
+                live: summary
+                    .live
+                    .iter()
+                    .filter(|s| matches!(s, Source::Param(_)))
+                    .copied()
+                    .collect(),
+                stopped: summary
+                    .stopped
+                    .iter()
+                    .filter(|(s, _)| matches!(s, Source::Param(_)))
+                    .map(|(s, span)| (*s, span.clone()))
+                    .collect(),
+            };
+            for (index, arg) in args.iter().enumerate() {
+                let source = Source::Arg(index);
+                let live = summary.live.contains(&source);
+                let stopped = summary.stopped.get(&source);
+                if !live && stopped.is_none() {
+                    continue;
+                }
+                let value = gradient_reads(arg, lets, summaries);
+                if let Some(span) = stopped {
+                    out = out.join(value.clone().stopped_at(span));
+                }
+                if live {
+                    out = out.join(value);
+                }
+            }
+            out
+        }
+        HirExprKind::Data(_) | HirExprKind::Scalar(_) => GradientReads::default(),
+    }
+}
+
 /// The source name of `op`, `attention` for any `Attention { heads }`.
 fn source_name(op: &TensorOp) -> &'static str {
     resolve::OPERATORS
@@ -1708,7 +1873,9 @@ mod tests {
                 "softmax",
                 "attention",
                 "cross_entropy",
-                "dropout"
+                "dropout",
+                "stop_gradient",
+                "sigreg"
             ]
         );
     }

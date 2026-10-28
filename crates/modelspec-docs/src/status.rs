@@ -405,6 +405,15 @@ pub const CAPABILITIES: &[Capability] = &[
         "/docs/concepts/language",
     ),
     shipped(
+        "Language",
+        "`stop_gradient`",
+        "Not yet released: `stop_gradient(x)` returns `x` unchanged and passes no gradient back, and a pass after autodiff removes it; a parameter that reaches the loss only through it is E-TYPE-026. The gradient of a parameter is checked against central differences with the stopped term held constant.",
+        Evidence::Test(
+            "crates/modelspec-runtime/tests/gradients_stop_gradient.rs::stop_gradient_gradient_of_w_matches_the_function_with_the_stopped_term_held",
+        ),
+        "/docs/reference/operators",
+    ),
+    shipped(
         "BERT operators",
         "`embedding`",
         "Since 0.10.0: a row lookup from an `f32[V,H]` table by `i32[N]` ids; the table gradient is a scatter-add checked against central differences.",
@@ -475,6 +484,15 @@ pub const CAPABILITIES: &[Capability] = &[
             "crates/modelspec-runtime/tests/gradients_dropout.rs::gradients_dropout_match_central_differences_at_a_fixed_token",
         ),
         "/docs/concepts/bert-operators",
+    ),
+    shipped(
+        "Training",
+        "`sigreg`",
+        "Not yet released: `sigreg(z, slices = M)`, LeJEPA's SIGReg, the Epps–Pulley statistic of M unit directions drawn anew each step against the standard normal, with its gradient checked against central differences, on the CPU backend; --backend vulkan answers E-TARGET-011 at the call.",
+        Evidence::Test(
+            "crates/modelspec-runtime/tests/gradients_sigreg.rs::gradients_sigreg_match_central_differences_at_a_fixed_projection",
+        ),
+        "/docs/reference/operators",
     ),
     shipped(
         "BERT operators",

@@ -235,6 +235,11 @@ pub enum TensorOp {
     DropoutGrad {
         p: f32,
     },
+    /// `x` of any `f32` shape `-> x`'s type: `x` unchanged, through which no gradient flows
+    /// (DESIGN.md § 2.2, § 4). Autodiff does not walk through it, and the pass
+    /// [`crate::passes::stop_gradient`] removes it after autodiff, so no training step, CPU
+    /// evaluation of a step or schedule holds it.
+    StopGradient,
     /// Internal optimizer op: the correctly rounded square root of each element, on any `f32`
     /// shape. Only the `Optimizer` subgraph of an AdamW step has it (DESIGN.md § 2.1, § 8).
     Sqrt,
@@ -242,6 +247,24 @@ pub enum TensorOp {
     /// shapes, or one rank-0 operand, as `Add`. Only the `Optimizer` subgraph of an AdamW step
     /// has it (DESIGN.md § 2.1, § 8).
     Div,
+    /// The source operator `sigreg(z, slices = M)`, `z: f32[N, K]` `-> f32[]`: the mean over `M`
+    /// random unit projections of the rows of `z` of the Epps–Pulley statistic of each
+    /// (DESIGN.md § 2.2, § 4). It types the call; the lowering expands it to
+    /// `ReduceMean(SigregColumns(MatMul(z, proj)))`, `proj: f32[K, M]` the internal projection
+    /// input of the call's site, so the verifier refuses it in Tensor IR.
+    Sigreg {
+        slices: u64,
+    },
+    /// Internal op `P: f32[N, M] -> f32[M]`: the Epps–Pulley statistic of each column of `P`
+    /// against the standard normal, `T_m = N sum_j c_j ((C_j - phi_j)^2 + S_j^2)` over the eight
+    /// knots `t_j = 0.625 j`, `C_j` and `S_j` the column means of `cos(t_j P)` and `sin(t_j P)`
+    /// (DESIGN.md § 4).
+    SigregColumns,
+    /// Internal gradient op over operands `P: f32[N, M]`, `G: f32[M]`: the gradient of
+    /// [`Self::SigregColumns`] with respect to `P`,
+    /// `2 G[m] sum_j c_j t_j (S_j cos(t_j P) - (C_j - phi_j) sin(t_j P))`, `C_j` and `S_j`
+    /// recomputed (DESIGN.md § 4).
+    SigregColumnsGrad,
 }
 
 impl TensorOp {
@@ -281,8 +304,12 @@ impl TensorOp {
             TensorOp::CrossEntropyGrad => "CrossEntropyGrad",
             TensorOp::Dropout { .. } => "Dropout",
             TensorOp::DropoutGrad { .. } => "DropoutGrad",
+            TensorOp::StopGradient => "StopGradient",
             TensorOp::Sqrt => "Sqrt",
             TensorOp::Div => "Div",
+            TensorOp::Sigreg { .. } => "Sigreg",
+            TensorOp::SigregColumns => "SigregColumns",
+            TensorOp::SigregColumnsGrad => "SigregColumnsGrad",
         }
     }
 
@@ -620,6 +647,21 @@ impl TensorProgramBuilder {
         self.push(TensorOp::DropoutGrad { p }, &[token, g])
     }
 
+    /// `x` unchanged, through which no gradient flows.
+    pub fn stop_gradient(&mut self, x: ValueId) -> Result<ValueId, BuildError> {
+        self.push(TensorOp::StopGradient, &[x])
+    }
+
+    /// The Epps–Pulley statistic of each column of the projected samples `p: [N, M]`.
+    pub fn sigreg_columns(&mut self, p: ValueId) -> Result<ValueId, BuildError> {
+        self.push(TensorOp::SigregColumns, &[p])
+    }
+
+    /// The gradient of [`Self::sigreg_columns`] of `p` from the result's `g: [M]`.
+    pub fn sigreg_columns_grad(&mut self, p: ValueId, g: ValueId) -> Result<ValueId, BuildError> {
+        self.push(TensorOp::SigregColumnsGrad, &[p, g])
+    }
+
     /// Adds any op except `Input`, typed by the registry.
     pub fn push(&mut self, op: TensorOp, operands: &[ValueId]) -> Result<ValueId, BuildError> {
         self.push_at(op, operands, None)
@@ -733,8 +775,12 @@ mod tests {
             TensorOp::CrossEntropyGrad,
             TensorOp::Dropout { p: 0.5 },
             TensorOp::DropoutGrad { p: 0.5 },
+            TensorOp::StopGradient,
             TensorOp::Sqrt,
             TensorOp::Div,
+            TensorOp::Sigreg { slices: 1 },
+            TensorOp::SigregColumns,
+            TensorOp::SigregColumnsGrad,
         ];
         for op in &ops {
             match op {
@@ -771,8 +817,12 @@ mod tests {
                 | TensorOp::CrossEntropyGrad
                 | TensorOp::Dropout { .. }
                 | TensorOp::DropoutGrad { .. }
+                | TensorOp::StopGradient
                 | TensorOp::Sqrt
-                | TensorOp::Div => {}
+                | TensorOp::Div
+                | TensorOp::Sigreg { .. }
+                | TensorOp::SigregColumns
+                | TensorOp::SigregColumnsGrad => {}
             }
         }
         ops

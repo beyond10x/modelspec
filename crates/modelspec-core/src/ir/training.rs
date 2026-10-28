@@ -565,6 +565,48 @@ pub fn dropout_sites(program: &TensorProgram) -> Vec<String> {
         .collect()
 }
 
+/// The projection inputs of the `sigreg` sites of `program`: each `Input` that a `MatMul` reads
+/// as its right operand where a `SigregColumns` reads that `MatMul`, once each, in input order
+/// (DESIGN.md § 2.3, story:jepa-sigreg-cpu). A program without `sigreg` has none.
+pub fn sigreg_projection_inputs(program: &TensorProgram) -> Vec<ValueId> {
+    let projected: std::collections::BTreeSet<ValueId> = program
+        .nodes
+        .iter()
+        .filter(|n| n.op == TensorOp::SigregColumns)
+        .filter_map(|n| n.operands.first().copied())
+        .collect();
+    let projections: std::collections::BTreeSet<ValueId> = program
+        .nodes
+        .iter()
+        .filter(|n| n.op == TensorOp::MatMul && projected.contains(&n.id))
+        .filter_map(|n| n.operands.get(1).copied())
+        .collect();
+    program
+        .inputs
+        .iter()
+        .copied()
+        .filter(|value| projections.contains(value))
+        .filter(|&value| {
+            matches!(
+                program.node(value).map(|n| &n.op),
+                Some(TensorOp::Input { .. })
+            )
+        })
+        .collect()
+}
+
+/// The `sigreg` sites of `program`: the name of each of its [`sigreg_projection_inputs`], in
+/// input order. The training host supplies each site's projection at every step.
+pub fn sigreg_sites(program: &TensorProgram) -> Vec<String> {
+    sigreg_projection_inputs(program)
+        .into_iter()
+        .filter_map(|value| match &program.node(value)?.op {
+            TensorOp::Input { name } => Some(name.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
 /// Appends optimizer nodes to a training program, numbering them after its largest value id.
 struct Appender {
     next: Option<u32>,
