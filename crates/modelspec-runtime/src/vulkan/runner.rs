@@ -1358,6 +1358,26 @@ pub(super) fn actions<'a>(
     Ok((actions, loss))
 }
 
+/// The positions in the actions of [`actions`] of the plan steps `steps`, none of them an
+/// `Allocate`: [`actions`] makes one action of every step that is not an `Allocate`, in plan
+/// order.
+pub(super) fn action_positions(
+    plan: &ExecutionPlan,
+    steps: &[usize],
+) -> Result<Vec<usize>, VulkanRunError> {
+    steps
+        .iter()
+        .map(|&at| match plan.step.get(at) {
+            Some(step) if step.op != PlanOp::Allocate => Ok(plan.step[..at]
+                .iter()
+                .filter(|before| before.op != PlanOp::Allocate)
+                .count()),
+            Some(step) => Err(unexpected(at, step, "an evaluated step allocates")),
+            None => Err(VulkanRunError::Plan(format!("the plan has no step {at}"))),
+        })
+        .collect()
+}
+
 fn unexpected(at: usize, step: &PlanStep, reason: &str) -> VulkanRunError {
     VulkanRunError::Plan(format!("step {at} ({}): {reason}", step.op))
 }
