@@ -289,3 +289,9 @@ workspace version and nothing is on a registry.
   before a GPU run; a bench's own warm-up steps outside its timed span stay. A timed run gets the
   GPU alone, and nobody locks its clocks. The operator said so on 2026-10-23
   (approval-record:benchmark-wave-scope D14).
+- Performance work is proved by a small experiment first: a probe that shows the idea moves the
+  measured figure, then the accurate implementation. Each change runs only the tests of the crates
+  and test targets it touches (and its own device tests when it changes a kernel). Changes collect
+  on one integration branch; the full gate (`task ci` with the device tests) runs once there, then
+  one PR carries every change to `main` and one release follows. The operator said so on
+  2026-10-28.
