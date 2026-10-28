@@ -29,7 +29,7 @@ site, keep the CPU-reference tests green, time it, publish the row on the Benchm
 ## Milestones
 
 The milestones are those of [DESIGN.md § 1](https://github.com/beyond10x/modelspec/blob/main/DESIGN.md#1-scope-and-milestones).
-M0 is built and released as 0.1.0. M1 is in progress; the latest release is 0.21.0. Some M2 items
+M0 is built and released as 0.1.0. M1 is in progress; the latest release is 0.22.0. Some M2 items
 were done early, in M1. The current milestone is a small BERT, pre-trained from scratch, which is
 one of the two proof models of M3: its operators run on the CPU reference interpreter, the row-wise
 ones also have Vulkan kernels since 0.14.0, and `attention`, `cross_entropy` and AdamW have theirs
@@ -70,6 +70,7 @@ reference interpreter, and `modelspec check`, `ir` and `train --backend cpu`.
 | 0.19.0 | no change to the Vulkan backend; the record of BERT-tiny pre-trained on one RTX 3090 for 10,000 steps over packed WikiText-103, held-out loss 6.7674994 nats against the unigram baseline of 6.9265379, on the documentation site |
 | 0.20.0 | no change to the Vulkan backend; the Benchmarks page shows the MLP sweep against FLOP per step with GFLOP/s per side and names the workloads not measured yet |
 | 0.21.0 | no change to the Vulkan backend; `examples/transformer_block.mspec`, the two encoder layers of BERT-tiny, trains through Vulkan within the run tolerance of the CPU run, and the Benchmarks page measures it against PyTorch CUDA eager and `torch.compile` at batches of 8, 32 and 128 sequences |
+| 0.22.0 | Vulkan kernels for `sigreg`, `SigregColumns` and `SigregColumnsGrad`, hold its losses and parameters to the CPU run within the run tolerance; `train --backend vulkan --data` binds every named `f32` and `i32` input and target of a dense directory, `--eval` runs on Vulkan too, and `infer --backend vulkan --data --function --out` runs any model function over every block |
 
 The 9 acceptance boxes of DESIGN.md § 9 are not ticked.
 
