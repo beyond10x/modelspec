@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/modelspec.artifact.ContentHash",
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "30fb804730c460a95541105dabb73eaf623a6992f5e63bfe6955e8f2c5b43643",
+    "contract_digest": "slice-sha256/2:6e2685355778d7b8588d3a765a16dd47e5b7de9d9277844b81c2101e3cdca629",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.artifact.ContentHash": {
+      "title": "ContentHash",
+      "description": "A blake3 digest under explicit serialization and version rules (DESIGN.md § 7), written as its 32 bytes in 64 lowercase hexadecimal digits (story:content-hash-schema-constrained).",
+      "x-ess-name": "modelspec.artifact.ContentHash",
+      "x-ess-kind": "newtype",
+      "type": "string",
+      "pattern": "^[0-9a-f]*$",
+      "x-ess-invariants": [
+        "value.count == 64"
+      ],
+      "x-ess-alphabet": "0123456789abcdef"
+    }
+  }
+}

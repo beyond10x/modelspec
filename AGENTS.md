@@ -126,10 +126,11 @@ Entry points are the `Taskfile.yml` tasks (go-task):
   documentation site differs from what the code produces now; `task docs-generate` rewrites them.
 - `task spec-validate`: `ess specify validate --path .` from inside `spec/`.
 - `task schema-check`: `ess generate --kind schema --check` from inside `spec/`, which fails when
-  a file the specification generates under `crates/modelspec-observatory/schema/` or
-  `crates/modelspec-runtime/schema/` differs from it or is missing; an extra file there passes.
-  `task schema-generate` rewrites both. A change to any file under `spec/` changes the schema's
-  provenance digest, so run `task schema-generate` in the same change.
+  a file the specification generates under `crates/modelspec-observatory/schema/`,
+  `crates/modelspec-runtime/schema/` or `crates/modelspec-diagram/schema/` differs from it or is
+  missing; an extra file there passes. `task schema-generate` rewrites all three. A change to any
+  file under `spec/` changes the schema's provenance digest, so run `task schema-generate` in the
+  same change.
 - `task ui-types-check`: `modelspec-ui-types --check`, which fails when
   `ui/src/generated/observatory.ts` differs from the TypeScript the Rust types of
   `crates/modelspec-observatory/src/event.rs` generate (`ts-rs`); `task ui-types` rewrites it.

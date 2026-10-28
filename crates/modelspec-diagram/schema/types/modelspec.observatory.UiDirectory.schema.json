@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/modelspec.observatory.UiDirectory",
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "30fb804730c460a95541105dabb73eaf623a6992f5e63bfe6955e8f2c5b43643",
+    "contract_digest": "slice-sha256/2:c1f2d576555ea4d6d3c2bff336043550bfd43f82038323a834ac15c2854225df",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.observatory.UiDirectory": {
+      "title": "UiDirectory",
+      "description": "The value of `--ui <dir>` on `modelspec train --serve <addr>` and on `modelspec observe` (story:observatory-ui-live-loss-chart), the directory of the built observatory UI, `ui/dist` after `task ui`. It is read whole before the address is bound, every regular file under it without following a symlink, and must hold `index.html`, at most 4096 files and 64 MiB; a directory that cannot be read, has no `index.html` or exceeds a limit is refused with one line on stderr and exit 1 before anything is served or run. Once bound the process prints `ui http://<bound address>/` on stderr after the `serving` line. `GET /` answers 200 with `index.html` and `GET /<path>` with the file at `<path>` under the directory, with a Content-Type from its extension; another method on such a path answers 405, and a path that names no file answers 404. A file written to the directory after it was read is not served. `modelspec train --ui` without `--serve` is a usage error.",
+      "x-ess-name": "modelspec.observatory.UiDirectory",
+      "x-ess-kind": "newtype",
+      "type": "string"
+    }
+  }
+}

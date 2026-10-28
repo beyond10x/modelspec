@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/modelspec.diagram.ScopeSegment",
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "30fb804730c460a95541105dabb73eaf623a6992f5e63bfe6955e8f2c5b43643",
+    "contract_digest": "slice-sha256/2:3fe3e953882700f0090eb2dec01fc6d8a95301e7a21f282f1ccc228deb49c497",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.diagram.ScopeKind": {
+      "title": "ScopeKind",
+      "description": "What one segment of a scope path names (DESIGN.md § 13.2). Program is the root, the train block; Stage a PipelineStage; Function one inlining of a model function at one call site; Adjoint the gradient nodes the rule of one forward node emitted; Update the optimizer nodes of one parameter; Module and Layer are reserved for the module and layer instances of DESIGN.md § 11 iteration 3 and are emitted by no compiler before it.",
+      "x-ess-name": "modelspec.diagram.ScopeKind",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "Program",
+        "Stage",
+        "Function",
+        "Adjoint",
+        "Update",
+        "Module",
+        "Layer"
+      ]
+    },
+    "modelspec.diagram.ScopeSegment": {
+      "title": "ScopeSegment",
+      "description": "One step of a scope path, outermost first.",
+      "x-ess-name": "modelspec.diagram.ScopeSegment",
+      "x-ess-kind": "struct",
+      "type": "object",
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/modelspec.diagram.ScopeKind"
+        },
+        "name": {
+          "description": "The train block's name, the stage's lower-case name, the function's name, the forward value as `%<k>` or the parameter's canonical path (DESIGN.md § 2.3).",
+          "type": "string"
+        },
+        "instance": {
+          "description": "For a Function segment, which inlining of the function in the program, from 0; 0 for every other kind.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "call_site": {
+          "description": "For a Function segment, the source position of the call as a diagnostic prints it, `file:line:column` (DESIGN.md § 8.1); absent for every other kind.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "name",
+        "instance"
+      ],
+      "additionalProperties": false,
+      "x-ess-invariants": [
+        "instance >= 0"
+      ]
+    }
+  }
+}

@@ -1,0 +1,215 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/modelspec.diagram.Scope",
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "30fb804730c460a95541105dabb73eaf623a6992f5e63bfe6955e8f2c5b43643",
+    "contract_digest": "slice-sha256/2:320af79ff7fdb97d4bbc5942cc96ee83a979f848831fb1bcd250b1ebee1abcb7",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.checkpoint.DType": {
+      "title": "DType",
+      "description": "A tensor element type and its size in bytes; `f32` for every value, `i32` only for row ids an `embedding` reads, never a parameter or a checkpoint tensor (DESIGN.md § 2.2).",
+      "x-ess-name": "modelspec.checkpoint.DType",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "F32",
+        "I32"
+      ],
+      "x-ess-attributes": [
+        {
+          "kind": "integer",
+          "name": "size_bytes",
+          "type": "Integer",
+          "values": {
+            "F32": 4,
+            "I32": 4
+          }
+        }
+      ]
+    },
+    "modelspec.checkpoint.Shape": {
+      "title": "Shape",
+      "description": "A tensor shape; each dimension is a positive integer and rank 0 is a scalar (DESIGN.md § 2.2).",
+      "x-ess-name": "modelspec.checkpoint.Shape",
+      "x-ess-kind": "newtype",
+      "type": "array",
+      "items": {
+        "type": "integer"
+      },
+      "x-ess-invariants": [
+        "forall dim in value: (dim > 0)"
+      ]
+    },
+    "modelspec.diagram.GlyphId": {
+      "title": "GlyphId",
+      "description": "The id of one SVG symbol of the glyph set (DESIGN.md § 13.1). `op-<operator>` for each Tensor IR operation, the operator in kebab case (`op-mat-mul`, `op-layer-norm-grad-x`), an Input also `op-input-token` for a dropout RNG token and `op-input-step` for a host input of an AdamW step; `scope-<kind>` for a composite of a Function, Adjoint, Module or Layer scope and `scope-update-<optimizer>` for an Update scope; `stage-<stage>` for a pipeline stage; `endpoint-<role>` for an endpoint. Every TensorOp variant has exactly one, and a gradient op's glyph is its forward operator's with the gradient mark.",
+      "x-ess-name": "modelspec.diagram.GlyphId",
+      "x-ess-kind": "newtype",
+      "type": "string"
+    },
+    "modelspec.diagram.PipelineStage": {
+      "title": "PipelineStage",
+      "description": "A stage of a pipeline view, each one composite node of the view's root (DESIGN.md § 13.4). Forward, Loss, Backward and Optimizer are the Training IR subgraphs Forward, Loss, Gradient and Optimizer; Data holds the program's Input nodes (inputs, targets, packed batch tensors, dropout RNG tokens, the host inputs of an AdamW step); Parameters holds every ParamRead at its state version. A checkpoint and a prediction are Endpoint nodes (EndpointRole), never stages.",
+      "x-ess-name": "modelspec.diagram.PipelineStage",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "Data",
+        "Parameters",
+        "Forward",
+        "Loss",
+        "Backward",
+        "Optimizer"
+      ]
+    },
+    "modelspec.diagram.Port": {
+      "title": "Port",
+      "description": "A tensor crossing a scope's boundary; a collapsed scope's composite node draws one port per entry, and an edge to or from a node inside the scope attaches to it (DESIGN.md § 13.3).",
+      "x-ess-name": "modelspec.diagram.Port",
+      "x-ess-kind": "struct",
+      "type": "object",
+      "properties": {
+        "direction": {
+          "$ref": "#/$defs/modelspec.diagram.PortDirection"
+        },
+        "value_id": {
+          "description": "The value that crosses, defined outside the scope for In and inside it for Out.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "dtype": {
+          "$ref": "#/$defs/modelspec.checkpoint.DType"
+        },
+        "shape": {
+          "$ref": "#/$defs/modelspec.checkpoint.Shape"
+        }
+      },
+      "required": [
+        "direction",
+        "value_id",
+        "dtype",
+        "shape"
+      ],
+      "additionalProperties": false,
+      "x-ess-invariants": [
+        "value_id >= 0"
+      ]
+    },
+    "modelspec.diagram.PortDirection": {
+      "title": "PortDirection",
+      "x-ess-name": "modelspec.diagram.PortDirection",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "In",
+        "Out"
+      ]
+    },
+    "modelspec.diagram.Scope": {
+      "title": "Scope",
+      "description": "One scope of the graph's scope tree with its boundary ports, outermost segment first.",
+      "x-ess-name": "modelspec.diagram.Scope",
+      "x-ess-kind": "struct",
+      "type": "object",
+      "properties": {
+        "key": {
+          "$ref": "#/$defs/modelspec.diagram.ScopeKey"
+        },
+        "parent": {
+          "$ref": "#/$defs/modelspec.diagram.ScopeKey",
+          "description": "Absent exactly on the root, the Program scope."
+        },
+        "path": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/modelspec.diagram.ScopeSegment"
+          }
+        },
+        "stage": {
+          "$ref": "#/$defs/modelspec.diagram.PipelineStage",
+          "description": "The pipeline stage the scope sits in, absent in a Model graph."
+        },
+        "glyph": {
+          "$ref": "#/$defs/modelspec.diagram.GlyphId"
+        },
+        "ports": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/modelspec.diagram.Port"
+          }
+        }
+      },
+      "required": [
+        "key",
+        "path",
+        "glyph",
+        "ports"
+      ],
+      "additionalProperties": false,
+      "x-ess-invariants": [
+        "path.count >= 1"
+      ]
+    },
+    "modelspec.diagram.ScopeKey": {
+      "title": "ScopeKey",
+      "description": "The canonical text of a scope path, unique within a graph and used as the composite node's key, an anchor on the documentation site and a file name (DESIGN.md § 13.2). The segments joined by `/`; a Program segment is the train block's name; a Stage segment its lower-case name; a Function segment `<fn>` for the first inlining of the function in the program and `<fn>@<c>` for inlining c from 1, the naming of dropout sites (DESIGN.md § 2.3); an Adjoint segment `grad%<k>`, k the forward ValueId; an Update segment `update@<parameter path>`.",
+      "x-ess-name": "modelspec.diagram.ScopeKey",
+      "x-ess-kind": "newtype",
+      "type": "string"
+    },
+    "modelspec.diagram.ScopeKind": {
+      "title": "ScopeKind",
+      "description": "What one segment of a scope path names (DESIGN.md § 13.2). Program is the root, the train block; Stage a PipelineStage; Function one inlining of a model function at one call site; Adjoint the gradient nodes the rule of one forward node emitted; Update the optimizer nodes of one parameter; Module and Layer are reserved for the module and layer instances of DESIGN.md § 11 iteration 3 and are emitted by no compiler before it.",
+      "x-ess-name": "modelspec.diagram.ScopeKind",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "Program",
+        "Stage",
+        "Function",
+        "Adjoint",
+        "Update",
+        "Module",
+        "Layer"
+      ]
+    },
+    "modelspec.diagram.ScopeSegment": {
+      "title": "ScopeSegment",
+      "description": "One step of a scope path, outermost first.",
+      "x-ess-name": "modelspec.diagram.ScopeSegment",
+      "x-ess-kind": "struct",
+      "type": "object",
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/modelspec.diagram.ScopeKind"
+        },
+        "name": {
+          "description": "The train block's name, the stage's lower-case name, the function's name, the forward value as `%<k>` or the parameter's canonical path (DESIGN.md § 2.3).",
+          "type": "string"
+        },
+        "instance": {
+          "description": "For a Function segment, which inlining of the function in the program, from 0; 0 for every other kind.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "call_site": {
+          "description": "For a Function segment, the source position of the call as a diagnostic prints it, `file:line:column` (DESIGN.md § 8.1); absent for every other kind.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "name",
+        "instance"
+      ],
+      "additionalProperties": false,
+      "x-ess-invariants": [
+        "instance >= 0"
+      ]
+    }
+  }
+}

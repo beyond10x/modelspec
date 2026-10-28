@@ -1016,6 +1016,8 @@ dependencies = [
 name = "modelspec-diagram"
 version = "0.21.0"
 dependencies = [
+ "blake3",
+ "jsonschema",
  "modelspec-core",
  "serde",
  "serde_json",

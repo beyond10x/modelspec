@@ -1,0 +1,305 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TrainingRun",
+  "description": "A run of one compiled artifact, with what § 6.1 says must be recorded to reproduce it. Source hash, compiler version, tensor shapes, compile flags (fast_math, deterministic) and backend are read through the artifact.",
+  "x-ess-name": "modelspec.training.TrainingRun",
+  "x-ess-kind": "entity",
+  "type": "object",
+  "properties": {
+    "training_run_id": {
+      "$ref": "#/$defs/modelspec.training.TrainingRunId"
+    },
+    "artifact_id": {
+      "$ref": "#/$defs/modelspec.artifact.ArtifactId",
+      "x-ess-relation": {
+        "name": "artifact",
+        "kind": "references",
+        "source": "modelspec.training.TrainingRun",
+        "target": "modelspec.artifact.CompiledArtifact",
+        "cardinality": "one",
+        "via": "artifact_id"
+      }
+    },
+    "steps": {
+      "description": "TrainConfig.steps, the steps of this invocation counted from start_step, so the run ends at start_step + steps (DESIGN.md § 6).",
+      "type": "integer"
+    },
+    "checkpoint_every": {
+      "description": "TrainConfig.checkpoint_every, a positive step interval; absent means no periodic checkpoints (DESIGN.md § 6).",
+      "type": "integer"
+    },
+    "start_step": {
+      "description": "The step number the run started at; 0 unless it resumed from a checkpoint (DESIGN.md § 6.1 step number, § 9 gate 7).",
+      "type": "integer"
+    },
+    "current_step": {
+      "description": "The step number the run has reached; current_step <= start_step + steps, where the run ends (DESIGN.md § 6, step counter; § 6.1 step number). ESS cannot add two facts, so this bound is not an invariant.",
+      "type": "integer"
+    },
+    "resumed_from_checkpoint_id": {
+      "$ref": "#/$defs/modelspec.checkpoint.CheckpointId",
+      "description": "The checkpoint a resumed run loaded; start_step equals its step (DESIGN.md § 6.2, § 9 gate 7).",
+      "x-ess-relation": {
+        "name": "resumed_from",
+        "kind": "references",
+        "source": "modelspec.training.TrainingRun",
+        "target": "modelspec.checkpoint.Checkpoint",
+        "cardinality": "one",
+        "via": "resumed_from_checkpoint_id"
+      }
+    },
+    "optimizer": {
+      "$ref": "#/$defs/modelspec.training.OptimizerConfig"
+    },
+    "rng": {
+      "$ref": "#/$defs/modelspec.training.RngState",
+      "description": "The RNG state the run started from; rng.seed is the run's single seed (DESIGN.md § 6.1)."
+    },
+    "device_profile_id": {
+      "$ref": "#/$defs/modelspec.device.DeviceProfileId",
+      "description": "Present exactly when the artifact's backend is Vulkan; a CPU run has no Vulkan device (DESIGN.md § 6.1 backend/device/driver). ESS cannot state the rule across the two entities.",
+      "x-ess-relation": {
+        "name": "device",
+        "kind": "references",
+        "source": "modelspec.training.TrainingRun",
+        "target": "modelspec.device.DeviceProfile",
+        "cardinality": "one",
+        "via": "device_profile_id"
+      }
+    },
+    "data_binding_id": {
+      "$ref": "#/$defs/modelspec.data.TrainingDataBindingId",
+      "description": "The corpus, tokenizer, sequence length and masking policy a masked-language-model run trained on; absent for a run on synthetic or dense data. story:bert-train-data-binding writes it (coordinator decision D26, 2026-10-24, `.engineering/waves/bert-1.md`).",
+      "x-ess-relation": {
+        "name": "data_binding",
+        "kind": "references",
+        "source": "modelspec.training.TrainingRun",
+        "target": "modelspec.data.TrainingDataBinding",
+        "cardinality": "one",
+        "via": "data_binding_id"
+      }
+    },
+    "state": {
+      "$ref": "#/$defs/modelspec.training.TrainingRun.State"
+    }
+  },
+  "required": [
+    "training_run_id",
+    "artifact_id",
+    "steps",
+    "start_step",
+    "current_step",
+    "optimizer",
+    "rng",
+    "state"
+  ],
+  "additionalProperties": false,
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "30fb804730c460a95541105dabb73eaf623a6992f5e63bfe6955e8f2c5b43643",
+    "contract_digest": "slice-sha256/2:5cad400884ca0d1a87042f911017c3f2de854f96727c5dfc18945b2da4854127",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.artifact.ArtifactId": {
+      "title": "ArtifactId",
+      "x-ess-name": "modelspec.artifact.ArtifactId",
+      "x-ess-kind": "newtype",
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    },
+    "modelspec.checkpoint.CheckpointId": {
+      "title": "CheckpointId",
+      "x-ess-name": "modelspec.checkpoint.CheckpointId",
+      "x-ess-kind": "newtype",
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    },
+    "modelspec.data.TrainingDataBindingId": {
+      "title": "TrainingDataBindingId",
+      "x-ess-name": "modelspec.data.TrainingDataBindingId",
+      "x-ess-kind": "newtype",
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    },
+    "modelspec.device.DeviceProfileId": {
+      "title": "DeviceProfileId",
+      "x-ess-name": "modelspec.device.DeviceProfileId",
+      "x-ess-kind": "newtype",
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    },
+    "modelspec.training.LearningRateSchedule": {
+      "title": "LearningRateSchedule",
+      "description": "How the learning rate varies over steps, settled by coordinator decision D50 of 2026-10-25 under the operator's grant of 2026-10-24, after Devlin et al. 2019. With t counting steps from 1 and steps the run's total, the rate is lr*t/warmup_steps for t <= warmup_steps and lr*(steps-t)/(steps-warmup_steps) after, lr being OptimizerConfig.learning_rate; it starts above zero, peaks at lr at step warmup_steps and reaches zero at the last step. warmup_steps = 0 means no warmup; warmup_steps >= steps is refused (E-TYPE-024, or a run error when --steps shortens the run). The host computes each step's rate in Binary64 and rounds it once to Binary32 (DESIGN.md § 2.1, § 6).",
+      "x-ess-name": "modelspec.training.LearningRateSchedule",
+      "x-ess-kind": "struct",
+      "type": "object",
+      "properties": {
+        "warmup_steps": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "warmup_steps"
+      ],
+      "additionalProperties": false,
+      "x-ess-invariants": [
+        "warmup_steps >= 0"
+      ]
+    },
+    "modelspec.training.MuonConfig": {
+      "title": "MuonConfig",
+      "description": "The hyperparameters of a Muon run besides those it shares with AdamW, settled by coordinator decision D67 of 2026-10-25 (DESIGN.md § 2.1). A matrix parameter no embedding reads takes the Muon update at OptimizerConfig.learning_rate; every other parameter takes AdamW at adam_learning_rate with the betas and epsilon of OptimizerConfig; both share its weight decay and schedule. The momentum buffer of each Muon parameter is not checkpointed, so a Muon run is neither checkpointed nor resumed.",
+      "x-ess-name": "modelspec.training.MuonConfig",
+      "x-ess-kind": "struct",
+      "type": "object",
+      "properties": {
+        "momentum": {
+          "description": "The momentum of the Nesterov buffer, in [0, 1).",
+          "type": "number"
+        },
+        "ns_steps": {
+          "description": "The Newton-Schulz steps that orthogonalize each update, in [1, 10].",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10
+        },
+        "adam_learning_rate": {
+          "description": "The peak learning rate of the parameters AdamW updates.",
+          "type": "number"
+        }
+      },
+      "required": [
+        "momentum",
+        "ns_steps",
+        "adam_learning_rate"
+      ],
+      "additionalProperties": false,
+      "x-ess-invariants": [
+        "momentum >= 0",
+        "momentum < 1",
+        "ns_steps >= 1",
+        "ns_steps <= 10",
+        "adam_learning_rate > 0"
+      ]
+    },
+    "modelspec.training.OptimizerConfig": {
+      "title": "OptimizerConfig",
+      "description": "Optimizer hyperparameters, recorded for reproducibility (DESIGN.md § 6.1). The AdamW fields are present exactly when kind is AdamW or Muon (Loshchilov and Hutter, decoupled weight decay), and muon exactly when kind is Muon; the AdamW first and second moments are a checkpoint's optimizer slots (DESIGN.md § 6.2).",
+      "x-ess-name": "modelspec.training.OptimizerConfig",
+      "x-ess-kind": "struct",
+      "type": "object",
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/modelspec.training.OptimizerKind"
+        },
+        "learning_rate": {
+          "description": "The base learning rate; the peak rate when a schedule is present.",
+          "type": "number"
+        },
+        "weight_decay": {
+          "description": "AdamW decoupled weight decay coefficient (epic:bert-from-scratch).",
+          "type": "number"
+        },
+        "beta1": {
+          "description": "AdamW first-moment decay rate.",
+          "type": "number"
+        },
+        "beta2": {
+          "description": "AdamW second-moment decay rate.",
+          "type": "number"
+        },
+        "epsilon": {
+          "description": "AdamW denominator term.",
+          "type": "number"
+        },
+        "schedule": {
+          "$ref": "#/$defs/modelspec.training.LearningRateSchedule",
+          "description": "Present exactly when kind is AdamW or Muon, settled by coordinator decision D50 of 2026-10-25; SGD keeps its constant learning rate, as M0 has."
+        },
+        "muon": {
+          "$ref": "#/$defs/modelspec.training.MuonConfig",
+          "description": "Present exactly when kind is Muon, whose AdamW fields and schedule are present too (coordinator decision D67 of 2026-10-25)."
+        }
+      },
+      "required": [
+        "kind",
+        "learning_rate"
+      ],
+      "additionalProperties": false,
+      "x-ess-invariants": [
+        "((kind == Sgd and not (defined(weight_decay)) and not (defined(beta1)) and not (defined(beta2)) and not (defined(epsilon)) and not (defined(schedule)) and not (defined(muon))) or (kind == AdamW and defined(weight_decay) and defined(beta1) and defined(beta2) and defined(epsilon) and defined(schedule) and not (defined(muon))) or (kind == Muon and defined(weight_decay) and defined(beta1) and defined(beta2) and defined(epsilon) and defined(schedule) and defined(muon)))"
+      ]
+    },
+    "modelspec.training.OptimizerKind": {
+      "title": "OptimizerKind",
+      "description": "SGD from M0; AdamW with decoupled weight decay and a warmup schedule from M3, written `adamw(lr = F, weight_decay = F, beta1 = F, beta2 = F, eps = F, warmup_steps = N)` (DESIGN.md § 1, § 2.1, § 11 iteration 4; epic:bert-from-scratch); Muon, orthogonalized momentum for the matrix parameters no embedding reads and AdamW for the others, written `muon(lr = F, momentum = F, weight_decay = F, ns_steps = N, warmup_steps = N, adam_lr = F, beta1 = F, beta2 = F, eps = F)` (DESIGN.md § 2.1, revision 0.51; story:muon-optimizer).",
+      "x-ess-name": "modelspec.training.OptimizerKind",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "Sgd",
+        "AdamW",
+        "Muon"
+      ]
+    },
+    "modelspec.training.RngAlgorithm": {
+      "title": "RngAlgorithm",
+      "description": "The counter-based PRNG of DESIGN.md § 2.3.",
+      "x-ess-name": "modelspec.training.RngAlgorithm",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "Philox4x32x10"
+      ]
+    },
+    "modelspec.training.RngState": {
+      "title": "RngState",
+      "description": "RNG algorithm, seed and counter position (DESIGN.md § 2.3, § 6.1, § 6.2).",
+      "x-ess-name": "modelspec.training.RngState",
+      "x-ess-kind": "struct",
+      "type": "object",
+      "properties": {
+        "algorithm": {
+          "$ref": "#/$defs/modelspec.training.RngAlgorithm"
+        },
+        "seed": {
+          "type": "integer"
+        },
+        "counter": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "algorithm",
+        "seed",
+        "counter"
+      ],
+      "additionalProperties": false
+    },
+    "modelspec.training.TrainingRun.State": {
+      "title": "State",
+      "x-ess-name": "modelspec.training.TrainingRun.State",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "Recorded"
+      ]
+    },
+    "modelspec.training.TrainingRunId": {
+      "title": "TrainingRunId",
+      "x-ess-name": "modelspec.training.TrainingRunId",
+      "x-ess-kind": "newtype",
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    }
+  }
+}

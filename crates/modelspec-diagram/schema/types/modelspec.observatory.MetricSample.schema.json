@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/modelspec.observatory.MetricSample",
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "30fb804730c460a95541105dabb73eaf623a6992f5e63bfe6955e8f2c5b43643",
+    "contract_digest": "slice-sha256/2:56bc3e2fb17aaefcf67010f31f22f352b103a895a3ec4495499a7da7f9c97c34",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.observatory.MetricSample": {
+      "title": "MetricSample",
+      "description": "One named metric value at a step, such as MLM accuracy (epic:training-observatory live metric charts, epic:bert-from-scratch evaluation).",
+      "x-ess-name": "modelspec.observatory.MetricSample",
+      "x-ess-kind": "struct",
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "value": {
+          "description": "The metric's value; null when it is NaN or ±inf, which Binary64 does not hold (wave observatory-1 coordinator, 2026-10-21).",
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "value"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

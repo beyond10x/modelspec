@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/modelspec.data.SampleOrder",
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "30fb804730c460a95541105dabb73eaf623a6992f5e63bfe6955e8f2c5b43643",
+    "contract_digest": "slice-sha256/2:7e1e27c66846c9d85c8ed6c147253d5c18ee871fc6e7591b4d0ee8d83774dcbb",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.data.SampleOrder": {
+      "title": "SampleOrder",
+      "description": "The optional file `order.u32` of a dense data directory, little-endian u32 sample indices with no header. Training step k feeds the samples indices[k·B .. (k+1)·B]; without the file it feeds the samples (k·B + i) mod N. The loss after the last update reads the batch of step `steps`, its positions taken modulo the count of indices. Fewer than steps · B indices, or an index not below the directory's sample count N, is refused with E-DATA-008 before the first step.",
+      "x-ess-name": "modelspec.data.SampleOrder",
+      "x-ess-kind": "struct",
+      "type": "object",
+      "properties": {
+        "indices": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          }
+        }
+      },
+      "required": [
+        "indices"
+      ],
+      "additionalProperties": false,
+      "x-ess-invariants": [
+        "indices.count > 0"
+      ]
+    }
+  }
+}

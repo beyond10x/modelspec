@@ -2,7 +2,7 @@
 format: aep.planning-md/3
 id: story:ir-gallery-renderer
 kind: story
-status: draft
+status: active
 title: 'Diagram renderer: DiagramGraph from verified IR, layered layout, SVG and JSON'
 summary: modelspec-diagram builds the DiagramGraph of the model view from verified IR, lays it out deterministically and writes SVG with glyphs and schema-valid JSON.
 relations:
@@ -32,7 +32,10 @@ scope:
   path: crates/modelspec-diagram/src/svg.rs
 - confidence: inferred
   path: crates/modelspec-diagram/tests/render.rs
-revision: 7
+revision: 9
+transitions:
+- {from: "draft", to: "proposed", at: "2026-10-28T19:57:55Z", actor: "human:timo", revision: 8}
+- {from: "proposed", to: "active", at: "2026-10-28T19:57:55Z", actor: "human:timo", revision: 9}
 ---
 # Diagram renderer: DiagramGraph from verified IR, layered layout, SVG and JSON
 

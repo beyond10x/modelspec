@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/modelspec.data.Dataset.State",
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "30fb804730c460a95541105dabb73eaf623a6992f5e63bfe6955e8f2c5b43643",
+    "contract_digest": "slice-sha256/2:dae20a4128f8a3b68dc6cc9bdaa22873d0adf75ac098d062f8f1bb7fb70beed9",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.data.Dataset.State": {
+      "title": "State",
+      "x-ess-name": "modelspec.data.Dataset.State",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "Recorded"
+      ]
+    }
+  }
+}

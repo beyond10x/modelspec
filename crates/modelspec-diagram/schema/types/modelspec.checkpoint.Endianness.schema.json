@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/modelspec.checkpoint.Endianness",
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "30fb804730c460a95541105dabb73eaf623a6992f5e63bfe6955e8f2c5b43643",
+    "contract_digest": "slice-sha256/2:04a02aa84c7d964a8336b1640830e25a5730d63c646cab8ff48b62fdae8ebf49",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.checkpoint.Endianness": {
+      "title": "Endianness",
+      "description": "The header's endian marker; the payload is little-endian, so a reader refuses Big (DESIGN.md § 6.2).",
+      "x-ess-name": "modelspec.checkpoint.Endianness",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "Little",
+        "Big"
+      ]
+    }
+  }
+}

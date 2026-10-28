@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/modelspec.diagram.NodeKind",
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "30fb804730c460a95541105dabb73eaf623a6992f5e63bfe6955e8f2c5b43643",
+    "contract_digest": "slice-sha256/2:bcaebf49b18ce3d70a06b4d4b879f6188579b243984d3dd6e260c7d04278e1c2",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.diagram.NodeKind": {
+      "title": "NodeKind",
+      "description": "Operator is one Tensor IR node; Composite stands for a whole scope, drawn when the scope is collapsed; Endpoint is a source or sink outside the IR that a pipeline view draws (a data split, a checkpoint file, a prediction file).",
+      "x-ess-name": "modelspec.diagram.NodeKind",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "Operator",
+        "Composite",
+        "Endpoint"
+      ]
+    }
+  }
+}

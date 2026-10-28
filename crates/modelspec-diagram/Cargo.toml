@@ -10,9 +10,11 @@ publish.workspace = true
 ts = ["dep:ts-rs"]
 
 [dependencies]
+blake3.workspace = true
 modelspec-core.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 ts-rs = { workspace = true, optional = true }
 
 [dev-dependencies]
-serde_json.workspace = true
+jsonschema.workspace = true

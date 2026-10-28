@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/modelspec.training.RngState",
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "30fb804730c460a95541105dabb73eaf623a6992f5e63bfe6955e8f2c5b43643",
+    "contract_digest": "slice-sha256/2:9e703bdaf36d48d77f04a1b0266d69fb899827f260a74004346dcd94700f8816",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.training.RngAlgorithm": {
+      "title": "RngAlgorithm",
+      "description": "The counter-based PRNG of DESIGN.md § 2.3.",
+      "x-ess-name": "modelspec.training.RngAlgorithm",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "Philox4x32x10"
+      ]
+    },
+    "modelspec.training.RngState": {
+      "title": "RngState",
+      "description": "RNG algorithm, seed and counter position (DESIGN.md § 2.3, § 6.1, § 6.2).",
+      "x-ess-name": "modelspec.training.RngState",
+      "x-ess-kind": "struct",
+      "type": "object",
+      "properties": {
+        "algorithm": {
+          "$ref": "#/$defs/modelspec.training.RngAlgorithm"
+        },
+        "seed": {
+          "type": "integer"
+        },
+        "counter": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "algorithm",
+        "seed",
+        "counter"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/modelspec.training.RngAlgorithm",
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "30fb804730c460a95541105dabb73eaf623a6992f5e63bfe6955e8f2c5b43643",
+    "contract_digest": "slice-sha256/2:c0557b48cf2f555ecf79bcb1f66ef8ce615c5adea7a12998b4d0ca32e051a8e8",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.training.RngAlgorithm": {
+      "title": "RngAlgorithm",
+      "description": "The counter-based PRNG of DESIGN.md § 2.3.",
+      "x-ess-name": "modelspec.training.RngAlgorithm",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "Philox4x32x10"
+      ]
+    }
+  }
+}

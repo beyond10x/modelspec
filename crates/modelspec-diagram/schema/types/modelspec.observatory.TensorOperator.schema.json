@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/modelspec.observatory.TensorOperator",
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "30fb804730c460a95541105dabb73eaf623a6992f5e63bfe6955e8f2c5b43643",
+    "contract_digest": "slice-sha256/2:ec601a2ca612c0e9e71b5541fb92f80f8cbc2e37cc27dc5fd73c3bc7f75ee848",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.observatory.TensorOperator": {
+      "title": "TensorOperator",
+      "description": "The Tensor IR operations, ReluGrad, BroadcastScalar, EmbeddingGrad, SumRows, GeluGrad, LayerNormGradX, LayerNormGradGamma, SoftmaxGrad, AttentionGradQ, AttentionGradK, AttentionGradV, CrossEntropyGrad and DropoutGrad being internal gradient ops and Sqrt and Div internal ops of the optimizer subgraph of an AdamW step (DESIGN.md § 3.1, § 4; `TensorOp` in `modelspec-core/src/ir/tensor.rs`). The operators of epic:bert-from-scratch join as the compiler gains them.",
+      "x-ess-name": "modelspec.observatory.TensorOperator",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "Input",
+        "ParamRead",
+        "Scalar",
+        "Add",
+        "Sub",
+        "Mul",
+        "MatMul",
+        "Relu",
+        "Transpose",
+        "ReduceSum",
+        "ReduceMean",
+        "Mse",
+        "ReluGrad",
+        "BroadcastScalar",
+        "Embedding",
+        "EmbeddingGrad",
+        "AddRows",
+        "SumRows",
+        "Gelu",
+        "GeluGrad",
+        "LayerNorm",
+        "LayerNormGradX",
+        "LayerNormGradGamma",
+        "Softmax",
+        "SoftmaxGrad",
+        "Attention",
+        "AttentionGradQ",
+        "AttentionGradK",
+        "AttentionGradV",
+        "CrossEntropy",
+        "CrossEntropyGrad",
+        "Dropout",
+        "DropoutGrad",
+        "Sqrt",
+        "Div"
+      ]
+    }
+  }
+}
