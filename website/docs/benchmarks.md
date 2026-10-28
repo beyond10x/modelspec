@@ -109,6 +109,28 @@ Tokens per second are the run's tokens per step · 10⁶ / µs per step, GFLOP/s
 | 128 | 16,384 | PyTorch CUDA eager | 2026-10-27 | torch 2.14.1+cu130, CUDA 13.0 | 12,091.141 | 1,355,041.638 | 3,596.6 | 3 |
 | 128 | 16,384 | PyTorch CUDA torch.compile | 2026-10-27 | torch 2.14.1+cu130, CUDA 13.0 | 5,138.515 | 3,188,469.97 | 8,462.9 | 3 |
 
+## BERT-tiny pre-training, time to the held-out baseline
+
+`bert-tiny-pretrain`: `examples/bert_tiny.mspec` pre-trained by each side from the same initial weights on the same batches of the same packed corpus, with the same optimizer and schedule, until its held-out loss, evaluated every `Eval every` steps, is at most the target loss. Steps to target is the first evaluated step at or below the target, training seconds to target the training time up to that step without the held-out evaluations, checkpoint writes or events. µs per step is a run's training seconds over its steps, the mean of its steps, and the figure is the median of 3 runs, the median of the run's repeats as for every workload; tokens per second is its tokens per step · 10⁶ / µs per step, GFLOP/s its FLOP per step / µs per step / 1000. Each figure links to the report that states it. FLOP are counted by `MatmulOnly`, 1,170,210,816·B, the matrix products of a pre-training step, the two encoder layers, the MLM transform and the tied decoder, forward and backward, at a batch of B sequences of 128.
+
+### ModelSpec Vulkan
+
+| Date | Build | µs per step | Tokens per second | GFLOP/s | Target loss | Steps to target | Training seconds to target | Final held-out loss | Eval every |
+|---|---|---|---|---|---|---|---|---|---|
+| 2026-10-28 | 0.21.0 (`3b9869f`) | [222,576.036](https://github.com/beyond10x/modelspec/blob/main/.engineering/planning/verification-report/bert-tiny-vs-pytorch-2026-10-28.md) | [18,402.7](https://github.com/beyond10x/modelspec/blob/main/.engineering/planning/verification-report/bert-tiny-vs-pytorch-2026-10-28.md) | [168.2](https://github.com/beyond10x/modelspec/blob/main/.engineering/planning/verification-report/bert-tiny-vs-pytorch-2026-10-28.md) | [6.926537926202018](https://github.com/beyond10x/modelspec/blob/main/.engineering/planning/verification-report/bert-tiny-vs-pytorch-2026-10-28.md) | [1,100](https://github.com/beyond10x/modelspec/blob/main/.engineering/planning/verification-report/bert-tiny-vs-pytorch-2026-10-28.md) | [245.969](https://github.com/beyond10x/modelspec/blob/main/.engineering/planning/verification-report/bert-tiny-vs-pytorch-2026-10-28.md) | [6.7675](https://github.com/beyond10x/modelspec/blob/main/.engineering/planning/verification-report/bert-tiny-vs-pytorch-2026-10-28.md) | 100 |
+
+### PyTorch CUDA eager
+
+| Date | Build | µs per step | Tokens per second | GFLOP/s | Target loss | Steps to target | Training seconds to target | Final held-out loss | Eval every |
+|---|---|---|---|---|---|---|---|---|---|
+| 2026-10-28 | torch 2.14.1+cu130, CUDA 13.0 | [9,897.473](https://github.com/beyond10x/modelspec/blob/main/.engineering/planning/verification-report/bert-tiny-vs-pytorch-2026-10-28.md) | [413,843.025](https://github.com/beyond10x/modelspec/blob/main/.engineering/planning/verification-report/bert-tiny-vs-pytorch-2026-10-28.md) | [3,783.5](https://github.com/beyond10x/modelspec/blob/main/.engineering/planning/verification-report/bert-tiny-vs-pytorch-2026-10-28.md) | [6.926537926202018](https://github.com/beyond10x/modelspec/blob/main/.engineering/planning/verification-report/bert-tiny-vs-pytorch-2026-10-28.md) | [1,100](https://github.com/beyond10x/modelspec/blob/main/.engineering/planning/verification-report/bert-tiny-vs-pytorch-2026-10-28.md) | [9.82](https://github.com/beyond10x/modelspec/blob/main/.engineering/planning/verification-report/bert-tiny-vs-pytorch-2026-10-28.md) | [6.7673](https://github.com/beyond10x/modelspec/blob/main/.engineering/planning/verification-report/bert-tiny-vs-pytorch-2026-10-28.md) | 100 |
+
+### PyTorch CUDA torch.compile
+
+| Date | Build | µs per step | Tokens per second | GFLOP/s | Target loss | Steps to target | Training seconds to target | Final held-out loss | Eval every |
+|---|---|---|---|---|---|---|---|---|---|
+| 2026-10-28 | torch 2.14.1+cu130, CUDA 13.0 | [4,887.491](https://github.com/beyond10x/modelspec/blob/main/.engineering/planning/verification-report/bert-tiny-vs-pytorch-2026-10-28.md) | [838,057.772](https://github.com/beyond10x/modelspec/blob/main/.engineering/planning/verification-report/bert-tiny-vs-pytorch-2026-10-28.md) | [7,661.8](https://github.com/beyond10x/modelspec/blob/main/.engineering/planning/verification-report/bert-tiny-vs-pytorch-2026-10-28.md) | [6.926537926202018](https://github.com/beyond10x/modelspec/blob/main/.engineering/planning/verification-report/bert-tiny-vs-pytorch-2026-10-28.md) | [1,100](https://github.com/beyond10x/modelspec/blob/main/.engineering/planning/verification-report/bert-tiny-vs-pytorch-2026-10-28.md) | [4.881](https://github.com/beyond10x/modelspec/blob/main/.engineering/planning/verification-report/bert-tiny-vs-pytorch-2026-10-28.md) | [6.7675](https://github.com/beyond10x/modelspec/blob/main/.engineering/planning/verification-report/bert-tiny-vs-pytorch-2026-10-28.md) | 100 |
+
 ## Every run
 
 | Run | Date | Workload | Side | Threads | Mode | Batch | H | Build | µs per step | Repeats | Source |
@@ -223,9 +245,6 @@ Tokens per second are the run's tokens per step · 10⁶ / µs per step, GFLOP/s
 | `transformer-block-b8-pytorch-cuda-compile-0.20.0` | 2026-10-27 | `transformer-block` | PyTorch CUDA torch.compile |  | Timed | 8 |  | torch 2.14.1+cu130, CUDA 13.0 | 1,971.859 | 3 | `verification-report:transformer-block-benchmark-2026-10-27, raw records benchmarks/raw/2026-10-27-transformer-block/pytorch.jsonl` |
 | `transformer-block-b32-pytorch-cuda-compile-0.20.0` | 2026-10-27 | `transformer-block` | PyTorch CUDA torch.compile |  | Timed | 32 |  | torch 2.14.1+cu130, CUDA 13.0 | 1,926.75 | 3 | `verification-report:transformer-block-benchmark-2026-10-27, raw records benchmarks/raw/2026-10-27-transformer-block/pytorch.jsonl` |
 | `transformer-block-b128-pytorch-cuda-compile-0.20.0` | 2026-10-27 | `transformer-block` | PyTorch CUDA torch.compile |  | Timed | 128 |  | torch 2.14.1+cu130, CUDA 13.0 | 5,138.515 | 3 | `verification-report:transformer-block-benchmark-2026-10-27, raw records benchmarks/raw/2026-10-27-transformer-block/pytorch.jsonl` |
-
-## Not measured
-
-Workloads the page declares that have no run in `benchmarks/runs.yaml` yet, so no figure. Each gets a section of its own above with its first run.
-
-- **BERT-tiny pre-training** (`bert-tiny-pretrain`): BERT-tiny pre-training timed to the same held-out loss as PyTorch CUDA with the same corpus, batches, initial weights and optimizer.
+| `bert-tiny-pretrain-modelspec-vulkan-0.21.0` | 2026-10-28 | `bert-tiny-pretrain` | ModelSpec Vulkan |  | Timed | 32 |  | 0.21.0 (`3b9869f`) | 222,576.036 | 3 | `verification-report:bert-tiny-vs-pytorch-2026-10-28, raw records benchmarks/raw/2026-10-28-bert-tiny-pretrain/modelspec-1.stdout.txt, modelspec-2.stdout.txt, modelspec-3.stdout.txt` |
+| `bert-tiny-pretrain-pytorch-cuda-eager-0.21.0` | 2026-10-28 | `bert-tiny-pretrain` | PyTorch CUDA eager |  | Timed | 32 |  | torch 2.14.1+cu130, CUDA 13.0 | 9,897.473 | 3 | `verification-report:bert-tiny-vs-pytorch-2026-10-28, raw records benchmarks/raw/2026-10-28-bert-tiny-pretrain/pytorch-eager-1.jsonl, pytorch-eager-2.jsonl, pytorch-eager-3.jsonl` |
+| `bert-tiny-pretrain-pytorch-cuda-compile-0.21.0` | 2026-10-28 | `bert-tiny-pretrain` | PyTorch CUDA torch.compile |  | Timed | 32 |  | torch 2.14.1+cu130, CUDA 13.0 | 4,887.491 | 3 | `verification-report:bert-tiny-vs-pytorch-2026-10-28, raw records benchmarks/raw/2026-10-28-bert-tiny-pretrain/pytorch-compile-1.jsonl, pytorch-compile-2.jsonl, pytorch-compile-3.jsonl` |

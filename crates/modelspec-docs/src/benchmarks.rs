@@ -2295,6 +2295,345 @@ mod tests {
         assert_eq!(used.len(), count, "every raw record is cited once");
     }
 
+    /// The held-out unigram baseline of the packed corpus, `heldout_unigram_baseline_nats` of its
+    /// `packed.json`: the target of every `bert-tiny-pretrain` run.
+    const BERT_TARGET: f64 = 6.926537926202018;
+
+    /// What one raw record of a `bert-tiny-pretrain` run, one of its three runs, states.
+    struct BertRecord {
+        us_per_step: f64,
+        steps: u64,
+        eval_every: u64,
+        steps_to_target: u64,
+        seconds_to_target: f64,
+        train_seconds: f64,
+        final_heldout_loss: f64,
+        commit: String,
+    }
+
+    /// From the `(step, held-out loss, training seconds)` of a run's evaluations: its eval
+    /// cadence (every evaluation on it, from step 0), the first evaluated step at or below
+    /// [`BERT_TARGET`] and that evaluation's training seconds, and the last held-out loss.
+    fn bert_curve(path: &str, evals: &[(u64, f64, f64)]) -> (u64, u64, f64, f64) {
+        assert!(evals.len() > 1, "{path}: {} evaluations", evals.len());
+        let every = evals[1].0 - evals[0].0;
+        for (i, (step, _, _)) in evals.iter().enumerate() {
+            assert_eq!(*step, i as u64 * every, "{path}: eval cadence");
+        }
+        let (step, _, seconds) = evals
+            .iter()
+            .find(|(_, loss, _)| *loss <= BERT_TARGET)
+            .unwrap_or_else(|| panic!("{path}: never at or below {BERT_TARGET}"));
+        (every, *step, *seconds, evals[evals.len() - 1].1)
+    }
+
+    /// A ModelSpec run's stdout under `train --eval-every --clock`: its `eval <k> loss <l>
+    /// accuracy <a> train_seconds <s>` lines and the closing `train_seconds <s> eval_seconds <e>
+    /// steps <n>`; µs per step is its training seconds over its steps.
+    fn modelspec_bert_record(path: &str, commit: &str) -> BertRecord {
+        let text = fs::read_to_string(root().join(path)).unwrap();
+        let mut evals = Vec::new();
+        let mut total = None;
+        for line in text.lines() {
+            match line.split(' ').collect::<Vec<_>>()[..] {
+                [
+                    "eval",
+                    step,
+                    "loss",
+                    loss,
+                    "accuracy",
+                    _,
+                    "train_seconds",
+                    seconds,
+                ] => evals.push((
+                    step.parse().unwrap(),
+                    loss.parse().unwrap(),
+                    seconds.parse().unwrap(),
+                )),
+                ["train_seconds", seconds, "eval_seconds", _, "steps", steps] => {
+                    total = Some((
+                        seconds.parse::<f64>().unwrap(),
+                        steps.parse::<u64>().unwrap(),
+                    ));
+                }
+                _ => {}
+            }
+        }
+        let (train_seconds, steps) =
+            total.unwrap_or_else(|| panic!("{path}: no closing train_seconds line"));
+        let (eval_every, steps_to_target, seconds_to_target, final_heldout_loss) =
+            bert_curve(path, &evals);
+        assert_eq!(evals[evals.len() - 1].0, steps, "{path}: last evaluation");
+        BertRecord {
+            us_per_step: train_seconds * 1e6 / steps as f64,
+            steps,
+            eval_every,
+            steps_to_target,
+            seconds_to_target,
+            train_seconds,
+            final_heldout_loss,
+            commit: commit.to_owned(),
+        }
+    }
+
+    /// An opponent run's JSON lines: one `{"step", "heldout_loss", "train_seconds"}` per
+    /// evaluation, then its result line, whose target figures must be those of its evaluations
+    /// and whose batch, tokens and FLOP must be those of `run`.
+    fn pytorch_bert_record(path: &str, run: &Run) -> BertRecord {
+        let text = fs::read_to_string(root().join(path)).unwrap();
+        let lines: Vec<Value> = text
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        let (result, evals) = lines.split_last().unwrap();
+        let evals: Vec<(u64, f64, f64)> = evals
+            .iter()
+            .map(|eval| {
+                (
+                    eval["step"].as_u64().unwrap(),
+                    eval["heldout_loss"].as_f64().unwrap(),
+                    eval["train_seconds"].as_f64().unwrap(),
+                )
+            })
+            .collect();
+        let (eval_every, steps_to_target, seconds_to_target, final_heldout_loss) =
+            bert_curve(path, &evals);
+        assert_eq!(result["status"], "measured", "{path}");
+        assert_eq!(result["build"]["dirty"], false, "{path}");
+        assert_eq!(result["target_loss"].as_f64(), Some(BERT_TARGET), "{path}");
+        assert_eq!(result["eval_every"].as_u64(), Some(eval_every), "{path}");
+        assert_eq!(
+            result["steps_to_target"].as_u64(),
+            Some(steps_to_target),
+            "{path}"
+        );
+        assert_eq!(
+            result["seconds_to_target"].as_f64(),
+            Some(seconds_to_target),
+            "{path}"
+        );
+        assert_eq!(
+            result["final_heldout_loss"].as_f64(),
+            Some(final_heldout_loss),
+            "{path}"
+        );
+        assert_eq!(result["batch"].as_u64(), run.batch, "{path}");
+        assert_eq!(
+            result["tokens_per_step"].as_u64(),
+            run.tokens_per_step,
+            "{path}"
+        );
+        assert_eq!(
+            result["flop_per_step"].as_u64(),
+            run.flop_per_step,
+            "{path}"
+        );
+        BertRecord {
+            us_per_step: result["us_per_step"].as_f64().unwrap(),
+            steps: result["steps"].as_u64().unwrap(),
+            eval_every,
+            steps_to_target,
+            seconds_to_target,
+            train_seconds: result["train_seconds"].as_f64().unwrap(),
+            final_heldout_loss,
+            commit: result["build"]["commit"].as_str().unwrap().to_owned(),
+        }
+    }
+
+    /// The three runs of verification-report:bert-tiny-vs-pytorch-2026-10-28: ModelSpec Vulkan,
+    /// PyTorch CUDA eager and `torch.compile`, three runs each of the 10,000 steps of
+    /// `examples/bert_tiny.mspec`, all counted by one `MatmulOnly` FLOP figure. Each cites the
+    /// three raw records of its side in run order and states their µs per step in that order;
+    /// the median of their µs per step, steps and training seconds to the target, training
+    /// seconds and final held-out loss; and their steps, eval cadence, target and commit.
+    #[test]
+    fn every_bert_tiny_pretrain_entry_repeats_the_raw_records_it_cites() {
+        let text = fs::read_to_string(root().join(RUNS)).unwrap();
+        let runs = read(&text, &schema()).unwrap();
+        let bert: Vec<&Run> = runs.iter().filter(|run| run.workload == BERT).collect();
+        let mut sides: Vec<&str> = bert.iter().map(|run| run.side.as_str()).collect();
+        sides.sort_unstable();
+        assert_eq!(
+            sides,
+            ["ModelSpecVulkan", "PyTorchCudaCompile", "PyTorchCudaEager"]
+        );
+        for run in bert {
+            assert_eq!(
+                run.flop_per_step,
+                Some(BERT_FLOP_PER_SEQUENCE * BERT_BATCH),
+                "{}",
+                run.run_id
+            );
+            assert_eq!(run.target_loss, Some(BERT_TARGET), "{}", run.run_id);
+            let (_, cited) = run
+                .source
+                .split_once("raw records ")
+                .unwrap_or_else(|| panic!("{} cites no raw records: {}", run.run_id, run.source));
+            let mut names = cited.split(", ");
+            let (dir, first) = names.next().unwrap().rsplit_once('/').unwrap();
+            assert!(dir.starts_with("benchmarks/raw/"), "{}: {dir}", run.run_id);
+            let (prefix, extension) = match run.side.as_str() {
+                "ModelSpecVulkan" => ("modelspec", "stdout.txt"),
+                "PyTorchCudaEager" => ("pytorch-eager", "jsonl"),
+                "PyTorchCudaCompile" => ("pytorch-compile", "jsonl"),
+                other => panic!("{}: no raw side for {other}", run.run_id),
+            };
+            let names: Vec<&str> = std::iter::once(first).chain(names).collect();
+            let expected: Vec<String> = (1..=3)
+                .map(|n| format!("{prefix}-{n}.{extension}"))
+                .collect();
+            assert_eq!(names, expected, "{}", run.run_id);
+            let records: Vec<BertRecord> = names
+                .iter()
+                .map(|name| {
+                    let path = format!("{dir}/{name}");
+                    if is_modelspec(&run.side) {
+                        let built =
+                            fs::read_to_string(root().join(dir).join("commit.txt")).unwrap();
+                        let mut built = built.lines();
+                        let commit = built.next().unwrap();
+                        assert_eq!(
+                            built
+                                .next()
+                                .and_then(|line| line.strip_prefix("modelspec ")),
+                            run.modelspec_version.as_deref(),
+                            "{}",
+                            run.run_id
+                        );
+                        modelspec_bert_record(&path, commit)
+                    } else {
+                        pytorch_bert_record(&path, run)
+                    }
+                })
+                .collect();
+            let middle = |figure: fn(&BertRecord) -> f64| {
+                median(&records.iter().map(figure).collect::<Vec<_>>())
+            };
+            assert_eq!(
+                run.repeats_us_per_step,
+                Some(records.iter().map(|record| record.us_per_step).collect()),
+                "{}",
+                run.run_id
+            );
+            assert_eq!(run.repeat_count, 3, "{}", run.run_id);
+            assert_eq!(
+                Some(run.median_us_per_step),
+                middle(|record| record.us_per_step),
+                "{}",
+                run.run_id
+            );
+            assert_eq!(
+                run.seconds_to_target,
+                middle(|record| record.seconds_to_target),
+                "{}",
+                run.run_id
+            );
+            assert_eq!(
+                run.train_seconds,
+                middle(|record| record.train_seconds),
+                "{}",
+                run.run_id
+            );
+            assert_eq!(
+                run.final_heldout_loss,
+                middle(|record| record.final_heldout_loss),
+                "{}",
+                run.run_id
+            );
+            let mut crossings: Vec<u64> = records
+                .iter()
+                .map(|record| record.steps_to_target)
+                .collect();
+            crossings.sort_unstable();
+            assert_eq!(run.steps_to_target, Some(crossings[1]), "{}", run.run_id);
+            for record in &records {
+                assert_eq!(run.timed_steps, Some(record.steps), "{}", run.run_id);
+                assert_eq!(run.eval_every, Some(record.eval_every), "{}", run.run_id);
+                assert_eq!(
+                    run.commit.as_deref(),
+                    Some(record.commit.as_str()),
+                    "{}",
+                    run.run_id
+                );
+            }
+        }
+    }
+
+    /// The published `bert-tiny-pretrain` section holds the three sides' medians of
+    /// verification-report:bert-tiny-vs-pytorch-2026-10-28, each figure linked to that report.
+    #[test]
+    fn the_published_page_has_the_bert_tiny_pretrain_figures_of_the_report() {
+        let (page, _) = files(&root()).unwrap();
+        let start = page
+            .find("\n## BERT-tiny pre-training, time to the held-out baseline\n")
+            .unwrap_or_else(|| panic!("no bert-tiny-pretrain section"));
+        let end = page[start + 1..]
+            .find("\n## ")
+            .map_or(page.len(), |at| start + 1 + at);
+        let section = &page[start..end];
+        let url = report_url("verification-report:bert-tiny-vs-pytorch-2026-10-28").unwrap();
+        // Date, build, then µs per step, tokens per second, GFLOP/s, target loss, steps to
+        // target, training seconds to target and final held-out loss, each linked; eval every.
+        let row = |build: &str, figures: [&str; 7]| {
+            let figures: Vec<String> = figures
+                .iter()
+                .map(|figure| format!("[{figure}]({url})"))
+                .collect();
+            format!("| 2026-10-28 | {build} | {} | 100 |", figures.join(" | "))
+        };
+        let target = "6.926537926202018";
+        let expected = [
+            row(
+                "0.21.0 (`3b9869f`)",
+                [
+                    "222,576.036",
+                    "18,402.7",
+                    "168.2",
+                    target,
+                    "1,100",
+                    "245.969",
+                    "6.7675",
+                ],
+            ),
+            row(
+                "torch 2.14.1+cu130, CUDA 13.0",
+                [
+                    "9,897.473",
+                    "413,843.025",
+                    "3,783.5",
+                    target,
+                    "1,100",
+                    "9.82",
+                    "6.7673",
+                ],
+            ),
+            row(
+                "torch 2.14.1+cu130, CUDA 13.0",
+                [
+                    "4,887.491",
+                    "838,057.772",
+                    "7,661.8",
+                    target,
+                    "1,100",
+                    "4.881",
+                    "6.7675",
+                ],
+            ),
+        ];
+        let table: Vec<&str> = section
+            .lines()
+            .filter(|line| line.starts_with("| ") && !line.starts_with("| Date"))
+            .collect();
+        assert_eq!(table, expected, "{section}");
+        for side in [
+            "ModelSpec Vulkan",
+            "PyTorch CUDA eager",
+            "PyTorch CUDA torch.compile",
+        ] {
+            assert!(section.contains(&format!("\n### {side}\n")), "{side}");
+        }
+    }
+
     #[test]
     fn the_history_holds_every_run_the_story_names() {
         let text = fs::read_to_string(root().join(RUNS)).unwrap();
@@ -2809,7 +3148,7 @@ mod tests {
     }
 
     #[test]
-    fn the_published_page_has_the_flop_chart_of_the_sweep_and_lists_the_transformer_workloads() {
+    fn the_published_page_has_the_flop_chart_of_the_sweep_and_every_declared_workload_measured() {
         let text = fs::read_to_string(root().join(RUNS)).unwrap();
         let runs = read(&text, &schema()).unwrap();
         let sweep: Vec<&Run> = runs.iter().filter(|run| run.workload == SWEEP).collect();
@@ -2856,10 +3195,11 @@ mod tests {
         let (page, images) = files(&root()).unwrap();
         assert!(images.contains_key("mlp-784-h-10-flop.svg"));
         assert!(!page.contains("the sides count by different rules"));
-        let section = not_measured(&page).unwrap();
-        assert!(!section.contains("Transformer block"), "{section}");
-        assert!(section.contains("**BERT-tiny pre-training**"));
-        assert_eq!(section.matches("\n- ").count(), 1, "{section}");
+        // Both transformer workloads have runs since verification-report:bert-tiny-vs-pytorch-
+        // 2026-10-28, so no declared workload is left unmeasured and the section is gone.
+        assert!(page.contains("\n## Transformer block\n"));
+        assert!(page.contains("\n## BERT-tiny pre-training, time to the held-out baseline\n"));
+        assert!(not_measured(&page).is_none(), "{page}");
     }
 
     /// The published transformer-block section holds the nine medians of
