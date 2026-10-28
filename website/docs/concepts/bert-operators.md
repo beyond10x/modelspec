@@ -1,7 +1,7 @@
 ---
 title: BERT operators
 description: The operators a small BERT needs - embedding, add_rows, gelu, layer_norm, softmax, attention, cross_entropy and dropout - what each computes, its i32 operands, its gradient, and which have Vulkan kernels.
-sidebar_position: 4
+sidebar_position: 5
 lede: "Eight operators added for a small BERT are typed by the operator registry, have gradients checked against central differences and have Vulkan kernels; train --backend vulkan runs a BERT step on the GPU, and the optimizer muon answers E-TARGET-011 wherever a Vulkan kernel is needed."
 source: "DESIGN.md § 2 and the operator registry in crates/modelspec-core/src/ops.rs and resolve.rs; the tests gradients_embedding.rs, gradients_dense.rs, gradients_norm.rs, gradients_attention.rs, gradients_cross_entropy.rs and gradients_dropout.rs of crates/modelspec-runtime, and check_i32.rs and embedding_no_kernel.rs of crates/modelspec-cli; the E-TARGET-011 output from a run of modelspec ir on crates/modelspec-cli/tests/fixtures/linear_regression_muon.mspec; CHANGELOG.md § 0.10.0, § 0.11.0 and Unreleased."
 ---
