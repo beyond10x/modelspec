@@ -25,8 +25,9 @@
 //! - held-out evaluation ([`Evaluation`], `--eval-every`): at every multiple of `every` and the last
 //!   step, before the step's command buffer, each `HeldOut` batch is a command buffer of its own
 //!   (coordinator decision D76, story:vulkan-eval-download-per-batch): it copies the batch into
-//!   the data views, runs the steps of the plan the loss is computed from
-//!   ([`modelspec_core::ir::kernel::ExecutionPlan::loss_steps`]) with dropout off and copies the
+//!   the data views, runs the steps of the plan the prediction is computed from, without the
+//!   loss sum ([`modelspec_core::ir::kernel::ExecutionPlan::prediction_steps`]), with dropout
+//!   off and copies the
 //!   prediction into a download buffer of one prediction ([`download_bytes`]), and after its
 //!   host wait the host adds the logits to the reduction of the CPU evaluation, in batch order
 //!   ([`HeldOut::tallying`]), before the next batch overwrites them;
@@ -95,8 +96,8 @@ use super::pipeline::{Pipeline, PipelineStatistics, reads_seed};
 use super::profile::{PlanName, Profile, Site, timings};
 use super::runner::{
     Action, Checkpoints, DeviceRunError, DivergedOnDevice, RunStats, Stamps, VulkanRunError,
-    actions, buffer, count_u32, descriptors, numerics_class, on_device, parameters, record,
-    state_of,
+    action_positions, actions, buffer, count_u32, descriptors, numerics_class, on_device,
+    parameters, record, state_of,
 };
 use super::sync::{Barrier, recorded_barriers};
 use crate::cpu::HostTensor;
@@ -551,6 +552,11 @@ pub fn train_stepwise_profiled(
         .iter()
         .map(|&at| &kept_actions.as_ref().unwrap_or(&step_actions)[at])
         .collect();
+    // A held-out batch reads the prediction, not the loss: the loss steps without the loss sum.
+    let eval_actions: Vec<&Action<'_>> = action_positions(plan, &plan.prediction_steps())?
+        .into_iter()
+        .map(|at| &kept_actions.as_ref().unwrap_or(&step_actions)[at])
+        .collect();
     let loss = buffer(&buffers, &plan.loss_view)?;
 
     // The dispatch sites a profile times, and the one timestamp pool every step's command buffer
@@ -765,7 +771,7 @@ pub fn train_stepwise_profiled(
                             }
                         }
                         recording.barrier(Barrier::TransferToCompute);
-                        record(&mut recording, loss_actions.iter().copied(), &buffers, None)?;
+                        record(&mut recording, eval_actions.iter().copied(), &buffers, None)?;
                         recording.barrier(Barrier::ComputeToTransfer);
                         recording.copy_region(
                             buffer(&buffers, &prediction)?,
@@ -779,7 +785,7 @@ pub fn train_stepwise_profiled(
                         first_submit.get_or_insert_with(Instant::now);
                         device.submit(recorded)?.wait()?;
                     }
-                    tally.add(&download.read_f32()?).map_err(refused)?;
+                    tally.add(download.mapped_f32()?).map_err(refused)?;
                 }
                 let metrics = tally.metrics().map_err(refused)?;
                 evaluation += evaluating.elapsed();

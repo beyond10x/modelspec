@@ -1185,6 +1185,21 @@ impl ExecutionPlan {
     /// two chosen steps the plan orders with a barrier stay ordered by one. No `Allocate` is
     /// chosen; empty when no step writes the loss view (DESIGN.md § 3.1).
     pub fn loss_steps(&self) -> Vec<usize> {
+        self.steps_up_to_loss(true)
+    }
+
+    /// The positions, in plan order, of the step plan's steps a held-out evaluation records,
+    /// which reads the prediction and not the loss: the steps of [`ExecutionPlan::loss_steps`]
+    /// chosen from the prediction's buffer alone, so neither the last step that writes the loss
+    /// view nor a step only it needs is chosen, with the barriers chosen by the same rule. Empty
+    /// when no step writes the loss view.
+    pub fn prediction_steps(&self) -> Vec<usize> {
+        self.steps_up_to_loss(false)
+    }
+
+    /// The steps before the last step that writes the loss view that the prediction's buffer
+    /// needs, with that step and what it reads when `with_loss`, and their barriers.
+    fn steps_up_to_loss(&self, with_loss: bool) -> Vec<usize> {
         let Some(last) = self.step.iter().rposition(|step| {
             step.writes
                 .iter()
@@ -1193,8 +1208,11 @@ impl ExecutionPlan {
             return Vec::new();
         };
         let mut chosen = vec![false; last + 1];
-        chosen[last] = true;
-        let mut needed: BTreeSet<u32> = self.step[last].reads.iter().map(|v| v.buffer).collect();
+        let mut needed: BTreeSet<u32> = BTreeSet::new();
+        if with_loss {
+            chosen[last] = true;
+            needed.extend(self.step[last].reads.iter().map(|v| v.buffer));
+        }
         needed.insert(self.prediction_view.buffer);
         for at in (0..last).rev() {
             let step = &self.step[at];
