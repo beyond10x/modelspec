@@ -4,7 +4,8 @@
 //! `sigreg(z, slices = M)` takes one operand `z: f32[N, K]` and the named compile-time argument
 //! `slices`, an integer literal of at least 1. A `z` of another rank is `E-TYPE-004` and an `i32`
 //! `z` is `E-TYPE-018`, each at the call; `slices = 0` is `E-TYPE-019` at the `slices` argument of
-//! the call, as every named-argument value is. A file that uses `sigreg` checks clean; its Tensor
+//! the call, as every named-argument value is, and a `slices` whose projection or projected rows
+//! overflow `u64` is `E-TYPE-016` there. A file that uses `sigreg` checks clean; its Tensor
 //! IR reads the site's projection, an internal `f32[K, M]` input named `<Model>.<fn>.sigreg#<k>`,
 //! through `MatMul`, then `SigregColumns` and `ReduceMean`. Until the Vulkan kernels exist,
 //! `compile --backend vulkan` is `E-TARGET-011` at the call. The fixtures are under
@@ -91,6 +92,38 @@ fn check_sigreg_slices_zero_is_e_type_019_at_the_argument() {
         (CALL.0, SLICES_COLUMN),
     );
     assert!(stderr.contains("at least 1"), "{stderr}");
+}
+
+/// ADV-JP-1, DESIGN.md § 2.2 (count overflows are hard errors): a `slices` whose derived
+/// projection `f32[4, 2^64 - 1]` overflows `u64` exits 1 with `E-TYPE-016` at the `slices`
+/// argument, and `ir --stage tensor` refuses it the same way, never as a compiler bug.
+#[test]
+fn check_sigreg_slices_whose_projection_overflows_is_e_type_016_at_the_argument() {
+    let stderr = refused(
+        "sigreg_slices_overflow.mspec",
+        "`slices` of `sigreg`",
+        "E-TYPE-016",
+        (CALL.0, SLICES_COLUMN),
+    );
+    assert!(stderr.contains("[4, 18446744073709551615]"), "{stderr}");
+    let (output, _) = modelspec("ir", "sigreg_slices_overflow.mspec", &["--stage", "tensor"]);
+    let stderr = text(&output.stderr);
+    assert_eq!(output.status.code(), Some(1), "{stderr}");
+    assert!(stderr.starts_with("E-TYPE-016: "), "{stderr}");
+}
+
+/// ADV-JP-1, the rest of its class: every value the lowering derives from `slices` is checked,
+/// not only the projection. `slices = 2^59` keeps the projection `f32[4, 2^59]` (2^63 bytes)
+/// within `u64` but not `P = z @ proj`, `f32[16, 2^59]`: `E-TYPE-016` at the argument.
+#[test]
+fn check_sigreg_slices_whose_projected_rows_overflow_is_e_type_016_at_the_argument() {
+    let stderr = refused(
+        "sigreg_slices_overflow_rows.mspec",
+        "`slices` of `sigreg`",
+        "E-TYPE-016",
+        (CALL.0, SLICES_COLUMN),
+    );
+    assert!(stderr.contains("[16, 576460752303423488]"), "{stderr}");
 }
 
 #[test]

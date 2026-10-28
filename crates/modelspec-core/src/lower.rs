@@ -46,7 +46,7 @@ use thiserror::Error;
 use crate::diag::SourceSpan;
 use crate::hir::{FnRef, Hir, HirData, HirExpr, HirExprKind, HirModel};
 use crate::ir::tensor::{
-    BuildError, DType, Dim, TensorOp, TensorProgram, TensorProgramBuilder, TensorType, ValueId,
+    BuildError, TensorOp, TensorProgram, TensorProgramBuilder, TensorType, ValueId,
 };
 use crate::ops;
 use crate::passes::dce;
@@ -422,13 +422,11 @@ impl Lowering<'_> {
                 operands.len()
             )));
         };
-        let k = match self.builder.type_of(z).map(|ty| ty.shape.as_slice()) {
-            Some(&[_, k]) => k,
-            _ => return Err(malformed("the operand of sigreg is not of rank 2".into())),
-        };
-        let ty = TensorType {
-            dtype: DType::F32,
-            shape: vec![k, Dim::Static(slices)],
+        let derived = self.builder.type_of(z).map_or_else(Vec::new, |ty| {
+            ops::derived_types(&TensorOp::Sigreg { slices }, &[ty])
+        });
+        let Some(ty) = derived.into_iter().next() else {
+            return Err(malformed("the operand of sigreg is not of rank 2".into()));
         };
         let proj = self.projection(span, ty)?;
         let at = Some(span.clone());

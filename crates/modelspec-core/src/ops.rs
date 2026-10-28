@@ -182,6 +182,30 @@ pub fn expanded(op: &TensorOp) -> bool {
     matches!(op, TensorOp::Sigreg { .. })
 }
 
+/// The types of the values the lowering derives for the expanded operator `op` ([`expanded`])
+/// from `operands` beside its result, each sized by a named argument: for `sigreg(z: f32[N, K],
+/// slices = M)` the projection `f32[K, M]`, `P = z @ proj` of `f32[N, M]` and
+/// `SigregColumns(P)` of `f32[M]` (DESIGN.md § 2.2). The type checker refuses one whose element
+/// or byte count overflows `u64` with E-TYPE-016 at that argument, so lowering never builds it.
+/// Empty for an operator that is not expanded or an operand that [`infer`] refuses.
+pub fn derived_types(op: &TensorOp, operands: &[&TensorType]) -> Vec<TensorType> {
+    match (op, operands) {
+        (TensorOp::Sigreg { slices }, [z]) if z.shape.len() == 2 => {
+            let m = Dim::Static(*slices);
+            let f32_of = |shape: Vec<Dim>| TensorType {
+                dtype: DType::F32,
+                shape,
+            };
+            vec![
+                f32_of(vec![z.shape[1], m]),
+                f32_of(vec![z.shape[0], m]),
+                f32_of(vec![m]),
+            ]
+        }
+        _ => Vec::new(),
+    }
+}
+
 /// `op` with the values of its named arguments, one per entry of [`named_parameters`] and in its
 /// order. `op` itself when it takes none.
 pub fn with_named(op: &TensorOp, values: &[NamedValue]) -> TensorOp {
@@ -1718,6 +1742,12 @@ mod tests {
         assert_eq!(source_arity(&op), 1);
         assert!(constant_operands(&op).is_empty());
         assert_eq!(infer(&op, &[&f32(&[33, 8])], None), Ok(f32(&[])));
+        assert_eq!(
+            derived_types(&op, &[&f32(&[33, 8])]),
+            [f32(&[8, 16]), f32(&[33, 16]), f32(&[16])]
+        );
+        assert!(derived_types(&op, &[&f32(&[8])]).is_empty());
+        assert!(derived_types(&TensorOp::SigregColumns, &[&f32(&[33, 8])]).is_empty());
         assert_eq!(
             infer(&op, &[&f32(&[8])], None),
             Err(OpError::Rank {
