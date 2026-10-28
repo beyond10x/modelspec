@@ -12,6 +12,7 @@ history.
 ### Added
 
 - The loss operator `sigreg(z, slices = M)`, LeJEPA's SIGReg: the Epps–Pulley statistic of `M` random unit directions, drawn anew each step on Philox stream tag 6, against the standard normal, with its gradient, on the CPU backend; `--backend vulkan` answers E-TARGET-011 (story:jepa-sigreg-cpu).
+- Vulkan kernels for `sigreg`: `SigregColumns` and `SigregColumnsGrad` run as per-column dispatches, `train --backend vulkan` uploads each step's projections and holds its losses and parameters to the CPU run within the run tolerance, and `infer --backend vulkan` with `sigreg` answers E-TARGET-011 at the call (story:jepa-sigreg-vulkan).
 
 ## [0.21.0] - 2026-10-28
 

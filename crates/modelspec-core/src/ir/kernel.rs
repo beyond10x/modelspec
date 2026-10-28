@@ -155,7 +155,8 @@ pub enum KernelKind {
     /// count a last, immediate operand ([`Kernel::heads`]).
     PerRow,
     /// A column reduction over the rows of its operands in ascending row order, one output
-    /// column per invocation: `SumRows` and `LayerNormGradGamma`.
+    /// column per invocation: `SumRows`, `LayerNormGradGamma`, `SigregColumns` and
+    /// `SigregColumnsGrad`, the last writing every row of its column.
     PerColumn,
 }
 
@@ -966,7 +967,16 @@ impl Kernel {
     /// gradient for `EmbeddingGrad` and of the operand for `SumRows`; 10 per element for `Gelu`
     /// and 24 for `GeluGrad`; 5 per element for `Softmax` and 4 for `SoftmaxGrad`; for an
     /// `[n, h]` operand, `n·(8h + 3)` for `LayerNorm` and `LayerNormGradGamma` and
-    /// `n·(14h + 3)` for `LayerNormGradX` (DESIGN.md § 3.1). One per output element for `Sqrt`
+    /// `n·(14h + 3)` for `LayerNormGradX` (DESIGN.md § 3.1). For `P: [n, m]`, the instructions
+    /// the kernel emits (DESIGN.md § 5.2), its written-out `sin`/`cos` 24 and each corrected
+    /// division by `n` 6 (the `OpFDiv`, two `Fma`s and the compare of the residual step), a
+    /// negation, rounding, conversion or select none: `m·(216n + 128)` for `SigregColumns`, per
+    /// row and knot the argument's product, `sin`/`cos` and two adds but on row 0, per knot two
+    /// divisions, `d`, `d·d` and the fused `q`, then the eight weighted terms and the product by
+    /// `n`; `m·(456n + 97)` for `SigregColumnsGrad`, the means again with per knot `C - phi` and
+    /// `0 - d`, the product `2 g`, then per element and knot the argument's product,
+    /// `sin`/`cos`, `S·cos` and the fused term, the eight weighted terms and the product by
+    /// `2 g`. One per output element for `Sqrt`
     /// and `Div`. For `cross_entropy` over `[n, v]` logits, `n·(4v + 6) + 1`: per element a
     /// compare, a subtraction, an `exp` and an add of the row softmax, per row a logarithm, an
     /// add, a subtraction, the fused weighted term and the weight sum's add, and the one
@@ -999,6 +1009,14 @@ impl Kernel {
                 .checked_mul(h)?
                 .checked_add(per_row)?
                 .checked_mul(n),
+            _ => None,
+        };
+        // `m·(per_row·n + per_column)` over the columns of `P: [n, m]`, operand 0.
+        let sigreg = |per_row: u64, per_column: u64| match operand(0)?.shape[..] {
+            [Dim::Static(n), Dim::Static(m)] => per_row
+                .checked_mul(n)?
+                .checked_add(per_column)?
+                .checked_mul(m),
             _ => None,
         };
         match self.kind {
@@ -1046,6 +1064,8 @@ impl Kernel {
             KernelKind::PerColumn => match self.op {
                 "SumRows" => elements(operand(0)?),
                 "LayerNormGradGamma" => rows(8, 3),
+                "SigregColumns" => sigreg(216, 128),
+                "SigregColumnsGrad" => sigreg(456, 97),
                 _ => None,
             },
         }

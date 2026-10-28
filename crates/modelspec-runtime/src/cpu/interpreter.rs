@@ -1409,7 +1409,7 @@ fn gelu_grad<T: Element>(x: T, g: T) -> T {
 }
 
 /// The number of positive knots of the `sigreg` quadrature, `t_j = 0.625 j` for `j = 1..=8`.
-const SIGREG_KNOTS: usize = 8;
+pub(crate) const SIGREG_KNOTS: usize = 8;
 /// The knot spacing of the `sigreg` quadrature: 17 knots on `[-5, 5]` (LeJEPA, arXiv 2511.08544,
 /// § 4.2.3 listing and § 6.1).
 const SIGREG_SPACING: f64 = 0.625;
@@ -1420,7 +1420,7 @@ const SIGREG_SPACING: f64 = 0.625;
 /// by the spacing and an end knot by half of it; the integrand `|ecf(t) - phi(t)|^2 phi(t)` is
 /// even and 0 at `t = 0`, so the positive knots carry twice their weight: `c_j = 1.25 phi_j` for
 /// `j < 8` and `c_8 = 0.625 phi_8` (LeJEPA, arXiv 2511.08544, § 4.2.3 listing and § 5.1).
-fn sigreg_knot(j: usize) -> (f64, f64, f64) {
+pub(crate) fn sigreg_knot(j: usize) -> (f64, f64, f64) {
     let t = SIGREG_SPACING * (j as f64);
     let phi = (-0.5 * t * t).exp();
     let share = if j == SIGREG_KNOTS { 1.0 } else { 2.0 };

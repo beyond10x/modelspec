@@ -6,8 +6,8 @@
 //! `z` is `E-TYPE-018`, each at the call; `slices = 0` is `E-TYPE-019` at the `slices` argument of
 //! the call, as every named-argument value is. A file that uses `sigreg` checks clean; its Tensor
 //! IR reads the site's projection, an internal `f32[K, M]` input named `<Model>.<fn>.sigreg#<k>`,
-//! through `MatMul`, then `SigregColumns` and `ReduceMean`. Until the Vulkan kernels exist,
-//! `compile --backend vulkan` is `E-TARGET-011` at the call. The fixtures are under
+//! through `MatMul`, then `SigregColumns` and `ReduceMean`. `compile --backend vulkan` writes an
+//! artifact with the two `sigreg` kernels (story:jepa-sigreg-vulkan). The fixtures are under
 //! `tests/fixtures/` of this crate.
 
 use std::path::{Path, PathBuf};
@@ -150,15 +150,16 @@ fn check_sigreg_ir_reads_the_projection_of_the_site() {
     assert!(grad.contains(&format!(" {projected}, ")), "{grad}");
 }
 
-/// Out of scope until the Vulkan kernels: `compile --backend vulkan` is `E-TARGET-011` at the
-/// call, naming the operator, and writes no artifact; `compile --backend cpu` writes one, the
-/// projection taking a buffer of its own.
+/// `compile --backend vulkan` writes an artifact whose kernels hold `SigregColumns` and
+/// `SigregColumnsGrad` (story:jepa-sigreg-vulkan, which replaced the `E-TARGET-011` of
+/// story:jepa-sigreg-cpu); `compile --backend cpu` writes one too, the projection taking a buffer
+/// of its own.
 #[test]
-fn compile_sigreg_is_e_target_011_for_vulkan_and_compiles_for_cpu() {
+fn compile_sigreg_writes_an_artifact_for_vulkan_and_for_cpu() {
     let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("check_sigreg");
     let vulkan = out.join("vulkan");
     let profile = repo_root().join("crates/modelspec-runtime/tests/fixtures/rtx3090.device.json");
-    let (output, relative) = modelspec(
+    let (output, _) = modelspec(
         "compile",
         "sigreg_train.mspec",
         &[
@@ -170,17 +171,12 @@ fn compile_sigreg_is_e_target_011_for_vulkan_and_compiles_for_cpu() {
             vulkan.to_str().unwrap(),
         ],
     );
-    let stderr = text(&output.stderr);
-    assert_eq!(output.status.code(), Some(1), "{stderr}");
-    assert!(
-        stderr.starts_with("E-TARGET-011: operator `sigreg` has no Vulkan kernel yet\n"),
-        "{stderr}"
-    );
-    assert!(
-        stderr.contains(&format!("  {relative}:13:16\n")),
-        "{stderr}"
-    );
-    assert!(!vulkan.join("artifact.json").exists());
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output.stderr));
+    let artifact =
+        std::fs::read_to_string(vulkan.join("artifact.json")).expect("the Vulkan artifact");
+    for op in ["\"SigregColumns\"", "\"SigregColumnsGrad\""] {
+        assert!(artifact.contains(op), "no kernel {op} in the artifact");
+    }
 
     let cpu = out.join("cpu");
     let (output, _) = modelspec(

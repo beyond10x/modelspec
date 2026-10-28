@@ -198,18 +198,18 @@ impl Element for f64 {
 }
 
 /// `2 / pi` in `f32`, the scale of the quadrant count of [`sin_cos`].
-const FRAC_2_PI: f32 = std::f32::consts::FRAC_2_PI;
+pub(crate) const FRAC_2_PI: f32 = std::f32::consts::FRAC_2_PI;
 /// `pi / 2` in three parts, `P1 + P2 + P3`, for Cody–Waite reduction: twice the constants `DP1`,
 /// `DP2` and `DP3` of Cephes `sinf`.
-const PI_2_P1: f32 = 1.570_312_5;
-const PI_2_P2: f32 = 4.837_513e-4;
-const PI_2_P3: f32 = 7.549_79e-8;
+pub(crate) const PI_2_P1: f32 = 1.570_312_5;
+pub(crate) const PI_2_P2: f32 = 4.837_513e-4;
+pub(crate) const PI_2_P3: f32 = 7.549_79e-8;
 /// The minimax polynomial of `(sin(r) / r - 1) / z` in `z = r^2` on `|r| <= pi/4`, highest degree
 /// first (Cephes `sinf`).
-const SIN_P: [f32; 3] = [-1.951_529_6e-4, 8.332_161e-3, -1.666_665_5e-1];
+pub(crate) const SIN_P: [f32; 3] = [-1.951_529_6e-4, 8.332_161e-3, -1.666_665_5e-1];
 /// The minimax polynomial of `(cos(r) - 1 + z/2) / z^2` in `z = r^2` on `|r| <= pi/4`, highest
 /// degree first (Cephes `cosf`).
-const COS_P: [f32; 3] = [2.443_315_7e-5, -1.388_731_6e-3, 4.166_664_6e-2];
+pub(crate) const COS_P: [f32; 3] = [2.443_315_7e-5, -1.388_731_6e-3, 4.166_664_6e-2];
 
 /// `(sin(x), cos(x))` in `f32` by one written-out sequence of `f32` operations, the same on every
 /// platform, so that a Vulkan kernel can emit it instruction for instruction (DESIGN.md § 4,

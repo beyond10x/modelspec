@@ -479,7 +479,7 @@ pub const CAPABILITIES: &[Capability] = &[
     shipped(
         "Training",
         "`sigreg`",
-        "Not yet released: `sigreg(z, slices = M)`, LeJEPA's SIGReg, the Epps–Pulley statistic of M unit directions drawn anew each step against the standard normal, with its gradient checked against central differences, on the CPU backend; --backend vulkan answers E-TARGET-011 at the call.",
+        "Not yet released: `sigreg(z, slices = M)`, LeJEPA's SIGReg, the Epps–Pulley statistic of M unit directions drawn anew each step against the standard normal, with its gradient checked against central differences, on the CPU and Vulkan backends: train --backend vulkan uploads each step's projections and holds every step loss and parameter to the CPU run within the run tolerance; infer --backend vulkan answers E-TARGET-011 at the call.",
         Evidence::Test(
             "crates/modelspec-runtime/tests/gradients_sigreg.rs::gradients_sigreg_match_central_differences_at_a_fixed_projection",
         ),
