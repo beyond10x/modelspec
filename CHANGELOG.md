@@ -9,6 +9,10 @@ history.
 
 ## [Unreleased]
 
+### Changed
+
+- The specification and CI use ESS 0.72.0 (was 0.68.0); the JSON Schemas under `crates/modelspec-observatory/schema` and `crates/modelspec-runtime/schema` regenerate unchanged.
+
 ## [0.20.0] - 2026-10-26
 
 The Benchmarks page shows the MLP sweep against FLOP per step: one log-log chart of µs per step for ModelSpec Vulkan, PyTorch CUDA eager and PyTorch CUDA `torch.compile`, a GFLOP/s column per side in each batch's table of latest medians, and a "Not measured" section that names the declared workloads without a run yet, the transformer block and BERT-tiny pre-training, with the work that will measure each. `modelspec-docs generate` refuses a run whose `workload` the page does not declare or whose `MatmulOnly` `flop_per_step` is not 3196·B·H, and the pitch deck gains the sweep slide. This release changes no compiler or runtime behaviour and no benchmark number.
