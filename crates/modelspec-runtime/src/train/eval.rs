@@ -44,6 +44,7 @@ use modelspec_core::ir::tensor::{DType, Dim, ParamId, ValueId};
 use thiserror::Error;
 
 use super::data::{DataError, PackedBatch, PackedData};
+use super::init::{sigreg_projections, with_projections};
 use super::runner::{RunError, argmax};
 use crate::cpu::interpreter::Prepared;
 use crate::cpu::{HostTensor, RuntimeError};
@@ -202,35 +203,59 @@ impl<'p> HeldOut<'p> {
     ///
     /// For the `compiled` that [`HeldOut::new`] was given, every batch runs the forward program
     /// prepared there. Another `compiled` is checked as `new` checks it, and its forward program
-    /// verified and planned for this evaluation alone.
+    /// verified and planned for this evaluation alone. A `sigreg` site reads its projection of
+    /// step 0; [`HeldOut::evaluate_at`] names the step.
     pub fn evaluate(
         &self,
         compiled: &CompiledTraining,
         params: &BTreeMap<ParamId, HostTensor<f32>>,
     ) -> Result<HeldOutMetrics, RunError> {
+        self.evaluate_at(compiled, params, 0)
+    }
+
+    /// The held-out loss and accuracy as [`HeldOut::evaluate`] measures them, every `sigreg` site
+    /// reading its projection of step `step`, the step whose parameters `params` are
+    /// (story:jepa-sigreg-cpu).
+    pub fn evaluate_at(
+        &self,
+        compiled: &CompiledTraining,
+        params: &BTreeMap<ParamId, HostTensor<f32>>,
+        step: u64,
+    ) -> Result<HeldOutMetrics, RunError> {
         let prediction = compiled.forward.prediction;
+        let projections =
+            sigreg_projections(&compiled.forward.program, compiled.config.seed, step)?;
         let mut forward = self.forward.borrow_mut();
         if std::ptr::eq(forward.prepared.program(), &compiled.forward.program) {
-            return self.measure(&mut forward, prediction, self.classes, params);
+            return self.measure(&mut forward, prediction, self.classes, params, &projections);
         }
         let rows = self.batches.first().map_or(0, |batch| batch.labels.len());
         let classes = classes(compiled, rows)?;
-        self.measure(&mut Forward::new(compiled)?, prediction, classes, params)
+        self.measure(
+            &mut Forward::new(compiled)?,
+            prediction,
+            classes,
+            params,
+            &projections,
+        )
     }
 
-    /// The reduction of the module documentation over every batch, each run on `forward`.
+    /// The reduction of the module documentation over every batch, each run on `forward` with
+    /// `params` and the `sigreg` `projections` beside the batch's inputs.
     fn measure(
         &self,
         forward: &mut Forward<'_>,
         prediction: ValueId,
         v: usize,
         params: &BTreeMap<ParamId, HostTensor<f32>>,
+        projections: &BTreeMap<String, HostTensor<f32>>,
     ) -> Result<HeldOutMetrics, RunError> {
         let Forward { prepared, outputs } = forward;
         let mut tally = Tally::default();
         for (b, batch) in self.batches.iter().enumerate() {
+            let inputs = with_projections(batch.tensors.inputs(), projections);
             prepared
-                .run_into(batch.tensors.inputs(), batch.tensors.ids(), params, outputs)
+                .run_into(&inputs, batch.tensors.ids(), params, outputs)
                 .map_err(|source| EvalError::Runtime { batch: b, source })?;
             for (position, output) in outputs.drain(..).enumerate() {
                 prepared.recycle(position, output);

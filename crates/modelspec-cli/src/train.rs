@@ -48,16 +48,18 @@
 //! ([`modelspec_runtime::vulkan::runner`]): the host waits for the device once after the last
 //! step, and once after each step `--checkpoint-every` writes a checkpoint at, whose parameters it
 //! reads back then and no other step. A run whose step plan has a `dropout` kernel or reads
-//! optimizer inputs (`adamw`'s rate, bias corrections and moments), and every run with `--data`
-//! or `--eval-every`, runs stepwise instead ([`modelspec_runtime::vulkan::stepwise`]; coordinator
+//! optimizer inputs (`adamw`'s rate, bias corrections and moments), and every run with `--data`,
+//! `--eval` or `--eval-every`, runs stepwise instead ([`modelspec_runtime::vulkan::stepwise`]; coordinator
 //! decision D73, 2026-10-25, `.engineering/waves/bert-1.md`): one command buffer and one host
 //! wait per step and one for the final loss, the step's batch, RNG tokens and AdamW scalars
 //! uploaded before it and the moments kept on the device. An evaluated step first runs each
 //! held-out batch without dropout in a command buffer of its own, one host wait per batch
-//! (coordinator decision D76, story:vulkan-eval-download-per-batch). A stepwise run's `--profile`
-//! writes the timestamps of each step's command buffer into one query pool and reads them back
-//! after that step's host wait, adding none (story:bert-tiny-vs-pytorch-cuda); its held-out
-//! batches are not timed. `--stats` prints the run's counters on stderr after it
+//! (coordinator decision D76, story:vulkan-eval-download-per-batch); with `--eval` the last step
+//! first runs each batch of the eval directory the same way (story:decider-dense-named-data). A
+//! stepwise run's `--profile` writes the timestamps of each step's command buffer into one query
+//! pool and reads them back after that step's host wait, adding none
+//! (story:bert-tiny-vs-pytorch-cuda); its held-out and eval batches are not timed. `--stats`
+//! prints the run's counters on stderr after it
 //! (host waits, submits, dispatches, dispatches and barriers per step, bytes up and down, device
 //! allocations, peak device bytes, the numerics class, microseconds per step). `--profile` times
 //! every dispatch with GPU timestamp queries, read back after the one host wait, and prints on
@@ -81,16 +83,20 @@
 //! `E-TARGET-004`. A build without the `vulkan` feature refuses the backend
 //! with [`E_TARGET_001`] before the file is read. `--fast-math` compiles the artifact with
 //! `fast_math` set (DESIGN.md § 12 ADR-008): its kernels carry no `NoContraction`, the run is
-//! compared within tolerance, and `--stats` names the class `tolerance`. `--init`, `--eval` and
+//! compared within tolerance, and `--stats` names the class `tolerance`. `--init` and
 //! `--statistics-every` are CPU-only, and `--device`, `--stats`,
 //! `--profile` and `--fast-math` Vulkan-only: naming one with the other backend is a usage error
 //! (exit 2).
 //!
-//! `--data <dir>` trains on dense `f32` files instead of synthetic data, `--init <dir>` starts
-//! the parameters that have a file from it, and `--eval <dir>` adds a last line
-//! `eval loss=<mean loss> accuracy=<fraction>` (DESIGN.md § 8; `spec/domains/data.yaml`). Every
-//! file is read before the first step; one that cannot be used is refused with `E-DATA-007`,
-//! `E-DATA-008` or `E-DATA-009` and no `step` line is printed.
+//! `--data <dir>` trains on dense files instead of synthetic data, `<name>.f32` or `<name>.i32`
+//! for every `input` and `target` declaration by its dtype, step `k` feeding block `k` of every
+//! file (story:decider-dense-named-data), `--init <dir>` starts the parameters that have a file
+//! from it, and `--eval <dir>` adds a last line `eval loss=<mean loss>`, with
+//! ` accuracy=<fraction>` when the loss compares the model output with the block's one `f32`
+//! target, never for `i32` labels (DESIGN.md § 8; `spec/domains/data.yaml`). Every file is read
+//! before the first step, on both backends; one that cannot be used is refused with
+//! `E-DATA-007`, `E-DATA-008` or `E-DATA-009`, and an `i32` value outside the rows or classes
+//! that read it with `E-DATA-011`, and no step runs.
 //!
 //! A `--data` directory that holds `binding.json` is a packed masked-language-model directory of
 //! `modelspec data pack` instead ([`data::source`], [`data::packed`]; story:bert-train-data-binding,
@@ -127,9 +133,10 @@
 //! `--write-batch <dir>` writes the synthetic batch the run trains on before its first step, one
 //! file `<dir>/<name>.f32` per input and target declaration, the tensor's elements in row-major
 //! order as little-endian `f32` and nothing else, so that another implementation can compute on
-//! the same data (story:transformer-block-benchmark); the example's `x.f32`, `key_mask.f32` and
-//! `y.f32` are not a `--data` directory, which takes one input. Beside `--data` it is a usage
-//! error (exit 2).
+//! the same data (story:transformer-block-benchmark). Every declaration of such a file is `f32`
+//! (synthetic data refuses `i32` with `E-DATA-004`), so the directory is also a dense `--data`
+//! directory that holds one batch (story:decider-dense-named-data). Beside `--data` it is a usage error
+//! (exit 2).
 //!
 //! `--steps <n>` runs `n` steps instead of the block's. `--checkpoint <path>` writes the state
 //! after the last step as a `.msckpt` file ([`checkpoint`]; DESIGN.md § 6.2), and
@@ -247,17 +254,20 @@ pub struct Args {
     /// packed directory of `modelspec data pack`: each input and target declaration names a
     /// tensor of the masked-language-model batch (ids, positions, key_mask, labels, weights),
     /// declared [B, S] or [B*S], and step K feeds the Train batch of step K. Any other DIR holds
-    /// dense f32 files: NAME.f32 for the input and the target declaration NAME, row-major
-    /// little-endian, and an optional order.u32 of sample indices.
+    /// dense files, row-major little-endian: NAME.f32 for every f32 input and target
+    /// declaration NAME and NAME.i32 for every i32 one, and an optional order.u32 of sample
+    /// indices. A sample is one row along the leading dimension B every declaration shares, else
+    /// the whole declared tensor (B = 1), and step K feeds block K of every file.
     #[arg(long, value_name = "DIR")]
     pub data: Option<PathBuf>,
     /// Start each parameter that has a file DIR/P.f32, P its path without the model name, from
     /// that file instead of its initializer.
     #[arg(long, value_name = "DIR")]
     pub init: Option<PathBuf>,
-    /// After the last step, run the forward program over every sample of DIR, dense f32 files
-    /// laid out as for a dense --data, and print `eval loss=<mean loss> accuracy=<fraction>`;
-    /// beside a packed --data directory it is a usage error.
+    /// After the last step, run the forward program over every sample of DIR, dense files laid
+    /// out as for a dense --data, and print `eval loss=<mean loss>`, followed by
+    /// ` accuracy=<fraction>` when the loss compares the model output with the block's one f32
+    /// target; on the CPU and on Vulkan. Beside a packed --data directory it is a usage error.
     #[arg(long, value_name = "DIR")]
     pub eval: Option<PathBuf>,
     /// With a packed --data directory, run the forward program without dropout over every full
@@ -327,9 +337,9 @@ pub struct Args {
     /// query fails, then the run's counters (dispatches, submits, host waits, barriers per step, bytes
     /// copied up and down, device allocations, peak device bytes), compile and pipeline creation
     /// time, steady-state microseconds per step and the step's total FLOP, bytes, GFLOP/s and
-    /// GB/s on stderr after it. A stepwise run (a model with dropout or AdamW, or --data or
-    /// --eval-every on Vulkan) reads each step's timestamps back after that step's host wait and
-    /// does not time its held-out batches.
+    /// GB/s on stderr after it. A stepwise run (a model with dropout, sigreg or AdamW, or --data,
+    /// --eval or --eval-every on Vulkan) reads each step's timestamps back after that step's host
+    /// wait and does not time its held-out or eval batches.
     #[arg(long)]
     pub profile: bool,
     /// With --backend vulkan, compile with fast_math (DESIGN.md ADR-008): the float multiplies,
@@ -353,7 +363,6 @@ fn misplaced_flag(args: &Args) -> Option<&'static str> {
         .find_map(|(flag, given)| given.then_some(flag)),
         Backend::Vulkan => [
             ("--init", args.init.is_some()),
-            ("--eval", args.eval.is_some()),
             ("--statistics-every", args.statistics_every.is_some()),
         ]
         .into_iter()
@@ -450,7 +459,8 @@ struct Loaded {
 /// The data of `--data`: dense files or a packed directory.
 enum TrainData {
     Dense(DenseData),
-    Packed(PackedData),
+    /// Boxed: the packed reader holds far more than the dense one.
+    Packed(Box<PackedData>),
 }
 
 impl TrainData {
@@ -485,7 +495,9 @@ impl Files {
         let plain = |error: DataError| Box::new((error, None));
         let data = match (&self.data, &self.binding) {
             (Some(dir), Some(binding)) => Some(TrainData::Packed(
-                data::packed(dir, binding.clone(), config, forward).map_err(plain)?,
+                data::packed(dir, binding.clone(), config, forward)
+                    .map(Box::new)
+                    .map_err(plain)?,
             )),
             (Some(dir), None) => Some(TrainData::Dense(
                 data::dense(dir, config, forward)
@@ -949,6 +961,7 @@ fn train(
             // step, each step streamed after its wait (coordinator decision D73).
             if stepwise::needed(compiled, artifact)
                 || files.data.is_some()
+                || files.eval.is_some()
                 || files.eval_every.is_some()
             {
                 let loaded = match files.load(compiled) {
@@ -979,12 +992,19 @@ fn train(
                         .as_ref()
                         .zip(files.eval_every)
                         .map(|(held_out, every)| stepwise::Evaluation { held_out, every }),
+                    dense_eval: loaded.eval.as_ref(),
+                    dense_predictions: None,
                     checkpoints: files.checkpoint_every.map(|every| Checkpoints {
                         every,
                         write: &mut write,
                     }),
                 };
+                // The `--eval` result, which the last step carries.
+                let mut dense_eval: Option<Eval> = None;
                 let mut observe = |seen: &stepwise::StepSeen<'_>| {
+                    if seen.dense_eval.is_some() {
+                        dense_eval = seen.dense_eval;
+                    }
                     let metrics = match seen.held_out {
                         Some(measured) => {
                             evals.insert(seen.step, (measured, seen.trained));
@@ -1019,9 +1039,9 @@ fn train(
                                 path,
                                 &Checkpoint::of_state(compiled, end, &run.state.values),
                             )
-                            .map(|()| (run, None, clock))
+                            .map(|()| (run, dense_eval, clock))
                             .map_err(|error| RunError::from(error).into()),
-                            None => Ok((run, None, clock)),
+                            None => Ok((run, dense_eval, clock)),
                         }
                     }
                     Err(DeviceRunError::Refused(diagnostic)) => Err(Failure::Refused(diagnostic)),
@@ -1157,7 +1177,9 @@ fn train(
             let observing = Instant::now();
             let metrics = match (&held_out, files.eval_every) {
                 (Some(held_out), Some(n)) if o.step.is_multiple_of(n) || o.step == end => {
-                    let measured = held_out.evaluate(compiled, o.values).map_err(Box::new)?;
+                    let measured = held_out
+                        .evaluate_at(compiled, o.values, o.step)
+                        .map_err(Box::new)?;
                     evaluating.set(evaluating.get() + observing.elapsed());
                     evals.insert(o.step, (measured, trained.get()));
                     metric_samples(measured)
@@ -1193,7 +1215,7 @@ fn train(
         };
         let eval = match &loaded.eval {
             None => None,
-            Some(data) => match runner::evaluate_dense(compiled, data, &run.state.values) {
+            Some(data) => match runner::evaluate_dense_at(compiled, data, &run.state.values, end) {
                 Ok(eval) => Some(eval),
                 Err(error) => break 'run Err(error.into()),
             },
@@ -1405,7 +1427,11 @@ fn report(
         tensors(&mut out, "param", &run.state.values);
     }
     if let Some(Eval { loss, accuracy }) = eval {
-        let _ = writeln!(out, "eval loss={loss} accuracy={accuracy}");
+        let _ = write!(out, "eval loss={loss}");
+        if let Some(accuracy) = accuracy {
+            let _ = write!(out, " accuracy={accuracy}");
+        }
+        out.push('\n');
     }
     out
 }

@@ -59,6 +59,7 @@ use modelspec_core::device::DeviceProfile;
 use modelspec_core::diag::Diagnostic;
 use modelspec_core::ir::kernel::{BufferView, ExecutionPlan, KernelKind, PlanOp, PlanStep};
 use modelspec_core::ir::tensor::{Dim, ParamId, TensorOp};
+use modelspec_core::ir::training::sigreg_sites;
 use thiserror::Error;
 
 use super::dispatch::{Bound, DescriptorArena, Recording, TimestampPool};
@@ -262,9 +263,9 @@ pub fn train_on_device_with(
 }
 
 /// [`train_on_device_with`], from the start and with the checkpoints of `options`
-/// ([`train_with`]). A step with a dropout or an AdamW update runs stepwise instead, one command
-/// buffer and one host wait per step ([`super::stepwise`]), on the synthetic data the run makes
-/// itself, and profiled per step's command buffer when `profiled`.
+/// ([`train_with`]). A step with a dropout, a `sigreg` or an AdamW update runs stepwise instead,
+/// one command buffer and one host wait per step ([`super::stepwise`]), on the synthetic data
+/// the run makes itself, and profiled per step's command buffer when `profiled`.
 pub fn train_on_device_from(
     device: Option<usize>,
     compiled: &CompiledTraining,
@@ -285,6 +286,8 @@ pub fn train_on_device_from(
             init,
             data: None,
             eval: None,
+            dense_eval: None,
+            dense_predictions: None,
             checkpoints,
         };
         return super::stepwise::train_stepwise_on_device(
@@ -335,6 +338,30 @@ pub fn dropout_refused(compiled: &CompiledTraining) -> Option<Diagnostic> {
     })
 }
 
+/// `E-TARGET-011` at the first `sigreg` call of `compiled`'s training step, when it has one,
+/// which [`infer_on_device`] refuses (story:jepa-sigreg-vulkan): a training run uploads each
+/// site's projection before each step ([`super::stepwise`]), but inference runs the loss steps
+/// of the step plan once, with no step to draw the projection for.
+pub fn sigreg_refused(compiled: &CompiledTraining) -> Option<Diagnostic> {
+    let node = compiled
+        .training
+        .training
+        .program
+        .nodes
+        .iter()
+        .find(|node| node.op == TensorOp::SigregColumns)?;
+    let refused = Diagnostic::new(
+        codes::NO_KERNEL,
+        "operator `sigreg` has no Vulkan inference yet: the device run supplies its projection \
+         only to a training step",
+    )
+    .note("infer it with `--backend cpu`");
+    Some(match node.source_span.clone() {
+        Some(span) => refused.at(span),
+        None => refused,
+    })
+}
+
 /// Loads Vulkan, selects device `device` (0 when `None`), negotiates and opens it, and runs
 /// [`infer`] on it with `params`.
 pub fn infer_on_device(
@@ -343,7 +370,7 @@ pub fn infer_on_device(
     artifact: &CompiledArtifact,
     params: &BTreeMap<ParamId, HostTensor<f32>>,
 ) -> Result<(Inference, RunStats), DeviceRunError> {
-    if let Some(refused) = dropout_refused(compiled) {
+    if let Some(refused) = dropout_refused(compiled).or_else(|| sigreg_refused(compiled)) {
         return Err(DeviceRunError::Refused(refused));
     }
     on_device(device, false, artifact, |opened, profile, negotiated| {
@@ -670,6 +697,12 @@ fn execute_runs(
              uploads neither, the stepwise run does (super::stepwise)"
                 .into(),
         ));
+    }
+    if let Some(site) = sigreg_sites(&compiled.training.training.program).first() {
+        return Err(VulkanRunError::Plan(format!(
+            "sigreg site {site} reads a projection drawn for every step; the chunked device run \
+             supplies none, the stepwise run does (super::stepwise)"
+        )));
     }
     let config = &compiled.config;
     let Job {

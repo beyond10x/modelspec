@@ -38,6 +38,11 @@
 //! before the op runs, row by row: a label outside the classes is
 //! [`RuntimeError::LabelOutOfRange`], a negative or non-finite weight
 //! [`RuntimeError::LossWeight`].
+//! `SigregColumns` and its gradient op work column by column, in the element type: each column
+//! mean of `cos(t_j P)` and `sin(t_j P)` sums in ascending row order from row 0, with `sin` and
+//! `cos` from [`Element::sin_cos`], and the sum over the eight knots runs in ascending `j`, its
+//! first product rounded and each later one fused (DESIGN.md § 4, story:jepa-sigreg-cpu).
+//! `sigreg` itself never runs: lowering expands it and the verifier refuses it.
 //!
 //! `dropout` and its gradient op read the `i32[2]` RNG token of their site and the run's seed
 //! ([`Prepared::set_seed`], [`evaluate_seeded`]): element `i` in row-major order is kept when
@@ -1072,8 +1077,14 @@ impl<'p, T: Element> Prepared<'p, T> {
             }
             TensorOp::Dropout { p } => self.masked(data, arg(0).data, operands[1], *p, ids),
             TensorOp::DropoutGrad { p } => self.masked(data, arg(1).data, operands[0], *p, ids),
+            TensorOp::StopGradient => data.extend_from_slice(arg(0).data),
             TensorOp::Sqrt => data.extend(arg(0).data.iter().map(|&x| x.sqrt())),
             TensorOp::Div => elementwise(data, arg(0), arg(1), |a, b| a / b),
+            TensorOp::SigregColumns => sigreg_columns(data, arg(0)),
+            TensorOp::SigregColumnsGrad => sigreg_columns_grad(data, arg(0), arg(1).data),
+            TensorOp::Sigreg { .. } => {
+                unreachable!("the verifier refuses `sigreg`, which lowering expands")
+            }
         }
     }
 }
@@ -1396,6 +1407,97 @@ fn gelu_grad<T: Element>(x: T, g: T) -> T {
     let (s, r) = (logistic(v), logistic(T::ZERO - v));
     let slope = constant::<T>(GELU_SCALE) * (one + three * constant::<T>(GELU_CUBIC) * x * x);
     (s + two * (s * x) * r * slope) * g
+}
+
+/// The number of positive knots of the `sigreg` quadrature, `t_j = 0.625 j` for `j = 1..=8`.
+pub(crate) const SIGREG_KNOTS: usize = 8;
+/// The knot spacing of the `sigreg` quadrature: 17 knots on `[-5, 5]` (LeJEPA, arXiv 2511.08544,
+/// § 4.2.3 listing and § 6.1).
+const SIGREG_SPACING: f64 = 0.625;
+
+/// The knot `t_j`, the standard normal characteristic function and window
+/// `phi_j = exp(-t_j^2 / 2)`, and the trapezoid weight `c_j` of the `sigreg` quadrature, for
+/// `j = 1..=8`, all in `f64`. The trapezoid on the 17 knots of `[-5, 5]` weighs an interior knot
+/// by the spacing and an end knot by half of it; the integrand `|ecf(t) - phi(t)|^2 phi(t)` is
+/// even and 0 at `t = 0`, so the positive knots carry twice their weight: `c_j = 1.25 phi_j` for
+/// `j < 8` and `c_8 = 0.625 phi_8` (LeJEPA, arXiv 2511.08544, § 4.2.3 listing and § 5.1).
+pub(crate) fn sigreg_knot(j: usize) -> (f64, f64, f64) {
+    let t = SIGREG_SPACING * (j as f64);
+    let phi = (-0.5 * t * t).exp();
+    let share = if j == SIGREG_KNOTS { 1.0 } else { 2.0 };
+    (t, phi, share * SIGREG_SPACING * phi)
+}
+
+/// The column means `(C_j, S_j)` of `cos(t_j P)` and `sin(t_j P)` of column `m` of the `[N, M]`
+/// tensor `p`, for `j = 1..=8`: each argument `t_j * P[n, m]` rounded in `T`, each sum over `n`
+/// ascending from row 0 in `T`, then divided by `N` in `T`. `SigregColumns` and its gradient op
+/// both use it, so the gradient sees the forward's means.
+fn sigreg_means<T: Element>(p: &View<'_, T>, m: usize) -> [(T, T); SIGREG_KNOTS] {
+    let (rows, columns) = (p.shape[0], p.shape[1] as usize);
+    let count = T::from_count(rows);
+    std::array::from_fn(|k| {
+        let t = constant::<T>(sigreg_knot(k + 1).0);
+        let mut column = p
+            .data
+            .iter()
+            .skip(m)
+            .step_by(columns)
+            .map(|&x| (t * x).sin_cos());
+        let (sin, cos) = match column.next() {
+            Some(first) => column.fold(first, |(sin, cos), (s, c)| (sin + s, cos + c)),
+            None => (T::ZERO, T::ZERO),
+        };
+        (cos / count, sin / count)
+    })
+}
+
+/// `SigregColumns`: for the `[N, M]` tensor `p`, the `[M]` Epps–Pulley statistics
+/// `T_m = N sum_j c_j ((C_j - phi_j)^2 + S_j^2)` (DESIGN.md § 4). Per column, with
+/// `d_j = C_j - phi_j`, `q_j = fma(S_j, S_j, d_j * d_j)`; the sum over `j` ascending is
+/// `c_1 * q_1` and then `fma(c_j, q_j, sum)`; the result is `N * sum`.
+fn sigreg_columns<T: Element>(data: &mut Vec<T>, p: View<'_, T>) {
+    let count = T::from_count(p.shape[0]);
+    for m in 0..p.shape[1] as usize {
+        let means = sigreg_means(&p, m);
+        let terms = means.iter().enumerate().map(|(k, &(cos, sin))| {
+            let (_, phi, weight) = sigreg_knot(k + 1);
+            let d = cos - constant::<T>(phi);
+            (constant::<T>(weight), sin.mul_add(sin, d * d))
+        });
+        data.push(count * sum_of_products(terms));
+    }
+}
+
+/// `SigregColumnsGrad`: the gradient of [`sigreg_columns`] of the `[N, M]` tensor `p` times the
+/// `[M]` upstream gradient `g`,
+/// `dP[n, m] = 2 g[m] sum_j c_j t_j (S_j cos(t_j P[n, m]) - (C_j - phi_j) sin(t_j P[n, m]))`
+/// (DESIGN.md § 4). The means are recomputed by [`sigreg_means`]; per element, with
+/// `(s_j, c_j) = sin_cos(t_j * P[n, m])`, the term is `fma(-(C_j - phi_j), s_j, S_j * c_j)`, the
+/// sum over `j` ascending is `(c_j t_j) * term_1` and then `fma(c_j t_j, term_j, sum)` with
+/// `c_j t_j` one constant, and the element is `(2 * g[m]) * sum`.
+fn sigreg_columns_grad<T: Element>(data: &mut Vec<T>, p: View<'_, T>, g: &[T]) {
+    let columns = p.shape[1] as usize;
+    let knots: [(T, T, T); SIGREG_KNOTS] = std::array::from_fn(|k| {
+        let (t, phi, weight) = sigreg_knot(k + 1);
+        (
+            constant::<T>(t),
+            constant::<T>(phi),
+            constant::<T>(weight * t),
+        )
+    });
+    let means: Vec<_> = (0..columns).map(|m| sigreg_means(&p, m)).collect();
+    let two = T::from_f32(2.0);
+    for (i, &x) in p.data.iter().enumerate() {
+        let m = i % columns;
+        let terms = knots
+            .iter()
+            .zip(&means[m])
+            .map(|(&(t, phi, slope), &(cos, sin))| {
+                let (s, c) = (t * x).sin_cos();
+                (slope, (T::ZERO - (cos - phi)).mul_add(s, sin * c))
+            });
+        data.push((two * g[m]) * sum_of_products(terms));
+    }
 }
 
 /// Each `transpose` whose every reader is a `matmul` reading it as its left operand, and which is

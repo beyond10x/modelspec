@@ -3,19 +3,19 @@
   "product": {
     "name": "ModelSpec",
     "mark": "Ms",
-    "eyebrow": "A language and compiler for trainable tensor programs · M1",
+    "eyebrow": "The goal: training compiled for one target · M1",
     "promise": [
-      "Specify what the model computes.",
-      "The compiler decides how it runs."
+      "Declare the whole training step.",
+      "Compile it into a runtime built for one GPU, to train faster."
     ],
-    "lede": "Write the model, the loss and the optimizer in one .mspec file. ModelSpec checks every name, type and shape before anything runs, lowers the file to a typed tensor IR, derives the gradients, adds the optimizer step and trains the whole step on a CPU reference interpreter or on one Vulkan GPU. No Python, PyTorch or CUDA.",
+    "lede": "ModelSpec is for training models faster than a general-purpose framework can; that speed is the goal and not shipped yet. Model, loss, gradients, optimizer and data are one typed .mspec program, so the compiler knows the whole step before it runs and can build a runtime for one use case, one operating system and one GPU, and every optimization is checked against a CPU reference. Today it trains on one Vulkan GPU, an RTX 3090, where a transformer step is still many times slower than PyTorch's. No Python, PyTorch or CUDA.",
     "actions": [
-      {"label": "Get started", "href": "/docs/getting-started", "kind": "primary"},
-      {"label": "Read the documentation", "href": "/docs/"},
+      {"label": "Why ModelSpec", "href": "/docs/concepts/north-star", "kind": "primary"},
+      {"label": "Get started", "href": "/docs/getting-started"},
       {"label": "What exists today", "href": "/docs/status"},
       {"label": "Pitch deck", "href": "pathname:///modelspec/pitch/"}
     ],
-    "meta": "One Rust binary · CPU reference and Vulkan training · Apache-2.0",
+    "meta": "One Rust binary · CPU reference and Vulkan training · Apache-2.0",
     "kpis": [
       {"count": "shipped", "label": "capabilities shipped"},
       {"count": "planned", "label": "capabilities planned"}
@@ -29,9 +29,45 @@
   "sections": [
     {
       "kind": "features",
-      "eyebrow": "What you get",
+      "eyebrow": "What it is for",
+      "title": "Faster training, because nothing is general at run time.",
+      "lede": "A general-purpose framework has to stay general while it runs. A ModelSpec runtime is compiled for one program on one target, and a compiler change that alters a result is refused. Faster than PyTorch is the planned outcome; the BERT-tiny ladder measures it.",
+      "items": [
+        {
+          "title": "The compiler knows the whole step",
+          "description": "Model, loss, gradients, optimizer, data bindings and execution policy are one declared, typed program. Forward pass, loss, backward pass and update compile into one verified Training IR program before anything runs.",
+          "status": "shipped",
+          "icon": "action",
+          "href": "/docs/concepts/pipeline"
+        },
+        {
+          "title": "A runtime for one target",
+          "description": "Compile that program into a runtime specialised for one use case, one operating system and one GPU chipset. One target exists today: Vulkan compute and SPIR-V on one RTX 3090 on Linux, with the kernel plan scheduled for its device profile. Runtimes for other systems and chipsets are planned.",
+          "status": "planned",
+          "icon": "claim",
+          "href": "/docs/concepts/north-star"
+        },
+        {
+          "title": "Optimizations that cannot change a result",
+          "description": "Every kernel, fusion and pass is checked against the CPU reference interpreter on the same IR. A faster change is kept; a change that alters a result is refused. That makes aggressive optimization safe to try, by people or agents.",
+          "status": "shipped",
+          "icon": "evidence",
+          "href": "/docs/concepts/north-star#2-optimizations-that-cannot-change-a-result"
+        },
+        {
+          "title": "BERT-tiny against PyTorch, step by step",
+          "description": "Today ModelSpec is slower: the BERT-tiny encoder block at batch 8 takes 93,868.4 µs per step on the RTX 3090 against 3,937.2 µs on PyTorch eager. Planned: the block within 3× of PyTorch eager, then full BERT-tiny at parity, then faster than torch.compile.",
+          "status": "planned",
+          "icon": "outcome",
+          "href": "/docs/concepts/north-star#3-the-worked-example-bert-tiny"
+        }
+      ]
+    },
+    {
+      "kind": "features",
+      "eyebrow": "What it is",
       "title": "Errors before anything runs.",
-      "lede": "A shape mismatch is a compile error with both operand types, not an exception halfway through training.",
+      "lede": "A declarative, statically typed language and a Rust compiler for differentiable tensor programs. A shape mismatch is a compile error with both operand types, not an exception halfway through training.",
       "items": [
         {
           "title": "Shapes in the types",
@@ -39,13 +75,6 @@
           "status": "shipped",
           "icon": "evidence",
           "href": "/docs/examples/shape-error"
-        },
-        {
-          "title": "The training step is compiled",
-          "description": "Forward pass, loss, reverse-mode gradients and the SGD update are one verified Training IR program, printed by modelspec ir --stage training.",
-          "status": "shipped",
-          "icon": "action",
-          "href": "/docs/concepts/pipeline"
         },
         {
           "title": "Reproducible from the seed",
@@ -77,8 +106,8 @@
         },
         {
           "title": "A small BERT, from scratch",
-          "description": "Embedding, attention, layer norm, GELU and the masked-language-model loss run on the CPU reference, and the data commands pack a corpus into token sequences. Their Vulkan kernels are planned.",
-          "status": "planned",
+          "description": "Embedding, attention, layer norm, GELU, dropout and the masked-language-model loss run on the CPU reference and, since 0.17.0, as Vulkan kernels; the data commands pack a corpus into token sequences, and BERT-tiny pre-trained on one RTX 3090 ends below the unigram baseline.",
+          "status": "shipped",
           "icon": "claim",
           "href": "/docs/concepts/bert-operators"
         }

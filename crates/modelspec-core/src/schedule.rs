@@ -11,7 +11,8 @@
 //! Each row-wise op is one Dispatch of workgroups of 64 ([`rowwise_kernel`]): `Embedding`,
 //! `AddRows`, `Gelu`, `GeluGrad`, `Dropout` and `DropoutGrad` one invocation per output element,
 //! `EmbeddingGrad`, `LayerNorm`, `LayerNormGradX`, `Softmax` and `SoftmaxGrad` one per output row,
-//! and the column reductions `SumRows` and `LayerNormGradGamma` one per output column.
+//! and the column reductions `SumRows`, `LayerNormGradGamma`, `SigregColumns` and
+//! `SigregColumnsGrad` one per output column.
 //! `Attention`, `AttentionGradQ`, `AttentionGradK` and `AttentionGradV` are one Dispatch each of
 //! workgroups of 64, one invocation per row and head, the head count a last immediate operand;
 //! `CrossEntropy` is a loss sum of one workgroup, `CrossEntropyGrad` one invocation per row, and
@@ -87,7 +88,7 @@ use crate::ir::kernel::{
     MatMulLimits, MatMulTile, Operand, PlanOp, PlanStep,
 };
 use crate::ir::tensor::{DType, Dim, ParamId, TensorNode, TensorOp, TensorType, ValueId};
-use crate::ir::training::{TrainConfig, TrainingStep};
+use crate::ir::training::{TrainConfig, TrainingStep, sigreg_projection_inputs};
 use crate::ops;
 
 /// The most workgroups in one dimension of a dispatch on every Vulkan device.
@@ -537,7 +538,7 @@ pub fn schedule_views(
 pub struct HostInput {
     /// The `Input` node.
     pub value: ValueId,
-    /// Its name: the dropout site, [`crate::ir::training::LR_T_INPUT`],
+    /// Its name: the dropout site, the sigreg site, [`crate::ir::training::LR_T_INPUT`],
     /// [`crate::ir::training::C1_INPUT`], [`crate::ir::training::C2_INPUT`] or a
     /// [`crate::ir::training::moment_input`].
     pub name: String,
@@ -638,6 +639,7 @@ fn schedule_with(
         .iter()
         .filter_map(|n| ops::token_operand(&n.op).and_then(|i| n.operands.get(i).copied()))
         .chain(step.optimizer.host_inputs())
+        .chain(sigreg_projection_inputs(program))
         .collect();
     let mut host_inputs = Vec::new();
     let mut places: BTreeMap<ValueId, Place> = BTreeMap::new();
@@ -690,8 +692,9 @@ fn schedule_with(
         }
         match &node.op {
             TensorOp::Input { name } if tokens.contains(&node.id) => {
-                // The RNG token of a dropout site and the AdamW scalars and moments, supplied by
-                // the host each step, are no data of the train block: each takes its own buffer.
+                // The RNG token of a dropout site, the projection of a sigreg site and the AdamW
+                // scalars and moments, supplied by the host each step, are no data of the train
+                // block: each takes its own buffer.
                 let view = allocate(&mut buffers, &node.ty).ok_or_else(shape_error)?;
                 places.insert(node.id, Place::View(view));
                 host_inputs.push(HostInput {
@@ -921,7 +924,10 @@ fn schedule_with(
             | TensorOp::Softmax
             | TensorOp::SoftmaxGrad
             | TensorOp::Dropout { .. }
-            | TensorOp::DropoutGrad { .. } => match built {
+            | TensorOp::DropoutGrad { .. }
+            | TensorOp::StopGradient
+            | TensorOp::SigregColumns
+            | TensorOp::SigregColumnsGrad => match built {
                 Kernels::None => continue,
                 Kernels::Vulkan => {
                     let no_kernel = || ScheduleError::NoKernel {
@@ -958,6 +964,19 @@ fn schedule_with(
                     (vec![built], None)
                 }
             },
+            TensorOp::Sigreg { .. } => {
+                match built {
+                    Kernels::None => continue,
+                    // The lowering expands `sigreg` and the verifier refuses it in Tensor IR, so
+                    // no plan reaches this: named as the source operator, at the call.
+                    Kernels::Vulkan => {
+                        return Err(ScheduleError::NoKernel {
+                            value: node.id,
+                            op: TensorOp::Sigreg { slices: 1 }.name(),
+                        });
+                    }
+                }
+            }
             TensorOp::Input { .. } | TensorOp::ParamRead { .. } | TensorOp::Scalar(_) => {
                 unreachable!("handled above")
             }
@@ -1184,6 +1203,14 @@ fn rowwise_shape(
         }
         (TensorOp::SoftmaxGrad, [[n, h], g], [rn, rh]) if *g == [*n, *h] && (n, h) == (rn, rh) => {
             f32s(&[0, 1]).then_some((KernelKind::PerRow, *n))?
+        }
+        (TensorOp::SigregColumns, [[_, m]], [rm]) if m == rm => {
+            f32s(&[0]).then_some((KernelKind::PerColumn, *m))?
+        }
+        (TensorOp::SigregColumnsGrad, [[n, m], [gm]], [rn, rm])
+            if m == gm && (n, m) == (rn, rm) =>
+        {
+            f32s(&[0, 1]).then_some((KernelKind::PerColumn, *m))?
         }
         _ => return None,
     };

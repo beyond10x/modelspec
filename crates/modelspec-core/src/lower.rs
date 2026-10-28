@@ -23,6 +23,12 @@
 //! the program every other run reads, dropout the identity (coordinator decision D47,
 //! 2026-10-25).
 //!
+//! A `sigreg(z, slices = M)` call, `z: f32[N, K]`, is `ReduceMean(SigregColumns(MatMul(z,
+//! proj)))`, every node at the call's span, `proj` the projection input of its site: an `f32[K,
+//! M]` `Input` named `<Model>.<fn>.sigreg#<k>` by the rule of the dropout sites, `k` the call's
+//! index among the `sigreg` calls of its function or loss in source order. The training host
+//! supplies every site's projection each step (DESIGN.md § 2.3, story:jepa-sigreg-cpu).
+//!
 //! The loss is the program's single output. Every node carries the span of the source construct
 //! it came from: the declaration for `Input` and `ParamRead`, the expression otherwise. Nothing
 //! is removed here, so a `let`, input or parameter the loss does not use is a dead node until
@@ -39,7 +45,9 @@ use thiserror::Error;
 
 use crate::diag::SourceSpan;
 use crate::hir::{FnRef, Hir, HirData, HirExpr, HirExprKind, HirModel};
-use crate::ir::tensor::{BuildError, TensorOp, TensorProgram, TensorProgramBuilder, ValueId};
+use crate::ir::tensor::{
+    BuildError, TensorOp, TensorProgram, TensorProgramBuilder, TensorType, ValueId,
+};
 use crate::ops;
 use crate::passes::dce;
 
@@ -63,12 +71,14 @@ pub struct LoweredProgram {
 /// is a compiler bug (DESIGN.md § 8.1), never a fault of the source.
 #[derive(Clone, Debug, PartialEq, Eq, Error)]
 pub enum LowerError {
-    /// The loss does not call `model.forward` exactly once, which E-TYPE-017 guarantees.
+    /// The loss does not call the predicted function, `model.forward` unless [`lower_predicting`]
+    /// names another, exactly once, which E-TYPE-017 guarantees for `forward`.
     #[error(
-        "{span}: the loss of train block `{train}` calls `model.forward` {count} time(s), not once"
+        "{span}: the loss of train block `{train}` calls `model.{function}` {count} time(s), not once"
     )]
     ForwardCalls {
         train: String,
+        function: String,
         count: usize,
         span: SourceSpan,
     },
@@ -83,6 +93,13 @@ pub enum LowerError {
 
 /// Lowers the train block of `hir` with its model inlined.
 pub fn lower(hir: &Hir) -> Result<LoweredProgram, LowerError> {
+    lower_predicting(hir, "forward")
+}
+
+/// [`lower`] with the value of the loss's one call of `model.<function>(...)` as the
+/// prediction instead of `model.forward`'s: what [`crate::compile::compile_function`] lowers,
+/// whose loss calls the function it runs once (story:decider-infer-on-data).
+pub fn lower_predicting(hir: &Hir, function: &str) -> Result<LoweredProgram, LowerError> {
     let model = &hir.model;
     let train = &hir.train;
     let mut builder = TensorProgramBuilder::new();
@@ -117,12 +134,13 @@ pub fn lower(hir: &Hir) -> Result<LoweredProgram, LowerError> {
         builder,
         model,
         reads,
-        forward: model.function("forward").map(|(f, _)| f),
+        forward: model.function(function).map(|(f, _)| f),
         predictions: Vec::new(),
         inlining: Vec::new(),
         inlined: vec![0; model.functions.len()],
         loss: &train.loss,
         tokens: BTreeMap::new(),
+        projections: BTreeMap::new(),
     };
     let loss = lowering.expr(&train.loss, &Frame::Train { data: &data })?;
     lowering
@@ -134,6 +152,7 @@ pub fn lower(hir: &Hir) -> Result<LoweredProgram, LowerError> {
         calls => {
             return Err(LowerError::ForwardCalls {
                 train: train.name.clone(),
+                function: function.to_owned(),
                 count: calls.len(),
                 span: train.loss.span.clone(),
             });
@@ -177,6 +196,31 @@ pub fn without_dropout(lowered: LoweredProgram) -> LoweredProgram {
         program: dce::eliminate(program),
         prediction: identity.get(&prediction).copied().unwrap_or(prediction),
         declared_inputs,
+    }
+}
+
+/// The source positions of the `sigreg` calls in `expr`, not entering the bodies of the model
+/// functions it calls.
+fn sigreg_calls(expr: &HirExpr, out: &mut Vec<(u32, u32)>) {
+    match &expr.kind {
+        HirExprKind::Op { op, args } => {
+            if matches!(op, TensorOp::Sigreg { .. }) {
+                out.push((expr.span.line, expr.span.column));
+            }
+            for arg in args {
+                sigreg_calls(arg, out);
+            }
+        }
+        HirExprKind::Call { args, .. } => {
+            for arg in args {
+                sigreg_calls(arg, out);
+            }
+        }
+        HirExprKind::Param(_)
+        | HirExprKind::Arg(_)
+        | HirExprKind::Let(_)
+        | HirExprKind::Data(_)
+        | HirExprKind::Scalar(_) => {}
     }
 }
 
@@ -241,6 +285,8 @@ struct Lowering<'h> {
     loss: &'h HirExpr,
     /// The RNG token input of each dropout site lowered so far, by site name.
     tokens: BTreeMap<String, ValueId>,
+    /// The projection input of each `sigreg` site lowered so far, by site name.
+    projections: BTreeMap<String, ValueId>,
 }
 
 impl Lowering<'_> {
@@ -287,6 +333,9 @@ impl Lowering<'_> {
                 let mut operands = Vec::with_capacity(args.len() + 1);
                 for arg in args {
                     operands.push(self.expr(arg, frame)?);
+                }
+                if let TensorOp::Sigreg { slices } = op {
+                    return self.sigreg(&operands, *slices, span);
                 }
                 if let TensorOp::Dropout { p } = op {
                     let [x] = operands[..] else {
@@ -362,6 +411,91 @@ impl Lowering<'_> {
             .map_err(build_error(span))?;
         self.tokens.insert(site, token);
         Ok(token)
+    }
+
+    /// `sigreg(z, slices = M)` at `span`, `z: f32[N, K]`: `ReduceMean(SigregColumns(MatMul(z,
+    /// proj)))`, `proj` the `f32[K, M]` projection input of the call's site ([`Self::projection`]),
+    /// every node at the call's span (DESIGN.md § 2.2, § 2.3).
+    fn sigreg(
+        &mut self,
+        operands: &[ValueId],
+        slices: u64,
+        span: &SourceSpan,
+    ) -> Result<ValueId, LowerError> {
+        let malformed = |what: String| LowerError::Malformed {
+            span: span.clone(),
+            what,
+        };
+        let [z] = operands[..] else {
+            return Err(malformed(format!(
+                "sigreg takes 1 operand; got {}",
+                operands.len()
+            )));
+        };
+        let derived = self.builder.type_of(z).map_or_else(Vec::new, |ty| {
+            ops::derived_types(&TensorOp::Sigreg { slices }, &[ty])
+        });
+        let Some(ty) = derived.into_iter().next() else {
+            return Err(malformed("the operand of sigreg is not of rank 2".into()));
+        };
+        let proj = self.projection(span, ty)?;
+        let at = Some(span.clone());
+        let p = self
+            .builder
+            .push_at(TensorOp::MatMul, &[z, proj], at.clone())
+            .map_err(build_error(span))?;
+        let columns = self
+            .builder
+            .push_at(TensorOp::SigregColumns, &[p], at.clone())
+            .map_err(build_error(span))?;
+        self.builder
+            .push_at(TensorOp::ReduceMean, &[columns], at)
+            .map_err(build_error(span))
+    }
+
+    /// The projection input of the `sigreg` site of the call at `span`, of type `ty`, made at its
+    /// first call: `<Model>.<fn>.sigreg#<k>`, `k` the call's index among the `sigreg` calls of
+    /// the function in source order, named by the dropout site rule ([`Self::token`]): `<fn>@<c>`
+    /// for the inlining `c` from 1, `train` for the loss.
+    fn projection(&mut self, span: &SourceSpan, ty: TensorType) -> Result<ValueId, LowerError> {
+        let model = self.model;
+        let (function, mut calls) = match self.inlining.last() {
+            Some(&(f, instance)) => {
+                let f = &model.functions[f.0];
+                let mut calls = Vec::new();
+                for binding in &f.lets {
+                    sigreg_calls(&binding.value, &mut calls);
+                }
+                sigreg_calls(&f.result, &mut calls);
+                let name = match instance {
+                    0 => f.name.clone(),
+                    c => format!("{}@{c}", f.name),
+                };
+                (name, calls)
+            }
+            None => {
+                let mut calls = Vec::new();
+                sigreg_calls(self.loss, &mut calls);
+                ("train".to_owned(), calls)
+            }
+        };
+        calls.sort_unstable();
+        let Ok(k) = calls.binary_search(&(span.line, span.column)) else {
+            return Err(LowerError::Malformed {
+                span: span.clone(),
+                what: format!("the sigreg call is not in the body of `{function}`"),
+            });
+        };
+        let site = format!("{}.{function}.sigreg#{k}", model.name);
+        if let Some(&proj) = self.projections.get(&site) {
+            return Ok(proj);
+        }
+        let proj = self
+            .builder
+            .input_at(&site, ty, Some(span.clone()))
+            .map_err(build_error(span))?;
+        self.projections.insert(site, proj);
+        Ok(proj)
     }
 
     fn inline(
@@ -572,5 +706,88 @@ train Fit {
         let without = without_dropout(with);
         assert_eq!(without.prediction, h);
         verify(&without.program).expect("it verifies");
+    }
+
+    const SIGREG_SITES: &str = "model Enc {
+    param w: Tensor<f32, [4, 3]> = xavier_uniform();
+    param v: Tensor<f32, [4, 6]> = xavier_uniform();
+
+    fn forward(x: Tensor<f32, [8, 4]>) -> Tensor<f32, [8, 3]> {
+        return matmul(x, w);
+    }
+
+    fn spread(x: Tensor<f32, [8, 4]>) -> Tensor<f32, []> {
+        let z = matmul(x, w);
+        return add(sigreg(z, slices = 2), sigreg(z, slices = 5));
+    }
+
+    fn wide(x: Tensor<f32, [8, 4]>) -> Tensor<f32, [8, 6]> {
+        return matmul(x, v);
+    }
+}
+
+train Fit {
+    model = Enc;
+    input x: Tensor<f32, [8, 4]>;
+    target y: Tensor<f32, [8, 3]>;
+    loss = add(add(mse(model.forward(x), y), model.spread(x)), add(model.spread(x), sigreg(model.wide(x), slices = 4)));
+    optimizer = sgd(lr = 0.05);
+    steps = 2;
+    seed = 1;
+    device = cpu;
+}
+";
+
+    /// A `sigreg` call lowers to `ReduceMean(SigregColumns(MatMul(z, proj)))`, `proj` an `f32[K,
+    /// M]` input named by the dropout site rule with `sigreg#<k>`: the second inlining of a
+    /// function is `<fn>@1`, a call in the loss is a `train` site. No `Sigreg` node remains, and
+    /// the program verifies.
+    #[test]
+    fn sigreg_sites_are_named_by_function_and_source_order() {
+        let lowered = lowered(SIGREG_SITES);
+        let program = &lowered.program;
+        assert_eq!(
+            input_names(program),
+            [
+                "x",
+                "y",
+                "Enc.spread.sigreg#0",
+                "Enc.spread.sigreg#1",
+                "Enc.spread@1.sigreg#0",
+                "Enc.spread@1.sigreg#1",
+                "Enc.train.sigreg#0",
+            ]
+        );
+        let ty = |name: &str| {
+            program
+                .nodes
+                .iter()
+                .find(|n| n.op == TensorOp::Input { name: name.into() })
+                .map(|n| n.ty.clone())
+                .unwrap()
+        };
+        assert_eq!(ty("Enc.spread.sigreg#0"), TensorType::f32(&[3, 2]));
+        assert_eq!(ty("Enc.spread.sigreg#1"), TensorType::f32(&[3, 5]));
+        assert_eq!(ty("Enc.train.sigreg#0"), TensorType::f32(&[6, 4]));
+        assert!(program.nodes.iter().all(|n| !ops::expanded(&n.op)));
+        let columns: Vec<_> = program
+            .nodes
+            .iter()
+            .filter(|n| n.op == TensorOp::SigregColumns)
+            .collect();
+        assert_eq!(columns.len(), 5);
+        for node in columns {
+            let matmul = program.node(node.operands[0]).unwrap();
+            assert_eq!(matmul.op, TensorOp::MatMul);
+            let proj = program.node(matmul.operands[1]).unwrap();
+            assert!(matches!(&proj.op, TensorOp::Input { name } if name.contains(".sigreg#")));
+            let mean = program
+                .nodes
+                .iter()
+                .find(|n| n.operands == [node.id])
+                .unwrap();
+            assert_eq!(mean.op, TensorOp::ReduceMean);
+        }
+        verify(program).expect("it verifies");
     }
 }

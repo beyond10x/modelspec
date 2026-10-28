@@ -1,7 +1,11 @@
 //! The modules of the thirteen row-wise kernels (DESIGN.md § 5.2): `Embedding`, `AddRows`,
 //! `Gelu`, `GeluGrad`, `Dropout` and `DropoutGrad` one invocation per output element;
 //! `EmbeddingGrad`, `LayerNorm`, `LayerNormGradX`, `Softmax` and `SoftmaxGrad` one per output
-//! row; `SumRows` and `LayerNormGradGamma` one per output column.
+//! row; `SumRows` and `LayerNormGradGamma` one per output column. The two `sigreg` kernels
+//! (story:jepa-sigreg-vulkan) are per column too: `SigregColumns` writes its column's statistic
+//! and `SigregColumnsGrad` every row of its column, each recomputing the column's means in one
+//! pass over the rows and computing `sin` and `cos` by the CPU's written-out routine
+//! ([`crate::cpu::tensor::sin_cos`]), never `GLSL.std.450 Sin` or `Cos`.
 //!
 //! Each computes its op as the CPU interpreter does, operation for operation: every sum in
 //! ascending index order from its first term, each sum of products from its first product,
@@ -27,7 +31,10 @@
 //! word 0 is at least [`keep_threshold`] of `p`.
 
 use super::{EmitError, Kernel, KernelKind, Operand, Shell, Word, operands_error, static_shape};
+use crate::cpu::interpreter::{SIGREG_KNOTS, sigreg_knot};
+use crate::cpu::tensor::{COS_P, FRAC_2_PI, PI_2_P1, PI_2_P2, PI_2_P3, SIN_P};
 use modelspec_core::ir::tensor::DType;
+use rspirv::spirv::GlslStd450Op;
 
 /// `sqrt(2 / pi)`, the scale of the tanh form of GELU, as the CPU interpreter holds it.
 const GELU_SCALE: f64 = 0.797_884_560_802_865_4;
@@ -111,6 +118,14 @@ pub(super) enum Rowwise {
         width: u32,
     },
     SoftmaxGrad {
+        width: u32,
+    },
+    SigregColumns {
+        rows: u32,
+        width: u32,
+    },
+    SigregColumnsGrad {
+        rows: u32,
         width: u32,
     },
 }
@@ -224,6 +239,26 @@ impl Rowwise {
             {
                 (PerRow, u(*n), Rowwise::SoftmaxGrad { width: u(*h) })
             }
+            ("SigregColumns", [F32], [[n, m]], [rm], []) if m == rm => (
+                PerColumn,
+                u(*m),
+                Rowwise::SigregColumns {
+                    rows: u(*n),
+                    width: u(*m),
+                },
+            ),
+            ("SigregColumnsGrad", [F32, F32], [[n, m], [gm]], [rn, rm], [])
+                if m == gm && (n, m) == (rn, rm) =>
+            {
+                (
+                    PerColumn,
+                    u(*m),
+                    Rowwise::SigregColumnsGrad {
+                        rows: u(*n),
+                        width: u(*m),
+                    },
+                )
+            }
             _ => {
                 return Err(EmitError::Unsupported {
                     kind: kernel.kind,
@@ -264,6 +299,9 @@ impl Rowwise {
     pub(super) fn f32_vars(self) -> usize {
         match self {
             Rowwise::LayerNormGradGamma { .. } => 1,
+            Rowwise::SigregColumns { .. } | Rowwise::SigregColumnsGrad { .. } => {
+                2 * SIGREG_KNOTS - 1
+            }
             _ => 0,
         }
     }
@@ -524,7 +562,200 @@ impl Shell {
             Rowwise::LayerNormGradX { width } => m.layer_norm_grad_x(width),
             Rowwise::Softmax { width } => m.softmax(width),
             Rowwise::SoftmaxGrad { width } => m.softmax_grad(width),
+            Rowwise::SigregColumns { rows, width } => m.sigreg_columns(rows, width),
+            Rowwise::SigregColumnsGrad { rows, width } => m.sigreg_columns_grad(rows, width),
             Rowwise::LayerNormGradGamma { .. } => unreachable!("handled above"),
+        })
+    }
+
+    /// `(sin(x), cos(x))` by the CPU's written-out routine ([`crate::cpu::tensor::sin_cos`]),
+    /// instruction for instruction: `q = RoundEven(x * (2/pi))`, the reduction
+    /// `r = fma(-q, P1, x)`, then `P2`, then `P3`, `z = r * r`, the two polynomials by `Fma`
+    /// and the products `s * z` and `c * z` rounded before their last `Fma`, and the quadrant
+    /// `q mod 4` of `q` converted to a signed integer selecting `(s, c)`, `(c, -s)`, `(-s, -c)`
+    /// or `(-c, s)`, each negation an `OpFNegate`.
+    fn sin_cos(&mut self, x: Word) -> Result<(Word, Word), EmitError> {
+        let scale = self.float(FRAC_2_PI);
+        let scaled = self.f_mul(x, scale)?;
+        let q = self.glsl_f32(GlslStd450Op::RoundEven, &[scaled])?;
+        let neg_q = self.b.f_negate(self.f32_ty, None, q)?;
+        let mut r = x;
+        for part in [PI_2_P1, PI_2_P2, PI_2_P3] {
+            let part = self.float(part);
+            r = self.f_fma(neg_q, part, r)?;
+        }
+        let z = self.f_mul(r, r)?;
+        let [s0, s1, s2] = SIN_P.map(|value| self.float(value));
+        let s = self.f_fma(s0, z, s1)?;
+        let s = self.f_fma(s, z, s2)?;
+        let sz = self.f_mul(s, z)?;
+        let s = self.f_fma(sz, r, r)?;
+        let [c0, c1, c2] = COS_P.map(|value| self.float(value));
+        let c = self.f_fma(c0, z, c1)?;
+        let c = self.f_fma(c, z, c2)?;
+        let cz = self.f_mul(c, z)?;
+        let (minus_half, one) = (self.float(-0.5), self.float(1.0));
+        let half = self.f_fma(minus_half, z, one)?;
+        let c = self.f_fma(cz, z, half)?;
+        let i32_ty = self.b.type_int(32, 1);
+        let signed = self.b.convert_f_to_s(i32_ty, None, q)?;
+        let quadrant = self.b.bitcast(self.u32_ty, None, signed)?;
+        let (zero, one, two) = (self.uint(0), self.uint(1), self.uint(2));
+        let bit = |m: &mut Self, value: Word, mask: Word| -> Result<Word, EmitError> {
+            let masked = m.b.bitwise_and(m.u32_ty, None, value, mask)?;
+            Ok(m.b.i_not_equal(m.bool_ty, None, masked, zero)?)
+        };
+        let swap = bit(self, quadrant, one)?;
+        let negate_sin = bit(self, quadrant, two)?;
+        let next = self.add(quadrant, one)?;
+        let negate_cos = bit(self, next, two)?;
+        let base_sin = self.b.select(self.f32_ty, None, swap, c, s)?;
+        let base_cos = self.b.select(self.f32_ty, None, swap, s, c)?;
+        let negated_sin = self.b.f_negate(self.f32_ty, None, base_sin)?;
+        let negated_cos = self.b.f_negate(self.f32_ty, None, base_cos)?;
+        let sin = self
+            .b
+            .select(self.f32_ty, None, negate_sin, negated_sin, base_sin)?;
+        let cos = self
+            .b
+            .select(self.f32_ty, None, negate_cos, negated_cos, base_cos)?;
+        Ok((sin, cos))
+    }
+
+    /// The knots `t_j` of the `sigreg` quadrature as the CPU rounds them, `j = 1..=8`.
+    fn sigreg_knots(&mut self) -> [Word; SIGREG_KNOTS] {
+        std::array::from_fn(|k| self.float(constant(sigreg_knot(k + 1).0)))
+    }
+
+    /// The means `(C_j, S_j)` of `cos(t_j x)` and `sin(t_j x)` over column `index` of the
+    /// `[rows, width]` binding 0, as the CPU's `sigreg_means`: each argument `t_j * x` rounded,
+    /// each sum from row 0 in ascending row order, one accumulator per knot and function (the
+    /// shell's `f32` variable and the module's 15 beside it), and each sum divided by `rows` by
+    /// [`Shell::over_width`]. One pass over the rows computes all 16 sums; each is the CPU's
+    /// sequence of adds. Uses the shell's first `u32` variable.
+    fn sigreg_means(
+        &mut self,
+        rows: u32,
+        width: u32,
+    ) -> Result<[(Word, Word); SIGREG_KNOTS], EmitError> {
+        let index = self.index;
+        let knots = self.sigreg_knots();
+        let accumulators: Vec<Word> = std::iter::once(self.f32_var)
+            .chain(self.matmul_vars.iter().copied())
+            .collect();
+        if accumulators.len() < 2 * SIGREG_KNOTS {
+            return Err(EmitError::Build(format!(
+                "a sigreg module keeps {} accumulators, not {}",
+                2 * SIGREG_KNOTS,
+                accumulators.len()
+            )));
+        }
+        let first = self.read(0, index)?;
+        for (j, &t) in knots.iter().enumerate() {
+            let argument = self.f_mul(t, first)?;
+            let (sin, cos) = self.sin_cos(argument)?;
+            self.b.store(accumulators[2 * j], cos, None, [])?;
+            self.b.store(accumulators[2 * j + 1], sin, None, [])?;
+        }
+        let (one, end, w) = (self.uint(1), self.uint(rows), self.uint(width));
+        let var = self.u32_vars[0];
+        self.counted(var, one, end, one, |m, n| {
+            let row = m.mul(n, w)?;
+            let at = m.add(row, index)?;
+            let x = m.read(0, at)?;
+            for (j, &t) in knots.iter().enumerate() {
+                let argument = m.f_mul(t, x)?;
+                let (sin, cos) = m.sin_cos(argument)?;
+                for (acc, value) in [(accumulators[2 * j], cos), (accumulators[2 * j + 1], sin)] {
+                    let sum = m.b.load(m.f32_ty, None, acc, None, [])?;
+                    let sum = m.f_add(sum, value)?;
+                    m.b.store(acc, sum, None, [])?;
+                }
+            }
+            Ok(())
+        })?;
+        let mut means = [(0, 0); SIGREG_KNOTS];
+        for (j, mean) in means.iter_mut().enumerate() {
+            let cos = self
+                .b
+                .load(self.f32_ty, None, accumulators[2 * j], None, [])?;
+            let sin = self
+                .b
+                .load(self.f32_ty, None, accumulators[2 * j + 1], None, [])?;
+            *mean = (self.over_width(cos, rows)?, self.over_width(sin, rows)?);
+        }
+        Ok(means)
+    }
+
+    /// `SigregColumns`, column `index`: the CPU's `sigreg_columns`, with `d_j = C_j - phi_j` and
+    /// `q_j = fma(S_j, S_j, d_j * d_j)`, the sum `c_1 * q_1` and then `fma(c_j, q_j, sum)`, and
+    /// the result `rows * sum`.
+    fn sigreg_columns(&mut self, rows: u32, width: u32) -> Result<(), EmitError> {
+        let index = self.index;
+        let means = self.sigreg_means(rows, width)?;
+        let mut sum = None;
+        for (j, &(cos, sin)) in means.iter().enumerate() {
+            let (_, phi, weight) = sigreg_knot(j + 1);
+            let (phi, weight) = (self.float(constant(phi)), self.float(constant(weight)));
+            let d = self.f_sub(cos, phi)?;
+            let square = self.f_mul(d, d)?;
+            let q = self.f_fma(sin, sin, square)?;
+            sum = Some(match sum {
+                None => self.f_mul(weight, q)?,
+                Some(sum) => self.f_fma(weight, q, sum)?,
+            });
+        }
+        let count = self.float(rows as f32);
+        let sum = sum.expect("eight knots");
+        let statistic = self.f_mul(count, sum)?;
+        self.write(index, statistic)
+    }
+
+    /// `SigregColumnsGrad`, column `index` of every row: the CPU's `sigreg_columns_grad`, the
+    /// means recomputed by [`Shell::sigreg_means`], then for row `n` in ascending order, with
+    /// `(s_j, c_j)` the [`Shell::sin_cos`] of `t_j * P[n, index]`, the term
+    /// `fma(0 - (C_j - phi_j), s_j, S_j * c_j)`, the sum `(c_j t_j) * term_1` and then
+    /// `fma(c_j t_j, term_j, sum)`, and the element `(2 * g[index]) * sum`.
+    fn sigreg_columns_grad(&mut self, rows: u32, width: u32) -> Result<(), EmitError> {
+        let index = self.index;
+        let means = self.sigreg_means(rows, width)?;
+        let zero = self.float(0.0);
+        let mut knots = Vec::with_capacity(SIGREG_KNOTS);
+        for (j, &(cos, sin)) in means.iter().enumerate() {
+            let (t, phi, weight) = sigreg_knot(j + 1);
+            let slope = self.float(constant(weight * t));
+            let (t, phi) = (self.float(constant(t)), self.float(constant(phi)));
+            let d = self.f_sub(cos, phi)?;
+            let negated = self.f_sub(zero, d)?;
+            knots.push((t, negated, sin, slope));
+        }
+        let g = self.read(1, index)?;
+        let two = self.float(2.0);
+        let twice = self.f_mul(two, g)?;
+        let (start, one, end, w) = (
+            self.uint(0),
+            self.uint(1),
+            self.uint(rows),
+            self.uint(width),
+        );
+        let var = self.u32_vars[0];
+        self.counted(var, start, end, one, |m, n| {
+            let row = m.mul(n, w)?;
+            let at = m.add(row, index)?;
+            let x = m.read(0, at)?;
+            let mut sum = None;
+            for &(t, negated, sin_mean, slope) in &knots {
+                let argument = m.f_mul(t, x)?;
+                let (s, c) = m.sin_cos(argument)?;
+                let product = m.f_mul(sin_mean, c)?;
+                let term = m.f_fma(negated, s, product)?;
+                sum = Some(match sum {
+                    None => m.f_mul(slope, term)?,
+                    Some(sum) => m.f_fma(slope, term, sum)?,
+                });
+            }
+            let element = m.f_mul(twice, sum.expect("eight knots"))?;
+            m.write(at, element)
         })
     }
 

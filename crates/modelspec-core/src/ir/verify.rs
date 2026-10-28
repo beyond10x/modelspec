@@ -91,6 +91,9 @@ pub enum VerifyError {
     ParamDType { param: ParamId, ty: TensorType },
     #[error("output {output} is not f32; an i32 value is read only as ids")]
     IntegerOutput { output: ValueId },
+    /// A source operator the lowering expands ([`ops::expanded`]), such as `Sigreg`.
+    #[error("{node} is the source operator {op}, which lowering expands; Tensor IR never holds it")]
+    Expanded { node: ValueId, op: &'static str },
 }
 
 /// Per-thread counts of the verifier's work, for the tests of a runtime that verifies once per
@@ -197,6 +200,12 @@ pub fn verify(program: &TensorProgram) -> Result<(), VerifyError> {
             _ => &node.ty,
         };
         check_concrete(Site::Value(node.id), &node.ty)?;
+        if ops::expanded(&node.op) {
+            return Err(VerifyError::Expanded {
+                node: node.id,
+                op: node.op.name(),
+            });
+        }
         let inferred = ops::infer(&node.op, &operand_types, Some(declared)).map_err(|source| {
             VerifyError::Op {
                 node: node.id,
@@ -481,6 +490,10 @@ pub enum TrainingVerifyError {
     StrayMomentEffect { value: ValueId },
     #[error("the write of the {moment} of parameter {param} is ordered before its read")]
     MomentWriteBeforeRead { param: ParamId, moment: Moment },
+    /// A training step holds a `StopGradient`, which the pass after autodiff removes
+    /// ([`crate::passes::stop_gradient`]).
+    #[error("{node} is a StopGradient; a training step holds none")]
+    StopGradientInStep { node: ValueId },
 }
 
 /// Checks every Training IR invariant of `training`, reporting the first failure.
@@ -619,7 +632,8 @@ fn check_graph(training: &TrainingProgram, optimizer: bool) -> Result<(), Traini
 ///
 /// Order: the rules of [`verify_training`] on `step.training`, with `Optimizer` tags allowed and
 /// the outputs the loss, the gradients, then the updates (every update first defined, since the
-/// layout names it); no `Optimizer` tag on a gradient, a `ParamRead` or an `Input`; no node
+/// layout names it); no `StopGradient` node, which the pass after autodiff removes
+/// ([`crate::passes::stop_gradient`]); no `Optimizer` tag on a gradient, a `ParamRead` or an `Input`; no node
 /// outside the optimizer subgraph using an optimizer value; an update for exactly the parameters
 /// with a gradient, each of its parameter's type and tagged `Optimizer`; the learning rate
 /// positive and finite, and every `Scalar` of the optimizer subgraph that learning rate. Then the
@@ -656,6 +670,13 @@ pub fn verify_step_writes(
     expected.extend(optimizer.updates.values());
     expected.extend(optimizer.state_slots().iter().map(|s| s.next));
     check_outputs(program, expected)?;
+    if let Some(node) = program
+        .nodes
+        .iter()
+        .find(|n| n.op == TensorOp::StopGradient)
+    {
+        return Err(TrainingVerifyError::StopGradientInStep { node: node.id });
+    }
 
     let tag = |v: ValueId| training.subgraphs[&v];
     let gradients: BTreeSet<ValueId> = training.gradients.values().copied().collect();
@@ -2507,6 +2528,34 @@ mod tests {
         assert_eq!(verify(&lookup()), Ok(()));
     }
 
+    /// `Sigreg` types a source call, but the lowering expands it: a Tensor IR node of it is
+    /// refused, and its expansion `ReduceMean(SigregColumns(MatMul(z, proj)))` verifies.
+    #[test]
+    fn a_sigreg_node_is_refused_and_its_expansion_verifies() {
+        let mut b = crate::ir::tensor::TensorProgramBuilder::new();
+        let z = b.input("z", TensorType::f32(&[33, 8])).unwrap();
+        let s = b.push(TensorOp::Sigreg { slices: 16 }, &[z]).unwrap();
+        b.output(s).unwrap();
+        assert_eq!(
+            verify(&b.finish()),
+            Err(VerifyError::Expanded {
+                node: s,
+                op: "Sigreg"
+            })
+        );
+
+        let mut b = crate::ir::tensor::TensorProgramBuilder::new();
+        let z = b.input("z", TensorType::f32(&[33, 8])).unwrap();
+        let proj = b
+            .input("M.forward.sigreg#0", TensorType::f32(&[8, 16]))
+            .unwrap();
+        let p = b.matmul(z, proj).unwrap();
+        let columns = b.sigreg_columns(p).unwrap();
+        let loss = b.reduce_mean(columns).unwrap();
+        b.output(loss).unwrap();
+        assert_eq!(verify(&b.finish()), Ok(()));
+    }
+
     /// A parameter is `f32`, read or not.
     #[test]
     fn an_i32_parameter_is_refused() {
@@ -2655,6 +2704,35 @@ mod tests {
             "{:?}",
             verify(&certain)
         );
+    }
+
+    /// Attaching an optimizer to a training program that still holds a `StopGradient` is refused,
+    /// naming the node; the same program after the pass attaches and verifies.
+    #[test]
+    fn a_step_that_holds_a_stop_gradient_is_refused() {
+        use crate::ir::tensor::{Initializer, TensorProgramBuilder, TensorType};
+        use crate::ir::training::{AttachError, OptimizerRule, attach};
+        let mut b = TensorProgramBuilder::new();
+        let x = b.input("x", TensorType::f32(&[3, 2])).unwrap();
+        let w = b
+            .declare_param("M.w", TensorType::f32(&[2, 2]), Initializer::XavierUniform)
+            .unwrap();
+        let read = b.param_read(w).unwrap();
+        let online = b.matmul(x, read).unwrap();
+        let target = b.matmul(x, read).unwrap();
+        let stopped = b.stop_gradient(target).unwrap();
+        let loss = b.mse(online, stopped).unwrap();
+        b.output(loss).unwrap();
+        let training = crate::autodiff::differentiate(&b.finish(), loss).unwrap();
+        assert_eq!(
+            attach(training.clone(), 0.1, OptimizerRule::Sgd).err(),
+            Some(AttachError::Training(
+                TrainingVerifyError::StopGradientInStep { node: stopped }
+            ))
+        );
+        let training = crate::passes::stop_gradient::eliminate_training(training);
+        let step = attach(training, 0.1, OptimizerRule::Sgd).unwrap();
+        verify_step(&step).expect("the step without StopGradient verifies");
     }
 
     /// The example trained with `adamw`: one parameter, its two moments and their effects.

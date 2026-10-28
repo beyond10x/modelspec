@@ -2,10 +2,21 @@
 title: What ModelSpec is
 slug: /
 sidebar_label: Overview
-description: A declarative, statically typed language and a Rust compiler for differentiable tensor programs. It trains on a CPU reference and on one Vulkan GPU, and its current milestone is a small BERT pre-trained from scratch.
+description: ModelSpec is for training models faster than a general-purpose framework, by compiling one declared training program into a runtime built for one target (planned). It is a typed language and a Rust compiler that trains today on a CPU reference and on one Vulkan GPU.
 ---
 
 # What ModelSpec is
+
+ModelSpec is for training models faster than a general-purpose framework can. The whole training
+step is one declared, typed program, so the compiler knows everything before it runs and can build
+a runtime for one target: one use case, one operating system, one GPU chipset. Every optimization
+is checked against a CPU reference, so a change that alters a result is refused and only faster
+ones are kept ([Why ModelSpec](./concepts/north-star.md)).
+
+That speed is planned, not shipped. Today ModelSpec trains on one RTX 3090 through Vulkan, and on
+a transformer it is still many times slower than PyTorch: the BERT-tiny encoder block at batch 8
+takes 93,868.4 µs per step against 3,937.2 µs on PyTorch eager. Closing that gap on BERT-tiny,
+step by step, is the [roadmap](./roadmap.md).
 
 ModelSpec is a declarative, statically typed language for differentiable tensor programs, and a
 compiler for it written in Rust. A `.mspec` file says what a model computes, what loss it is
@@ -42,15 +53,15 @@ train Fit {
 ## What works today
 
 ModelSpec is in milestone M1 (GPU execution), and its current goal is a small BERT pre-trained
-from scratch; the latest release is [0.21.0](https://github.com/beyond10x/modelspec/releases/tag/0.21.0).
+from scratch; the latest release is [0.22.0](https://github.com/beyond10x/modelspec/releases/tag/0.22.0).
 BERT-tiny pre-trained on one RTX 3090 for 10,000 steps reached a held-out loss of 6.7674994 nats,
 0.159 below the unigram baseline of 6.9265379 ([the run record](./runs/bert-tiny-gpu-pretraining.md)).
 
-| Works in 0.21.0 | Not built yet |
+| Works in 0.22.0 | Not built yet |
 |---|---|
 | `modelspec check`: parse and check names, types and shapes | `bench` |
 | `modelspec ir --stage tensor`, `--stage training` and `--stage kernel`: print the verified IR and the kernel plan | more than one device |
-| `modelspec train --backend cpu`: train on the CPU reference with seeded synthetic data or dense `f32` tensor files (`--data`) | modules, layers, generics and `f16` |
+| `modelspec train --backend cpu`: train on the CPU reference with seeded synthetic data or dense `f32` and `i32` tensor files (`--data`) | modules, layers, generics and `f16` |
 | `modelspec train --backend vulkan [--stats] [--profile]`: train on one Vulkan device with one host wait per run | |
 | `modelspec train --backend vulkan --data <packed-dir> [--eval-every <n>]`: train the hidden-32 BERT twin with dropout and AdamW on one Vulkan device, one host wait per step and one more per held-out batch of an evaluated step, and evaluate the held-out split on the device | |
 | `embedding`, `add_rows`, `gelu`, `layer_norm`, `softmax`, `attention`, `cross_entropy` and `dropout`, with `i32` row ids, on the CPU reference; all eight also have Vulkan kernels | |
@@ -84,7 +95,7 @@ in 0.9.0 and 30.726 µs in 0.10.0, each the median of 3 timed runs (`benchmarks/
 [Benchmarks](/docs/benchmarks) charts every run, [Status](/docs/status) lists every shipped
 capability with the test that holds it, and [Roadmap](./roadmap.md) says what M1 to M4 add.
 
-## What it is for
+## What else it gives you
 
 - **Errors before anything runs.** A `matmul` whose operands do not fit is a compile error naming
   both types and the dimension it expected ([a shape error](./examples/shape-error.md)), not an
@@ -98,7 +109,9 @@ capability with the test that holds it, and [Roadmap](./roadmap.md) says what M1
 
 ## Where to go next
 
-- [Getting started](./getting-started.md): download the 0.21.0 binary and train the examples on the CPU or a GPU.
+- [Why ModelSpec](./concepts/north-star.md): the north star, the BERT-tiny ladder against PyTorch,
+  and what is shipped and what is planned.
+- [Getting started](./getting-started.md): download the 0.22.0 binary and train the examples on the CPU or a GPU.
 - [The language](./concepts/language.md): what a file may contain.
 - [Write a model](./guides/write-a-model.md): build a two-layer model step by step.
 - [Pitch deck](pathname:///modelspec/pitch/): the case for ModelSpec in slides.

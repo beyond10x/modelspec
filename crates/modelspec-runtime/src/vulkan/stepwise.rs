@@ -16,6 +16,10 @@
 //!   are uploaded before it, and each moment `m` and `v` lives in a device buffer of its own,
 //!   zero at the start, which the step plan updates in place, so the moments never leave the
 //!   device until the run reads them back;
+//! - a step with `sigreg` (story:jepa-sigreg-vulkan): the projection of every `sigreg` site at
+//!   step `k` ([`crate::train::init::sigreg_projection`]) is uploaded before step `k`, the
+//!   final loss and every dense eval batch reading the projections of the last step and a
+//!   held-out batch those of the step it is evaluated at, as the CPU run draws them;
 //! - dense or packed `--data` ([`Data`]): the batch of step `k` is uploaded before it, as the CPU
 //!   run feeds it ([`crate::train::runner::run_checked`]);
 //! - held-out evaluation ([`Evaluation`], `--eval-every`): at every multiple of `every` and the last
@@ -25,7 +29,16 @@
 //!   ([`modelspec_core::ir::kernel::ExecutionPlan::loss_steps`]) with dropout off and copies the
 //!   prediction into a download buffer of one prediction ([`download_bytes`]), and after its
 //!   host wait the host adds the logits to the reduction of the CPU evaluation, in batch order
-//!   ([`HeldOut::tallying`]), before the next batch overwrites them.
+//!   ([`HeldOut::tallying`]), before the next batch overwrites them;
+//! - dense evaluation ([`StepwiseOptions::dense_eval`], `--eval`; story:decider-dense-named-data):
+//!   at the last step, before its command buffer, each batch of the eval directory is a command
+//!   buffer of its own, as a held-out batch is, which copies the loss down, and the prediction
+//!   too when the accuracy is measured ([`DenseData::compared_target`]); the host sums the
+//!   losses in `f64` in batch order and counts the correct target rows as
+//!   [`crate::train::runner::evaluate_dense`] does, and shows the result at the last step
+//!   ([`StepSeen::dense_eval`]); with [`StepwiseOptions::dense_predictions`] each batch's
+//!   prediction comes down too and is kept in batch order, which `infer --data --function` runs
+//!   with 0 steps on the step of a model function (story:decider-infer-on-data).
 //!
 //! Dropout is off where the CPU run has none: in the evaluation of the loss after the last
 //! update and in held-out evaluation, which the CPU run computes with the forward program. There
@@ -48,15 +61,16 @@
 //! buffer to the end of its host wait; the held-out batches of an evaluated step are timed apart
 //! into [`RunStats::evaluation`], from recording the first batch's command buffer to the host's
 //! tally of the last. Neither holds the plan build, the SPIR-V emission and pipeline creation,
-//! the batch the host draws and stages before each step, the final loss evaluation, or the
-//! checkpoint files and the observer, which run outside both spans. [`StepSeen::trained`] is the
-//! clock through the updates before the step.
+//! the batch the host draws and stages before each step, the final loss evaluation and the dense
+//! eval batches before it (the CPU run measures `--eval` after its loop), or the checkpoint
+//! files and the observer, which run outside both spans. [`StepSeen::trained`] is the clock
+//! through the updates before the step.
 //!
 //! A profiled run ([`train_stepwise_profiled`], `train --profile`) writes a timestamp before and
 //! after each dispatch of a step's command buffer into one query pool, reset at the start of each
 //! step's command buffer and read after its host wait, so it adds no host wait; the held-out
-//! batches are not timed. The stamps of every step, then those of the final loss evaluation,
-//! make the [`Profile`] of the chunked run ([`super::profile::timings`]); its steady time per step
+//! and dense eval batches are not timed. The stamps of every step, then those of the final loss
+//! evaluation, make the [`Profile`] of the chunked run ([`super::profile::timings`]); its steady time per step
 //! also holds the host's time between two steps' command buffers and any evaluation between them.
 
 use std::collections::BTreeMap;
@@ -66,9 +80,10 @@ use modelspec_core::artifact::{CompiledArtifact, check_device};
 use modelspec_core::compile::CompiledTraining;
 use modelspec_core::device::DeviceProfile;
 use modelspec_core::ir::kernel::{BufferView, Kernel, Operand, PlanOp};
-use modelspec_core::ir::tensor::{DType, ParamId};
+use modelspec_core::ir::tensor::{DType, ParamId, TensorType};
 use modelspec_core::ir::training::{
     AdamW, C1_INPUT, C2_INPUT, LR_T_INPUT, Moment, OptimizerRule, dropout_sites, moment_input,
+    sigreg_sites,
 };
 use modelspec_core::schedule::host_inputs;
 
@@ -86,10 +101,10 @@ use super::runner::{
 use super::sync::{Barrier, recorded_barriers};
 use crate::cpu::HostTensor;
 use crate::spirv::emit::{emit_kernels, emit_module_with};
-use crate::train::data::{DenseBatch, PackedBatch, synthetic};
+use crate::train::data::{DenseBatch, DenseData, PackedBatch, synthetic};
 use crate::train::eval::{HeldOut, HeldOutMetrics};
-use crate::train::init::{Stream, dropout_token, initialize};
-use crate::train::runner::{Data, Diverged, Feed, Run, RunError, non_finite};
+use crate::train::init::{Stream, dropout_token, initialize, sigreg_projection};
+use crate::train::runner::{Data, Diverged, Eval, Feed, Run, RunError, correct_rows, non_finite};
 
 /// The held-out evaluation of a stepwise run: `held_out` at every multiple of `every` among the
 /// run's steps and at its last step, as `--eval-every` asks.
@@ -111,6 +126,12 @@ pub struct StepwiseOptions<'o, 'h> {
     pub data: Option<Data<'o>>,
     /// The held-out evaluation, on packed data.
     pub eval: Option<Evaluation<'o, 'h>>,
+    /// The dense eval data of `--eval`, measured with the parameters after the last update as
+    /// [`crate::train::runner::evaluate_dense`] measures it on the CPU.
+    pub dense_eval: Option<&'o DenseData>,
+    /// With [`Self::dense_eval`], where the prediction of every dense eval batch goes, appended
+    /// in batch order: what `infer --data --function` writes (story:decider-infer-on-data).
+    pub dense_predictions: Option<&'o mut Vec<f32>>,
     /// The checkpoints to write on the way.
     pub checkpoints: Option<Checkpoints<'o>>,
 }
@@ -125,6 +146,10 @@ pub struct StepSeen<'a> {
     /// The held-out loss and accuracy of the parameters after `step` updates, at an evaluated
     /// step.
     pub held_out: Option<HeldOutMetrics>,
+    /// The loss, and where it is defined the accuracy, of the dense eval data of `--eval` with
+    /// the parameters after the last update: at the last step of a run given
+    /// [`StepwiseOptions::dense_eval`].
+    pub dense_eval: Option<Eval>,
     /// The parameters after `step` updates where the host holds them without another read-back:
     /// at the first step, the values it uploaded, and at the last, the values it read back.
     pub values: Option<&'a BTreeMap<ParamId, HostTensor<f32>>>,
@@ -136,11 +161,13 @@ pub struct StepSeen<'a> {
 /// The observer of a stepwise run: an error stops the run at that step and is its error.
 pub type Observe<'f> = dyn FnMut(&StepSeen<'_>) -> Result<(), Box<RunError>> + 'f;
 
-/// Whether `artifact`'s step plan needs the stepwise run: it has a dropout kernel, or the step
-/// reads optimizer inputs (AdamW's rate, bias corrections and moments).
+/// Whether `artifact`'s step plan needs the stepwise run: it has a dropout kernel, the step
+/// reads optimizer inputs (AdamW's rate, bias corrections and moments), or it has a `sigreg`
+/// site, whose projection is drawn anew for every step.
 pub fn needed(compiled: &CompiledTraining, artifact: &CompiledArtifact) -> bool {
     artifact.execution.kernels.iter().any(reads_seed)
         || !compiled.training.optimizer.host_inputs().is_empty()
+        || !sigreg_sites(&compiled.training.training.program).is_empty()
 }
 
 /// Loads Vulkan, selects device `device` (0 when `None`), negotiates and opens it, with the
@@ -161,11 +188,12 @@ pub fn train_stepwise_on_device(
     })
 }
 
-/// What one host input of the step is: the token of a dropout site, a scalar of an AdamW step,
-/// or a moment of a parameter.
+/// What one host input of the step is: the token of a dropout site, the projection of a
+/// `sigreg` site of this type, a scalar of an AdamW step, or a moment of a parameter.
 #[derive(Clone, Debug)]
 enum Hosted {
     Token(String),
+    Projection(String, TensorType),
     LrT,
     C1,
     C2,
@@ -228,6 +256,8 @@ pub fn train_stepwise_profiled(
         init,
         data,
         eval,
+        dense_eval,
+        mut dense_predictions,
         checkpoints,
     } = options;
     let end = start.checked_add(config.steps).ok_or_else(|| {
@@ -279,6 +309,7 @@ pub fn train_stepwise_profiled(
 
     // The host inputs of the step, each with the view the plan reads it from.
     let sites = dropout_sites(&compiled.training.training.program);
+    let projected = sigreg_sites(&compiled.training.training.program);
     let mut moment_of = BTreeMap::new();
     for parameter in &plan.parameters {
         for moment in [Moment::First, Moment::Second] {
@@ -313,6 +344,8 @@ pub fn train_stepwise_profiled(
         }
         let what = if sites.contains(&input.name) {
             Hosted::Token(input.name.clone())
+        } else if projected.contains(&input.name) {
+            Hosted::Projection(input.name.clone(), input.ty.clone())
         } else if input.name == LR_T_INPUT && adamw.is_some() {
             Hosted::LrT
         } else if input.name == C1_INPUT && adamw.is_some() {
@@ -415,6 +448,16 @@ pub fn train_stepwise_profiled(
     // What goes up before every step: the batch, the tokens and the scalars.
     let step_bytes: u64 = fed.iter().map(|(view, _)| view.size_bytes).sum();
     let mut step_upload = staging(device, step_bytes)?;
+    // Where each projection lies in the per-step upload: a held-out batch reads the projections
+    // of the step it is evaluated at, as the CPU evaluation does.
+    let mut projection_regions: Vec<(u64, BufferView)> = Vec::new();
+    let mut at = 0;
+    for (view, what) in &fed {
+        if matches!(what, Fed::Hosted(Hosted::Projection(..))) {
+            projection_regions.push((at, *view));
+        }
+        at += view.size_bytes;
+    }
 
     // The held-out batches, laid out as the data views, uploaded once.
     let prediction = plan.prediction_view;
@@ -445,9 +488,37 @@ pub fn train_stepwise_profiled(
         upload.write_f32(&eval_words)?;
     }
 
-    // What comes down: the loss every step, the logits of one held-out batch after each
-    // evaluated batch, the parameters and moments at the end and at each checkpoint.
-    let download = download_bytes(&prediction, eval_batches);
+    // The dense eval batches of `--eval`, laid out as the data views, uploaded once.
+    let dense_batches = dense_eval.map_or(0, |dense| dense.samples() / dense.batch());
+    let dense_compared = dense_eval.and_then(DenseData::compared_target);
+    let mut dense_batch = DenseBatch::default();
+    let mut dense_words: Vec<f32> = Vec::new();
+    if let Some(dense) = dense_eval {
+        for b in 0..dense_batches {
+            dense.fill_eval_batch(b, &mut dense_batch);
+            for declaration in &plan.data {
+                push_data(
+                    &mut dense_words,
+                    &declaration.view,
+                    &declaration.name,
+                    declaration.ty.dtype == DType::I32,
+                    dense_batch.inputs(),
+                    dense_batch.ids(),
+                )?;
+            }
+        }
+    }
+    let mut dense_upload = staging(device, 4 * dense_words.len() as u64)?;
+    if let Some(upload) = &mut dense_upload {
+        upload.write_f32(&dense_words)?;
+    }
+
+    // What comes down: the loss every step and every dense eval batch, the prediction of one
+    // batch after each held-out batch and each dense eval batch whose accuracy is measured or
+    // whose prediction is kept, the parameters and moments at the end and at each checkpoint.
+    let dense_predicted = dense_compared.is_some() || dense_predictions.is_some();
+    let predicted_batches = eval_batches + if dense_predicted { dense_batches } else { 0 };
+    let download = download_bytes(&prediction, predicted_batches);
     let mut loss_download = device.download_buffer(download.loss)?;
     let mut prediction_download = download_buffer(device, download.prediction)?;
     let param_bytes: u64 = plan.parameters.iter().map(|p| p.views[0].size_bytes).sum();
@@ -628,6 +699,12 @@ pub fn train_stepwise_profiled(
                         check_count(view, token.len())?;
                         words.extend(token.data().iter().map(|&w| f32::from_bits(w as u32)));
                     }
+                    Fed::Hosted(Hosted::Projection(site, ty)) => {
+                        let projection = sigreg_projection(config.seed, site, k, ty)
+                            .map_err(|error| refused(error.into()))?;
+                        check_count(view, projection.len())?;
+                        words.extend_from_slice(projection.data());
+                    }
                     Fed::Hosted(scalar) => {
                         let scalars = scalars.ok_or_else(|| {
                             VulkanRunError::Plan("an optimizer scalar without adamw".into())
@@ -676,6 +753,17 @@ pub fn train_stepwise_profiled(
                                 at += view.size_bytes;
                             }
                         }
+                        if let Some(upload) = &step_upload {
+                            for (at, view) in &projection_regions {
+                                recording.copy_region(
+                                    upload,
+                                    *at,
+                                    buffer(&buffers, view)?,
+                                    view.offset,
+                                    view.size_bytes,
+                                )?;
+                            }
+                        }
                         recording.barrier(Barrier::TransferToCompute);
                         record(&mut recording, loss_actions.iter().copied(), &buffers, None)?;
                         recording.barrier(Barrier::ComputeToTransfer);
@@ -700,6 +788,100 @@ pub fn train_stepwise_profiled(
             _ => None,
         };
         let trained = training;
+        // The last step of a run with `--eval`: before the step's command buffer, each dense eval
+        // batch in one of its own, its loss, and its prediction when the accuracy is measured,
+        // read back before the next batch overwrites them; the losses are summed in `f64` in
+        // batch order, as the CPU evaluation sums them.
+        let dense_measured = match dense_eval {
+            Some(dense) if last => {
+                let mut sum = 0.0f64;
+                let mut correct = 0usize;
+                let mut rows = 0usize;
+                for b in 0..dense_batches {
+                    {
+                        let mut recording = device.record()?;
+                        open(
+                            &mut recording,
+                            &mut opened,
+                            first_upload.as_ref(),
+                            &first_views,
+                            &buffers,
+                        )?;
+                        if let Some(upload) = &dense_upload {
+                            let mut at = b as u64 * data_bytes;
+                            for declaration in &plan.data {
+                                let view = declaration.view;
+                                recording.copy_region(
+                                    upload,
+                                    at,
+                                    buffer(&buffers, &view)?,
+                                    view.offset,
+                                    view.size_bytes,
+                                )?;
+                                at += view.size_bytes;
+                            }
+                        }
+                        if let Some(upload) = &step_upload {
+                            for (at, view) in &projection_regions {
+                                recording.copy_region(
+                                    upload,
+                                    *at,
+                                    buffer(&buffers, view)?,
+                                    view.offset,
+                                    view.size_bytes,
+                                )?;
+                            }
+                        }
+                        recording.barrier(Barrier::TransferToCompute);
+                        record(&mut recording, loss_actions.iter().copied(), &buffers, None)?;
+                        recording.barrier(Barrier::ComputeToTransfer);
+                        recording.copy_region(loss, plan.loss_view.offset, &loss_download, 0, 4)?;
+                        if dense_predicted {
+                            let download = prediction_download.as_ref().ok_or_else(|| {
+                                VulkanRunError::Plan("a dense eval without its download".into())
+                            })?;
+                            recording.copy_region(
+                                buffer(&buffers, &prediction)?,
+                                prediction.offset,
+                                download,
+                                0,
+                                prediction.size_bytes,
+                            )?;
+                        }
+                        recording.barrier(Barrier::TransferToHost);
+                        let recorded = recording.finish()?;
+                        first_submit.get_or_insert_with(Instant::now);
+                        device.submit(recorded)?.wait()?;
+                    }
+                    sum += f64::from(loss_download.read_f32()?[0]);
+                    let predicted = match prediction_download.as_mut() {
+                        Some(download) if dense_predicted => Some(download.read_f32()?),
+                        _ => None,
+                    };
+                    if let (Some(target), Some(predicted)) = (dense_compared, &predicted) {
+                        dense.fill_eval_batch(b, &mut dense_batch);
+                        let target = dense_batch.inputs().get(target).ok_or_else(|| {
+                            VulkanRunError::Plan(format!(
+                                "the dense eval target {target} is missing"
+                            ))
+                        })?;
+                        let (batch_correct, batch_rows) = correct_rows(predicted, target);
+                        correct += batch_correct;
+                        rows += batch_rows;
+                    }
+                    if let (Some(kept), Some(predicted)) =
+                        (dense_predictions.as_deref_mut(), predicted)
+                    {
+                        kept.extend_from_slice(&predicted);
+                    }
+                }
+                Some(Eval {
+                    loss: sum / dense_batches as f64,
+                    accuracy: dense_compared.map(|_| correct as f64 / rows as f64),
+                })
+            }
+            _ => None,
+        };
         {
             let stepping = Instant::now();
             let mut recording = device.record()?;
@@ -777,6 +959,7 @@ pub fn train_stepwise_profiled(
             step: k,
             loss: loss_k,
             held_out: metrics,
+            dense_eval: dense_measured,
             values,
             trained,
         })
@@ -865,7 +1048,8 @@ pub fn train_stepwise_profiled(
 pub struct DownloadBytes {
     /// The loss of a step, one `f32`.
     pub loss: u64,
-    /// The held-out logits, 0 without held-out evaluation.
+    /// One batch's prediction: the held-out logits, or the dense eval prediction whose accuracy
+    /// is measured; 0 when no batch's prediction is read.
     pub prediction: u64,
 }
 
@@ -877,9 +1061,9 @@ impl DownloadBytes {
 }
 
 /// The download buffers of a stepwise run whose plan predicts into `prediction` and which
-/// evaluates `eval_batches` held-out batches: the loss, and one batch's prediction whatever the
-/// number of batches, since each batch is evaluated in a command buffer of its own and read
-/// back before the next (story:vulkan-eval-download-per-batch).
+/// reads the prediction of `eval_batches` held-out or dense eval batches: the loss, and one
+/// batch's prediction whatever the number of batches, since each batch is evaluated in a command
+/// buffer of its own and read back before the next (story:vulkan-eval-download-per-batch).
 pub fn download_bytes(prediction: &BufferView, eval_batches: usize) -> DownloadBytes {
     DownloadBytes {
         loss: 4,

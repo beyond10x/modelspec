@@ -1,7 +1,7 @@
 ---
 title: Training
 description: What modelspec train does - seeded initialization, synthetic, dense or packed data, SGD on the CPU reference or a Vulkan GPU - and why two runs print the same bytes.
-sidebar_position: 3
+sidebar_position: 4
 lede: "modelspec train runs the compiled training step on the CPU reference or one Vulkan device, and every random value is addressed by seed, stream and id, so two CPU runs with the same file, data and seed print identical bytes."
 source: "DESIGN.md § 2.2, § 2.3, § 9 and ADR-009; crates/modelspec-cli/src/train.rs and crates/modelspec-runtime/src/train and cpu; the tests train_linear.rs, train_dense_data.rs, train_data.rs and train_dropout.rs of crates/modelspec-cli."
 ---
@@ -52,7 +52,7 @@ value under `seed = 42` however the file is laid out and in whatever order the c
 | Source | How | The `train` block |
 |---|---|---|
 | synthetic | the default | exactly one `input` and one `target` |
-| dense files | `--data <dir>` with `<name>.f32` per declaration, row-major little-endian `f32`, and an optional `order.u32` of sample indices | exactly one `input` and one `target` |
+| dense files | `--data <dir>` with `<name>.f32` per `f32` declaration and `<name>.i32` per `i32` declaration, row-major little-endian, and an optional `order.u32` of sample indices | any number of `input` and `target` declarations, at least one |
 | packed sequences | `--data <dir>` on a directory `modelspec data pack` wrote, recognised by its `binding.json` | each declaration names a tensor of the masked-language-model batch: `ids`, `positions`, `key_mask`, `labels` or `weights` |
 
 Synthetic data is a problem with a known answer. `train` draws the input, draws a second set of
@@ -68,11 +68,30 @@ order of stream 5, 15% of their tokens selected on stream 3, and of those 80% re
 token, 10% by a random token and 10% left as they are. [Prepare training data](../guides/prepare-training-data.md)
 builds a packed directory and trains on it.
 
+In a dense directory, a sample is one row along the leading dimension every declaration shares;
+when they share none, a sample is the whole declared tensor. Without `order.u32`, step `k` reads
+block `k` of every file, wrapping at the end. Before the first step, every value of an `i32`
+file is checked against the rows of each `embedding` table and the classes of each
+`cross_entropy` that read it, so an id or label out of range is refused before anything trains.
+
 `--init <dir>` starts each parameter that has a file `<dir>/<P>.f32`, `P` its path without the model name, from that file, and
 `--eval <dir>` runs the forward program over every sample of a dense directory after the last
-step. `--data`, `--init` and `--eval` run on `--backend cpu` only; `--eval` beside a packed
-`--data` is a usage error. Each refusal of a data source has its code, `E-DATA-001` to
-`E-DATA-009` ([Diagnostics](../reference/diagnostics.md#training-data)).
+step and prints the mean batch loss, with an accuracy only when the loss compares the model
+output with the block's one `f32` target; a classifier whose one target is `i32` labels prints
+the loss alone. `--init` runs on `--backend cpu` only, `--data` and `--eval`
+on both backends; `--eval` beside a packed `--data` is a usage error.
+
+`modelspec infer --data <dir> --function <name> --out <file>` runs one model function, which need
+not be `forward` and need not return a loss, with a checkpoint's parameters over every block of a
+dense directory. Each argument of the function reads `<dir>/<argument>.f32` or `.i32` as a
+declaration of `--eval` does, its `i32` values checked against the `embedding` tables and
+`cross_entropy` logits of the function that read them, and the file receives the function's
+result for every block in block order, one row per sample, little-endian `f32` with no header. A
+function that calls `sigreg` reads the projection of the checkpoint's step on both backends. The
+file is written beside itself and renamed into place, so an existing file is replaced whole or
+kept, and a `--out` that is the model file, the checkpoint or one of the argument files is
+refused. Each refusal of a data source has its code, `E-DATA-001` to
+`E-DATA-011` ([Diagnostics](../reference/diagnostics.md#training-data)).
 
 ## Reproducible to the byte
 

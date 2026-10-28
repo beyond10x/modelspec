@@ -1,15 +1,17 @@
 domain: modelspec.data
 
-summary: The training data of a run. Dense f32 tensor files for `modelspec train --data`, `--eval` and `--init` (story:train-data-dense-tensors); for a masked-language-model run, its tokenizer, vocabulary, corpus and masking policy (epic:bert-from-scratch). The tokenizer and data pipeline are Rust in the runtime or training host; a model specification does no I/O (DESIGN.md § 2.3). A run records the corpus, tokenizer and masking policy it trained with as one TrainingDataBinding, which modelspec.training.TrainingRun references through data_binding_id; masking is drawn per step from the run seed, never fixed when the corpus is prepared or packed (coordinator decision D26, 2026-10-24, `.engineering/waves/bert-1.md`).
+summary: The training data of a run. Dense f32 and i32 tensor files for `modelspec train --data` and `--eval`, and dense f32 files for `--init` (story:train-data-dense-tensors, story:decider-dense-named-data); for a masked-language-model run, its tokenizer, vocabulary, corpus and masking policy (epic:bert-from-scratch). The tokenizer and data pipeline are Rust in the runtime or training host; a model specification does no I/O (DESIGN.md § 2.3). A run records the corpus, tokenizer and masking policy it trained with as one TrainingDataBinding, which modelspec.training.TrainingRun references through data_binding_id; masking is drawn per step from the run seed, never fixed when the corpus is prepared or packed (coordinator decision D26, 2026-10-24, `.engineering/waves/bert-1.md`).
 
 types:
   - name: modelspec.data.DenseTensorFile
     kind: struct
     naming:
-      summary: One file `<name>.f32` of a dense data directory, read by `modelspec train --data` and `--eval` (DESIGN.md § 8). name is the name of an `input` or `target` declaration `name Tensor<f32, [B, d1, ...]>` of the train block; the file is row-major little-endian f32 with no header, one sample per sample_elements = d1 × ... values, so samples is the file length in bytes divided by 4 × sample_elements. A length that is not a whole number of samples, no sample at all, or a value that is NaN or infinite is refused with E-DATA-007 before the first step.
+      summary: One file of a dense data directory, read by `modelspec train --data` and `--eval` on both backends (DESIGN.md § 8, story:decider-dense-named-data). name is the name of an `input` or `target` declaration of the train block and dtype its element type; the file is `<name>.f32` for an F32 declaration and `<name>.i32` for an I32 one, row-major little-endian with no header, 4 bytes per value. When every declaration of the block has the same leading dimension B, a sample is one row along it, sample_elements = d1 × ... values of `name Tensor<dtype, [B, d1, ...]>`; otherwise B is 1 and a sample is the whole declared tensor, sample_elements its element count. samples is the file length in bytes divided by 4 × sample_elements. A missing file (the refusal names the file of the declared dtype, and the file of the other dtype when only that one exists), a length that is not a whole number of samples, no sample at all, or an F32 value that is NaN or infinite is refused with E-DATA-007 before the first step. Once every file is read, still before the first step and on both backends, an I32 value is a row id or a class label, and one that is negative or not below the rows of an `embedding` table that reads it, or the classes of `cross_entropy` logits that read it, is refused with E-DATA-011 naming the file, the element position and the bound.
     fields:
       - name: name
         type: String
+      - name: dtype
+        type: modelspec.checkpoint.DType
       - name: sample_elements
         type: Integer
       - name: samples
@@ -31,7 +33,7 @@ types:
   - name: modelspec.data.DenseDataDirectory
     kind: struct
     naming:
-      summary: The directory `modelspec train --data <dir>` or `--eval <dir>` names (DESIGN.md § 8). It holds one DenseTensorFile per `input` and `target` declaration of the train block, all with the same samples count N, and for `--data` an optional SampleOrder. Under `--eval` the order is not read and N must be a multiple of B, else E-DATA-009 before the first step.
+      summary: The directory `modelspec train --data <dir>` or `--eval <dir>` names (DESIGN.md § 8, story:decider-dense-named-data). It holds one DenseTensorFile per `input` and `target` declaration of the train block, however many the block declares and of either dtype, all with the same samples count N, and for `--data` an optional SampleOrder; training step k feeds block k of every file, the samples k·B .. (k+1)·B taken modulo N. Under `--eval`, on `--backend cpu` and `--backend vulkan` alike, the order is not read, N must be a multiple of B, else E-DATA-009 before the first step, and the forward program runs over every block after the last step; the run prints the mean of the block losses, and an accuracy only when the block declares exactly one target, that target is F32 and the loss compares it with the model output. A block whose one target is I32 labels that a `cross_entropy` reads, a classifier, is not held to the model output type (no E-DATA-002), trains, and prints no accuracy (DESIGN.md § 8).
     fields:
       - name: tensors
         type: List<modelspec.data.DenseTensorFile>
@@ -40,6 +42,23 @@ types:
     invariants:
       - tensors.count > 0
       - distinct: {in: tensors, as: tensor, by: tensor.name}
+
+  - name: modelspec.data.InferenceOutputFile
+    kind: struct
+    naming:
+      summary: The file `modelspec infer <file> --backend cpu|vulkan --checkpoint <path> --data <dir> --function <name> --out <path>` writes (DESIGN.md § 8, story:decider-infer-on-data). The DenseDataDirectory `<dir>` is read as `--eval` reads it, with the arguments of the model function `function` in place of the train block's declarations, each argument binding the DenseTensorFile of its name, so `<dir>/<argument>.f32` or `<dir>/<argument>.i32` by the argument's dtype; B is the leading dimension every argument shares, else 1; the sample count N must be a multiple of B, else E-DATA-009. The function runs with the checkpoint's parameters on every block of B samples in block order, and the file holds its results one after the other, row-major little-endian with no header, 4 bytes per value, of the function's result dtype (F32; the checker refuses a function that returns I32, E-TYPE-018), so it reads back with the layout of a DenseTensorFile of sample_elements row_elements. rows is N, one row per sample of `<dir>`, each row the function's result for that sample, row_elements values; the function's result is `[B, d1, ...]` when B is above 1, a row being d1 × ... values, and a row is the whole result when B is 1. A name that is not a function of the model, or a function whose result is not one row per sample, is refused with E-DATA-010 naming the model's functions; a path that resolves to a file the run reads (the model file, the checkpoint or an argument's file) is refused with E-DATA-010 naming `--out` and that file; an argument with no file, E-DATA-007; nothing is written on a refusal, and the file is written beside `<path>` and renamed over it, so an existing `<path>` is replaced whole or kept.
+    fields:
+      - name: function
+        type: String
+      - name: dtype
+        type: modelspec.checkpoint.DType
+      - name: row_elements
+        type: Integer
+      - name: rows
+        type: Integer
+    invariants:
+      - row_elements > 0
+      - rows > 0
 
   - name: modelspec.data.ParamInitFile
     kind: struct

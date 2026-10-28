@@ -5,6 +5,7 @@ A Rust compiler and runtime for `.mspec` tensor-program specifications. Humans s
 
 ## Serves
 
+- **The north star: `vision:modelspec` § North star (2026-10-28)**; public pages label its speed claim planned.
 - **The goal (2026-10-28): `initiative:transformer-within-3x-of-pytorch`.** A transformer trained on
   the GPU through Vulkan within 3× of PyTorch eager's step time; the order of work (B, A, C, D) and
   how to pick the next unit are the repository skill `goal` (`.agents/skills/goal/SKILL.md`,
@@ -16,7 +17,7 @@ A Rust compiler and runtime for `.mspec` tensor-program specifications. Humans s
 ## State
 
 Milestone M0 implemented (DESIGN.md revision 0.6, § 1 and § 11, iteration 1; wave `m0` closed);
-M1 (`epic:m1-vulkan-execution`) is in progress, latest release 0.21.0. The active milestone is
+M1 (`epic:m1-vulkan-execution`) is in progress, latest release 0.22.0. The active milestone is
 `epic:bert-from-scratch`, M3's BERT proof model: the operators `embedding` (with `i32` row ids),
 `add_rows`, `gelu`, `layer_norm`, `softmax` and `attention` (0.10.0), `cross_entropy` and
 `dropout` (0.11.0) run on the CPU interpreter, as do packed `--data` training and
@@ -68,8 +69,10 @@ on the `corpus-tokenizer` fixture.
 `train <file> --backend cpu --data <dir>` on a packed directory (one holding `binding.json`) feeds
 step `k` the `Train` batch of step `k`, each `input` and `target` naming a batch tensor (`ids`,
 `positions`, `key_mask`, `labels`, `weights`), and prints a `data` line first (DESIGN.md 0.46);
-any other `--data` directory holds dense `f32` files. `--data`, `--init` and `--eval` are CPU only.
-Its tests are `cargo test -p modelspec-cli --test train_data`.
+any other `--data` directory is dense and takes `f32` and `i32` files by declaration name,
+`NAME.f32` and `NAME.i32` (story:decider-dense-named-data). `--data` and `--eval` work on the CPU
+and on Vulkan; `--init` stays CPU only. Its tests are `cargo test -p modelspec-cli --test
+train_data`, `--test train_dense_named` and `--test adversary_dense_named`.
 `examples/bert_tiny.mspec` is BERT-tiny written out at the 8,192-token vocabulary of the corpus
 tokenizer (1,486,720 parameters; Turc et al.'s BERT-tiny has 4.4M at 30,522 tokens; `cargo test -p
 modelspec-cli --test bert_tiny`), and `crates/modelspec-cli/tests/fixtures/bert_cpu.mspec` is the

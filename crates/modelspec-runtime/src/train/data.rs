@@ -1,5 +1,5 @@
-//! Training data: M0 synthetic teacher data (DESIGN.md § 9 gate 4) and dense `f32` tensors read
-//! from a directory (DESIGN.md § 8; `spec/domains/data.yaml`, `DenseDataDirectory`).
+//! Training data: M0 synthetic teacher data (DESIGN.md § 9 gate 4) and dense `f32` and `i32`
+//! tensors read from a directory (DESIGN.md § 8; `spec/domains/data.yaml`, `DenseDataDirectory`).
 //!
 //! Synthetic data ([`synthetic`]): the one `input` is a standard normal tensor on
 //! [`Stream::Data`], drawn by Box-Muller and named by the input's name; the one `target` is the
@@ -10,18 +10,38 @@
 //! mask of `attention` ([`key_masks`]) is all ones, draws nothing and is not counted as the one
 //! input (story:transformer-block-benchmark).
 //!
-//! Dense data ([`dense`], [`dense_eval`]): the declaration `name: Tensor<f32, [B, d1, …]>` reads
-//! `<dir>/<name>.f32`, row-major little-endian `f32` with no header, one sample per `d1 × …`
-//! values. Training step `k` feeds the samples `order[k·B + i]` of `<dir>/order.u32` when the
-//! file exists, else `(k·B + i) mod N`, for `i` in `0..B`; positions past the end of the order
-//! wrap, which only the loss after the last update reads. A file that cannot be read as samples,
-//! or holds a NaN or an infinity, is [`E_DATA_007`], an order that does not cover the run is [`E_DATA_008`], and an eval
-//! directory that is not a whole number of batches is [`E_DATA_009`].
+//! Dense data ([`dense`], [`dense_eval`]; story:decider-dense-named-data): every `input` and
+//! `target` declaration of the `train` block, however many there are, reads `<dir>/<name>.f32`
+//! when it is `f32` and `<dir>/<name>.i32` when it is `i32`, row-major little-endian with no
+//! header. When every declaration has the same leading dimension `B`, a sample of
+//! `name: Tensor<_, [B, d1, …]>` is `d1 × …` values; otherwise `B` is 1 and a sample is the whole
+//! declared tensor. Training step `k` feeds the samples `order[k·B + i]` of `<dir>/order.u32`
+//! when the file exists, else `(k·B + i) mod N`, for `i` in `0..B`, so without an order step `k`
+//! reads block `k` of every file; positions past the end of the order wrap, which only the loss
+//! after the last update reads. A file that cannot be read as samples, or an `f32` file that
+//! holds a NaN or an infinity, is [`E_DATA_007`], an order that does not cover the run is
+//! [`E_DATA_008`], and an eval directory that is not a whole number of batches is
+//! [`E_DATA_009`]. An `i32` value is a row id or a class label, and once the files are read,
+//! before the first step on either backend, a value that is negative or not below the rows of an
+//! `embedding` table or the classes of `cross_entropy` logits that read it is [`E_DATA_011`]
+//! ([`refuse_out_of_range`]), so the device never receives an id it would read out of bounds.
+//! `infer --data <dir> --function <name>` reads the same layout with the arguments of the model
+//! function in place of the declarations ([`dense_function`]; story:decider-infer-on-data), its
+//! `i32` arguments held to the bounds of the function's program by the same [`E_DATA_011`], and
+//! a name that is no function of the model, or a function whose result is not one row per
+//! sample ([`row_elements`]), is [`E_DATA_010`] naming the model's functions; so is an output
+//! file that resolves to a file the run reads, naming `--out` and that file
+//! ([`refuse_out_reading`]).
 //!
 //! A declaration the loss does not read has no `Input` node after dead-code elimination, so the
 //! program could not take a value for it; it is refused at its declaration ([`E_DATA_003`])
-//! before anything runs. Neither source supplies `i32` row ids: an `i32` declaration is refused
-//! at its declaration too ([`E_DATA_004`]).
+//! before anything runs. Synthetic data supplies exactly one drawn `f32` input and one `f32`
+//! target ([`E_DATA_001`], [`E_DATA_004`]); dense data takes any number of either dtype and
+//! holds a single target to the model output type ([`E_DATA_002`]) only when the loss compares
+//! the model output with it, that is when the block declares exactly one target, the loss is
+//! not the scalar the forward function returns, and the target is not `i32` labels that a
+//! `cross_entropy` reads: such a classifier's labels are never of the output type, it trains,
+//! and its `--eval` line has no accuracy, which only an `f32` target has.
 //!
 //! Packed masked-language-model data ([`source`], [`packed`]; story:bert-train-data-binding,
 //! coordinator decision D48): a `--data` directory that holds [`BINDING_FILE`] is a directory
@@ -41,30 +61,33 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
-use modelspec_core::diag::{Code, Diagnostic};
+use modelspec_core::diag::{Code, Diagnostic, SourceSpan};
 use modelspec_core::hir::DataRole;
 use modelspec_core::ir::tensor::{DType, Dim, ParamId, TensorOp, TensorType, ValueId};
 use modelspec_core::ir::training::{DataDecl, TrainConfig};
 use modelspec_core::lower::LoweredProgram;
 use thiserror::Error;
 
-use super::init::{InitError, Stream, initialize, standard_normal};
+use super::init::{
+    InitError, Stream, initialize, sigreg_projections, standard_normal, with_projections,
+};
 use crate::cpu::{HostTensor, RuntimeError, evaluate_all};
 use crate::dataset::SplitRole;
 use crate::dataset::mlm::{
     self, BINDING_FILE, MlmBatch, Packed, TrainingDataBinding, binding_id, mlm_batch,
 };
 
-/// The `train` block does not declare exactly one `input` and one `target`. On a `--data`
-/// directory without `binding.json`, read as dense, under declarations that all name batch
-/// tensors, `train` prints a line naming the directory and `binding.json` before it.
+/// Synthetic data: the `train` block does not declare exactly one drawn `input` and one
+/// `target`. Dense data: the block declares no `input` or `target` at all.
 pub const E_DATA_001: Code = Code::new("E-DATA-001");
-/// The `target` is not of the model output type.
+/// The `target` is not of the model output type: for synthetic data always checked, for dense
+/// data only when the block declares exactly one target, the loss is not the scalar the
+/// forward function returns, and the target is not `i32` labels a `cross_entropy` reads.
 pub const E_DATA_002: Code = Code::new("E-DATA-002");
 /// A declared `input` or `target` is not read by the loss.
 pub const E_DATA_003: Code = Code::new("E-DATA-003");
-/// A declared `input` or `target` is `i32`: synthetic data draws `f32` values and dense files
-/// hold `f32`, so neither can supply row ids.
+/// A declared `input` or `target` of synthetic data is `i32`: synthetic data draws `f32` values,
+/// so it cannot supply row ids or labels. Dense data reads `i32` declarations from `.i32` files.
 pub const E_DATA_004: Code = Code::new("E-DATA-004");
 /// A declared `input` or `target` of a run on a packed `--data` directory names no tensor of the
 /// masked-language-model batch (`ids`, `positions`, `key_mask`, `labels`, `weights`), or the
@@ -78,14 +101,30 @@ pub const E_DATA_005: Code = Code::new("E-DATA-005");
 /// `labels` other classes, than the packed `vocabulary_size`.
 pub const E_DATA_006: Code = Code::new("E-DATA-006");
 /// A data, order or `--init` file is missing, unreadable, or not a whole number of samples (for
-/// `--init`, not the parameter's size), or a data or `--init` file holds a NaN or an infinity, or
-/// the data files differ in sample count, or the `input` and `target` do not share a leading
-/// batch dimension `B`, or the `--init` directory cannot be read or holds no parameter's file.
+/// `--init`, not the parameter's size), or an `f32` data or `--init` file holds a NaN or an
+/// infinity, or the data files differ in sample count, or the `--init` directory cannot be read
+/// or holds no parameter's file. A missing dense data file is named, and so is the file of the
+/// other dtype (`NAME.i32` for an `f32` declaration, `NAME.f32` for an `i32` one) when that one
+/// exists.
 pub const E_DATA_007: Code = Code::new("E-DATA-007");
 /// `order.u32` holds fewer than `steps · B` indices, or an index not below the sample count.
 pub const E_DATA_008: Code = Code::new("E-DATA-008");
-/// The `--eval` sample count is not a multiple of the batch dimension `B`.
+/// The `--eval` sample count, or the sample count of the `--data` directory of
+/// `infer --function`, is not a multiple of the batch dimension `B`.
 pub const E_DATA_009: Code = Code::new("E-DATA-009");
+/// The `--function` of `infer --data` names no function of the model, or a function whose
+/// result is not one row per sample of the data: one that takes no argument, or, when the
+/// arguments share a leading dimension `B` above 1, one whose result does not have it; each of
+/// these refusals names the functions the model declares. Also the `--out` of
+/// `infer --data`, resolved, names a file the run reads: the model file, the checkpoint or an
+/// argument's file; the refusal names `--out` and that file (story:decider-infer-on-data).
+pub const E_DATA_010: Code = Code::new("E-DATA-010");
+/// A value of a dense `i32` file of `--data` or `--eval`, or of an argument's file of
+/// `infer --data --function`, is negative or not below the rows of an `embedding` table that
+/// reads it as ids, or the classes of `cross_entropy` logits that read it as labels; refused
+/// once the files are read and before the first step or block, on either backend, naming the
+/// file, the element position and the bound.
+pub const E_DATA_011: Code = Code::new("E-DATA-011");
 
 /// The data of a synthetic run.
 #[derive(Clone, Debug, PartialEq)]
@@ -127,6 +166,9 @@ pub enum DataError {
 /// when it is `i32`, with [`E_DATA_002`] unless the target has the type of the prediction, and
 /// with [`E_DATA_003`] at the first declaration of `lowered.declared_inputs` the program has no
 /// `Input` node for.
+///
+/// The teacher's targets read the projection of step 0 at every `sigreg` site
+/// (story:jepa-sigreg-cpu); the projections are not data inputs.
 pub fn synthetic(
     config: &TrainConfig,
     lowered: &LoweredProgram,
@@ -142,7 +184,9 @@ pub fn synthetic(
     for mask in config.inputs.iter().filter(|d| masks.contains(&d.name)) {
         inputs.insert(mask.name.clone(), filled(&mask.name, &mask.ty, 1.0)?);
     }
-    let mut values = evaluate_all(forward, &inputs, &teacher)?.values;
+    let projections = sigreg_projections(forward, config.seed, 0)?;
+    let mut values =
+        evaluate_all(forward, &with_projections(&inputs, &projections), &teacher)?.values;
     let y = values
         .remove(&prediction)
         .ok_or(DataError::UndefinedPrediction(prediction))?;
@@ -271,18 +315,23 @@ fn refuse_unread(lowered: &LoweredProgram) -> Result<(), DataError> {
     Ok(())
 }
 
-/// Dense data read from a directory: a value of every sample of the `input` and the `target`,
-/// and for training the optional sample order.
+/// Dense data read from a directory: a value of every sample of every `input` and `target`
+/// declaration, and for training the optional sample order.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DenseData {
-    /// The batch dimension `B`: the leading dimension of both declarations.
+    /// The batch dimension `B`: the leading dimension every declaration shares, or 1 when they
+    /// do not share one and a sample is a whole declared tensor.
     batch: usize,
     /// The sample count `N` of every file.
     samples: usize,
-    /// The input, then the target.
-    tensors: [DenseTensor; 2],
+    /// Every declaration, in source order.
+    tensors: Vec<DenseTensor>,
     /// The indices of `order.u32`, when the directory has one.
     order: Option<Vec<u32>>,
+    /// The target whose rows `--eval` counts as correct or not: the one target, when the loss
+    /// compares the model output with it and it is `f32` ([`E_DATA_002`] holds it to the output
+    /// type); never the `i32` labels of a classifier.
+    compared: Option<String>,
 }
 
 /// The inputs of one training step or eval batch of a [`DenseData`], refilled in place by
@@ -292,12 +341,18 @@ pub struct DenseData {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct DenseBatch {
     inputs: BTreeMap<String, HostTensor<f32>>,
+    ids: BTreeMap<String, HostTensor<i32>>,
 }
 
 impl DenseBatch {
-    /// The value of each declaration, by name.
+    /// The value of each `f32` declaration, by name.
     pub fn inputs(&self) -> &BTreeMap<String, HostTensor<f32>> {
         &self.inputs
+    }
+
+    /// The value of each `i32` declaration, by name.
+    pub fn ids(&self) -> &BTreeMap<String, HostTensor<i32>> {
+        &self.ids
     }
 }
 
@@ -305,11 +360,28 @@ impl DenseBatch {
 #[derive(Clone, Debug, PartialEq)]
 struct DenseTensor {
     name: String,
-    /// The declared shape `[B, d1, …]`.
+    /// The declared shape.
     shape: Vec<u64>,
-    /// `d1 × …`.
+    /// The values of one sample: `d1 × …`, or the whole shape's when `B` is 1 because the
+    /// declarations share no leading dimension.
     sample: usize,
-    values: Vec<f32>,
+    values: DenseValues,
+}
+
+/// The values of a dense file, of its declaration's dtype.
+#[derive(Clone, Debug, PartialEq)]
+enum DenseValues {
+    F32(Vec<f32>),
+    I32(Vec<i32>),
+}
+
+impl DenseValues {
+    fn len(&self) -> usize {
+        match self {
+            DenseValues::F32(v) => v.len(),
+            DenseValues::I32(v) => v.len(),
+        }
+    }
 }
 
 impl DenseData {
@@ -323,21 +395,25 @@ impl DenseData {
         self.samples
     }
 
-    /// The name of the target declaration.
-    pub fn target(&self) -> &str {
-        &self.tensors[1].name
+    /// The target `--eval` measures an accuracy on: the one target when the loss compares the
+    /// model output with it, which is then `f32`; `None` when the block declares another number
+    /// of targets, the loss is the scalar the forward function returns, or the one target is the
+    /// `i32` labels a `cross_entropy` reads.
+    pub fn compared_target(&self) -> Option<&str> {
+        self.compared.as_deref()
     }
 
-    /// The inputs of training step `k`: the samples `order[(k·B + i) mod len]` with an order,
-    /// `(k·B + i) mod N` without one, for `i` in `0..B`. A new map each call; the training loop
-    /// refills one [`DenseBatch`] with [`Self::fill_step`] instead.
+    /// The `f32` inputs of training step `k`: the samples `order[(k·B + i) mod len]` with an
+    /// order, `(k·B + i) mod N` without one, for `i` in `0..B`. A new map each call; the
+    /// training loop refills one [`DenseBatch`] with [`Self::fill_step`] instead, which also
+    /// holds the `i32` declarations.
     pub fn step(&self, k: u64) -> BTreeMap<String, HostTensor<f32>> {
         let mut batch = DenseBatch::default();
         self.fill_step(k, &mut batch);
         batch.inputs
     }
 
-    /// The inputs of eval batch `b`: the samples `b·B .. (b+1)·B`. A new map each call, as
+    /// The `f32` inputs of eval batch `b`: the samples `b·B .. (b+1)·B`. A new map each call, as
     /// [`Self::step`].
     pub fn eval_batch(&self, b: usize) -> BTreeMap<String, HostTensor<f32>> {
         let mut batch = DenseBatch::default();
@@ -362,34 +438,54 @@ impl DenseData {
     }
 
     /// Writes the samples `sample(i)`, `i` in `0..B`, of each declaration into its entry of
-    /// `batch`. An entry `batch` holds is rewritten in place, its key, shape and data buffer
-    /// kept, so only a declaration `batch` does not hold yet allocates (or a fill of more
+    /// `batch`, an `f32` declaration into [`DenseBatch::inputs`] and an `i32` one into
+    /// [`DenseBatch::ids`]. An entry `batch` holds is rewritten in place, its key, shape and data
+    /// buffer kept, so only a declaration `batch` does not hold yet allocates (or a fill of more
     /// elements than the entry has held).
     fn fill(&self, batch: &mut DenseBatch, sample: impl Fn(usize) -> usize) {
         for t in &self.tensors {
-            let write = |data: &mut Vec<f32>| {
-                data.clear();
-                for i in 0..self.batch {
-                    let s = sample(i);
-                    data.extend_from_slice(&t.values[s * t.sample..(s + 1) * t.sample]);
+            match &t.values {
+                DenseValues::F32(values) => {
+                    fill_one(&mut batch.inputs, t, values, self.batch, &sample);
                 }
-            };
-            match batch.inputs.get_mut(t.name.as_str()) {
-                Some(tensor) => tensor.refill(&t.shape, write),
-                None => {
-                    let mut data = Vec::with_capacity(self.batch * t.sample);
-                    write(&mut data);
-                    let tensor = HostTensor::from_parts(t.shape.clone(), data);
-                    batch.inputs.insert(t.name.clone(), tensor);
+                DenseValues::I32(values) => {
+                    fill_one(&mut batch.ids, t, values, self.batch, &sample)
                 }
             }
         }
     }
 }
 
-/// The training data of `--data <dir>`: the `input` and `target` files of `config` and the
-/// optional `order.u32`, which must hold at least `config.steps · B` indices, each below `N`
-/// ([`E_DATA_008`]). Refused first as [`synthetic`] refuses the declarations.
+/// Writes the samples `sample(i)`, `i` in `0..batch`, of `t`, whose values are `values`, into
+/// its entry of `into`, as [`DenseData::fill`] documents.
+fn fill_one<T: Copy>(
+    into: &mut BTreeMap<String, HostTensor<T>>,
+    t: &DenseTensor,
+    values: &[T],
+    batch: usize,
+    sample: &impl Fn(usize) -> usize,
+) {
+    let write = |data: &mut Vec<T>| {
+        data.clear();
+        for i in 0..batch {
+            let s = sample(i);
+            data.extend_from_slice(&values[s * t.sample..(s + 1) * t.sample]);
+        }
+    };
+    match into.get_mut(t.name.as_str()) {
+        Some(tensor) => tensor.refill(&t.shape, write),
+        None => {
+            let mut data = Vec::with_capacity(batch * t.sample);
+            write(&mut data);
+            let tensor = HostTensor::from_parts(t.shape.clone(), data);
+            into.insert(t.name.clone(), tensor);
+        }
+    }
+}
+
+/// The training data of `--data <dir>`: the file of every `input` and `target` declaration of
+/// `config` and the optional `order.u32`, which must hold at least `config.steps · B` indices,
+/// each below `N` ([`E_DATA_008`]). Refused first as [`read_dense`] refuses.
 pub fn dense(
     dir: &Path,
     config: &TrainConfig,
@@ -450,8 +546,9 @@ pub fn dense(
     Ok(data)
 }
 
-/// The eval data of `--eval <dir>`: the `input` and `target` files of `config`, whose sample
-/// count must be a multiple of `B` ([`E_DATA_009`]); `order.u32` is not read.
+/// The eval data of `--eval <dir>`: the file of every `input` and `target` declaration of
+/// `config`, whose sample count must be a multiple of `B` ([`E_DATA_009`]); `order.u32` is not
+/// read.
 pub fn dense_eval(
     dir: &Path,
     config: &TrainConfig,
@@ -469,82 +566,459 @@ pub fn dense_eval(
     Ok(data)
 }
 
-/// The `input` and `target` files of `dir`, without an order.
+/// Whether the loss of `lowered` is the value its one `model.forward(...)` call returns, so no
+/// model output is compared with a target.
+fn loss_is_the_forward_value(lowered: &LoweredProgram) -> bool {
+    lowered.program.outputs.first() == Some(&lowered.prediction)
+}
+
+/// Whether a `cross_entropy` of `lowered`'s forward program reads the `Input` named `name` as
+/// its labels, its second operand.
+fn read_as_labels(lowered: &LoweredProgram, name: &str) -> bool {
+    let forward = &lowered.program;
+    forward.nodes.iter().any(|node| {
+        matches!(node.op, TensorOp::CrossEntropy)
+            && node
+                .operands
+                .get(1)
+                .and_then(|&v| forward.node(v))
+                .is_some_and(
+                    |labels| matches!(&labels.op, TensorOp::Input { name: input } if input == name),
+                )
+    })
+}
+
+/// The files of `dir` of every declaration of `config`, in source order, without an order.
+/// Refused, in this order: with [`E_DATA_001`] at the block when it declares no `input` or
+/// `target`; with [`E_DATA_002`] at the one target when the block declares exactly one, the loss
+/// is not the scalar the forward function returns, the target is not `i32` labels a
+/// `cross_entropy` reads, and the target is not of the model output type; with [`E_DATA_003`] at
+/// a declaration the loss does not read; then with [`E_DATA_007`] at the first file in source
+/// order that cannot be read as samples ([`read_tensor`]), and when the files differ in sample
+/// count; then with [`E_DATA_011`] at the first `i32` value outside a bound that reads it
+/// ([`refuse_out_of_range`]).
 fn read_dense(
     dir: &Path,
     config: &TrainConfig,
     lowered: &LoweredProgram,
 ) -> Result<DenseData, DataError> {
-    let (input, target) = declarations(config, lowered, "dense data", &BTreeSet::new())?;
-    let batch = match (input.ty.shape.first(), target.ty.shape.first()) {
-        (Some(&Dim::Static(a)), Some(&Dim::Static(b))) if a == b && a > 0 => a,
-        _ => {
-            return Err(DataError::Refused(
-                Diagnostic::new(
-                    E_DATA_007,
-                    "the input and the target do not share a leading batch dimension",
-                )
-                .at(target.span.clone())
-                .with("input", input.ty.to_string())
-                .with("target", target.ty.to_string()),
-            ));
-        }
-    };
-    let input = read_tensor(dir, "input", input)?;
-    let target = read_tensor(dir, "target", target)?;
-    let samples = input.values.len() / input.sample;
-    let target_samples = target.values.len() / target.sample;
-    if samples != target_samples {
+    let decls = in_source_order(config);
+    if decls.is_empty() {
         return Err(DataError::Refused(
-            Diagnostic::new(
-                E_DATA_007,
-                "the data files do not hold the same number of samples",
-            )
-            .with("directory", dir.display().to_string())
-            .with(input.name.clone(), samples.to_string())
-            .with(target.name.clone(), target_samples.to_string()),
+            Diagnostic::new(E_DATA_001, "dense data needs an input or a target")
+                .at(config.span.clone())
+                .with("inputs", "0")
+                .with("targets", "0"),
         ));
     }
-    let batch = usize::try_from(batch).map_err(|_| InitError::Shape {
-        path: input.name.clone(),
+    let compared = match &config.targets[..] {
+        [target] if !loss_is_the_forward_value(lowered) => Some(target),
+        _ => None,
+    };
+    let compared = compared
+        .filter(|target| !(target.ty.dtype == DType::I32 && read_as_labels(lowered, &target.name)));
+    if let Some(target) = compared {
+        let prediction = lowered.prediction;
+        let output = &lowered
+            .program
+            .node(prediction)
+            .ok_or(DataError::UndefinedPrediction(prediction))?
+            .ty;
+        if target.ty != *output {
+            return Err(DataError::Refused(
+                Diagnostic::new(E_DATA_002, "the target is not of the model output type")
+                    .at(target.span.clone())
+                    .with("target", target.ty.to_string())
+                    .with("model output", output.to_string()),
+            ));
+        }
+    }
+    refuse_unread(lowered)?;
+    let mut data = read_files(dir, &decls)?;
+    refuse_out_of_range(dir, &decls, &data.tensors, lowered)?;
+    data.compared = compared.map(|t| t.name.clone());
+    Ok(data)
+}
+
+/// The data of `infer --data <dir> --function <name>` (story:decider-infer-on-data): the file
+/// of every argument of the function, the `input` declarations of `function`, the
+/// configuration of [`modelspec_core::compile::compile_function`] whose lowered program is
+/// `lowered`, read as [`dense_eval`] reads the declarations of a `train` block, with no order
+/// and no compared target. Refused with [`E_DATA_010`] at the function, naming the model's
+/// `functions`, when it takes no argument, so no file binds a sample to it; with
+/// [`E_DATA_007`] as [`read_tensor`] refuses an argument's file and when the files differ in
+/// sample count; with [`E_DATA_011`] at the first `i32` value outside a bound of `lowered`
+/// that reads it ([`refuse_out_of_range`]); and with [`E_DATA_009`] when the sample count is
+/// not a multiple of `B`.
+pub fn dense_function(
+    dir: &Path,
+    name: &str,
+    function: &TrainConfig,
+    lowered: &LoweredProgram,
+    functions: &[String],
+) -> Result<DenseData, DataError> {
+    let decls: Vec<(&DataDecl, &'static str)> =
+        function.inputs.iter().map(|d| (d, "argument")).collect();
+    if decls.is_empty() {
+        return Err(DataError::Refused(
+            Diagnostic::new(
+                E_DATA_010,
+                format!("the function `{name}` takes no argument a data file could bind"),
+            )
+            .at(function.span.clone())
+            .with("function", name)
+            .with("functions", functions.join(", ")),
+        ));
+    }
+    let data = read_files(dir, &decls)?;
+    refuse_out_of_range(dir, &decls, &data.tensors, lowered)?;
+    if !data.samples.is_multiple_of(data.batch) {
+        return Err(DataError::Refused(
+            Diagnostic::new(E_DATA_009, "the data is not a whole number of blocks")
+                .with("directory", dir.display().to_string())
+                .with("samples", data.samples.to_string())
+                .with("batch", data.batch.to_string()),
+        ));
+    }
+    Ok(data)
+}
+
+/// [`E_DATA_010`]: the model declares no function `name`; `functions` are those it declares.
+pub fn unknown_function(name: &str, functions: &[String]) -> DataError {
+    DataError::Refused(
+        Diagnostic::new(
+            E_DATA_010,
+            format!("the model declares no function `{name}`"),
+        )
+        .with("function", name)
+        .with("functions", functions.join(", ")),
+    )
+}
+
+/// The values of one row of the output of `infer --data --function` (`spec/domains/data.yaml`,
+/// `InferenceOutputFile`): one row per sample of a block of `batch` samples, so the result of
+/// the function `name`, of type `output`, is `[B, d1, …]` when `batch` is above 1, a row
+/// `d1 × …` values, and a row is the whole result when `batch` is 1. A result whose leading
+/// dimension is not `B`, when `B` is above 1, is not one row per sample and is refused with
+/// [`E_DATA_010`] naming the model's `functions`.
+pub fn row_elements(
+    name: &str,
+    output: &TensorType,
+    batch: usize,
+    functions: &[String],
+) -> Result<usize, DataError> {
+    let (shape, elements) = static_shape(name, output)?;
+    if batch == 1 {
+        return Ok(elements);
+    }
+    match shape.first() {
+        Some(&leading) if leading == batch as u64 => Ok(elements / batch),
+        _ => Err(DataError::Refused(
+            Diagnostic::new(
+                E_DATA_010,
+                format!("the result of the function `{name}` is not one row per sample"),
+            )
+            .with("function", name)
+            .with("result", output.to_string())
+            .with("batch", batch.to_string())
+            .with("functions", functions.join(", ")),
+        )),
+    }
+}
+
+/// The files `infer --data <dir> --function` reads for the arguments of `function`, the
+/// configuration of [`modelspec_core::compile::compile_function`], each with what it binds:
+/// [`dense_file`] of every argument.
+pub fn function_files(dir: &Path, function: &TrainConfig) -> Vec<(String, PathBuf)> {
+    function
+        .inputs
+        .iter()
+        .map(|decl| (format!("argument `{}`", decl.name), dense_file(dir, decl)))
+        .collect()
+}
+
+/// [`E_DATA_010`] when the output file `out` of `infer --data --function` resolves to one of
+/// `reads`, the files the run reads, each with what it is: the run would overwrite its own
+/// input. Both sides are canonicalized, a missing file by its canonical parent and its name,
+/// and on Unix an existing `out` also matches a file with its device and inode (a hard link).
+/// A file that cannot be resolved matches nothing.
+pub fn refuse_out_reading(out: &Path, reads: &[(String, PathBuf)]) -> Result<(), DataError> {
+    let Some(target) = resolved(out) else {
+        return Ok(());
+    };
+    for (what, file) in reads {
+        if resolved(file).as_ref() == Some(&target) || same_file(out, file) {
+            return Err(DataError::Refused(
+                Diagnostic::new(E_DATA_010, "`--out` names a file the run reads")
+                    .with("--out", out.display().to_string())
+                    .with(what.as_str(), file.display().to_string()),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// `path` canonicalized, or, when it does not exist, its canonical parent joined with its
+/// name; `None` when neither resolves.
+fn resolved(path: &Path) -> Option<PathBuf> {
+    if let Ok(path) = path.canonicalize() {
+        return Some(path);
+    }
+    let name = path.file_name()?;
+    let parent = match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
+    };
+    parent.canonicalize().ok().map(|parent| parent.join(name))
+}
+
+/// Whether `a` and `b` both exist and are one file: the same device and inode.
+#[cfg(unix)]
+fn same_file(a: &Path, b: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match (std::fs::metadata(a), std::fs::metadata(b)) {
+        (Ok(a), Ok(b)) => a.dev() == b.dev() && a.ino() == b.ino(),
+        _ => false,
+    }
+}
+
+/// Without device and inode numbers, canonical paths alone decide.
+#[cfg(not(unix))]
+fn same_file(_: &Path, _: &Path) -> bool {
+    false
+}
+
+/// The dense file of `decl` in `dir`: `<name>.f32` when it is `f32`, `<name>.i32` when `i32`.
+fn dense_file(dir: &Path, decl: &DataDecl) -> PathBuf {
+    let extension = match decl.ty.dtype {
+        DType::F32 => "f32",
+        DType::I32 => "i32",
+    };
+    dir.join(format!("{}.{extension}", decl.name))
+}
+
+/// The files of `dir` of the declarations `decls`, each with its role, in that order: `B` and
+/// the samples of each, without an order or a compared target. Refused with [`E_DATA_007`] at
+/// the first file that cannot be read as samples ([`read_tensor`]), and when the files differ in
+/// sample count.
+fn read_files(dir: &Path, decls: &[(&DataDecl, &'static str)]) -> Result<DenseData, DataError> {
+    let shapes = decls
+        .iter()
+        .map(|(decl, _)| static_shape(&decl.name, &decl.ty))
+        .collect::<Result<Vec<_>, InitError>>()?;
+    let leading = shapes[0].0.first().copied();
+    let shared = leading.filter(|_| shapes.iter().all(|(s, _)| s.first().copied() == leading));
+    let batch = usize::try_from(shared.unwrap_or(1)).map_err(|_| InitError::Shape {
+        path: decls[0].0.name.clone(),
     })?;
+    let mut tensors = Vec::with_capacity(decls.len());
+    for (&(decl, role), (shape, elements)) in decls.iter().zip(shapes) {
+        let sample = if shared.is_some() {
+            elements / batch
+        } else {
+            elements
+        };
+        tensors.push(read_tensor(dir, role, decl, shape, sample)?);
+    }
+    let counts: Vec<usize> = tensors.iter().map(|t| t.values.len() / t.sample).collect();
+    let samples = counts[0];
+    if counts.iter().any(|&n| n != samples) {
+        let mut diagnostic = Diagnostic::new(
+            E_DATA_007,
+            "the data files do not hold the same number of samples",
+        )
+        .with("directory", dir.display().to_string());
+        for (t, n) in tensors.iter().zip(&counts) {
+            diagnostic = diagnostic.with(t.name.clone(), n.to_string());
+        }
+        return Err(DataError::Refused(diagnostic));
+    }
     Ok(DenseData {
         batch,
         samples,
-        tensors: [input, target],
+        tensors,
         order: None,
+        compared: None,
     })
 }
 
-/// The samples of `decl` in `<dir>/<name>.f32`.
-fn read_tensor(dir: &Path, role: &str, decl: &DataDecl) -> Result<DenseTensor, DataError> {
-    let shape = zeros(&decl.name, &decl.ty)?.shape().to_vec();
-    let sample: usize = shape[1..].iter().map(|&n| n as usize).product();
-    let path = dir.join(format!("{}.f32", decl.name));
-    let values = read_f32(&path).map_err(|error| {
-        unreadable(
-            &format!("the data file of the {role} `{}`", decl.name),
-            &path,
-            &error,
+/// A bound on the values of an `i32` input: an op of the forward program reads the input as an
+/// index below `bound`.
+struct IndexBound {
+    /// The name of the `Input` the op reads.
+    input: String,
+    /// The values must lie in `0..bound`.
+    bound: u64,
+    /// What the bound counts, for the diagnostic: "the 6 rows of the `embedding` table
+    /// `Named.table`".
+    what: String,
+    /// Where the op is, when the lowering kept it.
+    span: Option<SourceSpan>,
+}
+
+/// Every index bound of `lowered`'s forward program, in program order. An `i32` value is only
+/// a program input (DESIGN.md § 2.2), and the only operands that read one are the ids of
+/// `embedding`, below the rows of its table, and the labels of `cross_entropy`, below the classes
+/// of its logits; the internal `EmbeddingGrad` and `CrossEntropyGrad` read the same inputs with
+/// the same bounds, and the RNG token of `Dropout` is no declaration.
+fn index_bounds(lowered: &LoweredProgram) -> Vec<IndexBound> {
+    let forward = &lowered.program;
+    let mut bounds = Vec::new();
+    for node in &forward.nodes {
+        let (op, count, axis) = match node.op {
+            TensorOp::Embedding => ("`embedding` table", "rows", 0),
+            TensorOp::CrossEntropy => ("`cross_entropy` logits", "classes", 1),
+            _ => continue,
+        };
+        let Some(&operand) = node.operands.first() else {
+            continue;
+        };
+        let Some(input) = node
+            .operands
+            .get(1)
+            .and_then(|&v| forward.node(v))
+            .and_then(|n| match &n.op {
+                TensorOp::Input { name } => Some(name.clone()),
+                _ => None,
+            })
+        else {
+            continue;
+        };
+        let Some(value) = forward.node(operand) else {
+            continue;
+        };
+        let Some(&Dim::Static(bound)) = value.ty.shape.get(axis) else {
+            continue;
+        };
+        bounds.push(IndexBound {
+            input,
+            bound,
+            what: format!(
+                "the {bound} {count} of the {op} `{}`",
+                value_name(lowered, operand)
+            ),
+            span: node.source_span.clone(),
+        });
+    }
+    bounds
+}
+
+/// The name of the value `id` of `lowered`'s forward program in a diagnostic: the canonical
+/// path of the parameter it reads, else its value id.
+fn value_name(lowered: &LoweredProgram, id: ValueId) -> String {
+    let forward = &lowered.program;
+    match forward.node(id).map(|n| &n.op) {
+        Some(TensorOp::ParamRead { param }) => forward
+            .params
+            .get(param)
+            .map_or_else(|| id.to_string(), |p| p.path.clone()),
+        _ => id.to_string(),
+    }
+}
+
+/// [`E_DATA_011`] at the first `i32` declaration, in source order, whose file `<dir>/<name>.i32`
+/// holds a value that is negative or not below the smallest of its [`index_bounds`], naming the
+/// file, the value's element position in it and that bound. Every value of the file is checked,
+/// not only those a step reads, so the refusal comes before the first step on both backends and
+/// does not depend on the order or the number of steps.
+fn refuse_out_of_range(
+    dir: &Path,
+    decls: &[(&DataDecl, &'static str)],
+    tensors: &[DenseTensor],
+    lowered: &LoweredProgram,
+) -> Result<(), DataError> {
+    let bounds = index_bounds(lowered);
+    for (&(decl, role), tensor) in decls.iter().zip(tensors) {
+        let DenseValues::I32(values) = &tensor.values else {
+            continue;
+        };
+        let Some(tightest) = bounds
+            .iter()
+            .filter(|b| b.input == tensor.name)
+            .min_by_key(|b| b.bound)
+        else {
+            continue;
+        };
+        let Some((position, &value)) = values
+            .iter()
+            .enumerate()
+            .find(|&(_, &v)| v < 0 || v as u64 >= tightest.bound)
+        else {
+            continue;
+        };
+        let path = dir.join(format!("{}.i32", tensor.name));
+        let mut diagnostic = Diagnostic::new(
+            E_DATA_011,
+            format!(
+                "the data file of the {role} `{}` holds {value}, outside {}",
+                tensor.name, tightest.what
+            ),
         )
+        .at(decl.span.clone())
+        .with("file", path.display().to_string())
+        .with("position", position.to_string())
+        .with("value", value.to_string())
+        .with("bound", format!("0 <= value < {}", tightest.bound));
+        if let Some(span) = &tightest.span {
+            diagnostic = diagnostic.with("read at", span.to_string());
+        }
+        return Err(DataError::Refused(diagnostic));
+    }
+    Ok(())
+}
+
+/// The samples of `decl`, of shape `shape` and `sample` values a sample, in `<dir>/<name>.f32`
+/// for an `f32` declaration and `<dir>/<name>.i32` for an `i32` one. A missing file is
+/// [`E_DATA_007`] naming it, and naming the file of the other dtype when only that one exists.
+fn read_tensor(
+    dir: &Path,
+    role: &str,
+    decl: &DataDecl,
+    shape: Vec<u64>,
+    sample: usize,
+) -> Result<DenseTensor, DataError> {
+    let other = match decl.ty.dtype {
+        DType::F32 => "i32",
+        DType::I32 => "f32",
+    };
+    let path = dense_file(dir, decl);
+    let what = format!("the data file of the {role} `{}`", decl.name);
+    let read = match decl.ty.dtype {
+        DType::F32 => read_f32(&path).map(DenseValues::F32),
+        DType::I32 => read_i32(&path).map(DenseValues::I32),
+    };
+    let values = read.map_err(|error| {
+        let mut diagnostic = cannot_read(&what, &path, &error);
+        let found = dir.join(format!("{}.{other}", decl.name));
+        if error.kind() == ErrorKind::NotFound && found.is_file() {
+            diagnostic = diagnostic.with(
+                "found",
+                format!(
+                    "{}, the file of an {other} declaration; `{}` is declared {}",
+                    found.display(),
+                    decl.name,
+                    decl.ty
+                ),
+            );
+        }
+        DataError::Refused(diagnostic)
     })?;
-    if values.is_empty() || !values.len().is_multiple_of(sample) {
+    let len = values.len();
+    if len == 0 || !len.is_multiple_of(sample) {
         return Err(DataError::Refused(
             Diagnostic::new(
                 E_DATA_007,
-                format!(
-                    "the data file of the {role} `{}` is not a whole number of samples",
-                    decl.name
-                ),
+                format!("{what} is not a whole number of samples"),
             )
             .at(decl.span.clone())
             .with("file", path.display().to_string())
-            .with("values", values.len().to_string())
+            .with("values", len.to_string())
             .with("sample", format!("{sample} values")),
         ));
     }
-    let what = format!("the data file of the {role} `{}`", decl.name);
-    if let Some(refused) = non_finite(&what, &path, &values) {
+    if let DenseValues::F32(values) = &values
+        && let Some(refused) = non_finite(&what, &path, values)
+    {
         return Err(refused);
     }
     Ok(DenseTensor {
@@ -553,6 +1027,24 @@ fn read_tensor(dir: &Path, role: &str, decl: &DataDecl) -> Result<DenseTensor, D
         sample,
         values,
     })
+}
+
+/// The little-endian `i32` values of the file `path`; a length that is not a whole number of
+/// values is [`ErrorKind::InvalidData`].
+fn read_i32(path: &Path) -> std::io::Result<Vec<i32>> {
+    let bytes = std::fs::read(path)?;
+    if bytes.len() % 4 != 0 {
+        return Err(std::io::Error::new(
+            ErrorKind::InvalidData,
+            format!("{} bytes is not a whole number of i32 values", bytes.len()),
+        ));
+    }
+    Ok(bytes
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|b| i32::from_le_bytes(*b))
+        .collect())
 }
 
 /// The little-endian `f32` values of the file `path`; a length that is not a whole number of
@@ -589,11 +1081,14 @@ pub(crate) fn non_finite(what: &str, path: &Path, values: &[f32]) -> Option<Data
 
 /// [`E_DATA_007`]: `what` at `path` cannot be read.
 pub(crate) fn unreadable(what: &str, path: &Path, error: &std::io::Error) -> DataError {
-    DataError::Refused(
-        Diagnostic::new(E_DATA_007, format!("cannot read {what}"))
-            .with("file", path.display().to_string())
-            .with("error", error.to_string()),
-    )
+    DataError::Refused(cannot_read(what, path, error))
+}
+
+/// The diagnostic of [`unreadable`].
+fn cannot_read(what: &str, path: &Path, error: &std::io::Error) -> Diagnostic {
+    Diagnostic::new(E_DATA_007, format!("cannot read {what}"))
+        .with("file", path.display().to_string())
+        .with("error", error.to_string())
 }
 
 /// A tensor of the masked-language-model batch, the field of [`MlmBatch`] a declaration names.
@@ -1103,6 +1598,13 @@ fn zeros(name: &str, ty: &TensorType) -> Result<HostTensor<f32>, InitError> {
 
 /// A tensor of type `ty` with every element `value`.
 fn filled(name: &str, ty: &TensorType, value: f32) -> Result<HostTensor<f32>, InitError> {
+    let (shape, count) = static_shape(name, ty)?;
+    Ok(HostTensor::from_parts(shape, vec![value; count]))
+}
+
+/// The static shape of `ty` and its element count; a dimension that is not a positive static
+/// size is [`InitError::Shape`], and a count past `usize` [`InitError::TooManyElements`].
+fn static_shape(name: &str, ty: &TensorType) -> Result<(Vec<u64>, usize), InitError> {
     let shape = ty
         .shape
         .iter()
@@ -1120,7 +1622,7 @@ fn filled(name: &str, ty: &TensorType, value: f32) -> Result<HostTensor<f32>, In
             .iter()
             .fold(1u128, |acc, &n| acc.saturating_mul(u128::from(n))),
     })?;
-    Ok(HostTensor::from_parts(shape, vec![value; count]))
+    Ok((shape, count))
 }
 
 #[cfg(test)]
@@ -1486,7 +1988,8 @@ train T {
         );
     }
 
-    /// Dense data reads every input from a file, so a key mask is a second input there.
+    /// Dense data reads every input from a file, a key mask too, so a missing directory is
+    /// refused at the file of the first declaration in source order (story:decider-dense-named-data).
     #[test]
     fn dense_data_takes_no_key_mask_from_the_program() {
         let compiled = modelspec_core::compile::compile_training("m.mspec", MASKED).unwrap();
@@ -1497,7 +2000,31 @@ train T {
         ) else {
             panic!("dense data is refused");
         };
-        assert_eq!(d.code, E_DATA_001);
+        assert_eq!(d.code, E_DATA_007);
+        assert_eq!(d.message, "cannot read the data file of the input `x`");
+        assert_eq!(
+            (d.details[0].label.as_deref(), d.details[0].text.as_str()),
+            (Some("file"), "no-such-directory/x.f32"),
+            "{d}"
+        );
+    }
+
+    /// Dense data takes any number of declarations, but a block that declares none has nothing
+    /// to read: E-DATA-001 at the block, before any file.
+    #[test]
+    fn dense_data_without_declarations_is_refused_with_e_data_001() {
+        let none = config(42, vec![], vec![]);
+        let Err(DataError::Refused(d)) = dense(Path::new("no-such-directory"), &none, &linear())
+        else {
+            panic!("dense data is refused");
+        };
+        assert_eq!(
+            d.to_string(),
+            "E-DATA-001: dense data needs an input or a target\n  \
+             fit.mspec:1:5\n  \
+             inputs: 0\n  \
+             targets: 0"
+        );
     }
 
     const EMBEDDING: &str = "model M {
@@ -1518,8 +2045,9 @@ train T {
 }
 ";
 
-    /// Synthetic inputs are standard normal `f32` draws and dense files hold `f32`: neither
-    /// supplies an `i32` declaration, refused at it with E-DATA-004 before any file is read.
+    /// Synthetic inputs are standard normal `f32` draws, so an `i32` declaration is refused at it
+    /// with E-DATA-004; dense data reads it from `<name>.i32` (story:decider-dense-named-data),
+    /// so a missing directory is refused naming that file.
     #[test]
     fn an_i32_declaration_is_refused_with_e_data_004() {
         let compiled = modelspec_core::compile::compile_training("e.mspec", EMBEDDING).unwrap();
@@ -1534,7 +2062,12 @@ train T {
         let Err(DataError::Refused(d)) = dense(missing, &compiled.config, &compiled.forward) else {
             panic!("dense data is refused");
         };
-        assert_eq!(d.code, E_DATA_004);
-        assert!(d.message.starts_with("dense data cannot supply"), "{d}");
+        assert_eq!(d.code, E_DATA_007);
+        assert_eq!(d.message, "cannot read the data file of the input `ids`");
+        assert_eq!(
+            (d.details[0].label.as_deref(), d.details[0].text.as_str()),
+            (Some("file"), "no-such-directory/ids.i32"),
+            "{d}"
+        );
     }
 }

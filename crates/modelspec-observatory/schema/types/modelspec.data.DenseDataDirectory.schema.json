@@ -4,14 +4,36 @@
   "x-ess-provenance": {
     "system": "modelspec",
     "specification_version": "v1",
-    "source_digest": "a0b514a0e2f3d5106bdc434831eaef8b08e9a1fa2de22f9f158d14de1af01205",
-    "contract_digest": "slice-sha256/2:d502de909f00a95c2591a6117c2a1875028aaf765ceefd55fd80aa0357acd062",
+    "source_digest": "ecf459b5256b83f59998404e1e8a39fe65ca33082d33c64f911d51a4c2dd623d",
+    "contract_digest": "slice-sha256/2:a71a93e246d8af05effa524e7c10bdd54dd62fa817919acca92acb1f63a4a848",
     "regenerate": "ess generate"
   },
   "$defs": {
+    "modelspec.checkpoint.DType": {
+      "title": "DType",
+      "description": "A tensor element type and its size in bytes; `f32` for every value, `i32` only for row ids an `embedding` reads, never a parameter or a checkpoint tensor (DESIGN.md § 2.2).",
+      "x-ess-name": "modelspec.checkpoint.DType",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "F32",
+        "I32"
+      ],
+      "x-ess-attributes": [
+        {
+          "kind": "integer",
+          "name": "size_bytes",
+          "type": "Integer",
+          "values": {
+            "F32": 4,
+            "I32": 4
+          }
+        }
+      ]
+    },
     "modelspec.data.DenseDataDirectory": {
       "title": "DenseDataDirectory",
-      "description": "The directory `modelspec train --data <dir>` or `--eval <dir>` names (DESIGN.md § 8). It holds one DenseTensorFile per `input` and `target` declaration of the train block, all with the same samples count N, and for `--data` an optional SampleOrder. Under `--eval` the order is not read and N must be a multiple of B, else E-DATA-009 before the first step.",
+      "description": "The directory `modelspec train --data <dir>` or `--eval <dir>` names (DESIGN.md § 8, story:decider-dense-named-data). It holds one DenseTensorFile per `input` and `target` declaration of the train block, however many the block declares and of either dtype, all with the same samples count N, and for `--data` an optional SampleOrder; training step k feeds block k of every file, the samples k·B .. (k+1)·B taken modulo N. Under `--eval`, on `--backend cpu` and `--backend vulkan` alike, the order is not read, N must be a multiple of B, else E-DATA-009 before the first step, and the forward program runs over every block after the last step; the run prints the mean of the block losses, and an accuracy only when the block declares exactly one target, that target is F32 and the loss compares it with the model output. A block whose one target is I32 labels that a `cross_entropy` reads, a classifier, is not held to the model output type (no E-DATA-002), trains, and prints no accuracy (DESIGN.md § 8).",
       "x-ess-name": "modelspec.data.DenseDataDirectory",
       "x-ess-kind": "struct",
       "type": "object",
@@ -37,13 +59,16 @@
     },
     "modelspec.data.DenseTensorFile": {
       "title": "DenseTensorFile",
-      "description": "One file `<name>.f32` of a dense data directory, read by `modelspec train --data` and `--eval` (DESIGN.md § 8). name is the name of an `input` or `target` declaration `name Tensor<f32, [B, d1, ...]>` of the train block; the file is row-major little-endian f32 with no header, one sample per sample_elements = d1 × ... values, so samples is the file length in bytes divided by 4 × sample_elements. A length that is not a whole number of samples, no sample at all, or a value that is NaN or infinite is refused with E-DATA-007 before the first step.",
+      "description": "One file of a dense data directory, read by `modelspec train --data` and `--eval` on both backends (DESIGN.md § 8, story:decider-dense-named-data). name is the name of an `input` or `target` declaration of the train block and dtype its element type; the file is `<name>.f32` for an F32 declaration and `<name>.i32` for an I32 one, row-major little-endian with no header, 4 bytes per value. When every declaration of the block has the same leading dimension B, a sample is one row along it, sample_elements = d1 × ... values of `name Tensor<dtype, [B, d1, ...]>`; otherwise B is 1 and a sample is the whole declared tensor, sample_elements its element count. samples is the file length in bytes divided by 4 × sample_elements. A missing file (the refusal names the file of the declared dtype, and the file of the other dtype when only that one exists), a length that is not a whole number of samples, no sample at all, or an F32 value that is NaN or infinite is refused with E-DATA-007 before the first step. Once every file is read, still before the first step and on both backends, an I32 value is a row id or a class label, and one that is negative or not below the rows of an `embedding` table that reads it, or the classes of `cross_entropy` logits that read it, is refused with E-DATA-011 naming the file, the element position and the bound.",
       "x-ess-name": "modelspec.data.DenseTensorFile",
       "x-ess-kind": "struct",
       "type": "object",
       "properties": {
         "name": {
           "type": "string"
+        },
+        "dtype": {
+          "$ref": "#/$defs/modelspec.checkpoint.DType"
         },
         "sample_elements": {
           "type": "integer",
@@ -56,6 +81,7 @@
       },
       "required": [
         "name",
+        "dtype",
         "sample_elements",
         "samples"
       ],

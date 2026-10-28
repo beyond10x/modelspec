@@ -54,11 +54,13 @@ use super::data::{
     DataError, DenseBatch, DenseData, PackedBatch, PackedData, SyntheticData, synthetic,
 };
 use super::eval::EvalError;
-use super::init::{InitError, Stream, dropout_token, initialize};
+use super::init::{
+    InitError, Stream, dropout_token, initialize, sigreg_projections, with_projections,
+};
 use super::optimizer::{ParamState, PreparedStep, StepError};
-use crate::cpu::{HostTensor, RuntimeError, evaluate_all, evaluate_with_ids};
+use crate::cpu::{HostTensor, RuntimeError, evaluate_all_with_ids, evaluate_with_ids};
 
-/// No `i32` tensors, the step inputs of synthetic and dense data.
+/// No `i32` tensors, the step inputs of synthetic data.
 static NO_IDS: BTreeMap<String, HostTensor<i32>> = BTreeMap::new();
 
 /// The loss of a training step, or a parameter, an AdamW moment or a Muon momentum buffer after
@@ -406,7 +408,8 @@ pub fn run_checked(
     // Prepared at the first step that makes an update, so a run of no steps verifies nothing more
     // than before; every later step reuses it (story:cpu-prepared-training-step).
     let mut prepared: Option<PreparedStep<'_>> = None;
-    let sites = dropout_sites(&compiled.training.training.program);
+    let training_program = &compiled.training.training.program;
+    let sites = dropout_sites(training_program);
     let mut losses = Vec::new();
     for step in start..=end {
         // The Muon parameters whose norm this step's update found not finite.
@@ -421,6 +424,10 @@ pub fn run_checked(
             let prepared = prepared.as_mut().expect("prepared above");
             let learning_rate = prepared.schedule(step + 1, end);
             let (inputs, ids) = feed.inputs(step)?;
+            // The projection of every `sigreg` site at this step, beside the batch
+            // (story:jepa-sigreg-cpu).
+            let projections = sigreg_projections(training_program, config.seed, step)?;
+            let inputs = with_projections(inputs, &projections);
             // The `i32` inputs of the step: the batch's ids (packed data) and the RNG token of
             // every dropout site at this step (DESIGN.md § 2.3), by name.
             let mut tokens: BTreeMap<String, HostTensor<i32>> = ids.clone();
@@ -430,7 +437,7 @@ pub fn run_checked(
                     .map(|site| (site.clone(), dropout_token(site, step))),
             );
             let evaluated = prepared
-                .evaluate_with_ids(inputs, &tokens, &state)
+                .evaluate_with_ids(&inputs, &tokens, &state)
                 .map_err(|source| RunError::Step { step, source })?;
             observe(&Observed {
                 step,
@@ -445,7 +452,9 @@ pub fn run_checked(
             loss
         } else {
             let (inputs, ids) = feed.inputs(end)?;
-            let loss = evaluate_with_ids(forward, inputs, ids, &state.values)?[0].data()[0];
+            let projections = sigreg_projections(forward, config.seed, end)?;
+            let inputs = with_projections(inputs, &projections);
+            let loss = evaluate_with_ids(forward, &inputs, ids, &state.values)?[0].data()[0];
             observe(&Observed {
                 step,
                 loss,
@@ -499,13 +508,13 @@ pub(crate) enum Feed<'a> {
 }
 
 impl Feed<'_> {
-    /// The inputs of step `step`: `f32` tensors, and the `i32` tensors only packed data has.
+    /// The inputs of step `step`: `f32` tensors, and the `i32` tensors of dense and packed data.
     pub(crate) fn inputs(&mut self, step: u64) -> Result<StepInputs<'_>, DataError> {
         match self {
             Feed::Synthetic(s) => Ok((&s.inputs, &NO_IDS)),
             Feed::Dense(data, batch) => {
                 data.fill_step(step, batch);
-                Ok((batch.inputs(), &NO_IDS))
+                Ok((batch.inputs(), batch.ids()))
             }
             Feed::Packed(data, batch) => {
                 data.fill_step(step, batch)?;
@@ -523,50 +532,82 @@ impl Feed<'_> {
     }
 }
 
-/// The loss and accuracy of the forward program over every sample of an eval directory.
+/// The loss, and where it is defined the accuracy, of the forward program over every sample of
+/// an eval directory.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Eval {
     /// The mean of the per-batch losses, summed in `f64`.
     pub loss: f64,
-    /// The fraction of samples whose prediction row has its first maximum at the index of the
-    /// first maximum of the target row; a prediction row holding a NaN is never correct.
-    pub accuracy: f64,
+    /// The fraction of target rows, rows along the target's leading dimension (one row for a
+    /// rank-0 target), whose prediction row has its first maximum at the index of the first
+    /// maximum of the target row; a prediction row holding a NaN is never correct. `None` unless
+    /// the loss compares the model output with the block's one target and that target is `f32`
+    /// ([`DenseData::compared_target`]; story:decider-dense-named-data).
+    pub accuracy: Option<f64>,
 }
 
 /// Runs the forward program of `compiled` with `params` over `data` in batches of `B`
-/// ([`DenseData::eval_batch`]); `data` holds a whole number of batches ([`super::data::dense_eval`]).
+/// ([`DenseData::fill_eval_batch`]), each batch's `f32` and `i32` declarations as its inputs;
+/// `data` holds a whole number of batches ([`super::data::dense_eval`]).
+/// A `sigreg` site reads its projection of step 0; [`evaluate_dense_at`] names the step.
 pub fn evaluate_dense(
     compiled: &CompiledTraining,
     data: &DenseData,
     params: &BTreeMap<ParamId, HostTensor<f32>>,
 ) -> Result<Eval, RunError> {
+    evaluate_dense_at(compiled, data, params, 0)
+}
+
+/// Runs as [`evaluate_dense`] does, every `sigreg` site reading its projection of step `step`,
+/// the step whose parameters `params` are (story:jepa-sigreg-cpu).
+pub fn evaluate_dense_at(
+    compiled: &CompiledTraining,
+    data: &DenseData,
+    params: &BTreeMap<ParamId, HostTensor<f32>>,
+    step: u64,
+) -> Result<Eval, RunError> {
+    let projections = sigreg_projections(&compiled.forward.program, compiled.config.seed, step)?;
     let prediction = compiled.forward.prediction;
     let batches = data.samples() / data.batch();
     let mut loss = 0.0f64;
     let mut correct = 0usize;
+    let mut rows = 0usize;
     let mut batch = DenseBatch::default();
     for b in 0..batches {
         data.fill_eval_batch(b, &mut batch);
-        let inputs = batch.inputs();
-        let mut values = evaluate_all(&compiled.forward.program, inputs, params)?;
+        let inputs = with_projections(batch.inputs(), &projections);
+        let mut values =
+            evaluate_all_with_ids(&compiled.forward.program, &inputs, batch.ids(), params)?;
         loss += f64::from(values.outputs[0].data()[0]);
+        let Some(target) = data.compared_target() else {
+            continue;
+        };
         let predicted = values
             .values
             .remove(&prediction)
             .ok_or(DataError::UndefinedPrediction(prediction))?;
-        let target = inputs[data.target()].data();
-        let width = target.len() / data.batch();
-        correct += predicted
-            .data()
-            .chunks_exact(width)
-            .zip(target.chunks_exact(width))
-            .filter(|(p, t)| argmax(p).is_some_and(|i| Some(i) == argmax(t)))
-            .count();
+        let (correct_rows, target_rows) = correct_rows(predicted.data(), &inputs[target]);
+        correct += correct_rows;
+        rows += target_rows;
     }
     Ok(Eval {
         loss: loss / batches as f64,
-        accuracy: correct as f64 / data.samples() as f64,
+        accuracy: data.compared_target().map(|_| correct as f64 / rows as f64),
     })
+}
+
+/// The rows of `target` whose row of `predicted`, of the same shape, has its first maximum at
+/// the index of the target row's ([`argmax`]), and the number of rows: the target's leading
+/// dimension, or one row for a rank-0 target.
+pub(crate) fn correct_rows(predicted: &[f32], target: &HostTensor<f32>) -> (usize, usize) {
+    let rows = target.shape().first().map_or(1, |&n| n as usize);
+    let width = target.data().len() / rows;
+    let correct = predicted
+        .chunks_exact(width)
+        .zip(target.data().chunks_exact(width))
+        .filter(|(p, t)| argmax(p).is_some_and(|i| Some(i) == argmax(t)))
+        .count();
+    (correct, rows)
 }
 
 /// The index of the first maximum of `row`, the lowest index among ties, or `None` when `row`

@@ -296,6 +296,7 @@ pub fn write_node(out: &mut impl Write, program: &TensorProgram, node: &TensorNo
             }
             out.write_char(']')?;
         }
+        TensorOp::Sigreg { slices } => write!(out, " [slices = {slices}]")?,
         _ => {}
     }
     for (i, operand) in node.operands.iter().enumerate() {

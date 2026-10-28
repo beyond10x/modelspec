@@ -78,13 +78,14 @@ fn export(case: &Path) -> (PathBuf, PathBuf, String) {
 /// target declaration of the example and nothing else, each the tensor's row-major
 /// little-endian `f32` elements, 4 bytes per element of the declared shape, `x` and `y`
 /// `[1024, 128]` and `key_mask` `[8, 128]`, whose values are the synthetic key mask, all ones.
-/// It is not a `--data` directory: `--data` on the example is refused with E-DATA-001, because
-/// dense data counts the key mask as a second input.
+/// Since story:decider-dense-named-data it is also a dense `--data` directory of one batch: the
+/// declarations share no leading dimension, so a sample is the whole declared tensor, and
+/// `--steps 0 --data` on it prints the step-0 loss of the synthetic run (it was refused with
+/// E-DATA-001 while dense data took one input and one target).
 #[test]
-fn adv_tb_4_the_written_batch_of_the_example_is_one_f32_file_per_declaration_and_no_data_directory()
-{
+fn adv_tb_4_the_written_batch_of_the_example_is_one_f32_file_per_declaration_and_one_data_batch() {
     let case = scratch("data");
-    let (_, batch, _) = export(&case);
+    let (_, batch, loss) = export(&case);
     let mut files: Vec<(String, u64)> = std::fs::read_dir(&batch)
         .expect("the batch directory")
         .map(|entry| {
@@ -121,10 +122,11 @@ fn adv_tb_4_the_written_batch_of_the_example_is_one_f32_file_per_declaration_and
         "--data",
         path(&batch),
     ]);
-    assert_exit(&output, 1);
-    let stderr = text(&output.stderr);
-    assert!(stderr.contains("E-DATA-001"), "{stderr}");
-    assert!(!stderr.contains("panicked"), "{stderr}");
+    assert_exit(&output, 0);
+    assert_eq!(
+        after(&text(&output.stdout), "step 0 loss "),
+        Some(loss.as_str())
+    );
 }
 
 /// The checkpoint of `--steps 0` is the initial state: `infer` on it prints the loss the run
