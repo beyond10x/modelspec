@@ -236,6 +236,8 @@ pub trait KernelBackend {
 
 Use *typed IDs* rather than vector positions in public APIs. The verifier checks SSA dominance/topological definition order, ownership of parameter IDs, legal effects, shape/dtype consistency, and full output initialization.
 
+Beside the nodes, as `TrainingProgram.subgraphs` sits beside them, `TensorProgram.scopes` is a `ScopeTable` (§ 13.2): its `entries`, each a `ScopeEntry` of a `parent` `ScopeId` (absent on the Program scope, an earlier entry otherwise) and a `ScopeSegment` (`Program(name)`, `Function { name, instance, call_span }`, `Adjoint(ValueId)`, `Update(path)`, `Module`, `Layer`), and its `values`, the scope of every `ValueId`. `TensorProgramBuilder::enter_scope` and `exit_scope` bracket a scope and every node the builder adds is stamped with the innermost; `lower` enters the Program scope first and a Function scope per inlining, `differentiate` and `differentiate_inputs` stamp each rule's nodes `Adjoint(%k)` under `%k`'s scope, and `attach_sgd`, `attach_adamw` and `attach_muon` stamp each parameter's update `Update(path)`. `ScopeTable::key` is the `modelspec.diagram.ScopeKey` text (`FitTwoLayer/update@TwoLayer.w1`, `Fit/extra@1`, `<train>/forward/grad%<k>`). A table with no entry and no value is a program built without provenance, as a builder in which no scope was entered makes; the verifier checks only a table that records something, and there refuses a node without a scope (V-SCOPE-001) and a scope whose parent chain does not reach a Program scope (V-SCOPE-002). Nothing prints the table, so `modelspec ir` and every `ir_hash` are unchanged.
+
 ### 3.3 Compiler passes and ordering
 
 1. Parse, resolve names, specialize compile-time dimension parameters.

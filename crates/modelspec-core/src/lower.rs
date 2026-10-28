@@ -23,6 +23,11 @@
 //! the program every other run reads, dropout the identity (coordinator decision D47,
 //! 2026-10-25).
 //!
+//! Every node is stamped with its scope (DESIGN.md § 13.2): the train block's `Program` scope,
+//! entered first, and inside it a `Function` scope for each inlining, with the instance the
+//! dropout sites count and the call's span, so the scope `extra@1` holds the site
+//! `<Model>.extra@1.dropout#<k>`.
+//!
 //! The loss is the program's single output. Every node carries the span of the source construct
 //! it came from: the declaration for `Input` and `ParamRead`, the expression otherwise. Nothing
 //! is removed here, so a `let`, input or parameter the loss does not use is a dead node until
@@ -39,7 +44,9 @@ use thiserror::Error;
 
 use crate::diag::SourceSpan;
 use crate::hir::{FnRef, Hir, HirData, HirExpr, HirExprKind, HirModel};
-use crate::ir::tensor::{BuildError, TensorOp, TensorProgram, TensorProgramBuilder, ValueId};
+use crate::ir::tensor::{
+    BuildError, ScopeSegment, TensorOp, TensorProgram, TensorProgramBuilder, ValueId,
+};
 use crate::ops;
 use crate::passes::dce;
 
@@ -86,6 +93,7 @@ pub fn lower(hir: &Hir) -> Result<LoweredProgram, LowerError> {
     let model = &hir.model;
     let train = &hir.train;
     let mut builder = TensorProgramBuilder::new();
+    builder.enter_scope(ScopeSegment::Program(train.name.clone()));
 
     let mut params = Vec::with_capacity(model.params.len());
     for param in &model.params {
@@ -397,6 +405,11 @@ impl Lowering<'_> {
         let instance = self.inlined[function.0];
         self.inlined[function.0] += 1;
         self.inlining.push((function, instance));
+        self.builder.enter_scope(ScopeSegment::Function {
+            name: f.name.clone(),
+            instance: u32::try_from(instance).unwrap_or(u32::MAX),
+            call_span: Some(span.clone()),
+        });
         let mut frame = Frame::Function {
             args,
             lets: Vec::with_capacity(f.lets.len()),
@@ -408,6 +421,7 @@ impl Lowering<'_> {
             }
         }
         let result = self.expr(&f.result, &frame)?;
+        self.builder.exit_scope();
         self.inlining.pop();
         Ok(result)
     }

@@ -9,6 +9,10 @@ history.
 
 ## [Unreleased]
 
+### Added
+
+- `TensorProgram.scopes`, a `ScopeTable` recording where every Tensor IR node came from: the train block, each inlined function with its instance and call site, the gradient rule of one forward node and the update of one parameter, stamped by lowering, autodiff and the optimizer attach, kept by dead-code elimination and checked by the verifier (`V-SCOPE-001`, `V-SCOPE-002`); `modelspec ir` prints nothing new (story:diagram-scope-provenance).
+
 ### Changed
 
 - ESS 0.74.0 (was 0.72.0): `spec/ess-inputs.yaml` requires it and CI installs it.

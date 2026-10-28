@@ -12,7 +12,9 @@ use crate::device::DeviceProfile;
 use crate::ir::kernel::{
     BufferView, ExecutionPlan, Kernel, KernelKind, KernelModuleId, MatMulLimits, PlanOp, PlanStep,
 };
-use crate::ir::tensor::{DType, Dim, ParamId, TensorOp, TensorProgram, TensorType, ValueId};
+use crate::ir::tensor::{
+    DType, Dim, ParamId, ScopeSegment, TensorOp, TensorProgram, TensorType, ValueId,
+};
 use crate::ir::training::{
     Access, C1_INPUT, C2_INPUT, Effect, EffectToken, LR_T_INPUT, MUON_LR_T_INPUT, Moment, Muon,
     OptimizerRule, StateVersion, Subgraph, TrainingProgram, TrainingStep, moment_input,
@@ -91,6 +93,26 @@ pub enum VerifyError {
     ParamDType { param: ParamId, ty: TensorType },
     #[error("output {output} is not f32; an i32 value is read only as ids")]
     IntegerOutput { output: ValueId },
+    /// V-SCOPE-001: the program records scopes, and this node has none in its table, or one the
+    /// table does not hold (DESIGN.md § 3.2, § 13.2).
+    #[error("V-SCOPE-001: {node} has no scope in the program's scope table")]
+    NodeWithoutScope { node: ValueId },
+    /// V-SCOPE-002: the parent chain of this scope does not reach the Program scope: it names a
+    /// scope that is not an earlier entry, or ends in a scope that is not a Program, or a Program
+    /// scope has a parent.
+    #[error("V-SCOPE-002: scope {scope} does not lie in the Program scope")]
+    ScopeOutsideProgram { scope: u32 },
+}
+
+impl VerifyError {
+    /// The code of a verifier rule that has one: `V-SCOPE-001` and `V-SCOPE-002`.
+    pub fn rule(&self) -> Option<&'static str> {
+        match self {
+            VerifyError::NodeWithoutScope { .. } => Some("V-SCOPE-001"),
+            VerifyError::ScopeOutsideProgram { .. } => Some("V-SCOPE-002"),
+            _ => None,
+        }
+    }
 }
 
 /// Per-thread counts of the verifier's work, for the tests of a runtime that verifies once per
@@ -134,7 +156,8 @@ pub mod counters {
 /// Order: the parameter table (concrete f32 types, unique canonical paths), then value uniqueness,
 /// then each node in definition order (operands defined earlier, parameter declared, concrete
 /// type, registry rule), then the input list (exactly the Input nodes, each once, in node order,
-/// names unique) and the output list (each defined, each f32).
+/// names unique) and the output list (each defined, each f32), then the scope table when the
+/// program records one (V-SCOPE-001, V-SCOPE-002).
 pub fn verify(program: &TensorProgram) -> Result<(), VerifyError> {
     counters::bump(&counters::VERIFY);
     let mut paths: BTreeMap<&str, ParamId> = BTreeMap::new();
@@ -219,6 +242,35 @@ pub fn verify(program: &TensorProgram) -> Result<(), VerifyError> {
         };
         if program.nodes[i].ty.dtype != DType::F32 {
             return Err(VerifyError::IntegerOutput { output });
+        }
+    }
+    check_scopes(program)
+}
+
+/// The scope rules of DESIGN.md § 13.2, for a program that records scopes (a non-empty
+/// [`crate::ir::tensor::ScopeTable`]): every scope's parent is an earlier scope and its chain
+/// ends in a Program scope, only a root is a Program scope (V-SCOPE-002), and every node has a
+/// scope the table holds (V-SCOPE-001).
+fn check_scopes(program: &TensorProgram) -> Result<(), VerifyError> {
+    let scopes = &program.scopes;
+    if scopes.is_empty() {
+        return Ok(());
+    }
+    for (i, entry) in scopes.entries.iter().enumerate() {
+        let program_segment = matches!(entry.segment, ScopeSegment::Program(_));
+        // Every earlier scope has passed, so a parent before this one reaches a Program scope.
+        let reaches = match entry.parent {
+            None => program_segment,
+            Some(parent) => !program_segment && (parent.0 as usize) < i,
+        };
+        if !reaches {
+            return Err(VerifyError::ScopeOutsideProgram { scope: i as u32 });
+        }
+    }
+    for node in &program.nodes {
+        match scopes.scope_of(node.id) {
+            Some(scope) if (scope.0 as usize) < scopes.entries.len() => {}
+            _ => return Err(VerifyError::NodeWithoutScope { node: node.id }),
         }
     }
     Ok(())
