@@ -1,7 +1,7 @@
 ---
 title: The pipeline
 description: From a .mspec file to a verified training step, stage by stage, with the Tensor IR and Training IR of the linear regression example read line by line.
-sidebar_position: 2
+sidebar_position: 3
 lede: "The compiler turns a source file into a chain of immutable values, the Tensor IR, the Training IR and the Kernel IR, each verified before the next stage reads it."
 source: "DESIGN.md § 3; crates/modelspec-core/src/lower.rs, autodiff.rs, ir and schedule.rs; the tests ir_tensor.rs, train_linear.rs and ir_kernel.rs of crates/modelspec-cli and their golden files; the IR listings pasted from runs of modelspec ir on examples/linear_regression.mspec."
 ---

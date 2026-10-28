@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ModelSpec: specify what the model computes; the compiler decides how it runs</title>
+<title>ModelSpec: train faster, because the compiler builds a runtime for one target</title>
 <style>
 :root {
   --bg: #0e1116;
@@ -218,8 +218,8 @@ body.all .hud, body.all .narrow { display: none; }
   <div class="title-wrap">
     <div class="kicker">Vision · 2026-10-28 · release 0.21.0</div>
     <h1>ModelSpec</h1>
-    <p class="promise">Specify <b>what</b> the model computes.<br>The compiler decides <b>how</b> it runs.</p>
-    <p class="sub">A declarative language and a Rust compiler for differentiable tensor programs. One <code>.mspec</code> file is the whole training step.</p>
+    <p class="promise">Train faster, because the compiler builds<br>a runtime for <b>one</b> target.</p>
+    <p class="sub">The whole training step is one declared <code>.mspec</code> program, so the compiler knows everything before it runs, and every optimization is held to a CPU reference. The speed is the goal, not shipped yet.</p>
     <div class="chips">
       <span class="chip">Rust</span>
       <span class="chip">Vulkan compute + SPIR-V</span>
@@ -227,20 +227,21 @@ body.all .hud, body.all .narrow { display: none; }
       <span class="chip">no Python · PyTorch · CUDA</span>
     </div>
   </div>
-  <aside class="notes">Vision objective; DESIGN.md header principle and section 0. Date and version: the 0.21.0 release, 2026-10-28 (CHANGELOG.md § 0.21.0).</aside>
+  <aside class="notes">Vision, "North star" (2026-10-28); DESIGN.md section 0. Date and version: the 0.21.0 release, 2026-10-28 (CHANGELOG.md § 0.21.0).</aside>
 </section>
 
 <!-- 2 -->
 <section class="slide" data-n="2">
-  <h2>The problem</h2>
-  <p class="mut" style="font-size:30px;margin-bottom:40px">A training run today is a Python program over a framework, a CUDA toolkit and a driver.</p>
-  <div class="grid2">
-    <div class="card"><span class="num">01</span><h3>What ran is scattered</h3><p>Shapes, gradient graph, optimizer state and random streams live in runtime objects. Nobody can read them back as one artifact.</p></div>
-    <div class="card"><span class="num">02</span><h3>Errors arrive late</h3><p>Shape and dtype errors surface at run time, often after GPU time has been spent.</p></div>
-    <div class="card"><span class="num">03</span><h3>Reproducing means rebuilding</h3><p>To reproduce a run you reproduce an environment, not re-read a file.</p></div>
-    <div class="card"><span class="num">04</span><h3>No target for model writers</h3><p>A person, script or agent that edits models has no small, typed target to check before it runs.</p></div>
+  <span class="tag">North star · planned</span>
+  <h2>Why one declared program can train faster</h2>
+  <p class="mut" style="font-size:28px;margin-bottom:28px">A general framework stays general on every step. A ModelSpec runtime is compiled for one program on one target.</p>
+  <div class="grid2" style="gap:22px 40px">
+    <div class="card"><span class="num">01</span><h3>The compiler sees the whole step</h3><p>Model, loss, gradients, optimizer and data are one typed program, known before it runs.</p></div>
+    <div class="card"><span class="num">02</span><h3>One runtime per target</h3><p>One use case, one OS, one GPU chipset. Today: Vulkan on one RTX 3090; more planned.</p></div>
+    <div class="card"><span class="num">03</span><h3>Faster, never different</h3><p>Every kernel and pass is checked against the CPU reference. A change that alters a result is refused.</p></div>
+    <div class="card"><span class="num">04</span><h3>Today: slower on a transformer</h3><p>BERT-tiny block, batch 8: 93.9 ms per step; PyTorch eager 3.9 ms, torch.compile 2.0 ms. Planned: 3×, parity, then faster.</p></div>
   </div>
-  <aside class="notes">Vision, "The problem".</aside>
+  <aside class="notes">Vision, "North star" (2026-10-28): points 1 to 3 and the BERT-tiny ladder. One target today: DESIGN.md section 0 and website/docs/status.mdx. Figures: website/docs/benchmarks.md, Transformer block, the runs transformer-block-b8-modelspec-vulkan-0.20.0, transformer-block-b8-pytorch-cuda-eager-0.20.0 and transformer-block-b8-pytorch-cuda-compile-0.20.0 of benchmarks/runs.yaml (2026-10-27, medians 93,868.4, 3,937.2 and 1,971.9 µs per step), published in CHANGELOG.md § 0.21.0. The ladder (within 3× of eager, parity with eager, faster than torch.compile) is planned, not built. The problem this answers (what ran is scattered, errors arrive late, reproducing means rebuilding) is on slides 6 and 7.</aside>
 </section>
 
 <!-- 3 -->
