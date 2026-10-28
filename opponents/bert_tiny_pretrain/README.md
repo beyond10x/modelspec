@@ -44,26 +44,37 @@ ModelSpec's with `--checkpoint`.
 `--mode eager` runs the step as written. `--mode compile` runs the forward and the loss under
 `torch.compile(dynamic=False)`, after a dynamo reset. A step is:
 
-- the batch's copy to the device;
+- the batch's copy to the device, `non_blocking` from pinned host memory;
 - `zero_grad(set_to_none=True)`, the loss and `backward()`;
 - `AdamW.step()` and the scheduler's step.
 
 ### The training clock
 
-Before the first step, both modes run 3 forward and backward passes on a copy of the parameters
-and then discard it. In compile mode this compiles the step; in both modes it initialises cuBLAS.
+Before the first step, both modes run a warm-up on a copy of the parameters: 3 forward and
+backward passes and one `AdamW.step()` with an optimizer of its own. The copy and that optimizer
+are then discarded, so the timed run still starts from the parameters it read. In compile mode
+the warm-up compiles the step; in both modes it pays the first use of cuBLAS and of AdamW, so
+the first timed step carries no first-use cost.
 
-The clock starts at the first step. Per step it is host wall time from a
-`torch.cuda.synchronize` before the batch's copy to the device to one after the scheduler's step.
-These are outside it:
+Where each side's clock starts and stops, per training step:
 
-- the warm-up and the loading;
-- the host's draw of the next batch;
+| | starts | stops |
+|---|---|---|
+| this opponent | a `torch.cuda.synchronize` after the step's batch is staged in pinned host memory | a `torch.cuda.synchronize` after the scheduler's step |
+| ModelSpec (`--clock`, stepwise) | recording the step's command buffer, after the host staged the batch | the end of that step's host wait |
+
+Both clocks include the step's copy of its batch to the device, ModelSpec's from its staging
+buffer, the opponent's from pinned host memory. These are
+outside both:
+
+- the warm-up, the loading, the plan build and pipeline creation;
+- the host's draw and staging of the batch;
 - the held-out evaluations.
 
-ModelSpec's `--clock` leaves out the same things. Its stepwise clock runs from recording a step's
-command buffer to the end of that step's host wait. It excludes plan build, pipeline creation,
-the host's draw and staging of the batch, and the held-out command buffers.
+`train_seconds` is the sum of the per-step clock. The figure per run is
+`us_per_step = train_seconds · 10⁶ / steps`, the mean over the run's steps, on both sides:
+ModelSpec's from the `train_seconds <s> … steps <n>` line of `--clock`, this opponent's from its
+result line. The benchmarks page and the report give the median of 3 runs of it.
 
 ### The held-out evaluation
 
@@ -89,8 +100,8 @@ One JSON line on stdout per evaluation: `{"step": k, "heldout_loss": v, "train_s
 | `build` | `commit`: the git commit of the checkout; `dirty`: whether its tracked files differ from it |
 | `status` | `measured` or `refused` |
 | `steps` | the training steps |
-| `median_us_per_step` | the median of the per-step clock over every step |
-| `tokens_per_s`, `gflops` | `tokens_per_step` and `flop_per_step` over the median |
+| `us_per_step` | `train_seconds · 10⁶ / steps`, the mean of the per-step clock over the run, as ModelSpec's `train_seconds` over its steps |
+| `tokens_per_s`, `gflops` | `tokens_per_step` and `flop_per_step` over `us_per_step` |
 | `train_seconds` | the training clock at the end |
 | `eval_every` | `--eval-every` |
 | `target_loss` | `--target`, or `null` |

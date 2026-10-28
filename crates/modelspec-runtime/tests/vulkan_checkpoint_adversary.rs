@@ -134,6 +134,7 @@ fn checkpoint_boundaries_on_the_device() {
                         write: &mut write,
                     }),
                     data: None,
+                    clock: false,
                 },
             )
             .expect("the run with checkpoints finishes");
@@ -153,6 +154,7 @@ fn checkpoint_boundaries_on_the_device() {
                     init: init.clone(),
                     checkpoints: None,
                     data: None,
+                    clock: false,
                 },
             )
             .expect("the plain run finishes");
@@ -177,6 +179,7 @@ fn checkpoint_boundaries_on_the_device() {
                         init: init.clone(),
                         checkpoints: None,
                         data: None,
+                        clock: false,
                     },
                 )
                 .expect("the reference run finishes");

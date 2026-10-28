@@ -23,11 +23,15 @@ ModelSpec's with --checkpoint.
 
 --mode eager runs the step as written; --mode compile runs the forward and the loss under
 torch.compile(dynamic=False). Before the first step both modes run 3 forward and backward passes
-on a copy of the parameters, which compiles the compiled mode and initialises cuBLAS in both, and
-then forget them. The training clock starts at the first step: per step, host wall time from a
-CUDA synchronize before the step's batch is copied to the device to one after the scheduler's
-step. The host's draw of the batch, the held-out evaluations, the warm-up and loading are outside
-it.
+and one AdamW step on a copy of the parameters with an optimizer of its own, then forget both:
+this compiles the compiled mode and pays cuBLAS's and AdamW's first use in both modes, and the
+timed run still starts from the parameters it read. The training clock starts at the first step.
+Per step it is host wall time from a CUDA synchronize to one after the scheduler's step, and
+includes the step's batch copy to the device (non_blocking, from pinned host memory staged
+before the synchronize). The host's draw and staging of the batch, the held-out evaluations, the
+warm-up and loading are outside it. The result line's us_per_step is the training clock over
+the steps, the mean of the run's steps, as ModelSpec's train_seconds over its steps; tokens_per_s
+and gflops are taken from it.
 
 At step 0, every multiple of --eval-every and the last step it evaluates every full HeldOut batch
 without dropout, as ModelSpec's `train --eval-every` does, and prints one JSON line
@@ -49,7 +53,6 @@ import array
 import json
 import math
 import os
-import statistics
 import struct
 import subprocess
 import sys
@@ -646,17 +649,20 @@ def train(args, device, line):
 
     first = packed.batch("Train", args.seed, 0, BATCH)
     copies = {name: value.detach().clone().requires_grad_(True) for name, value in params.items()}
-    ids, labels, weights = (t.to(device) for t in first)
+    ids, labels, weights = (t.pin_memory().to(device, non_blocking=True) for t in first)
     started = time.perf_counter()
     for _ in range(WARMUP_PASSES):
         loss_fn(copies, ids, positions, key_mask, labels, weights).backward()
+    discarded = torch.optim.AdamW(list(copies.values()), lr=LR, betas=BETAS, eps=ADAM_EPS,
+                                  weight_decay=WEIGHT_DECAY, foreach=True)
+    discarded.step()
+    discarded.zero_grad(set_to_none=True)
     torch.cuda.synchronize(device)
-    del copies
-    progress(f"warm-up: {WARMUP_PASSES} forward and backward passes on a copy in "
-             f"{time.perf_counter() - started:.3f} s ({args.mode})")
+    del copies, discarded
+    progress(f"warm-up: {WARMUP_PASSES} forward and backward passes and one AdamW step on a "
+             f"copy in {time.perf_counter() - started:.3f} s ({args.mode})")
 
     trained = 0.0
-    durations = []
     evals = []
 
     def evaluate(step):
@@ -672,9 +678,10 @@ def train(args, device, line):
     for step in range(args.steps):
         if step % args.eval_every == 0:
             evaluate(step)
+        staged = tuple(t.pin_memory() for t in batch)
         torch.cuda.synchronize(device)
         started = time.perf_counter()
-        ids, labels, weights = (t.to(device, non_blocking=True) for t in batch)
+        ids, labels, weights = (t.to(device, non_blocking=True) for t in staged)
         optimizer.zero_grad(set_to_none=True)
         loss = loss_fn(params, ids, positions, key_mask, labels, weights)
         loss.backward()
@@ -683,23 +690,22 @@ def train(args, device, line):
         torch.cuda.synchronize(device)
         seconds = time.perf_counter() - started
         trained += seconds
-        durations.append(seconds)
         if not math.isfinite(loss.item()):
             raise ValueError(f"step {step}: the training loss is {loss.item()}")
         if step + 1 < args.steps:
             batch = packed.batch("Train", args.seed, step + 1, BATCH)
     evaluate(args.steps)
 
-    median = statistics.median(durations) * 1e6
+    us_per_step = trained * 1e6 / args.steps
     reached = None
     if args.target is not None:
         reached = next(((k, s) for k, loss, s in evals if loss <= args.target), None)
     line.update({
         "status": "measured",
         "steps": args.steps,
-        "median_us_per_step": median,
-        "tokens_per_s": BATCH * SEQ * 1e6 / median,
-        "gflops": line["flop_per_step"] / (median * 1e3),
+        "us_per_step": us_per_step,
+        "tokens_per_s": BATCH * SEQ * 1e6 / us_per_step,
+        "gflops": line["flop_per_step"] / (us_per_step * 1e3),
         "train_seconds": trained,
         "eval_every": args.eval_every,
         "target_loss": args.target,

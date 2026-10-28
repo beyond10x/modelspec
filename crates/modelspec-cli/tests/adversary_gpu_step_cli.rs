@@ -393,10 +393,53 @@ fn adv_gpu_step_device_profile_and_stats_on_a_stepwise_run() {
     assert!(stderr.contains("host waits: 31\n"), "{stderr}");
 }
 
-/// Hypothesis 5: the SGD dropout fixture on Vulkan prints the CPU's stdout byte for byte, a
-/// resume on Vulkan from a CPU checkpoint at step 10 prints the CPU resume's stdout, and a
-/// diverging learning rate gives the CPU's status, stdout and stderr. The unit claims the first
-/// in its report and has no test for it.
+/// A `step <k> loss <v> …` or `eval <k> loss <v> …` line split at its loss: the text before it,
+/// the value, and the text after it.
+fn loss_line(line: &str) -> Option<(&str, f32, &str)> {
+    let (head, tail) = line.split_once(" loss ")?;
+    if !(head.starts_with("step ") || head.starts_with("eval ")) {
+        return None;
+    }
+    let (value, rest) = tail.split_once(' ').unwrap_or((tail, ""));
+    Some((head, value.parse().ok()?, rest))
+}
+
+/// The stdout of a Vulkan run against the CPU's (coordinator decision D88): the same lines, each
+/// finite loss within the run tolerance `GPU_RUN_ATOL + GPU_RUN_RTOL·|c|` of DESIGN.md § 9, every
+/// non-finite one, every other line and the rest of a loss line byte for byte.
+fn assert_stdout_as_the_cpu(gpu: &str, cpu: &str, label: &str) {
+    let g: Vec<&str> = gpu.lines().collect();
+    let c: Vec<&str> = cpu.lines().collect();
+    assert_eq!(g.len(), c.len(), "{label}: lines\n{gpu}\n---\n{cpu}");
+    let mut losses = 0;
+    for (g_line, c_line) in g.iter().zip(&c) {
+        match (loss_line(g_line), loss_line(c_line)) {
+            (Some((g_head, g_loss, g_rest)), Some((c_head, c_loss, c_rest))) => {
+                assert_eq!((g_head, g_rest), (c_head, c_rest), "{label}");
+                if !c_loss.is_finite() {
+                    assert_eq!(g_line, c_line, "{label}: a non-finite loss");
+                    continue;
+                }
+                assert!(
+                    within(g_loss, c_loss, c_loss.abs(), GPU_RUN_ATOL, GPU_RUN_RTOL),
+                    "{label}: `{g_line}` against the CPU's `{c_line}`"
+                );
+                losses += 1;
+            }
+            _ => assert_eq!(g_line, c_line, "{label}"),
+        }
+    }
+    assert!(losses > 0, "{label}: no loss line in\n{cpu}");
+}
+
+/// Hypothesis 5: the SGD dropout fixture on Vulkan prints the CPU's stdout, a resume on Vulkan
+/// from a CPU checkpoint at step 10 prints the CPU resume's stdout, and a diverging learning rate
+/// gives the CPU's status, stdout and stderr. The unit claims the first in its report and has no
+/// test for it. Since story:bert-tiny-vs-pytorch-cuda (coordinator decision D88) every finite
+/// loss is compared within the run tolerance of DESIGN.md § 9 and every other stdout line byte
+/// for byte: release 0.21.0 sums the CPU's whole-tensor reductions in `f64` (D84), which moved
+/// the CPU's step-0 loss by one ULP (`2.426727` against the Vulkan run's `2.4267268` on the RTX
+/// 3090).
 #[test]
 #[ignore = "needs a Vulkan device"]
 fn adv_gpu_step_device_dropout_sgd_matches_the_cpu_run_resume_and_divergence() {
@@ -405,10 +448,10 @@ fn adv_gpu_step_device_dropout_sgd_matches_the_cpu_run_resume_and_divergence() {
     assert_exit(&cpu, 0);
     let gpu = modelspec(&["train", DROPOUT, "--backend", "vulkan"]);
     assert_exit(&gpu, 0);
-    assert_eq!(
-        text(&gpu.stdout),
-        text(&cpu.stdout),
-        "a 30-step dropout run"
+    assert_stdout_as_the_cpu(
+        &text(&gpu.stdout),
+        &text(&cpu.stdout),
+        "a 30-step dropout run",
     );
 
     let checkpoint = case.join("cpu10.msckpt");
@@ -442,10 +485,10 @@ fn adv_gpu_step_device_dropout_sgd_matches_the_cpu_run_resume_and_divergence() {
         .collect();
     assert_exit(&resumed[0], 0);
     assert_exit(&resumed[1], 0);
-    assert_eq!(
-        text(&resumed[1].stdout),
-        text(&resumed[0].stdout),
-        "a resumed dropout run"
+    assert_stdout_as_the_cpu(
+        &text(&resumed[1].stdout),
+        &text(&resumed[0].stdout),
+        "a resumed dropout run",
     );
 
     let diverging = variant(
@@ -458,7 +501,11 @@ fn adv_gpu_step_device_dropout_sgd_matches_the_cpu_run_resume_and_divergence() {
     let gpu = modelspec(&["train", &diverging, "--backend", "vulkan"]);
     assert_exit(&cpu, 1);
     assert_eq!(gpu.status.code(), cpu.status.code());
-    assert_eq!(text(&gpu.stdout), text(&cpu.stdout));
+    assert_stdout_as_the_cpu(
+        &text(&gpu.stdout),
+        &text(&cpu.stdout),
+        "a diverging dropout run",
+    );
     assert_eq!(text(&gpu.stderr), text(&cpu.stderr));
 }
 

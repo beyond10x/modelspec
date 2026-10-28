@@ -21,8 +21,11 @@
 //! checkpoint files and the events of `--serve` and `--record`. A stepwise Vulkan run sums, per
 //! update, the time from recording the step's command buffer to the end of its host wait
 //! ([`modelspec_runtime::vulkan::stepwise`]), so the host's batch draw before each step is left
-//! out too; a chunked Vulkan run counts its time from the first submit to the end of the last
-//! wait; a CPU run counts the time of its loop of updates from the first step's batch to the
+//! out too; a chunked Vulkan run sums, per stop, the time from recording its first command buffer
+//! to the end of the wait for its steps, and records the read-back, the final loss evaluation and
+//! the checkpoint after them in a command buffer of their own, one more host wait per stop
+//! (story:bert-tiny-vs-pytorch-cuda, ADV-BP-3);
+//! a CPU run counts the time of its loop of updates from the first step's batch to the
 //! last update, without the time its observer and its checkpoints take. With `--clock` each
 //! `eval <k>` line carries the clock through the updates before step `k`, so the time at which
 //! the held-out loss first falls below a target reads from stdout alone.
@@ -277,7 +280,8 @@ pub struct Args {
     /// lines of a finished run, the training-loop time of its N updates without compilation, plan
     /// build, held-out evaluation, the final loss, checkpoints and events, and the time of its
     /// held-out evaluations; and ` train_seconds <s>` at the end of each `eval <k>` line, the
-    /// clock through the updates before step K.
+    /// clock through the updates before step K. A chunked Vulkan run waits once more per
+    /// checkpoint and at the end, so that its clock leaves out the read-back and the final loss.
     #[arg(long)]
     pub clock: bool,
     /// After the last step, write the parameters, step and optimizer to the .msckpt file PATH. A
@@ -1049,6 +1053,7 @@ fn train(
                     write: &mut write,
                 }),
                 data: None,
+                clock: files.clock,
             };
             // The post-loop step; the runner refuses a run whose end is past `u64::MAX`.
             let last = files.start().saturating_add(compiled.config.steps);

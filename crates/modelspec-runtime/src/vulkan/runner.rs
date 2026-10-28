@@ -111,7 +111,10 @@ pub struct RunStats {
     /// The training clock (`train_seconds`, story:bert-tiny-vs-pytorch-cuda): of a stepwise run
     /// the sum over its updates of the time from recording the step's command buffer to the end
     /// of its host wait, without the held-out evaluations, the final loss evaluation, the batch
-    /// the host draws and stages before the step, and the checkpoint files; of a chunked run
+    /// the host draws and stages before the step, and the checkpoint files; of a chunked run with
+    /// [`RunOptions::clock`] the sum over its stops of the time from recording the stop's first
+    /// command buffer to the end of the wait for its steps, without the read-back, the final loss
+    /// evaluation and the checkpoint after them; of a chunked run without it
     /// [`RunStats::elapsed`].
     pub training: Duration,
     /// The held-out evaluations of a stepwise run (`eval_seconds`): each evaluated step's batches
@@ -220,6 +223,12 @@ pub struct RunOptions<'c> {
     /// what [`synthetic`] made for the same training block, kept by a caller that runs it more
     /// than once. A batch the plan does not match is refused with [`VulkanRunError::Plan`].
     pub data: Option<SyntheticData>,
+    /// Whether a chunked run keeps its training clock ([`RunStats::training`], `train --clock`,
+    /// story:bert-tiny-vs-pytorch-cuda): each stop waits for its steps, then records its
+    /// read-back, the final loss evaluation of the last stop and the checkpoint after it in a
+    /// command buffer of their own, one more host wait per stop, so that the clock leaves them
+    /// out. A stepwise run keeps its clock without it.
+    pub clock: bool,
 }
 
 /// The forward program on the device ([`infer`]).
@@ -269,6 +278,7 @@ pub fn train_on_device_from(
             init,
             checkpoints,
             data: _,
+            clock: _,
         } = options;
         let options = super::stepwise::StepwiseOptions {
             start,
@@ -561,6 +571,35 @@ struct Done {
     prediction: Option<HostTensor<f32>>,
 }
 
+/// The training clock of a chunked run with [`RunOptions::clock`] ([`RunStats::training`]): the
+/// sum of the spans from recording a stop's first command buffer to the end of the host wait for
+/// its steps. The read-back, the final loss evaluation and the checkpoint write after each stop
+/// fall between two spans.
+#[derive(Debug, Default)]
+struct TrainingClock {
+    total: Duration,
+    began: Option<Instant>,
+}
+
+impl TrainingClock {
+    /// A stop's span begins at `at`.
+    fn begin(&mut self, at: Instant) {
+        self.began = Some(at);
+    }
+
+    /// The span begun last ends at `at`; without one begun, nothing is counted.
+    fn end(&mut self, at: Instant) {
+        if let Some(began) = self.began.take() {
+            self.total += at.saturating_duration_since(began);
+        }
+    }
+
+    /// The spans ended so far.
+    fn total(&self) -> Duration {
+        self.total
+    }
+}
+
 /// The timestamps of one command buffer: its pool and the next query to write.
 pub(super) struct Stamps<'p> {
     pub(super) pool: &'p TimestampPool<'p>,
@@ -645,6 +684,7 @@ fn execute_runs(
         init,
         checkpoints,
         data,
+        clock: clocked,
     } = options;
     start
         .checked_add(steps)
@@ -829,12 +869,15 @@ fn execute_runs(
         let mut dispatches_per_step = 0;
         let mut barriers_per_step = 0;
         let mut first_submit: Option<Instant> = None;
+        let mut trained = TrainingClock::default();
         let loss = buffer(&buffers, &plan.loss_view)?;
-        // The counters of the first `ran` steps, from the first submit to the last wait.
+        // The counters of the first `ran` steps, from the first submit to the last wait, with
+        // `trained` the training clock of a clocked run.
         let count = |ran: u64,
                      dispatches_per_step: u64,
                      barriers_per_step: u64,
-                     first_submit: Option<Instant>| {
+                     first_submit: Option<Instant>,
+                     trained: Duration| {
             let elapsed = first_submit
                 .expect("a run submits at least one command buffer")
                 .elapsed();
@@ -851,7 +894,7 @@ fn execute_runs(
                 peak_device_bytes: memory.peak_bytes(),
                 class,
                 elapsed,
-                training: elapsed,
+                training: if clocked { trained } else { elapsed },
                 evaluation: Duration::ZERO,
             }
         };
@@ -901,6 +944,7 @@ fn execute_runs(
         for &stop in &stops {
             let last = stop == steps;
             {
+                trained.begin(Instant::now());
                 let mut chain = device.chain();
                 let mut recording = device.record()?;
                 let mut stamps = stamps_of(chunk, next_query);
@@ -943,6 +987,16 @@ fn execute_runs(
                     recording.copy_region(loss, plan.loss_view.offset, &losses, 4 * k, 4)?;
                     recording.barrier(Barrier::TransferToCompute);
                     barriers_per_step = recorded_barriers() - barriers_before;
+                }
+                // A clocked run waits for the steps of this stop before it records what
+                // follows them, so that the training clock ends with the last step.
+                if clocked && stop > from {
+                    let recorded = recording.finish()?;
+                    first_submit.get_or_insert_with(Instant::now);
+                    chain.finish(recorded)?.wait()?;
+                    trained.end(Instant::now());
+                    chain = device.chain();
+                    recording = device.record()?;
                 }
                 if last {
                     record(
@@ -1013,7 +1067,13 @@ fn execute_runs(
                     };
                     return Err(VulkanRunError::NonFinite(Box::new(DivergedOnDevice {
                         diverged: Diverged { diagnostic, run },
-                        stats: count(stop, dispatches_per_step, barriers_per_step, first_submit),
+                        stats: count(
+                            stop,
+                            dispatches_per_step,
+                            barriers_per_step,
+                            first_submit,
+                            trained.total(),
+                        ),
                         profile: profile_of(stop, Some((chunk, next_query)))?,
                     })));
                 }
@@ -1022,7 +1082,13 @@ fn execute_runs(
             last_from = from;
             from = stop;
         }
-        let stats = count(steps, dispatches_per_step, barriers_per_step, first_submit);
+        let stats = count(
+            steps,
+            dispatches_per_step,
+            barriers_per_step,
+            first_submit,
+            trained.total(),
+        );
         let profiled = profile_of(steps, None)?;
 
         let read = download.read_f32()?;
@@ -1372,6 +1438,25 @@ mod tests {
     }
 
     const FINITE: [f32; 4] = [1.0, 2.0, 3.0, 4.0];
+
+    /// story:bert-tiny-vs-pytorch-cuda, finding ADV-BP-3: the training clock of a chunked run
+    /// counts each stop from its recording to the wait for its steps and nothing between two
+    /// stops, the read-back, final loss evaluation and checkpoint write; an end without a begin
+    /// counts nothing.
+    #[test]
+    fn the_chunked_training_clock_counts_the_steps_of_each_stop_and_not_what_follows_them() {
+        let zero = Instant::now();
+        let at = |ms: u64| zero + Duration::from_millis(ms);
+        let mut clock = TrainingClock::default();
+        clock.end(at(5));
+        assert_eq!(clock.total(), Duration::ZERO);
+        clock.begin(at(10));
+        clock.end(at(40));
+        clock.end(at(300));
+        clock.begin(at(500));
+        clock.end(at(530));
+        assert_eq!(clock.total(), Duration::from_millis(60));
+    }
 
     /// The step, the losses kept and the diagnostic's text of a refused read-back.
     fn refused(found: Option<(u64, Diagnostic)>) -> (u64, String) {

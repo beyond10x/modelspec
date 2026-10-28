@@ -95,10 +95,10 @@ entities:
         summary: The median µs per step of the repeats, as the source states it, or computed from its median seconds as seconds · 10⁶ / timed_steps.
       - name: target_loss
         type: Optional<Binary64>
-        summary: The held-out loss a time-to-target run trains to, such as the `bert-tiny-pretrain` reference run's final held-out loss `6.926537926202018`; with steps_to_target and seconds_to_target, required on a `bert-tiny-pretrain` run.
+        summary: The held-out loss a time-to-target run trains to; for `bert-tiny-pretrain` the held-out unigram baseline of its packed corpus, `heldout_unigram_baseline_nats` `6.926537926202018` of `packed.json`, which the reference run passed on its way to a final held-out loss of 6.7674994; with steps_to_target, seconds_to_target and eval_every, required on a `bert-tiny-pretrain` run.
       - name: steps_to_target
         type: Optional<modelspec.benchmark.PositiveInteger>
-        summary: The first evaluated step whose held-out loss is at most target_loss, where the source states it.
+        summary: The first evaluated step whose held-out loss is at most target_loss, a multiple of eval_every, where the source states it.
       - name: seconds_to_target
         type: Optional<Binary64>
         summary: The training seconds up to steps_to_target, the cumulative `train_seconds` of that step's eval line, without the held-out evaluations, checkpoint writes or events (`modelspec train --clock`, and the opponent's eval lines).
