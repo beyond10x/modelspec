@@ -85,17 +85,39 @@ fn mnist_mlp_on_vulkan_prints_the_lines_of_the_cpu_run() {
     assert!(stderr.contains("host waits: 1\n"), "{stderr}");
 }
 
+/// `--init` stays CPU-only, a usage error on Vulkan; `--eval` runs on Vulkan since
+/// story:decider-dense-named-data, so beside a file that does not exist it is not a usage error
+/// but the missing file's refusal, exit 1.
 #[test]
 fn the_data_flags_are_usage_errors_on_vulkan() {
-    for flags in [&["--init", "init"][..], &["--eval", "eval"]] {
-        let mut args = vec!["train", "no-such-model.mspec", "--backend", "vulkan"];
-        args.extend_from_slice(flags);
-        let output = modelspec(&args, Some(NO_LOADER));
-        let stderr = text(&output.stderr);
-        assert_eq!(output.status.code(), Some(2), "{flags:?}: {stderr}");
-        assert!(stderr.contains(flags[0]), "{flags:?}: {stderr}");
-        assert!(output.stdout.is_empty(), "{flags:?}");
-    }
+    let args = [
+        "train",
+        "no-such-model.mspec",
+        "--backend",
+        "vulkan",
+        "--init",
+        "init",
+    ];
+    let output = modelspec(&args, Some(NO_LOADER));
+    let stderr = text(&output.stderr);
+    assert_eq!(output.status.code(), Some(2), "{stderr}");
+    assert!(stderr.contains("--init"), "{stderr}");
+    assert!(output.stdout.is_empty());
+
+    let args = [
+        "train",
+        "no-such-model.mspec",
+        "--backend",
+        "vulkan",
+        "--eval",
+        "eval",
+    ];
+    let output = modelspec(&args, Some(NO_LOADER));
+    let stderr = text(&output.stderr);
+    assert_eq!(output.status.code(), Some(1), "{stderr}");
+    assert!(!stderr.contains("--eval"), "{stderr}");
+    assert!(stderr.contains("no-such-model.mspec"), "{stderr}");
+    assert!(output.stdout.is_empty());
 }
 
 #[test]

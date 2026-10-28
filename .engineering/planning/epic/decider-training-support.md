@@ -2,14 +2,15 @@
 format: aep.planning-md/3
 id: epic:decider-training-support
 kind: epic
-status: proposed
+status: active
 title: 'Decider training support: train and score the decider model in ModelSpec'
 summary: decider.mspec trains on the CPU and through Vulkan on the decider repository's batches, and infer scores held-out decisions; anything blocking the decider goes first.
 relations:
 - serves: vision:modelspec
-revision: 2
+revision: 3
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-28T12:12:29Z", actor: "human:timo", revision: 2}
+- {from: "proposed", to: "active", at: "2026-10-28T12:13:46Z", actor: "human:timo", revision: 3}
 ---
 # Decider training support: train and score the decider model in ModelSpec
 

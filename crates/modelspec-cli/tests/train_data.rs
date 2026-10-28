@@ -429,8 +429,10 @@ fn read_as_dense(file: &str, dir: &Path) -> String {
 
 /// Scenario 3, coordinator decision D56: a directory without `binding.json` is dense (D48), so
 /// the fixture on the dataset directory of `data prepare` or on an empty directory is refused,
-/// exit 1, with one line naming the directory and `binding.json` and then today's E-DATA-001;
-/// any dense refusal of batch-tensor declarations takes that line (here E-DATA-007), and dense
+/// exit 1, with one line naming the directory and `binding.json` and then the dense refusal,
+/// since story:decider-dense-named-data E-DATA-007 naming `ids.i32`, the file of the first
+/// declaration (it was E-DATA-001 while dense data took one input and one target); any dense
+/// refusal of batch-tensor declarations takes that line, and dense
 /// files under those names still train without it. `--eval` beside a packed `--data` is a usage
 /// error, exit 2, on one line, before anything runs.
 #[test]
@@ -446,17 +448,18 @@ fn refusals_name_the_missing_binding_and_the_packed_eval() {
         assert_eq!(stdout(&output), "", "nothing runs");
         let text = stderr(&output);
         let lines: Vec<&str> = text.lines().collect();
+        let file = format!("  file: {}", path(&dir.join("ids.i32")));
         assert_eq!(
-            lines,
+            lines[..3],
             [
                 read_as_dense(MLM_BAG, dir).as_str(),
-                "E-DATA-001: dense data needs exactly one input and one target",
-                "  crates/modelspec-cli/tests/fixtures/mlm_bag.mspec:9:1",
-                "  inputs: 1",
-                "  targets: 2",
+                "E-DATA-007: cannot read the data file of the input `ids`",
+                file.as_str(),
             ],
             "{text}"
         );
+        assert_eq!(lines.len(), 4, "{text}");
+        assert!(lines[3].starts_with("  error: "), "{text}");
     }
 
     let renamed = case.join("renamed.mspec");

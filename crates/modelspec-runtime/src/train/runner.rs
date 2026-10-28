@@ -56,9 +56,9 @@ use super::data::{
 use super::eval::EvalError;
 use super::init::{InitError, Stream, dropout_token, initialize};
 use super::optimizer::{ParamState, PreparedStep, StepError};
-use crate::cpu::{HostTensor, RuntimeError, evaluate_all, evaluate_with_ids};
+use crate::cpu::{HostTensor, RuntimeError, evaluate_all_with_ids, evaluate_with_ids};
 
-/// No `i32` tensors, the step inputs of synthetic and dense data.
+/// No `i32` tensors, the step inputs of synthetic data.
 static NO_IDS: BTreeMap<String, HostTensor<i32>> = BTreeMap::new();
 
 /// The loss of a training step, or a parameter, an AdamW moment or a Muon momentum buffer after
@@ -499,13 +499,13 @@ pub(crate) enum Feed<'a> {
 }
 
 impl Feed<'_> {
-    /// The inputs of step `step`: `f32` tensors, and the `i32` tensors only packed data has.
+    /// The inputs of step `step`: `f32` tensors, and the `i32` tensors of dense and packed data.
     pub(crate) fn inputs(&mut self, step: u64) -> Result<StepInputs<'_>, DataError> {
         match self {
             Feed::Synthetic(s) => Ok((&s.inputs, &NO_IDS)),
             Feed::Dense(data, batch) => {
                 data.fill_step(step, batch);
-                Ok((batch.inputs(), &NO_IDS))
+                Ok((batch.inputs(), batch.ids()))
             }
             Feed::Packed(data, batch) => {
                 data.fill_step(step, batch)?;
@@ -523,18 +523,23 @@ impl Feed<'_> {
     }
 }
 
-/// The loss and accuracy of the forward program over every sample of an eval directory.
+/// The loss, and where it is defined the accuracy, of the forward program over every sample of
+/// an eval directory.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Eval {
     /// The mean of the per-batch losses, summed in `f64`.
     pub loss: f64,
-    /// The fraction of samples whose prediction row has its first maximum at the index of the
-    /// first maximum of the target row; a prediction row holding a NaN is never correct.
-    pub accuracy: f64,
+    /// The fraction of target rows, rows along the target's leading dimension (one row for a
+    /// rank-0 target), whose prediction row has its first maximum at the index of the first
+    /// maximum of the target row; a prediction row holding a NaN is never correct. `None` unless
+    /// the loss compares the model output with the block's one target
+    /// ([`DenseData::compared_target`]; story:decider-dense-named-data).
+    pub accuracy: Option<f64>,
 }
 
 /// Runs the forward program of `compiled` with `params` over `data` in batches of `B`
-/// ([`DenseData::eval_batch`]); `data` holds a whole number of batches ([`super::data::dense_eval`]).
+/// ([`DenseData::fill_eval_batch`]), each batch's `f32` and `i32` declarations as its inputs;
+/// `data` holds a whole number of batches ([`super::data::dense_eval`]).
 pub fn evaluate_dense(
     compiled: &CompiledTraining,
     data: &DenseData,
@@ -544,29 +549,43 @@ pub fn evaluate_dense(
     let batches = data.samples() / data.batch();
     let mut loss = 0.0f64;
     let mut correct = 0usize;
+    let mut rows = 0usize;
     let mut batch = DenseBatch::default();
     for b in 0..batches {
         data.fill_eval_batch(b, &mut batch);
         let inputs = batch.inputs();
-        let mut values = evaluate_all(&compiled.forward.program, inputs, params)?;
+        let mut values =
+            evaluate_all_with_ids(&compiled.forward.program, inputs, batch.ids(), params)?;
         loss += f64::from(values.outputs[0].data()[0]);
+        let Some(target) = data.compared_target() else {
+            continue;
+        };
         let predicted = values
             .values
             .remove(&prediction)
             .ok_or(DataError::UndefinedPrediction(prediction))?;
-        let target = inputs[data.target()].data();
-        let width = target.len() / data.batch();
-        correct += predicted
-            .data()
-            .chunks_exact(width)
-            .zip(target.chunks_exact(width))
-            .filter(|(p, t)| argmax(p).is_some_and(|i| Some(i) == argmax(t)))
-            .count();
+        let (correct_rows, target_rows) = correct_rows(predicted.data(), &inputs[target]);
+        correct += correct_rows;
+        rows += target_rows;
     }
     Ok(Eval {
         loss: loss / batches as f64,
-        accuracy: correct as f64 / data.samples() as f64,
+        accuracy: data.compared_target().map(|_| correct as f64 / rows as f64),
     })
+}
+
+/// The rows of `target` whose row of `predicted`, of the same shape, has its first maximum at
+/// the index of the target row's ([`argmax`]), and the number of rows: the target's leading
+/// dimension, or one row for a rank-0 target.
+pub(crate) fn correct_rows(predicted: &[f32], target: &HostTensor<f32>) -> (usize, usize) {
+    let rows = target.shape().first().map_or(1, |&n| n as usize);
+    let width = target.data().len() / rows;
+    let correct = predicted
+        .chunks_exact(width)
+        .zip(target.data().chunks_exact(width))
+        .filter(|(p, t)| argmax(p).is_some_and(|i| Some(i) == argmax(t)))
+        .count();
+    (correct, rows)
 }
 
 /// The index of the first maximum of `row`, the lowest index among ties, or `None` when `row`

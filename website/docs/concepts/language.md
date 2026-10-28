@@ -90,7 +90,7 @@ literal of its kind is `E-TYPE-019`, a name the operator does not take or one gi
 | Setting | Meaning |
 |---|---|
 | `model = Name;` | the model to train |
-| `input x: Tensor<...>;`, `target y: Tensor<...>;` | on synthetic data and on dense `--data` files, exactly one of each: the target has the model's output type, and the loss reads both. On a packed `--data` directory, each declaration names a tensor of the masked-language-model batch, such as `ids`, `labels` and `weights` ([Prepare training data](../guides/prepare-training-data.md)) |
+| `input x: Tensor<...>;`, `target y: Tensor<...>;` | on synthetic data, exactly one of each: the target has the model's output type, and the loss reads both. On dense `--data` files, any number of either, each read from `<name>.f32` or `<name>.i32` by its dtype, and the loss reads every one; a single target the loss compares with the model output has the model's output type. On a packed `--data` directory, each declaration names a tensor of the masked-language-model batch, such as `ids`, `labels` and `weights` ([Prepare training data](../guides/prepare-training-data.md)) |
 | `loss = expr;` | a scalar expression that calls `model.forward` exactly once (`E-TYPE-017` otherwise) |
 | `optimizer = sgd(lr = 0.05);` | plain SGD with a positive learning rate, constant over the run |
 | `optimizer = adamw(lr = F, weight_decay = F, beta1 = F, beta2 = F, eps = F, warmup_steps = N);` | AdamW with decoupled weight decay, every argument required and named; the learning rate rises linearly from 0 over `warmup_steps` and falls linearly to 0 at the last step. Out-of-range arguments are `E-TYPE-023` and `E-TYPE-024`. CPU reference only; `train --checkpoint` and `--resume` refuse an AdamW run |

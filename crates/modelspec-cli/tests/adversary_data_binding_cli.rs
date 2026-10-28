@@ -280,10 +280,15 @@ fn adv_db_dense_packed_decision() {
     assert!(
         text.starts_with(&format!(
             "modelspec train {MLM_BAG}: {} holds no binding.json, so it is read as a dense \
-             directory\nE-DATA-001: ",
+             directory\nE-DATA-007: cannot read the data file of the input `ids`",
             path(&stray)
         )),
-        "D56: the directory and binding.json, then E-DATA-001: {text}"
+        "D56: the directory and binding.json, then the dense refusal, since \
+         story:decider-dense-named-data E-DATA-007 at the first missing file ids.i32: {text}"
+    );
+    assert!(
+        text.contains(&format!("file: {}", path(&stray.join("ids.i32")))),
+        "{text}"
     );
     assert_eq!(stdout(&output), "");
     std::fs::copy(packed.join("binding.json"), stray.join("binding.json")).unwrap();

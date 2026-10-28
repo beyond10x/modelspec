@@ -52,7 +52,7 @@ value under `seed = 42` however the file is laid out and in whatever order the c
 | Source | How | The `train` block |
 |---|---|---|
 | synthetic | the default | exactly one `input` and one `target` |
-| dense files | `--data <dir>` with `<name>.f32` per declaration, row-major little-endian `f32`, and an optional `order.u32` of sample indices | exactly one `input` and one `target` |
+| dense files | `--data <dir>` with `<name>.f32` per `f32` declaration and `<name>.i32` per `i32` declaration, row-major little-endian, and an optional `order.u32` of sample indices | any number of `input` and `target` declarations, at least one |
 | packed sequences | `--data <dir>` on a directory `modelspec data pack` wrote, recognised by its `binding.json` | each declaration names a tensor of the masked-language-model batch: `ids`, `positions`, `key_mask`, `labels` or `weights` |
 
 Synthetic data is a problem with a known answer. `train` draws the input, draws a second set of
@@ -68,10 +68,15 @@ order of stream 5, 15% of their tokens selected on stream 3, and of those 80% re
 token, 10% by a random token and 10% left as they are. [Prepare training data](../guides/prepare-training-data.md)
 builds a packed directory and trains on it.
 
+In a dense directory, a sample is one row along the leading dimension every declaration shares;
+when they share none, a sample is the whole declared tensor. Without `order.u32`, step `k` reads
+block `k` of every file, wrapping at the end.
+
 `--init <dir>` starts each parameter that has a file `<dir>/<P>.f32`, `P` its path without the model name, from that file, and
 `--eval <dir>` runs the forward program over every sample of a dense directory after the last
-step. `--data`, `--init` and `--eval` run on `--backend cpu` only; `--eval` beside a packed
-`--data` is a usage error. Each refusal of a data source has its code, `E-DATA-001` to
+step and prints the mean batch loss, with an accuracy only when the loss compares the model
+output with the block's one target. `--init` runs on `--backend cpu` only, `--data` and `--eval`
+on both backends; `--eval` beside a packed `--data` is a usage error. Each refusal of a data source has its code, `E-DATA-001` to
 `E-DATA-009` ([Diagnostics](../reference/diagnostics.md#training-data)).
 
 ## Reproducible to the byte

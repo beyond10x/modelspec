@@ -25,7 +25,14 @@
 //!   ([`modelspec_core::ir::kernel::ExecutionPlan::loss_steps`]) with dropout off and copies the
 //!   prediction into a download buffer of one prediction ([`download_bytes`]), and after its
 //!   host wait the host adds the logits to the reduction of the CPU evaluation, in batch order
-//!   ([`HeldOut::tallying`]), before the next batch overwrites them.
+//!   ([`HeldOut::tallying`]), before the next batch overwrites them;
+//! - dense evaluation ([`StepwiseOptions::dense_eval`], `--eval`; story:decider-dense-named-data):
+//!   at the last step, before its command buffer, each batch of the eval directory is a command
+//!   buffer of its own, as a held-out batch is, which copies the loss down, and the prediction
+//!   too when the accuracy is measured ([`DenseData::compared_target`]); the host sums the
+//!   losses in `f64` in batch order and counts the correct target rows as
+//!   [`crate::train::runner::evaluate_dense`] does, and shows the result at the last step
+//!   ([`StepSeen::dense_eval`]).
 //!
 //! Dropout is off where the CPU run has none: in the evaluation of the loss after the last
 //! update and in held-out evaluation, which the CPU run computes with the forward program. There
@@ -68,10 +75,10 @@ use super::runner::{
 use super::sync::{Barrier, recorded_barriers};
 use crate::cpu::HostTensor;
 use crate::spirv::emit::{emit_kernels, emit_module_with};
-use crate::train::data::{DenseBatch, PackedBatch, synthetic};
+use crate::train::data::{DenseBatch, DenseData, PackedBatch, synthetic};
 use crate::train::eval::{HeldOut, HeldOutMetrics};
 use crate::train::init::{Stream, dropout_token, initialize};
-use crate::train::runner::{Data, Diverged, Feed, Run, RunError, non_finite};
+use crate::train::runner::{Data, Diverged, Eval, Feed, Run, RunError, correct_rows, non_finite};
 
 /// The held-out evaluation of a stepwise run: `held_out` at every multiple of `every` among the
 /// run's steps and at its last step, as `--eval-every` asks.
@@ -93,6 +100,9 @@ pub struct StepwiseOptions<'o, 'h> {
     pub data: Option<Data<'o>>,
     /// The held-out evaluation, on packed data.
     pub eval: Option<Evaluation<'o, 'h>>,
+    /// The dense eval data of `--eval`, measured with the parameters after the last update as
+    /// [`crate::train::runner::evaluate_dense`] measures it on the CPU.
+    pub dense_eval: Option<&'o DenseData>,
     /// The checkpoints to write on the way.
     pub checkpoints: Option<Checkpoints<'o>>,
 }
@@ -107,6 +117,10 @@ pub struct StepSeen<'a> {
     /// The held-out loss and accuracy of the parameters after `step` updates, at an evaluated
     /// step.
     pub held_out: Option<HeldOutMetrics>,
+    /// The loss, and where it is defined the accuracy, of the dense eval data of `--eval` with
+    /// the parameters after the last update: at the last step of a run given
+    /// [`StepwiseOptions::dense_eval`].
+    pub dense_eval: Option<Eval>,
     /// The parameters after `step` updates where the host holds them without another read-back:
     /// at the first step, the values it uploaded, and at the last, the values it read back.
     pub values: Option<&'a BTreeMap<ParamId, HostTensor<f32>>>,
@@ -187,6 +201,7 @@ pub fn train_stepwise(
         init,
         data,
         eval,
+        dense_eval,
         checkpoints,
     } = options;
     let end = start.checked_add(config.steps).ok_or_else(|| {
@@ -388,9 +403,36 @@ pub fn train_stepwise(
         upload.write_f32(&eval_words)?;
     }
 
-    // What comes down: the loss every step, the logits of one held-out batch after each
-    // evaluated batch, the parameters and moments at the end and at each checkpoint.
-    let download = download_bytes(&prediction, eval_batches);
+    // The dense eval batches of `--eval`, laid out as the data views, uploaded once.
+    let dense_batches = dense_eval.map_or(0, |dense| dense.samples() / dense.batch());
+    let dense_compared = dense_eval.and_then(DenseData::compared_target);
+    let mut dense_batch = DenseBatch::default();
+    let mut dense_words: Vec<f32> = Vec::new();
+    if let Some(dense) = dense_eval {
+        for b in 0..dense_batches {
+            dense.fill_eval_batch(b, &mut dense_batch);
+            for declaration in &plan.data {
+                push_data(
+                    &mut dense_words,
+                    &declaration.view,
+                    &declaration.name,
+                    declaration.ty.dtype == DType::I32,
+                    dense_batch.inputs(),
+                    dense_batch.ids(),
+                )?;
+            }
+        }
+    }
+    let mut dense_upload = staging(device, 4 * dense_words.len() as u64)?;
+    if let Some(upload) = &mut dense_upload {
+        upload.write_f32(&dense_words)?;
+    }
+
+    // What comes down: the loss every step and every dense eval batch, the prediction of one
+    // batch after each held-out batch and each dense eval batch whose accuracy is measured, the
+    // parameters and moments at the end and at each checkpoint.
+    let predicted_batches = eval_batches + dense_compared.map_or(0, |_| dense_batches);
+    let download = download_bytes(&prediction, predicted_batches);
     let mut loss_download = device.download_buffer(download.loss)?;
     let mut prediction_download = download_buffer(device, download.prediction)?;
     let param_bytes: u64 = plan.parameters.iter().map(|p| p.views[0].size_bytes).sum();
@@ -568,6 +610,83 @@ pub fn train_stepwise(
             }
             _ => None,
         };
+        // The last step of a run with `--eval`: before the step's command buffer, each dense eval
+        // batch in one of its own, its loss, and its prediction when the accuracy is measured,
+        // read back before the next batch overwrites them; the losses are summed in `f64` in
+        // batch order, as the CPU evaluation sums them.
+        let dense_measured = match dense_eval {
+            Some(dense) if last => {
+                let mut sum = 0.0f64;
+                let mut correct = 0usize;
+                let mut rows = 0usize;
+                for b in 0..dense_batches {
+                    {
+                        let mut recording = device.record()?;
+                        open(
+                            &mut recording,
+                            &mut opened,
+                            first_upload.as_ref(),
+                            &first_views,
+                            &buffers,
+                        )?;
+                        if let Some(upload) = &dense_upload {
+                            let mut at = b as u64 * data_bytes;
+                            for declaration in &plan.data {
+                                let view = declaration.view;
+                                recording.copy_region(
+                                    upload,
+                                    at,
+                                    buffer(&buffers, &view)?,
+                                    view.offset,
+                                    view.size_bytes,
+                                )?;
+                                at += view.size_bytes;
+                            }
+                        }
+                        recording.barrier(Barrier::TransferToCompute);
+                        record(&mut recording, loss_actions.iter().copied(), &buffers, None)?;
+                        recording.barrier(Barrier::ComputeToTransfer);
+                        recording.copy_region(loss, plan.loss_view.offset, &loss_download, 0, 4)?;
+                        if dense_compared.is_some() {
+                            let download = prediction_download.as_ref().ok_or_else(|| {
+                                VulkanRunError::Plan("a dense eval without its download".into())
+                            })?;
+                            recording.copy_region(
+                                buffer(&buffers, &prediction)?,
+                                prediction.offset,
+                                download,
+                                0,
+                                prediction.size_bytes,
+                            )?;
+                        }
+                        recording.barrier(Barrier::TransferToHost);
+                        let recorded = recording.finish()?;
+                        first_submit.get_or_insert_with(Instant::now);
+                        device.submit(recorded)?.wait()?;
+                    }
+                    sum += f64::from(loss_download.read_f32()?[0]);
+                    if let (Some(target), Some(download)) =
+                        (dense_compared, prediction_download.as_mut())
+                    {
+                        dense.fill_eval_batch(b, &mut dense_batch);
+                        let target = dense_batch.inputs().get(target).ok_or_else(|| {
+                            VulkanRunError::Plan(format!(
+                                "the dense eval target {target} is missing"
+                            ))
+                        })?;
+                        let (batch_correct, batch_rows) =
+                            correct_rows(&download.read_f32()?, target);
+                        correct += batch_correct;
+                        rows += batch_rows;
+                    }
+                }
+                Some(Eval {
+                    loss: sum / dense_batches as f64,
+                    accuracy: dense_compared.map(|_| correct as f64 / rows as f64),
+                })
+            }
+            _ => None,
+        };
         {
             let mut recording = device.record()?;
             open(
@@ -629,6 +748,7 @@ pub fn train_stepwise(
             step: k,
             loss: loss_k,
             held_out: metrics,
+            dense_eval: dense_measured,
             values,
         })
         .map_err(VulkanRunError::Run)?;
@@ -705,7 +825,8 @@ pub fn train_stepwise(
 pub struct DownloadBytes {
     /// The loss of a step, one `f32`.
     pub loss: u64,
-    /// The held-out logits, 0 without held-out evaluation.
+    /// One batch's prediction: the held-out logits, or the dense eval prediction whose accuracy
+    /// is measured; 0 when no batch's prediction is read.
     pub prediction: u64,
 }
 
@@ -717,9 +838,9 @@ impl DownloadBytes {
 }
 
 /// The download buffers of a stepwise run whose plan predicts into `prediction` and which
-/// evaluates `eval_batches` held-out batches: the loss, and one batch's prediction whatever the
-/// number of batches, since each batch is evaluated in a command buffer of its own and read
-/// back before the next (story:vulkan-eval-download-per-batch).
+/// reads the prediction of `eval_batches` held-out or dense eval batches: the loss, and one
+/// batch's prediction whatever the number of batches, since each batch is evaluated in a command
+/// buffer of its own and read back before the next (story:vulkan-eval-download-per-batch).
 pub fn download_bytes(prediction: &BufferView, eval_batches: usize) -> DownloadBytes {
     DownloadBytes {
         loss: 4,

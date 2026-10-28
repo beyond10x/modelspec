@@ -9,6 +9,10 @@ history.
 
 ## [Unreleased]
 
+### Changed
+
+- `modelspec train --data DIR` on a dense directory binds every `input` and `target` declaration by name, however many there are: `NAME.f32` for an `f32` declaration and `NAME.i32` for an `i32` one, a sample one row along the leading dimension all declarations share, else the whole declared tensor; step k feeds block k of every file, on the CPU and on Vulkan. `--eval DIR` takes the same layout, runs on Vulkan too, and prints `accuracy=` only when the loss compares the model output with the block's one target. For dense data `E-DATA-001` now means a block with no declaration, `E-DATA-002` applies only to that one compared target, `E-DATA-004` no longer applies, and a missing file is `E-DATA-007` naming it and, when only that exists, the file of the other dtype (DESIGN.md revision 0.56) (story:decider-dense-named-data).
+
 ## [0.21.0] - 2026-10-28
 
 ModelSpec measures its first workload beyond the MLP sweep. `examples/transformer_block.mspec`, the two encoder layers of BERT-tiny, trains on the CPU and through Vulkan, and the bench `transformer_block` times it at batches of 8, 32 and 128 sequences against the same program in PyTorch CUDA, eager and `torch.compile` (`opponents/transformer_block/`), whose `--compare-step` takes one SGD step from a ModelSpec checkpoint and compares every parameter with ModelSpec's checkpoint of the next step. On an RTX 3090 at batch 8, ModelSpec Vulkan takes a median of 93.9 ms per step against 3.9 ms for PyTorch eager and 2.0 ms for `torch.compile`, and the Benchmarks page gains a Transformer block section with the figures of all three batches. `modelspec train --write-batch` writes the synthetic batch a run trains on, synthetic data feeds an input read only as an attention key mask with all ones, and the CPU interpreter accumulates every whole-tensor sum in `f64`, so the losses a CPU run prints can change in their last digits. The specification and CI use ESS 0.72.0.

@@ -2,7 +2,7 @@
 format: aep.planning-md/3
 id: story:decider-dense-named-data
 kind: story
-status: proposed
+status: active
 title: Dense --data with any number of named f32 and i32 inputs and targets
 summary: Bind every train declaration to NAME.f32 or NAME.i32 of a dense directory, on CPU and Vulkan, --eval included.
 relations:
@@ -33,9 +33,10 @@ scope:
   path: spec/domains/data.yaml
 - confidence: cited
   path: website
-revision: 4
+revision: 5
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-28T12:12:29Z", actor: "human:timo", revision: 4}
+- {from: "proposed", to: "active", at: "2026-10-28T12:13:46Z", actor: "human:timo", revision: 5}
 ---
 # Dense --data with any number of named f32 and i32 inputs and targets
 

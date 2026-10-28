@@ -312,7 +312,8 @@ fn fixture() -> String {
 
 /// Attack 6: an `i32` input that no operator reads still checks, and `train` refuses it with
 /// E-DATA-004 (not E-DATA-003, which follows it); an `i32` target the loss does not read is
-/// E-DATA-004 at the target; dense data refuses before it opens a file.
+/// E-DATA-004 at the target; dense data reads the `i32` input from `ids.i32` since
+/// story:decider-dense-named-data, so a missing directory is E-DATA-007 naming that file.
 #[test]
 fn adversary_embedding_e_data_004_reaches_unread_ids_targets_and_dense_data() {
     let unread = write(
@@ -390,7 +391,12 @@ train T {
     let text = stderr(&output);
     assert_eq!(output.status.code(), Some(1), "{text}");
     assert!(
-        text.starts_with("E-DATA-004: dense data cannot supply the i32 input `ids`\n"),
+        text.starts_with("E-DATA-007: cannot read the data file of the input `ids`\n"),
+        "dense data reads an i32 declaration from NAME.i32 since \
+         story:decider-dense-named-data, so the missing directory is refused at ids.i32: {text}"
+    );
+    assert!(
+        text.contains(&format!("file: {}", missing.join("ids.i32").display())),
         "{text}"
     );
 }

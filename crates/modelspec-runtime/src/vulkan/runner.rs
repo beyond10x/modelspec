@@ -272,6 +272,7 @@ pub fn train_on_device_from(
             init,
             data: None,
             eval: None,
+            dense_eval: None,
             checkpoints,
         };
         let (run, stats) = super::stepwise::train_stepwise_on_device(
