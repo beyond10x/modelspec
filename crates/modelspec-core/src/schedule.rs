@@ -11,7 +11,8 @@
 //! Each row-wise op is one Dispatch of workgroups of 64 ([`rowwise_kernel`]): `Embedding`,
 //! `AddRows`, `Gelu`, `GeluGrad`, `Dropout` and `DropoutGrad` one invocation per output element,
 //! `EmbeddingGrad`, `LayerNorm`, `LayerNormGradX`, `Softmax` and `SoftmaxGrad` one per output row,
-//! and the column reductions `SumRows` and `LayerNormGradGamma` one per output column.
+//! and the column reductions `SumRows`, `LayerNormGradGamma`, `SigregColumns` and
+//! `SigregColumnsGrad` one per output column.
 //! `Attention`, `AttentionGradQ`, `AttentionGradK` and `AttentionGradV` are one Dispatch each of
 //! workgroups of 64, one invocation per row and head, the head count a last immediate operand;
 //! `CrossEntropy` is a loss sum of one workgroup, `CrossEntropyGrad` one invocation per row, and
@@ -924,7 +925,9 @@ fn schedule_with(
             | TensorOp::SoftmaxGrad
             | TensorOp::Dropout { .. }
             | TensorOp::DropoutGrad { .. }
-            | TensorOp::StopGradient => match built {
+            | TensorOp::StopGradient
+            | TensorOp::SigregColumns
+            | TensorOp::SigregColumnsGrad => match built {
                 Kernels::None => continue,
                 Kernels::Vulkan => {
                     let no_kernel = || ScheduleError::NoKernel {
@@ -961,10 +964,11 @@ fn schedule_with(
                     (vec![built], None)
                 }
             },
-            TensorOp::Sigreg { .. } | TensorOp::SigregColumns | TensorOp::SigregColumnsGrad => {
+            TensorOp::Sigreg { .. } => {
                 match built {
                     Kernels::None => continue,
-                    // No Vulkan kernel until story S3: named as the source operator, at the call.
+                    // The lowering expands `sigreg` and the verifier refuses it in Tensor IR, so
+                    // no plan reaches this: named as the source operator, at the call.
                     Kernels::Vulkan => {
                         return Err(ScheduleError::NoKernel {
                             value: node.id,
@@ -1199,6 +1203,14 @@ fn rowwise_shape(
         }
         (TensorOp::SoftmaxGrad, [[n, h], g], [rn, rh]) if *g == [*n, *h] && (n, h) == (rn, rh) => {
             f32s(&[0, 1]).then_some((KernelKind::PerRow, *n))?
+        }
+        (TensorOp::SigregColumns, [[_, m]], [rm]) if m == rm => {
+            f32s(&[0]).then_some((KernelKind::PerColumn, *m))?
+        }
+        (TensorOp::SigregColumnsGrad, [[n, m], [gm]], [rn, rm])
+            if m == gm && (n, m) == (rn, rm) =>
+        {
+            f32s(&[0, 1]).then_some((KernelKind::PerColumn, *m))?
         }
         _ => return None,
     };

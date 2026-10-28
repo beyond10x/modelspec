@@ -7,13 +7,28 @@
 //! instance, which `task ci` never does; run it with
 //! `MODELSPEC_VK_VALIDATION=1 cargo test --release -p modelspec-cli --test train_vulkan -- --ignored`.
 //!
+//! A second device test trains the `sigreg` fixture of story:jepa-sigreg-cpu on both backends
+//! and holds every step's recorded loss and every final parameter element to the run tolerance
+//! (story:jepa-sigreg-vulkan).
+//!
 //! The other tests are usage errors, refused before the file is read or a loader opened.
 #![cfg(feature = "vulkan")]
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+#[allow(dead_code)]
+#[path = "../../modelspec-runtime/tests/common/mod.rs"]
+mod common;
+
+use common::{GPU_RUN_ATOL, GPU_RUN_RTOL, within};
+use serde_json::Value;
+
 const MNIST_MLP: &str = "examples/mnist_mlp.mspec";
+/// The `sigreg` fixture of story:jepa-sigreg-cpu: 100 `sgd` steps on `sigreg` of a `[256, 8]`
+/// parameter over 16 slices.
+const SIGREG_TRAIN: &str = "crates/modelspec-cli/tests/fixtures/sigreg_train.mspec";
 const LINEAR_REGRESSION: &str = "examples/linear_regression.mspec";
 
 /// A loader path that does not exist, so a test that reaches the loader fails with E-TARGET-002
@@ -300,6 +315,117 @@ fn mnist_mlp_profile_prints_every_dispatch_site_and_leaves_stdout_alone() {
     ] {
         assert!(stderr.contains(counter), "{counter}: {stderr}");
     }
+}
+
+/// The loss of every `StepCompleted` of a recorded run file, by step.
+fn recorded_losses(file: &Path) -> BTreeMap<u64, f32> {
+    std::fs::read_to_string(file)
+        .expect("the recording")
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).expect("a JSON event"))
+        .filter(|event| event["body"]["kind"] == "StepCompleted")
+        .map(|event| {
+            let value = &event["body"]["value"];
+            (
+                value["step"].as_u64().expect("a step"),
+                value["loss"].as_f64().expect("a loss") as f32,
+            )
+        })
+        .collect()
+}
+
+/// The values of every `param @<path>: <type> = [v, ...]` line, by path.
+fn final_params(out: &str) -> BTreeMap<String, Vec<f32>> {
+    out.lines()
+        .filter_map(|line| line.strip_prefix("param @"))
+        .map(|rest| {
+            let (path, rest) = rest.split_once(": ").expect("`@<path>: <type> = [..]`");
+            let (_, list) = rest.split_once(" = [").expect("a value list");
+            let list = list.strip_suffix(']').expect("a closed list");
+            let values = list
+                .split(", ")
+                .map(|v| v.parse::<f32>().expect("an f32"))
+                .collect();
+            (path.to_owned(), values)
+        })
+        .collect()
+}
+
+/// story:jepa-sigreg-vulkan: the `sigreg` fixture trained on Vulkan, its projection uploaded
+/// before each step, prints the lines of the CPU run in order, and each of its 101 recorded step
+/// losses and every element of its parameter after the run is within
+/// `GPU_RUN_ATOL + GPU_RUN_RTOL · |c|` of the CPU run's `c`. Prints the largest differences
+/// and whether the two runs were bit-equal.
+#[test]
+#[ignore = "needs a Vulkan device"]
+fn sigreg_on_vulkan_matches_the_cpu_run_within_the_run_tolerance() {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("train_vulkan_sigreg");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("scratch directory");
+    let run = |backend: &str| {
+        let record = dir.join(format!("{backend}.run.jsonl"));
+        let output = modelspec(
+            &[
+                "train",
+                SIGREG_TRAIN,
+                "--backend",
+                backend,
+                "--record",
+                record.to_str().expect("a UTF-8 path"),
+            ],
+            None,
+        );
+        assert_eq!(output.status.code(), Some(0), "{}", text(&output.stderr));
+        (text(&output.stdout), recorded_losses(&record))
+    };
+    let (gpu_out, gpu_losses) = run("vulkan");
+    let (cpu_out, cpu_losses) = run("cpu");
+    let gpu_lines: Vec<String> = gpu_out.lines().map(shape_of).collect();
+    let cpu_lines: Vec<String> = cpu_out.lines().map(shape_of).collect();
+    assert_eq!(gpu_lines, cpu_lines, "the lines in order");
+
+    let mut outside = Vec::new();
+    assert_eq!(cpu_losses.len(), 101, "step 0 to 100");
+    assert_eq!(
+        cpu_losses.keys().collect::<Vec<_>>(),
+        gpu_losses.keys().collect::<Vec<_>>()
+    );
+    let (mut loss_diff, mut bits_equal) = (0.0f64, true);
+    for (step, &c) in &cpu_losses {
+        let g = gpu_losses[step];
+        loss_diff = loss_diff.max((f64::from(g) - f64::from(c)).abs());
+        bits_equal &= g.to_bits() == c.to_bits();
+        if !within(g, c, c.abs(), GPU_RUN_ATOL, GPU_RUN_RTOL) {
+            outside.push(format!("step {step}: gpu {g} cpu {c}"));
+        }
+    }
+    let (cpu_params, gpu_params) = (final_params(&cpu_out), final_params(&gpu_out));
+    assert_eq!(cpu_params.len(), 1, "the one parameter");
+    assert_eq!(
+        cpu_params.keys().collect::<Vec<_>>(),
+        gpu_params.keys().collect::<Vec<_>>()
+    );
+    let (mut elements, mut param_diff) = (0usize, 0.0f64);
+    for (path, c) in &cpu_params {
+        let g = &gpu_params[path];
+        assert_eq!(g.len(), c.len(), "{path}");
+        for (i, (&g, &c)) in g.iter().zip(c).enumerate() {
+            elements += 1;
+            param_diff = param_diff.max((f64::from(g) - f64::from(c)).abs());
+            bits_equal &= g.to_bits() == c.to_bits();
+            if !within(g, c, c.abs(), GPU_RUN_ATOL, GPU_RUN_RTOL) && outside.len() < 8 {
+                outside.push(format!("{path}[{i}]: gpu {g} cpu {c}"));
+            }
+        }
+    }
+    eprintln!(
+        "sigreg run: {} step losses, max |g-c| {loss_diff:.3e}; {elements} parameter elements, \
+         max |g-c| {param_diff:.3e}; bit-equal: {}",
+        cpu_losses.len(),
+        if bits_equal { "yes" } else { "no" }
+    );
+    assert_eq!(elements, 256 * 8);
+    assert!(outside.is_empty(), "{outside:#?}");
 }
 
 #[test]

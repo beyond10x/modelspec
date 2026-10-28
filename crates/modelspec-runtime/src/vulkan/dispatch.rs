@@ -738,7 +738,21 @@ pub fn kernel_bindings(kernel: &Kernel) -> Result<KernelBindings, ExecError> {
         | KernelKind::SgdUpdate
         | KernelKind::Transpose => (result, result),
         KernelKind::MatMul => (result, matmul_invocations(kernel)?),
-        KernelKind::PerElement | KernelKind::PerColumn => (result, result),
+        KernelKind::PerElement => (result, result),
+        // One invocation per column of the result: its last dimension, which is all of it for
+        // a column reduction and the row width of `SigregColumnsGrad`.
+        KernelKind::PerColumn => {
+            let columns = match kernel.result.shape.last() {
+                Some(Dim::Static(columns)) => *columns,
+                _ => {
+                    return Err(ExecError::KernelShape {
+                        kernel: kernel.signature(),
+                        reason: "a per-column kernel writes static columns".to_owned(),
+                    });
+                }
+            };
+            (columns, columns)
+        }
         KernelKind::PerRow => {
             let rows = match kernel.result.shape.first() {
                 Some(Dim::Static(rows)) => *rows,

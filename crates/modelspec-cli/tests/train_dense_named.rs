@@ -947,29 +947,69 @@ mod device {
         assert!((g - c).abs() <= bound(c), "eval: vulkan {g}, cpu {c}");
     }
 
-    /// dense-named-jepa-vulkan: `sigreg` has no Vulkan kernel in this branch
-    /// (story:jepa-sigreg-vulkan), so the JEPA-shaped program on the device is refused with
-    /// E-TARGET-011 naming the operator, and records no step. When that story lands this case
-    /// fails and becomes an agreement test with the CPU run.
+    /// The values of every `param @<path>: <type> = [v, ...]` line of `stdout`, by path.
+    fn final_params(stdout: &str) -> BTreeMap<String, Vec<f32>> {
+        stdout
+            .lines()
+            .filter_map(|line| line.strip_prefix("param @"))
+            .map(|rest| {
+                let (name, rest) = rest.split_once(": ").expect("`@<path>: <type> = [..]`");
+                let (_, list) = rest.split_once(" = [").expect("a value list");
+                let list = list.strip_suffix(']').expect("a closed list");
+                let values = list
+                    .split(", ")
+                    .map(|v| v.parse::<f32>().expect("an f32"))
+                    .collect();
+                (name.to_owned(), values)
+            })
+            .collect()
+    }
+
+    /// dense-named-jepa-vulkan: the JEPA-shaped program trains on the device from the dense
+    /// directory of `tokens.i32` and `y.f32` with `--eval` (story:jepa-sigreg-vulkan,
+    /// story:decider-dense-named-data): every recorded loss, every element of the three
+    /// parameters after the run and the `--eval` loss, whose batches read the `sigreg`
+    /// projection of the last step as the CPU evaluation does, are within the run tolerance of
+    /// the CPU run's.
     #[test]
     #[ignore = "needs a Vulkan device"]
-    fn dense_named_jepa_vulkan_is_refused_until_sigreg_has_a_kernel() {
+    fn dense_named_jepa_vulkan_agrees_with_the_cpu_run() {
         let (root, file) = case("jepa_vulkan", JEPA);
         let data = root.join("data");
         write_dir(&data, &jepa_data(31, 64));
-        let record = root.join("gpu.jsonl");
-        let output = train(&file, "vulkan", &data, &["--record", path(&record)]);
-        let stderr = text(&output.stderr);
-        assert_eq!(output.status.code(), Some(1), "stderr: {stderr}");
-        assert!(
-            stderr.starts_with("E-TARGET-011: operator `sigreg` has no Vulkan kernel yet\n"),
-            "stderr: {stderr}"
+        let eval = root.join("eval");
+        write_dir(&eval, &jepa_data(32, 32));
+        let (cpu, gpu) = agree(&file, &data, &root, &["--eval", path(&eval)]);
+        assert_eq!(
+            recorded_losses(&root.join("gpu.jsonl"))
+                .keys()
+                .copied()
+                .collect::<Vec<_>>(),
+            (0..=5).collect::<Vec<u64>>(),
+            "{gpu}"
         );
-        let steps = if record.exists() {
-            recorded_losses(&record).len()
-        } else {
-            0
-        };
-        assert_eq!(steps, 0, "stderr: {stderr}");
+        let (c, g) = (eval_loss(&cpu), eval_loss(&gpu));
+        assert!((g - c).abs() <= bound(c), "eval: vulkan {g}, cpu {c}");
+        let (cpu_params, gpu_params) = (final_params(&cpu), final_params(&gpu));
+        assert_eq!(cpu_params.len(), 3, "{cpu}");
+        assert_eq!(
+            cpu_params.keys().collect::<Vec<_>>(),
+            gpu_params.keys().collect::<Vec<_>>(),
+            "{gpu}"
+        );
+        let mut elements = 0usize;
+        let mut outside = Vec::new();
+        for (name, c) in &cpu_params {
+            let g = &gpu_params[name];
+            assert_eq!(g.len(), c.len(), "{name}");
+            for (i, (&g, &c)) in g.iter().zip(c).enumerate() {
+                elements += 1;
+                if (f64::from(g) - f64::from(c)).abs() > bound(f64::from(c)) {
+                    outside.push(format!("{name}[{i}]: vulkan {g}, cpu {c}"));
+                }
+            }
+        }
+        assert_eq!(elements, 16 * 8 + 8 * 8 + 8 * 8);
+        assert!(outside.is_empty(), "{outside:#?}");
     }
 }

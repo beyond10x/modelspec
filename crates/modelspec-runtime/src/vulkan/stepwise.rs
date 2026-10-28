@@ -16,6 +16,10 @@
 //!   are uploaded before it, and each moment `m` and `v` lives in a device buffer of its own,
 //!   zero at the start, which the step plan updates in place, so the moments never leave the
 //!   device until the run reads them back;
+//! - a step with `sigreg` (story:jepa-sigreg-vulkan): the projection of every `sigreg` site at
+//!   step `k` ([`crate::train::init::sigreg_projection`]) is uploaded before step `k`, the
+//!   final loss and every dense eval batch reading the projections of the last step and a
+//!   held-out batch those of the step it is evaluated at, as the CPU run draws them;
 //! - dense or packed `--data` ([`Data`]): the batch of step `k` is uploaded before it, as the CPU
 //!   run feeds it ([`crate::train::runner::run_checked`]);
 //! - held-out evaluation ([`Evaluation`], `--eval-every`): at every multiple of `every` and the last
@@ -57,9 +61,10 @@ use modelspec_core::artifact::{CompiledArtifact, check_device};
 use modelspec_core::compile::CompiledTraining;
 use modelspec_core::device::DeviceProfile;
 use modelspec_core::ir::kernel::{BufferView, Kernel, Operand, PlanOp};
-use modelspec_core::ir::tensor::{DType, ParamId};
+use modelspec_core::ir::tensor::{DType, ParamId, TensorType};
 use modelspec_core::ir::training::{
     AdamW, C1_INPUT, C2_INPUT, LR_T_INPUT, Moment, OptimizerRule, dropout_sites, moment_input,
+    sigreg_sites,
 };
 use modelspec_core::schedule::host_inputs;
 
@@ -77,7 +82,7 @@ use crate::cpu::HostTensor;
 use crate::spirv::emit::{emit_kernels, emit_module_with};
 use crate::train::data::{DenseBatch, DenseData, PackedBatch, synthetic};
 use crate::train::eval::{HeldOut, HeldOutMetrics};
-use crate::train::init::{Stream, dropout_token, initialize};
+use crate::train::init::{Stream, dropout_token, initialize, sigreg_projection};
 use crate::train::runner::{Data, Diverged, Eval, Feed, Run, RunError, correct_rows, non_finite};
 
 /// The held-out evaluation of a stepwise run: `held_out` at every multiple of `every` among the
@@ -128,17 +133,19 @@ pub struct StepSeen<'a> {
 
 /// Why a stepwise run is not profiled: `--profile` times the chunked run's dispatch sites.
 pub const NOT_PROFILED: &str = "--profile times the chunked device run; a run with dropout, \
-                                AdamW, --data or --eval-every records one command buffer per \
-                                step and has no profile yet";
+                                sigreg, AdamW, --data or --eval-every records one command \
+                                buffer per step and has no profile yet";
 
 /// The observer of a stepwise run: an error stops the run at that step and is its error.
 pub type Observe<'f> = dyn FnMut(&StepSeen<'_>) -> Result<(), Box<RunError>> + 'f;
 
-/// Whether `artifact`'s step plan needs the stepwise run: it has a dropout kernel, or the step
-/// reads optimizer inputs (AdamW's rate, bias corrections and moments).
+/// Whether `artifact`'s step plan needs the stepwise run: it has a dropout kernel, the step
+/// reads optimizer inputs (AdamW's rate, bias corrections and moments), or it has a `sigreg`
+/// site, whose projection is drawn anew for every step.
 pub fn needed(compiled: &CompiledTraining, artifact: &CompiledArtifact) -> bool {
     artifact.execution.kernels.iter().any(reads_seed)
         || !compiled.training.optimizer.host_inputs().is_empty()
+        || !sigreg_sites(&compiled.training.training.program).is_empty()
 }
 
 /// Loads Vulkan, selects device `device` (0 when `None`), negotiates and opens it, and runs
@@ -157,11 +164,12 @@ pub fn train_stepwise_on_device(
     })
 }
 
-/// What one host input of the step is: the token of a dropout site, a scalar of an AdamW step,
-/// or a moment of a parameter.
+/// What one host input of the step is: the token of a dropout site, the projection of a
+/// `sigreg` site of this type, a scalar of an AdamW step, or a moment of a parameter.
 #[derive(Clone, Debug)]
 enum Hosted {
     Token(String),
+    Projection(String, TensorType),
     LrT,
     C1,
     C2,
@@ -253,6 +261,7 @@ pub fn train_stepwise(
 
     // The host inputs of the step, each with the view the plan reads it from.
     let sites = dropout_sites(&compiled.training.training.program);
+    let projected = sigreg_sites(&compiled.training.training.program);
     let mut moment_of = BTreeMap::new();
     for parameter in &plan.parameters {
         for moment in [Moment::First, Moment::Second] {
@@ -287,6 +296,8 @@ pub fn train_stepwise(
         }
         let what = if sites.contains(&input.name) {
             Hosted::Token(input.name.clone())
+        } else if projected.contains(&input.name) {
+            Hosted::Projection(input.name.clone(), input.ty.clone())
         } else if input.name == LR_T_INPUT && adamw.is_some() {
             Hosted::LrT
         } else if input.name == C1_INPUT && adamw.is_some() {
@@ -373,6 +384,16 @@ pub fn train_stepwise(
     // What goes up before every step: the batch, the tokens and the scalars.
     let step_bytes: u64 = fed.iter().map(|(view, _)| view.size_bytes).sum();
     let mut step_upload = staging(device, step_bytes)?;
+    // Where each projection lies in the per-step upload: a held-out batch reads the projections
+    // of the step it is evaluated at, as the CPU evaluation does.
+    let mut projection_regions: Vec<(u64, BufferView)> = Vec::new();
+    let mut at = 0;
+    for (view, what) in &fed {
+        if matches!(what, Fed::Hosted(Hosted::Projection(..))) {
+            projection_regions.push((at, *view));
+        }
+        at += view.size_bytes;
+    }
 
     // The held-out batches, laid out as the data views, uploaded once.
     let prediction = plan.prediction_view;
@@ -542,6 +563,12 @@ pub fn train_stepwise(
                         check_count(view, token.len())?;
                         words.extend(token.data().iter().map(|&w| f32::from_bits(w as u32)));
                     }
+                    Fed::Hosted(Hosted::Projection(site, ty)) => {
+                        let projection = sigreg_projection(config.seed, site, k, ty)
+                            .map_err(|error| refused(error.into()))?;
+                        check_count(view, projection.len())?;
+                        words.extend_from_slice(projection.data());
+                    }
                     Fed::Hosted(scalar) => {
                         let scalars = scalars.ok_or_else(|| {
                             VulkanRunError::Plan("an optimizer scalar without adamw".into())
@@ -587,6 +614,17 @@ pub fn train_stepwise(
                                     view.size_bytes,
                                 )?;
                                 at += view.size_bytes;
+                            }
+                        }
+                        if let Some(upload) = &step_upload {
+                            for (at, view) in &projection_regions {
+                                recording.copy_region(
+                                    upload,
+                                    *at,
+                                    buffer(&buffers, view)?,
+                                    view.offset,
+                                    view.size_bytes,
+                                )?;
                             }
                         }
                         recording.barrier(Barrier::TransferToCompute);
@@ -641,6 +679,17 @@ pub fn train_stepwise(
                                     view.size_bytes,
                                 )?;
                                 at += view.size_bytes;
+                            }
+                        }
+                        if let Some(upload) = &step_upload {
+                            for (at, view) in &projection_regions {
+                                recording.copy_region(
+                                    upload,
+                                    *at,
+                                    buffer(&buffers, view)?,
+                                    view.offset,
+                                    view.size_bytes,
+                                )?;
                             }
                         }
                         recording.barrier(Barrier::TransferToCompute);
