@@ -167,7 +167,8 @@ fn adversary_every_published_gflops_cell_follows_its_run() {
 }
 
 /// Every run that counts by `MatmulOnly` states its workload's count (spec/domains/benchmark.yaml,
-/// FlopRule): `3196·B·H` for the sweep and `339,738,624·B` for `transformer-block`, so the sides
+/// FlopRule): `3196·B·H` for the sweep, `339,738,624·B` for `transformer-block` and
+/// `1,170,210,816·B` for `bert-tiny-pretrain`, so the sides
 /// of one point state one count; `MatmulOnly` on any other workload is wrong.
 #[test]
 fn adversary_every_matmul_only_run_states_3196_b_h() {
@@ -185,6 +186,7 @@ fn adversary_every_matmul_only_run_states_3196_b_h() {
                 .zip(run.hidden)
                 .map(|(batch, hidden)| 3196 * batch * hidden),
             "transformer-block" => run.batch.map(|batch| 339_738_624 * batch),
+            "bert-tiny-pretrain" => run.batch.map(|batch| 1_170_210_816 * batch),
             _ => None,
         };
         if expected.is_none() || run.flop != expected {

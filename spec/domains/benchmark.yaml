@@ -32,7 +32,7 @@ types:
   - name: modelspec.benchmark.FlopRule
     kind: enum
     naming:
-      summary: What flop_per_step counts. MatmulOnly counts the matrix products of a step, forward and backward, by workload, `3196·B·H` for `mlp-784-H-10`, the matmuls of a 784 → H → 10 step at batch B, and `N·(42·H² + 24·H·F + 24·S·H)` with `N = B·S`, `H = 128`, `F = 512` and `S = 128`, that is `339,738,624·B`, for `transformer-block` at a batch of B sequences (benches/transformer_block/block.rs); AllSites is the `profile step_total` count over every dispatch site of the step (DESIGN.md § 3.1 counting rule).
+      summary: What flop_per_step counts. MatmulOnly counts the matrix products of a step, forward and backward, by workload, `3196·B·H` for `mlp-784-H-10`, the matmuls of a 784 → H → 10 step at batch B, and `N·(42·H² + 24·H·F + 24·S·H)` with `N = B·S`, `H = 128`, `F = 512` and `S = 128`, that is `339,738,624·B`, for `transformer-block` at a batch of B sequences (benches/transformer_block/block.rs), and `N·(54·H² + 24·H·F + 6·H·V + 24·S·H)` with `V = 8,192`, that is `1,170,210,816·B`, for `bert-tiny-pretrain` (benches/bert_tiny/flop.rs); AllSites is the `profile step_total` count over every dispatch site of the step (DESIGN.md § 3.1 counting rule).
     variants: [MatmulOnly, AllSites]
 
 entities:
@@ -48,7 +48,7 @@ entities:
         summary: The day of the run, `YYYY-MM-DD`; for a figure that only a CHANGELOG release states, that release's date.
       - name: workload
         type: String
-        summary: What was trained, `mnist-784-64-10` (examples/mnist_mlp.mspec on MNIST, batch 100), `mlp-784-H-10` (the `mlp_sweep` bench, 784 → H ReLU → 10 at the batch and hidden width of the run) or `transformer-block` (the `transformer_block` bench, examples/transformer_block.mspec at the batch of the run, in sequences of 128).
+        summary: What was trained, `mnist-784-64-10` (examples/mnist_mlp.mspec on MNIST, batch 100), `mlp-784-H-10` (the `mlp_sweep` bench, 784 → H ReLU → 10 at the batch and hidden width of the run), `transformer-block` (the `transformer_block` bench, examples/transformer_block.mspec at the batch of the run, in sequences of 128) or `bert-tiny-pretrain` (examples/bert_tiny.mspec, MLM pre-training on the packed corpus, 32 sequences of 128, timed to a held-out loss target).
       - name: side
         type: modelspec.benchmark.Side
       - name: threads
@@ -93,6 +93,24 @@ entities:
       - name: median_us_per_step
         type: Binary64
         summary: The median µs per step of the repeats, as the source states it, or computed from its median seconds as seconds · 10⁶ / timed_steps.
+      - name: target_loss
+        type: Optional<Binary64>
+        summary: The held-out loss a time-to-target run trains to, such as the `bert-tiny-pretrain` reference run's final held-out loss `6.926537926202018`; with steps_to_target and seconds_to_target, required on a `bert-tiny-pretrain` run.
+      - name: steps_to_target
+        type: Optional<modelspec.benchmark.PositiveInteger>
+        summary: The first evaluated step whose held-out loss is at most target_loss, where the source states it.
+      - name: seconds_to_target
+        type: Optional<Binary64>
+        summary: The training seconds up to steps_to_target, the cumulative `train_seconds` of that step's eval line, without the held-out evaluations, checkpoint writes or events (`modelspec train --clock`, and the opponent's eval lines).
+      - name: train_seconds
+        type: Optional<Binary64>
+        summary: The training seconds of the whole run, as seconds_to_target counts them.
+      - name: eval_every
+        type: Optional<modelspec.benchmark.PositiveInteger>
+        summary: The steps between held-out evaluations of a time-to-target run, which bound how finely steps_to_target is resolved.
+      - name: final_heldout_loss
+        type: Optional<Binary64>
+        summary: The held-out loss at the run's last step, where the source states it.
       - name: gpu
         type: Optional<String>
         summary: The GPU of a GPU side, as the source names it.

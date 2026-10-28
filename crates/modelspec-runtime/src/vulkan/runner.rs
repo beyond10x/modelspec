@@ -108,6 +108,15 @@ pub struct RunStats {
     /// From the first submit to the end of the last wait, the checkpoints written on the way
     /// included.
     pub elapsed: Duration,
+    /// The training clock (`train_seconds`, story:bert-tiny-vs-pytorch-cuda): of a stepwise run
+    /// the sum over its updates of the time from recording the step's command buffer to the end
+    /// of its host wait, without the held-out evaluations, the final loss evaluation, the batch
+    /// the host draws and stages before the step, and the checkpoint files; of a chunked run
+    /// [`RunStats::elapsed`].
+    pub training: Duration,
+    /// The held-out evaluations of a stepwise run (`eval_seconds`): each evaluated step's batches
+    /// from recording the first command buffer to the host's tally of the last; 0 without one.
+    pub evaluation: Duration,
 }
 
 impl RunStats {
@@ -246,8 +255,7 @@ pub fn train_on_device_with(
 /// [`train_on_device_with`], from the start and with the checkpoints of `options`
 /// ([`train_with`]). A step with a dropout or an AdamW update runs stepwise instead, one command
 /// buffer and one host wait per step ([`super::stepwise`]), on the synthetic data the run makes
-/// itself; such a run is not profiled, and `profiled` is refused with
-/// [`VulkanRunError::Plan`].
+/// itself, and profiled per step's command buffer when `profiled`.
 pub fn train_on_device_from(
     device: Option<usize>,
     compiled: &CompiledTraining,
@@ -256,11 +264,6 @@ pub fn train_on_device_from(
     options: RunOptions<'_>,
 ) -> Result<(Run, RunStats, Option<Profile>), DeviceRunError> {
     if super::stepwise::needed(compiled, artifact) {
-        if profiled {
-            return Err(DeviceRunError::Failed(VulkanRunError::Plan(
-                super::stepwise::NOT_PROFILED.into(),
-            )));
-        }
         let RunOptions {
             start,
             init,
@@ -274,14 +277,14 @@ pub fn train_on_device_from(
             eval: None,
             checkpoints,
         };
-        let (run, stats) = super::stepwise::train_stepwise_on_device(
+        return super::stepwise::train_stepwise_on_device(
             device,
+            profiled,
             compiled,
             artifact,
             options,
             &mut |_| Ok(()),
-        )?;
-        return Ok((run, stats, None));
+        );
     }
     on_device(device, profiled, artifact, |opened, profile, negotiated| {
         let job = Job {
@@ -560,8 +563,8 @@ struct Done {
 
 /// The timestamps of one command buffer: its pool and the next query to write.
 pub(super) struct Stamps<'p> {
-    pool: &'p TimestampPool<'p>,
-    next: u32,
+    pub(super) pool: &'p TimestampPool<'p>,
+    pub(super) next: u32,
 }
 
 /// [`train`] for `job` from the start and with the checkpoints of `options`: [`execute_runs`]
@@ -831,21 +834,26 @@ fn execute_runs(
         let count = |ran: u64,
                      dispatches_per_step: u64,
                      barriers_per_step: u64,
-                     first_submit: Option<Instant>| RunStats {
-            steps: ran,
-            host_waits: device.host_waits() - waits_before,
-            submits: device.submits() - submits_before,
-            dispatches: device.dispatches() - dispatches_before,
-            dispatches_per_step,
-            barriers_per_step,
-            bytes_uploaded: device.bytes_uploaded() - uploaded_before,
-            bytes_downloaded: device.bytes_downloaded() - downloaded_before,
-            device_allocations: memory.allocations(),
-            peak_device_bytes: memory.peak_bytes(),
-            class,
-            elapsed: first_submit
+                     first_submit: Option<Instant>| {
+            let elapsed = first_submit
                 .expect("a run submits at least one command buffer")
-                .elapsed(),
+                .elapsed();
+            RunStats {
+                steps: ran,
+                host_waits: device.host_waits() - waits_before,
+                submits: device.submits() - submits_before,
+                dispatches: device.dispatches() - dispatches_before,
+                dispatches_per_step,
+                barriers_per_step,
+                bytes_uploaded: device.bytes_uploaded() - uploaded_before,
+                bytes_downloaded: device.bytes_downloaded() - downloaded_before,
+                device_allocations: memory.allocations(),
+                peak_device_bytes: memory.peak_bytes(),
+                class,
+                elapsed,
+                training: elapsed,
+                evaluation: Duration::ZERO,
+            }
         };
         // The profile of the first `ran` steps, when `profiled`. `stopped` is `None` for the whole
         // run, every pool written and the final loss evaluation last; for a run stopped at a

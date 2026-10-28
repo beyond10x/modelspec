@@ -67,6 +67,8 @@ fn stats() -> RunStats {
         peak_device_bytes: 1024,
         class: NumericsClass::Tolerance,
         elapsed: Duration::from_micros(90),
+        training: Duration::from_micros(90),
+        evaluation: Duration::ZERO,
     }
 }
 

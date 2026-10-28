@@ -266,7 +266,7 @@ workspace version and nothing is on a registry.
 - The files in `examples/` are target syntax. Keep them in step with DESIGN.md § 2 until a parser
   can check them, then make `modelspec check` on every example part of the gate once the parser
   supports its constructs: `linear_regression.mspec` from M0, `mnist_mlp.mspec`, `bert_tiny.mspec`
-  since the BERT operators, `transformer_block.mspec` (the benchmark `transformer_block` and its
+  since the BERT operators (its opponent `opponents/bert_tiny_pretrain/` trains the same program), `transformer_block.mspec` (the benchmark `transformer_block` and its
   opponent `opponents/transformer_block/` run it), `tiny_mlp.mspec` (modules, generics, `vulkan(0)`) from DESIGN.md § 11
   iteration 3.
 - Use `Taskfile.yml` (go-task) for build and test entry points once code exists; not a Makefile.

@@ -9,7 +9,23 @@
 //! - `init @<path>: <type> = [v, ...]` for every parameter before the first step;
 //! - `step <k> loss <v>` at step 0, every 50 steps and the last step, where step `k` is the loss
 //!   after `k` updates;
+//! - with `--clock`, `train_seconds <s> eval_seconds <s> steps <n>`, the run's training clock:
+//!   the training-loop time of its `n` updates and the time of its held-out evaluations, in
+//!   seconds;
 //! - `param @<path>: <type> = [v, ...]` for every parameter after the last step.
+//!
+//! Without `--clock` stdout holds no time, so two runs of one seed print the same bytes. The
+//! training clock (story:bert-tiny-vs-pytorch-cuda, coordinator decision D87) leaves out
+//! the compile, the plan build and pipeline creation, the held-out evaluations of `--eval-every`
+//! (counted apart as `eval_seconds`), the final loss evaluation after the last update,
+//! checkpoint files and the events of `--serve` and `--record`. A stepwise Vulkan run sums, per
+//! update, the time from recording the step's command buffer to the end of its host wait
+//! ([`modelspec_runtime::vulkan::stepwise`]), so the host's batch draw before each step is left
+//! out too; a chunked Vulkan run counts its time from the first submit to the end of the last
+//! wait; a CPU run counts the time of its loop of updates from the first step's batch to the
+//! last update, without the time its observer and its checkpoints take. With `--clock` each
+//! `eval <k>` line carries the clock through the updates before step `k`, so the time at which
+//! the held-out loss first falls below a target reads from stdout alone.
 //!
 //! Parameters are listed by canonical path, values in row-major order, each `f32` in its shortest
 //! round-trip decimal form. A file that does not compile, or data the file's declarations
@@ -35,7 +51,10 @@
 //! wait per step and one for the final loss, the step's batch, RNG tokens and AdamW scalars
 //! uploaded before it and the moments kept on the device. An evaluated step first runs each
 //! held-out batch without dropout in a command buffer of its own, one host wait per batch
-//! (coordinator decision D76, story:vulkan-eval-download-per-batch), and `--profile` refuses a stepwise run on one line (exit 1). `--stats` prints the run's counters on stderr after it
+//! (coordinator decision D76, story:vulkan-eval-download-per-batch). A stepwise run's `--profile`
+//! writes the timestamps of each step's command buffer into one query pool and reads them back
+//! after that step's host wait, adding none (story:bert-tiny-vs-pytorch-cuda); its held-out
+//! batches are not timed. `--stats` prints the run's counters on stderr after it
 //! (host waits, submits, dispatches, dispatches and barriers per step, bytes up and down, device
 //! allocations, peak device bytes, the numerics class, microseconds per step). `--profile` times
 //! every dispatch with GPU timestamp queries, read back after the one host wait, and prints on
@@ -93,7 +112,8 @@
 //! runs on the parameters after `k` updates, the ones the loss of step `k` is of, over every full
 //! batch of `B` sequences of the `HeldOut` split drawn with the run seed, so the last
 //! `count mod B` held-out sequences are never evaluated, and stdout has
-//! `eval <k> loss <v> accuracy <a>` after the `step <k>` line, which an evaluated step always
+//! `eval <k> loss <v> accuracy <a>` (with `--clock` followed by ` train_seconds <s>`) after the
+//! `step <k>` line, which an evaluated step always
 //! gets; the `StepCompleted` of step `k` carries the metric samples `heldout_mlm_loss` and
 //! `heldout_mlm_accuracy` with those values, every other one an empty `metrics` list.
 //! `--eval-every` without `--data`,
@@ -118,7 +138,10 @@
 //! checkpoint that cannot be written fails the run on one line. A file whose optimizer is
 //! `adamw(...)` or `muon(...)` takes neither `--checkpoint` nor `--resume`, a usage error, since a
 //! checkpoint does not hold its moments or momentum buffers yet (DESIGN.md § 6, coordinator
-//! decisions D50 and D67).
+//! decisions D50 and D67), except `--checkpoint` on a run of `--steps 0` without
+//! `--checkpoint-every`, whose moments and buffers are still 0: it writes the step-0 checkpoint
+//! of the initial parameters, from which another implementation starts
+//! (story:bert-tiny-vs-pytorch-cuda).
 //!
 //! `--serve <addr>` also streams the run as `text/event-stream` at `http://<addr>/events`
 //! (`spec/domains/observatory.yaml`, `ServeAddress` and `StreamFrame`; [`modelspec_observatory`]).
@@ -157,13 +180,14 @@
 //! event is written to the file after the first failed write; a run that finished then ends its
 //! stream with `RunFailed` instead of `RunFinished`.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::io::Write;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
+use std::time::{Duration, Instant};
 
 use modelspec_core::compile::{self, CompiledTraining};
 use modelspec_core::diag::{Code, Diagnostic};
@@ -234,8 +258,9 @@ pub struct Args {
     #[arg(long, value_name = "DIR")]
     pub eval: Option<PathBuf>,
     /// With a packed --data directory, run the forward program without dropout over every full
-    /// batch of the HeldOut split and print `eval <k> loss <v> accuracy <a>` after the
-    /// `step <k>` line; the step's StepCompleted carries them as the metric samples
+    /// batch of the HeldOut split and print `eval <k> loss <v> accuracy <a>` after the `step <k>`
+    /// line (with --clock followed by ` train_seconds <s>`); the
+    /// step's StepCompleted carries the loss and accuracy as the metric samples
     /// heldout_mlm_loss and heldout_mlm_accuracy. Evaluation happens at every multiple of N
     /// among the run's steps and at the run's last step, so a resumed run evaluates no step 0 of
     /// its own and starts at the first multiple of N at or after the step it resumes at. The
@@ -248,7 +273,16 @@ pub struct Args {
     /// checkpoint's step plus N.
     #[arg(long, value_name = "N")]
     pub steps: Option<u64>,
-    /// After the last step, write the parameters, step and optimizer to the .msckpt file PATH.
+    /// Print the training clock: `train_seconds <s> eval_seconds <s> steps <n>` after the step
+    /// lines of a finished run, the training-loop time of its N updates without compilation, plan
+    /// build, held-out evaluation, the final loss, checkpoints and events, and the time of its
+    /// held-out evaluations; and ` train_seconds <s>` at the end of each `eval <k>` line, the
+    /// clock through the updates before step K.
+    #[arg(long)]
+    pub clock: bool,
+    /// After the last step, write the parameters, step and optimizer to the .msckpt file PATH. A
+    /// file trained with adamw or muon takes it only with --steps 0 and without
+    /// --checkpoint-every: the checkpoint of the initial parameters.
     #[arg(long, value_name = "PATH")]
     pub checkpoint: Option<PathBuf>,
     /// Also write STEM-K.msckpt beside the --checkpoint file at every step K after the start that
@@ -290,7 +324,8 @@ pub struct Args {
     /// copied up and down, device allocations, peak device bytes), compile and pipeline creation
     /// time, steady-state microseconds per step and the step's total FLOP, bytes, GFLOP/s and
     /// GB/s on stderr after it. A stepwise run (a model with dropout or AdamW, or --data or
-    /// --eval-every on Vulkan) refuses --profile on one line, exit 1.
+    /// --eval-every on Vulkan) reads each step's timestamps back after that step's host wait and
+    /// does not time its held-out batches.
     #[arg(long)]
     pub profile: bool,
     /// With --backend vulkan, compile with fast_math (DESIGN.md ADR-008): the float multiplies,
@@ -355,6 +390,18 @@ enum Failure {
     Diverged(Box<Diverged>, String),
 }
 
+/// The training clock of a finished run (the module documentation): its training-loop time
+/// and the time of its held-out evaluations.
+#[derive(Clone, Copy, Debug, Default)]
+struct Clock {
+    train: Duration,
+    eval: Duration,
+}
+
+/// The held-out metrics of an evaluated step and the training clock through the updates before
+/// it.
+type Evaluated = (HeldOutMetrics, Duration);
+
 impl From<RunError> for Failure {
     fn from(error: RunError) -> Self {
         match error {
@@ -385,6 +432,8 @@ struct Files {
     checkpoint_every: Option<u64>,
     /// The step and parameters of `--resume`, read and matched before the server binds.
     resume: Option<(u64, BTreeMap<ParamId, HostTensor<f32>>)>,
+    /// `--clock`: stdout carries the training clock.
+    clock: bool,
 }
 
 /// The files of a run, read before its first step.
@@ -575,7 +624,11 @@ pub fn run(args: Args, stdout: &mut dyn Write, stderr: &mut dyn Write) -> u8 {
         OptimizerRule::Muon(_) => Some(("muon", "its momentum buffers and moments")),
     };
     if let Some((optimizer, state)) = unsaved {
+        // A run of no step from step 0 holds its moments and buffers at 0: its checkpoint drops
+        // nothing.
+        let initial = compiled.config.steps == 0 && args.checkpoint_every.is_none();
         let flag = match (&args.checkpoint, &args.resume) {
+            (Some(_), None) if initial => None,
             (Some(_), _) => Some("--checkpoint"),
             (None, Some(_)) => Some("--resume"),
             (None, None) => None,
@@ -754,6 +807,7 @@ pub fn run(args: Args, stdout: &mut dyn Write, stderr: &mut dyn Write) -> u8 {
         checkpoint: args.checkpoint,
         checkpoint_every: args.checkpoint_every,
         resume,
+        clock: args.clock,
     };
     emit(RunEventBody::RunStarted(RunStarted {
         steps: compiled.config.steps,
@@ -851,9 +905,10 @@ fn train(
     };
     let params = paths(compiled);
     // The held-out metrics of each evaluated step (`--eval-every`), filled as the run goes on, so
-    // a run that stops prints those of the steps before it stopped.
-    let mut evals: BTreeMap<u64, HeldOutMetrics> = BTreeMap::new();
-    let observed: Result<(Run, Option<Eval>), Failure> = 'run: {
+    // a run that stops prints those of the steps before it stopped, each with the training clock
+    // through the updates before it.
+    let mut evals: BTreeMap<u64, Evaluated> = BTreeMap::new();
+    let observed: Result<(Run, Option<Eval>, Clock), Failure> = 'run: {
         #[cfg(feature = "vulkan")]
         if let Engine::Vulkan {
             artifact,
@@ -892,9 +947,6 @@ fn train(
                 || files.data.is_some()
                 || files.eval_every.is_some()
             {
-                if profile.is_some() {
-                    break 'run Err(Failure::Failed(stepwise::NOT_PROFILED.to_owned()));
-                }
                 let loaded = match files.load(compiled) {
                     Ok(loaded) => loaded,
                     Err(failed) => {
@@ -931,7 +983,7 @@ fn train(
                 let mut observe = |seen: &stepwise::StepSeen<'_>| {
                     let metrics = match seen.held_out {
                         Some(measured) => {
-                            evals.insert(seen.step, measured);
+                            evals.insert(seen.step, (measured, seen.trained));
                             metric_samples(measured)
                         }
                         None => Vec::new(),
@@ -945,22 +997,27 @@ fn train(
                 };
                 break 'run match stepwise::train_stepwise_on_device(
                     *device,
+                    profile.is_some(),
                     compiled,
                     artifact,
                     options,
                     &mut observe,
                 ) {
-                    Ok((run, counted)) => {
-                        let _ = write!(stderr, "{}", counters(&counted, None));
+                    Ok((run, counted, profiled)) => {
+                        let _ = write!(stderr, "{}", counters(&counted, profiled));
                         let end = run.start_step + counted.steps;
+                        let clock = Clock {
+                            train: counted.training,
+                            eval: counted.evaluation,
+                        };
                         match &files.checkpoint {
                             Some(path) => checkpoint::write(
                                 path,
                                 &Checkpoint::of_state(compiled, end, &run.state.values),
                             )
-                            .map(|()| (run, None))
+                            .map(|()| (run, None, clock))
                             .map_err(|error| RunError::from(error).into()),
-                            None => Ok((run, None)),
+                            None => Ok((run, None, clock)),
                         }
                     }
                     Err(DeviceRunError::Refused(diagnostic)) => Err(Failure::Refused(diagnostic)),
@@ -969,11 +1026,11 @@ fn train(
                         let DivergedOnDevice {
                             diverged,
                             stats: counted,
-                            profile: _,
+                            profile: profiled,
                         } = *stopped;
                         Err(Failure::Diverged(
                             Box::new(diverged),
-                            counters(&counted, None),
+                            counters(&counted, profiled),
                         ))
                     }
                     Err(DeviceRunError::Failed(VulkanRunError::Run(error))) => Err((*error).into()),
@@ -1009,14 +1066,18 @@ fn train(
                     }
                     let _ = write!(stderr, "{}", counters(&counted, profiled));
                     let end = run.start_step + counted.steps;
+                    let clock = Clock {
+                        train: counted.training,
+                        eval: counted.evaluation,
+                    };
                     match &files.checkpoint {
                         Some(path) => checkpoint::write(
                             path,
                             &Checkpoint::of_state(compiled, end, &run.state.values),
                         )
-                        .map(|()| (run, None))
+                        .map(|()| (run, None, clock))
                         .map_err(|error| RunError::from(error).into()),
-                        None => Ok((run, None)),
+                        None => Ok((run, None, clock)),
                     }
                 }
                 Err(DeviceRunError::Refused(diagnostic)) => Err(Failure::Refused(diagnostic)),
@@ -1061,12 +1122,23 @@ fn train(
         };
         let start = files.start();
         let end = start.saturating_add(compiled.config.steps);
-        let after = |k: u64, state: &ParamState| match (files.checkpoint_every, files.every_path(k))
-        {
-            (Some(n), Some(path)) if k.is_multiple_of(n) && k < end => {
-                checkpoint::write(&path, &Checkpoint::of_state(compiled, k, &state.values))
-            }
-            _ => Ok(()),
+        // The training clock (the module documentation): the run's time since `started` less the
+        // time its observer and its checkpoints took, read as each update ends.
+        let started = Cell::new(Instant::now());
+        let left_out = Cell::new(Duration::ZERO);
+        let trained = Cell::new(Duration::ZERO);
+        let evaluating = Cell::new(Duration::ZERO);
+        let after = |k: u64, state: &ParamState| {
+            trained.set(started.get().elapsed().saturating_sub(left_out.get()));
+            let writing = Instant::now();
+            let written = match (files.checkpoint_every, files.every_path(k)) {
+                (Some(n), Some(path)) if k.is_multiple_of(n) && k < end => {
+                    checkpoint::write(&path, &Checkpoint::of_state(compiled, k, &state.values))
+                }
+                _ => Ok(()),
+            };
+            left_out.set(left_out.get() + writing.elapsed());
+            written
         };
         // Drawn once, before the first step, so a split too small for a batch is refused then.
         let held_out = match (files.eval_every, &loaded.data) {
@@ -1077,10 +1149,12 @@ fn train(
             _ => None,
         };
         let observe = |o: &Observed<'_>| {
+            let observing = Instant::now();
             let metrics = match (&held_out, files.eval_every) {
                 (Some(held_out), Some(n)) if o.step.is_multiple_of(n) || o.step == end => {
                     let measured = held_out.evaluate(compiled, o.values).map_err(Box::new)?;
-                    evals.insert(o.step, measured);
+                    evaluating.set(evaluating.get() + observing.elapsed());
+                    evals.insert(o.step, (measured, trained.get()));
                     metric_samples(measured)
                 }
                 _ => Vec::new(),
@@ -1093,8 +1167,10 @@ fn train(
                 Vec::new()
             };
             step_completed(o.step, o.loss, metrics, parameters);
+            left_out.set(left_out.get() + observing.elapsed());
             Ok(())
         };
+        started.set(Instant::now());
         let run = match runner::run_checked(
             compiled,
             loaded.data.as_ref().map(TrainData::as_data),
@@ -1105,6 +1181,10 @@ fn train(
         ) {
             Ok(run) => run,
             Err(error) => break 'run Err(error.into()),
+        };
+        let clock = Clock {
+            train: trained.get(),
+            eval: evaluating.get(),
         };
         let eval = match &loaded.eval {
             None => None,
@@ -1119,9 +1199,9 @@ fn train(
                 break 'run Err(RunError::from(error).into());
             }
         }
-        Ok((run, eval))
+        Ok((run, eval, clock))
     };
-    let (run, eval) = match observed {
+    let (run, eval, clock) = match observed {
         Ok(done) => done,
         Err(Failure::Refused(diagnostic)) => {
             end();
@@ -1133,7 +1213,15 @@ fn train(
         }
         Err(Failure::Diverged(diverged, counters)) => {
             let Diverged { diagnostic, run } = *diverged;
-            let printed = report(compiled, files.binding.as_ref(), &run, &evals, None, false);
+            let printed = report(
+                compiled,
+                files.binding.as_ref(),
+                &run,
+                &evals,
+                None,
+                None,
+                files.clock,
+            );
             let _ = stdout
                 .write_all(printed.as_bytes())
                 .and_then(|()| stdout.flush());
@@ -1154,7 +1242,15 @@ fn train(
             });
         }
     };
-    let printed = report(compiled, files.binding.as_ref(), &run, &evals, eval, true);
+    let printed = report(
+        compiled,
+        files.binding.as_ref(),
+        &run,
+        &evals,
+        eval,
+        Some(clock),
+        files.clock,
+    );
     let body = printed.trim_end_matches('\n');
     let (head, last) = printed.split_at(body.rfind('\n').map_or(0, |i| i + 1));
     let written = stdout
@@ -1240,14 +1336,18 @@ fn device_parameters(
 
 /// The stdout of a run: of a finished one, or without its `param` lines of one that stopped at
 /// its last loss (E-TRAIN-001); a run on a packed directory starts with the `data` line of its
-/// `binding`. Each step of `evals` gets its `step` line and, after it, its `eval` line.
+/// `binding`. Each step of `evals` gets its `step` line and, after it, its `eval` line. A run is
+/// finished when it has its `clock`. When `clocked` (`--clock`) each `eval` line ends in the
+/// training clock through the updates before its step, and a finished run prints its clock line
+/// after its `step` and `eval` lines and before its `param` lines.
 fn report(
     compiled: &CompiledTraining,
     binding: Option<&TrainingDataBinding>,
     run: &Run,
-    evals: &BTreeMap<u64, HeldOutMetrics>,
+    evals: &BTreeMap<u64, Evaluated>,
     eval: Option<Eval>,
-    finished: bool,
+    clock: Option<Clock>,
+    clocked: bool,
 ) -> String {
     let params = paths(compiled);
     let mut out = String::new();
@@ -1279,11 +1379,24 @@ fn report(
         if k == run.start_step || k.is_multiple_of(LOSS_EVERY) || k == last || evaluated.is_some() {
             let _ = writeln!(out, "step {k} loss {loss}");
         }
-        if let Some(HeldOutMetrics { loss, accuracy }) = evaluated {
-            let _ = writeln!(out, "eval {k} loss {loss} accuracy {accuracy}");
+        if let Some((HeldOutMetrics { loss, accuracy }, trained)) = evaluated {
+            let _ = write!(out, "eval {k} loss {loss} accuracy {accuracy}");
+            if clocked {
+                let _ = write!(out, " train_seconds {:.6}", trained.as_secs_f64());
+            }
+            out.push('\n');
         }
     }
-    if finished {
+    if let Some(Clock { train, eval }) = clock {
+        if clocked {
+            let _ = writeln!(
+                out,
+                "train_seconds {:.6} eval_seconds {:.6} steps {}",
+                train.as_secs_f64(),
+                eval.as_secs_f64(),
+                last - run.start_step
+            );
+        }
         tensors(&mut out, "param", &run.state.values);
     }
     if let Some(Eval { loss, accuracy }) = eval {

@@ -38,6 +38,12 @@ pub struct Run {
     pub repeat_count: u64,
     pub repeats_us_per_step: Option<Vec<f64>>,
     pub median_us_per_step: f64,
+    pub target_loss: Option<f64>,
+    pub steps_to_target: Option<u64>,
+    pub seconds_to_target: Option<f64>,
+    pub train_seconds: Option<f64>,
+    pub eval_every: Option<u64>,
+    pub final_heldout_loss: Option<f64>,
     pub source: String,
 }
 
@@ -125,7 +131,7 @@ fn median(values: &[f64]) -> Option<f64> {
 }
 
 /// The fields of `modelspec.benchmark.BenchmarkRun` typed `PositiveInteger`.
-const POSITIVE_INTEGERS: [&str; 7] = [
+const POSITIVE_INTEGERS: [&str; 9] = [
     "threads",
     "batch",
     "hidden",
@@ -133,6 +139,8 @@ const POSITIVE_INTEGERS: [&str; 7] = [
     "flop_per_step",
     "timed_steps",
     "repeat_count",
+    "steps_to_target",
+    "eval_every",
 ];
 
 /// Whether `value` is a YAML number that is not finite (`.nan`, `.inf`, `-.inf`). JSON has no
@@ -184,10 +192,42 @@ const BLOCK_SEQ: u64 = 128;
 /// with `S = H = 128` and `F = 512`, the closed form of
 /// `crates/modelspec-runtime/benches/transformer_block/block.rs`.
 const BLOCK_FLOP_PER_SEQUENCE: u64 = 339_738_624;
+/// The BERT-tiny pre-training workload (story:bert-tiny-vs-pytorch-cuda), whose `MatmulOnly`
+/// count is [`BERT_FLOP_PER_SEQUENCE`]·B and whose runs are timed to a held-out loss.
+const BERT: &str = "bert-tiny-pretrain";
+/// The sequences of one `bert-tiny-pretrain` step, the batch of `examples/bert_tiny.mspec`.
+const BERT_BATCH: u64 = 32;
+/// The tokens of one `bert-tiny-pretrain` step, [`BERT_BATCH`] sequences of 128.
+const BERT_TOKENS: u64 = BERT_BATCH * 128;
+/// The `MatmulOnly` FLOP of a `bert-tiny-pretrain` step per sequence:
+/// `S·(54·H² + 24·H·F + 6·H·V + 24·S·H)` with `S = H = 128`, `F = 512` and `V = 8,192`, the
+/// closed form of `crates/modelspec-runtime/benches/bert_tiny/flop.rs`.
+const BERT_FLOP_PER_SEQUENCE: u64 = 1_170_210_816;
+
+/// What is wrong with the `MatmulOnly` count `flop` of a `workload` run counted as `per_sequence`
+/// FLOP per sequence of its batch.
+fn per_sequence_problem(run: &Run, flop: u64, workload: &str, per_sequence: u64) -> Option<String> {
+    match run.batch {
+        Some(batch) => {
+            let expected = per_sequence.checked_mul(batch);
+            (expected != Some(flop)).then(|| {
+                format!(
+                    "{flop} is not what flop_rule MatmulOnly counts for `{workload}`, \
+                     {per_sequence}·B = {} at batch {batch}",
+                    expected.map_or("more than 2^64".to_owned(), |n| n.to_string())
+                )
+            })
+        }
+        None => Some(format!(
+            "flop_rule MatmulOnly counts {per_sequence}·B for `{workload}`, so the run must give batch"
+        )),
+    }
+}
 
 /// What is wrong with a `MatmulOnly` count of `flop` FLOP per step: the rule is a formula per
-/// workload (`modelspec.benchmark.FlopRule`), `3196·B·H` for `mlp-784-H-10` and
-/// `339,738,624·B` for `transformer-block`, and is defined for no other workload.
+/// workload (`modelspec.benchmark.FlopRule`), `3196·B·H` for `mlp-784-H-10`, `339,738,624·B` for
+/// `transformer-block` and `1,170,210,816·B` for `bert-tiny-pretrain`, and is defined for no other
+/// workload.
 fn matmul_only_problems(run: &Run, flop: u64) -> Option<(&'static str, String)> {
     let problem = match run.workload.as_str() {
         SWEEP_WORKLOAD => match (run.batch, run.hidden) {
@@ -207,26 +247,84 @@ fn matmul_only_problems(run: &Run, flop: u64) -> Option<(&'static str, String)> 
                     .to_owned(),
             ),
         },
-        BLOCK => match run.batch {
-            Some(batch) => {
-                let expected = BLOCK_FLOP_PER_SEQUENCE.checked_mul(batch);
-                (expected != Some(flop)).then(|| {
-                    format!(
-                        "{flop} is not what flop_rule MatmulOnly counts for `{BLOCK}`, \
-                         {BLOCK_FLOP_PER_SEQUENCE}·B = {} at batch {batch}",
-                        expected.map_or("more than 2^64".to_owned(), |n| n.to_string())
-                    )
-                })
-            }
-            None => Some(format!(
-                "flop_rule MatmulOnly counts {BLOCK_FLOP_PER_SEQUENCE}·B for `{BLOCK}`, so the run must give batch"
-            )),
-        },
+        BLOCK => per_sequence_problem(run, flop, BLOCK, BLOCK_FLOP_PER_SEQUENCE),
+        BERT => per_sequence_problem(run, flop, BERT, BERT_FLOP_PER_SEQUENCE),
         other => Some(format!(
-            "flop_rule MatmulOnly is a formula of `{SWEEP_WORKLOAD}` and `{BLOCK}`, not of `{other}`"
+            "flop_rule MatmulOnly is a formula of `{SWEEP_WORKLOAD}`, `{BLOCK}` and `{BERT}`, not of `{other}`"
         )),
     };
     problem.map(|problem| ("flop_per_step", problem))
+}
+
+/// What is wrong with a `bert-tiny-pretrain` run (story:bert-tiny-vs-pytorch-cuda) beyond the
+/// schema: it states its target_loss, steps_to_target and seconds_to_target, the figures its
+/// section is about, and the 4,096 tokens of a step of 32 sequences of 128; its losses and
+/// seconds are positive, and its seconds to the target are within its training seconds.
+fn bert_problems(run: &Run) -> Vec<(&'static str, String)> {
+    let mut problems = Vec::new();
+    let missing = [
+        (
+            "target_loss",
+            run.target_loss.is_none(),
+            "the held-out loss it trains to",
+        ),
+        (
+            "steps_to_target",
+            run.steps_to_target.is_none(),
+            "the first evaluated step at or below its target",
+        ),
+        (
+            "seconds_to_target",
+            run.seconds_to_target.is_none(),
+            "the training seconds to that step",
+        ),
+        (
+            "tokens_per_step",
+            run.tokens_per_step.is_none(),
+            "the 4096 tokens of one step",
+        ),
+    ];
+    for (field, absent, what) in missing {
+        if absent {
+            problems.push((
+                field,
+                format!("is missing; a `{BERT}` run must give {field}, {what}"),
+            ));
+        }
+    }
+    if let Some(tokens) = run.tokens_per_step.filter(|tokens| *tokens != BERT_TOKENS) {
+        problems.push((
+            "tokens_per_step",
+            format!(
+                "{tokens} is not the {BERT_TOKENS} tokens of a `{BERT}` step, {BERT_BATCH} sequences of 128"
+            ),
+        ));
+    }
+    if let Some(batch) = run.batch.filter(|batch| *batch != BERT_BATCH) {
+        problems.push((
+            "batch",
+            format!("{batch} is not the {BERT_BATCH} sequences of a `{BERT}` step"),
+        ));
+    }
+    for (field, value) in [
+        ("target_loss", run.target_loss),
+        ("seconds_to_target", run.seconds_to_target),
+        ("train_seconds", run.train_seconds),
+        ("final_heldout_loss", run.final_heldout_loss),
+    ] {
+        if value.is_some_and(|value| !(value.is_finite() && value > 0.0)) {
+            problems.push((field, "must be a positive number".to_owned()));
+        }
+    }
+    if let (Some(to_target), Some(total)) = (run.seconds_to_target, run.train_seconds)
+        && to_target > total
+    {
+        problems.push((
+            "seconds_to_target",
+            format!("{to_target} is more than the run's train_seconds {total}"),
+        ));
+    }
+    problems
 }
 
 /// What is wrong with the batch and tokens of a `transformer-block` run (coordinator decision
@@ -274,7 +372,8 @@ fn block_problems(run: &Run) -> Vec<(&'static str, String)> {
 /// hold whatever schema is read, its date, its repeats against its repeat count and its median
 /// against the median of its repeats; a `MatmulOnly` count against its workload's formula
 /// ([`matmul_only_problems`]); the batch and tokens of a `transformer-block` run
-/// ([`block_problems`]); and its workload against the workloads the page declares
+/// ([`block_problems`]); the target figures, batch and tokens of a `bert-tiny-pretrain` run
+/// ([`bert_problems`]); and its workload against the workloads the page declares
 /// ([`WORKLOADS`]).
 fn semantic_problems(run: &Run) -> Vec<(&'static str, String)> {
     let mut problems = Vec::new();
@@ -301,6 +400,9 @@ fn semantic_problems(run: &Run) -> Vec<(&'static str, String)> {
     if run.workload == BLOCK {
         problems.extend(block_problems(run));
     }
+    if run.workload == BERT {
+        problems.extend(bert_problems(run));
+    }
     let counts = [
         ("threads", run.threads),
         ("batch", run.batch),
@@ -309,6 +411,8 @@ fn semantic_problems(run: &Run) -> Vec<(&'static str, String)> {
         ("flop_per_step", run.flop_per_step),
         ("timed_steps", run.timed_steps),
         ("repeat_count", Some(run.repeat_count)),
+        ("steps_to_target", run.steps_to_target),
+        ("eval_every", run.eval_every),
     ];
     for (field, value) in counts {
         if value == Some(0) {
@@ -1486,6 +1590,12 @@ fn rule_text(rule: &str, workload: &str) -> String {
              forward and backward, at a batch of B sequences of {BLOCK_SEQ}",
             grouped(&BLOCK_FLOP_PER_SEQUENCE.to_string())
         ),
+        ("MatmulOnly", BERT) => format!(
+            "`MatmulOnly`, {}·B, the matrix products of a pre-training step, the two encoder \
+             layers, the MLM transform and the tied decoder, forward and backward, at a batch of \
+             B sequences of 128",
+            grouped(&BERT_FLOP_PER_SEQUENCE.to_string())
+        ),
         ("MatmulOnly", _) => {
             "`MatmulOnly`, 3196·B·H, the matmuls of a 784 → H → 10 step at batch B".to_owned()
         }
@@ -1684,6 +1794,94 @@ fn sequence_section(workload: &str, runs: &[&Run], images: &mut Pages) -> String
     out
 }
 
+/// Where the report a run's `source` names is read: a verification report under
+/// `.engineering/planning/verification-report/`, or `CHANGELOG.md`; none for another source.
+fn report_url(source: &str) -> Option<String> {
+    let cited = source.split([',', ' ']).next().unwrap_or_default();
+    if let Some(name) = cited.strip_prefix("verification-report:") {
+        (!name.is_empty()).then(|| {
+            format!(
+                "{}/.engineering/planning/verification-report/{name}.md",
+                crate::SOURCE
+            )
+        })
+    } else if cited == "CHANGELOG.md" {
+        Some(format!("{}/CHANGELOG.md", crate::SOURCE))
+    } else {
+        None
+    }
+}
+
+/// The section of `bert-tiny-pretrain` (story:bert-tiny-vs-pytorch-cuda), a workload timed to a
+/// held-out loss: per side a table of its runs in file order, with µs per step, tokens per
+/// second, GFLOP/s, the target, the steps and training seconds to it and the final held-out
+/// loss, each figure linked to the report that states it. No chart: the figure that matters is
+/// the time to the target, one number per run.
+fn target_section(workload: &str, runs: &[&Run]) -> String {
+    let title = workload_title(workload);
+    let rules: std::collections::BTreeSet<&str> = runs
+        .iter()
+        .filter_map(|run| run.flop_rule.as_deref())
+        .collect();
+    let rules: Vec<String> = rules.iter().map(|rule| rule_text(rule, workload)).collect();
+    let mut out = format!(
+        "## {title}, time to the held-out baseline\n\n`{workload}`: `examples/bert_tiny.mspec` \
+         pre-trained by each side from the same initial weights on the same batches of the same \
+         packed corpus, with the same optimizer and schedule, until its held-out loss, evaluated \
+         every `Eval every` steps, is at most the target loss. Steps to target is the first \
+         evaluated step at or below the target, training seconds to target the training time up \
+         to that step without the held-out evaluations, checkpoint writes or events. µs per step \
+         is the median of the timed run, tokens per second its tokens per step · 10⁶ / µs per \
+         step, GFLOP/s its FLOP per step / µs per step / 1000. Each figure links to the report \
+         that states it."
+    );
+    if !rules.is_empty() {
+        out.push_str(&format!(" FLOP are counted by {}.", rules.join(" and by ")));
+    }
+    out.push('\n');
+    let mut sides: Vec<(usize, &str)> = runs
+        .iter()
+        .map(|run| (side_rank(&run.side), run.side.as_str()))
+        .collect();
+    sides.sort();
+    sides.dedup();
+    for (_, side) in sides {
+        out.push_str(&format!(
+            "\n### {}\n\n\
+             | Date | Build | µs per step | Tokens per second | GFLOP/s | Target loss | Steps to target | Training seconds to target | Final held-out loss | Eval every |\n\
+             |---|---|---|---|---|---|---|---|---|---|\n",
+            side_label(side)
+        ));
+        for run in runs.iter().filter(|run| run.side == side) {
+            let url = report_url(&run.source);
+            let linked = |figure: Option<String>| match (figure, &url) {
+                (None, _) => String::new(),
+                (Some(figure), Some(url)) => format!("[{figure}]({url})"),
+                (Some(figure), None) => figure,
+            };
+            let figures = [
+                Some(number(run.median_us_per_step)),
+                tokens_per_s(run).map(number),
+                gflops(run).map(|value| gflops_text(Some(value))),
+                run.target_loss.map(|loss| loss.to_string()),
+                run.steps_to_target.map(|steps| grouped(&steps.to_string())),
+                run.seconds_to_target.map(number),
+                run.final_heldout_loss.map(|loss| format!("{loss:.4}")),
+            ];
+            let figures: Vec<String> = figures.into_iter().map(linked).collect();
+            out.push_str(&format!(
+                "| {} | {} | {} | {} |\n",
+                run.date,
+                crate::cell(&build(run)),
+                figures.join(" | "),
+                run.eval_every
+                    .map_or(String::new(), |every| every.to_string())
+            ));
+        }
+    }
+    out
+}
+
 fn capitalised(text: &str) -> String {
     let mut chars = text.chars();
     chars.next().map_or(String::new(), |first| {
@@ -1731,7 +1929,9 @@ fn render(runs: &[Run]) -> (String, Pages) {
             .iter()
             .filter(|run| run.workload == *workload)
             .collect();
-        let section = if of_workload.iter().any(|run| run.tokens_per_step.is_some()) {
+        let section = if *workload == BERT {
+            target_section(workload, &of_workload)
+        } else if of_workload.iter().any(|run| run.tokens_per_step.is_some()) {
             sequence_section(workload, &of_workload, &mut images)
         } else if of_workload
             .iter()
@@ -2542,19 +2742,14 @@ mod tests {
 
         let with_both = format!(
             "{with_block}{}",
-            entry(
-                "bert",
-                "2026-10-28",
-                "bert-tiny-pretrain",
-                "ModelSpecVulkan",
-                None,
-                None,
-                5000.0
-            )
+            bert_entry("bert", "ModelSpecVulkan", 5000.0, (3400, 28.5), 84.25, 6.8)
         );
         let runs = read(&with_both, &schema()).unwrap();
         let (page, _) = render(&runs);
-        assert!(page.contains("\n## BERT-tiny pre-training\n"), "{page}");
+        assert!(
+            page.contains("\n## BERT-tiny pre-training, time to the held-out baseline\n"),
+            "{page}"
+        );
         assert!(not_measured(&page).is_none(), "{page}");
     }
 
@@ -2928,6 +3123,222 @@ mod tests {
         assert!(
             !not_measured.contains("Transformer block"),
             "{not_measured}"
+        );
+    }
+
+    /// A `bert-tiny-pretrain` run of `side` (story:bert-tiny-vs-pytorch-cuda) with every figure a
+    /// time-to-target run states: 32 sequences of 128, its `MatmulOnly` FLOP
+    /// (`1,170,210,816·32`), the target, the steps and training seconds to it, and the final
+    /// held-out loss. Its lines, from 2 under `runs:`: 7 batch, 8 tokens_per_step, 9
+    /// flop_per_step, 11 target_loss, 12 steps_to_target, 13 seconds_to_target.
+    fn bert_entry(
+        id: &str,
+        side: &str,
+        median: f64,
+        to_target: (u64, f64),
+        train_seconds: f64,
+        final_loss: f64,
+    ) -> String {
+        let (steps, seconds) = to_target;
+        let version = if is_modelspec(side) {
+            "    modelspec_version: 0.22.0\n    commit: 0123456789abcdef\n".to_owned()
+        } else {
+            "    opponent_version: torch 2.14.1+cu130\n".to_owned()
+        };
+        format!(
+            "  - run_id: {id}\n    date: \"2026-10-28\"\n    workload: bert-tiny-pretrain\n    side: {side}\n    mode: Timed\n    batch: 32\n    tokens_per_step: 4096\n    flop_per_step: 37446746112\n    flop_rule: MatmulOnly\n    target_loss: 6.926537926202018\n    steps_to_target: {steps}\n    seconds_to_target: {seconds}\n    train_seconds: {train_seconds}\n    eval_every: 100\n    final_heldout_loss: {final_loss}\n{version}    repeat_count: 3\n    repeats_us_per_step: null\n    median_us_per_step: {median}\n    source: verification-report:bert-fixture\n    state: Recorded\n"
+        )
+    }
+
+    fn bert_run(side: &str) -> String {
+        format!(
+            "runs:\n{}",
+            bert_entry("bert", side, 8192.0, (3400, 28.5), 84.25, 6.8012345)
+        )
+    }
+
+    /// A `bert-tiny-pretrain` run states its target and the steps and training seconds to it, and
+    /// its 4,096 tokens per step, 32 sequences of 128; without one of them, or with other tokens,
+    /// another batch or another `MatmulOnly` count, it is refused at the field.
+    #[test]
+    fn a_bert_tiny_pretrain_run_without_its_target_figures_or_with_other_tokens_is_refused_at_the_field()
+     {
+        let run = read(&bert_run("ModelSpecVulkan"), &schema()).unwrap();
+        assert_eq!(run[0].target_loss, Some(6.926537926202018));
+        assert_eq!(run[0].steps_to_target, Some(3400));
+        assert_eq!(run[0].seconds_to_target, Some(28.5));
+        assert_eq!(run[0].train_seconds, Some(84.25));
+        assert_eq!(run[0].eval_every, Some(100));
+        assert_eq!(run[0].final_heldout_loss, Some(6.8012345));
+        assert!(read(&bert_run("PyTorchCudaCompile"), &schema()).is_ok());
+
+        for (line, field) in [
+            ("    target_loss: 6.926537926202018\n", "target_loss"),
+            ("    steps_to_target: 3400\n", "steps_to_target"),
+            ("    seconds_to_target: 28.5\n", "seconds_to_target"),
+            ("    tokens_per_step: 4096\n", "tokens_per_step"),
+        ] {
+            let text = bert_run("ModelSpecVulkan").replace(line, "");
+            let error = read(&text, &schema()).err().unwrap();
+            assert!(
+                error.starts_with(&format!(
+                    "benchmarks/runs.yaml:2: runs[0] (bert) field `{field}`: is missing; a \
+                     `bert-tiny-pretrain` run must give {field}"
+                )),
+                "{error}"
+            );
+            assert_eq!(error.lines().count(), 1, "{error}");
+        }
+
+        let tokens =
+            bert_run("ModelSpecVulkan").replace("tokens_per_step: 4096", "tokens_per_step: 1024");
+        assert_eq!(
+            read(&tokens, &schema()).err().unwrap(),
+            "benchmarks/runs.yaml:8: runs[0] (bert) field `tokens_per_step`: 1024 is not the 4096 \
+             tokens of a `bert-tiny-pretrain` step, 32 sequences of 128"
+        );
+
+        let batch = bert_run("ModelSpecVulkan")
+            .replace("batch: 32", "batch: 8")
+            .replace("flop_per_step: 37446746112", "flop_per_step: 9361686528");
+        let error = read(&batch, &schema()).err().unwrap();
+        assert!(
+            error.starts_with(
+                "benchmarks/runs.yaml:7: runs[0] (bert) field `batch`: 8 is not the 32 sequences"
+            ),
+            "{error}"
+        );
+
+        let flop = bert_run("ModelSpecVulkan")
+            .replace("flop_per_step: 37446746112", "flop_per_step: 10871635968");
+        let error = read(&flop, &schema()).err().unwrap();
+        assert!(
+            error.starts_with("benchmarks/runs.yaml:9: runs[0] (bert) field `flop_per_step`:"),
+            "{error}"
+        );
+        assert!(
+            error.contains("1170210816·B = 37446746112 at batch 32"),
+            "{error}"
+        );
+
+        let seconds =
+            bert_run("ModelSpecVulkan").replace("seconds_to_target: 28.5", "seconds_to_target: 0");
+        assert_eq!(
+            read(&seconds, &schema()).err().unwrap(),
+            "benchmarks/runs.yaml:13: runs[0] (bert) field `seconds_to_target`: must be a \
+             positive number"
+        );
+        let after =
+            bert_run("ModelSpecVulkan").replace("seconds_to_target: 28.5", "seconds_to_target: 90");
+        assert_eq!(
+            read(&after, &schema()).err().unwrap(),
+            "benchmarks/runs.yaml:13: runs[0] (bert) field `seconds_to_target`: 90 is more than \
+             the run's train_seconds 84.25"
+        );
+        let zero =
+            bert_run("ModelSpecVulkan").replace("steps_to_target: 3400", "steps_to_target: 0");
+        let error = read(&zero, &schema()).err().unwrap();
+        assert!(
+            error.starts_with("benchmarks/runs.yaml:12: runs[0] (bert) field `steps_to_target`:"),
+            "{error}"
+        );
+    }
+
+    /// A `bert-tiny-pretrain` run gets the section "BERT-tiny pre-training, time to the held-out
+    /// baseline": a table per side with µs per step, tokens per second, GFLOP/s, the target, the
+    /// steps and training seconds to it and the final held-out loss, each linked to the run's
+    /// report, and no chart.
+    #[test]
+    fn a_bert_tiny_pretrain_section_shows_time_to_target_per_side_linked_to_the_report() {
+        let text = format!(
+            "{}{}{}",
+            flop_fixture(),
+            bert_entry(
+                "bert-ms",
+                "ModelSpecVulkan",
+                8192.0,
+                (3400, 28.5),
+                84.25,
+                6.8012345
+            ),
+            bert_entry(
+                "bert-pt",
+                "PyTorchCudaEager",
+                16384.0,
+                (3400, 57.0),
+                170.0,
+                6.8011999
+            )
+        );
+        let runs = read(&text, &schema()).unwrap();
+        let (page, images) = render(&runs);
+        let start = page
+            .find("\n## BERT-tiny pre-training, time to the held-out baseline\n")
+            .unwrap_or_else(|| panic!("{page}"));
+        let end = page[start + 1..]
+            .find("\n## ")
+            .map_or(page.len(), |at| start + 1 + at);
+        let section = &page[start..end];
+        assert!(
+            !images
+                .keys()
+                .any(|name| name.starts_with("bert-tiny-pretrain")),
+            "{:?}",
+            images.keys()
+        );
+        let report = format!(
+            "{}/.engineering/planning/verification-report/bert-fixture.md",
+            crate::SOURCE
+        );
+        let header = "| Date | Build | µs per step | Tokens per second | GFLOP/s | Target loss | Steps to target | Training seconds to target | Final held-out loss | Eval every |";
+        assert_eq!(section.matches(header).count(), 2, "{section}");
+        let ours = section
+            .find("\n### ModelSpec Vulkan\n")
+            .unwrap_or_else(|| panic!("{section}"));
+        let theirs = section
+            .find("\n### PyTorch CUDA eager\n")
+            .unwrap_or_else(|| panic!("{section}"));
+        assert!(ours < theirs, "{section}");
+        let row = |build: &str, figures: [&str; 7]| {
+            let linked: Vec<String> = figures
+                .iter()
+                .map(|figure| format!("[{figure}]({report})"))
+                .collect();
+            format!("| 2026-10-28 | {build} | {} | 100 |", linked.join(" | "))
+        };
+        let ms = row(
+            "0.22.0 (`0123456`)",
+            [
+                "8,192",
+                "500,000",
+                "4,571.1",
+                "6.926537926202018",
+                "3,400",
+                "28.5",
+                "6.8012",
+            ],
+        );
+        let pt = row(
+            "torch 2.14.1+cu130",
+            [
+                "16,384",
+                "250,000",
+                "2,285.6",
+                "6.926537926202018",
+                "3,400",
+                "57",
+                "6.8012",
+            ],
+        );
+        assert!(section[ours..theirs].contains(&ms), "{ms}\n{section}");
+        assert!(section[theirs..].contains(&pt), "{pt}\n{section}");
+        assert!(section.contains("1,170,210,816·B"), "{section}");
+        assert!(section.contains("`bert-tiny-pretrain`"), "{section}");
+        for kind in ["story:", "epic:", "verification-report:"] {
+            assert!(!section.contains(kind), "{kind} in {section}");
+        }
+        assert!(
+            not_measured(&page).is_none_or(|rest| !rest.contains("**BERT-tiny pre-training**"))
         );
     }
 

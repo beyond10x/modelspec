@@ -296,12 +296,14 @@ fn adv_gpu_step_bert_tiny_schedules_the_eight_kernels() {
     }
 }
 
-/// Finding f3 (hypothesis 9): DESIGN.md § 8 says `--profile` refuses a stepwise run (one with
+/// Finding f3 (hypothesis 9): DESIGN.md § 8 said `--profile` refuses a stepwise run (one with
 /// dropout, AdamW, `--data` or `--eval-every`), but `train --help`, from which the generated CLI
-/// reference page is built, describes `--profile` without that limit. Red on the unit; fix pass
-/// 1 names the refusal in the help (coordinator decision D74).
+/// reference page is built, described `--profile` without that limit. Red on the unit; fix pass
+/// 1 named the refusal in the help (coordinator decision D74). Since
+/// story:bert-tiny-vs-pytorch-cuda a stepwise run is profiled, one query pool per step's command
+/// buffer, and the help names the stepwise run's profile instead.
 #[test]
-fn adv_gpu_step_f3_help_names_the_stepwise_profile_refusal() {
+fn adv_gpu_step_f3_help_names_the_stepwise_profile() {
     let output = modelspec(&["train", "--help"]);
     assert_exit(&output, 0);
     let help = text(&output.stdout);
@@ -314,22 +316,54 @@ fn adv_gpu_step_f3_help_names_the_stepwise_profile_refusal() {
         .unwrap_or_default()
         .to_owned();
     assert!(
-        paragraph.contains("dropout") || paragraph.contains("stepwise"),
-        "the --profile help names no refusal:\n{paragraph}"
+        paragraph.contains("stepwise") && !paragraph.contains("refuses"),
+        "the --profile help names no stepwise profile:\n{paragraph}"
     );
 }
 
-/// Hypothesis 9: on a stepwise run `--profile` is one line on stderr, exit 1, nothing on stdout,
-/// and `--stats` prints its twelve counters, `host waits` one per step plus one.
+/// Hypothesis 9: on a stepwise run `--profile` prints the profile of every step's command buffer
+/// on stderr, exit 0, the unprofiled run's stdout (story:bert-tiny-vs-pytorch-cuda,
+/// which replaced the one-line refusal): each `step` site called once per step, each `final` site
+/// once, one host wait per step plus one, and `step_total` with no uncounted site; and `--stats`
+/// prints its twelve counters, `host waits` one per step plus one.
 #[test]
 #[ignore = "needs a Vulkan device"]
-fn adv_gpu_step_device_profile_refusal_and_stats_on_a_stepwise_run() {
+fn adv_gpu_step_device_profile_and_stats_on_a_stepwise_run() {
     let output = modelspec(&["train", DROPOUT, "--backend", "vulkan", "--profile"]);
-    assert_exit(&output, 1);
-    assert!(output.stdout.is_empty(), "{}", text(&output.stdout));
+    assert_exit(&output, 0);
+    let plain = modelspec(&["train", DROPOUT, "--backend", "vulkan"]);
+    assert_exit(&plain, 0);
+    assert_eq!(text(&output.stdout), text(&plain.stdout));
     let stderr = text(&output.stderr);
-    assert_eq!(stderr.lines().count(), 1, "{stderr}");
-    assert!(stderr.contains("--profile"), "{stderr}");
+    let dispatches: Vec<&str> = stderr
+        .lines()
+        .filter(|line| line.starts_with("profile dispatch "))
+        .collect();
+    assert!(
+        dispatches
+            .iter()
+            .any(|line| line.starts_with("profile dispatch step ")),
+        "{stderr}"
+    );
+    for line in &dispatches {
+        let calls = if line.starts_with("profile dispatch step ") {
+            " calls 30 "
+        } else {
+            " calls 1 "
+        };
+        assert!(line.contains(calls), "{line}");
+    }
+    assert!(stderr.contains("profile host_waits 31\n"), "{stderr}");
+    assert!(
+        stderr.contains("profile steady_us_per_step ")
+            && !stderr.contains("profile steady_us_per_step unavailable"),
+        "30 steps are past the 20-step warm-up:\n{stderr}"
+    );
+    let total = stderr.lines().last().expect("a step_total line").to_owned();
+    assert!(
+        total.starts_with("profile step_total flop ") && total.ends_with(" uncounted_sites 0"),
+        "{stderr}"
+    );
 
     let output = modelspec(&["train", DROPOUT, "--backend", "vulkan", "--stats"]);
     assert_exit(&output, 0);
