@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/modelspec.diagram.Port",
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "30fb804730c460a95541105dabb73eaf623a6992f5e63bfe6955e8f2c5b43643",
+    "contract_digest": "slice-sha256/2:0f14ba39fa09bb94a4e472a375fdfa043d82678851a65a6c5e3c71283f59921c",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.checkpoint.DType": {
+      "title": "DType",
+      "description": "A tensor element type and its size in bytes; `f32` for every value, `i32` only for row ids an `embedding` reads, never a parameter or a checkpoint tensor (DESIGN.md § 2.2).",
+      "x-ess-name": "modelspec.checkpoint.DType",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "F32",
+        "I32"
+      ],
+      "x-ess-attributes": [
+        {
+          "kind": "integer",
+          "name": "size_bytes",
+          "type": "Integer",
+          "values": {
+            "F32": 4,
+            "I32": 4
+          }
+        }
+      ]
+    },
+    "modelspec.checkpoint.Shape": {
+      "title": "Shape",
+      "description": "A tensor shape; each dimension is a positive integer and rank 0 is a scalar (DESIGN.md § 2.2).",
+      "x-ess-name": "modelspec.checkpoint.Shape",
+      "x-ess-kind": "newtype",
+      "type": "array",
+      "items": {
+        "type": "integer"
+      },
+      "x-ess-invariants": [
+        "forall dim in value: (dim > 0)"
+      ]
+    },
+    "modelspec.diagram.Port": {
+      "title": "Port",
+      "description": "A tensor crossing a scope's boundary; a collapsed scope's composite node draws one port per entry, and an edge to or from a node inside the scope attaches to it (DESIGN.md § 13.3).",
+      "x-ess-name": "modelspec.diagram.Port",
+      "x-ess-kind": "struct",
+      "type": "object",
+      "properties": {
+        "direction": {
+          "$ref": "#/$defs/modelspec.diagram.PortDirection"
+        },
+        "value_id": {
+          "description": "The value that crosses, defined outside the scope for In and inside it for Out.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "dtype": {
+          "$ref": "#/$defs/modelspec.checkpoint.DType"
+        },
+        "shape": {
+          "$ref": "#/$defs/modelspec.checkpoint.Shape"
+        }
+      },
+      "required": [
+        "direction",
+        "value_id",
+        "dtype",
+        "shape"
+      ],
+      "additionalProperties": false,
+      "x-ess-invariants": [
+        "value_id >= 0"
+      ]
+    },
+    "modelspec.diagram.PortDirection": {
+      "title": "PortDirection",
+      "x-ess-name": "modelspec.diagram.PortDirection",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "In",
+        "Out"
+      ]
+    }
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/modelspec.diagram.ScopeKind",
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "30fb804730c460a95541105dabb73eaf623a6992f5e63bfe6955e8f2c5b43643",
+    "contract_digest": "slice-sha256/2:79cfd676a56b2e491f180a077bc5fb8dc9c4d82718fc82dec823c2c794527516",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.diagram.ScopeKind": {
+      "title": "ScopeKind",
+      "description": "What one segment of a scope path names (DESIGN.md § 13.2). Program is the root, the train block; Stage a PipelineStage; Function one inlining of a model function at one call site; Adjoint the gradient nodes the rule of one forward node emitted; Update the optimizer nodes of one parameter; Module and Layer are reserved for the module and layer instances of DESIGN.md § 11 iteration 3 and are emitted by no compiler before it.",
+      "x-ess-name": "modelspec.diagram.ScopeKind",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "Program",
+        "Stage",
+        "Function",
+        "Adjoint",
+        "Update",
+        "Module",
+        "Layer"
+      ]
+    }
+  }
+}

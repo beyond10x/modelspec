@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/modelspec.diagram.OperatorFamily",
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "30fb804730c460a95541105dabb73eaf623a6992f5e63bfe6955e8f2c5b43643",
+    "contract_digest": "slice-sha256/2:a253edbfc482d87ad8043dfffc859a6e91b1c25a50f460a0e5f5383f46370b7f",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.diagram.OperatorFamily": {
+      "title": "OperatorFamily",
+      "description": "The class of an operator; every glyph of one family shares an outline and an accent colour, a CSS custom property of the diagram's style (DESIGN.md § 13.1). Elementwise covers add, sub, mul, relu, gelu, sqrt, div, abs and the scalar constant; Contraction matmul; Reduction sum, mean and sum_rows; Normalization layer_norm and softmax; Attention attention; Embedding embedding and add_rows; Layout transpose, broadcast, reshape, concat and stop_gradient; Stochastic dropout and its RNG token; Loss mse, cross_entropy, smooth_l1 and any regularization term; Optimizer the update arithmetic of sgd, adamw and muon; DataIo Input and ParamRead.",
+      "x-ess-name": "modelspec.diagram.OperatorFamily",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "Elementwise",
+        "Contraction",
+        "Reduction",
+        "Normalization",
+        "Attention",
+        "Embedding",
+        "Layout",
+        "Stochastic",
+        "Loss",
+        "Optimizer",
+        "DataIo"
+      ]
+    }
+  }
+}

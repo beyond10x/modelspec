@@ -1,0 +1,15 @@
+{
+  "at": "2026-10-28T18:20:53Z",
+  "actor": "human:timo",
+  "artifact": "story:diagram-cli",
+  "kind": "story",
+  "revision": 5,
+  "change": {
+    "change": "evidence",
+    "kind": "review_outcome",
+    "source": "review-result:plan-critic-parallel-safety-ir-svg-gallery-round-1",
+    "reference": ".engineering/planning/story/diagram-cli.md",
+    "review": "review-result:plan-critic-parallel-safety-ir-svg-gallery-round-1",
+    "outcome": "fixed"
+  }
+}

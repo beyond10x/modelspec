@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/modelspec.diagram.DiagramGraphId",
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "30fb804730c460a95541105dabb73eaf623a6992f5e63bfe6955e8f2c5b43643",
+    "contract_digest": "slice-sha256/2:5eb0f29e2c236604169422da186380b8c783de59d7b146c5eabdf0623344da7e",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.diagram.DiagramGraphId": {
+      "title": "DiagramGraphId",
+      "description": "The identity of a graph, derived and never drawn at random, so the same IR gives the same bytes (DESIGN.md § 13.5); the view's lower-case name, a slash and the graph's ir_hash, with `:<function>` after the view of an Infer graph drawn for `--function <function>`.",
+      "x-ess-name": "modelspec.diagram.DiagramGraphId",
+      "x-ess-kind": "newtype",
+      "type": "string"
+    }
+  }
+}

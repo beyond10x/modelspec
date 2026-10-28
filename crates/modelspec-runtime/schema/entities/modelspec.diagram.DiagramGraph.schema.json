@@ -1,0 +1,527 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DiagramGraph",
+  "description": "The whole diagram of one program in one view, every scope level at once; a render picks what is visible (DESIGN.md § 13.2). Built by `modelspec-diagram` from the verified Tensor IR or training step that `modelspec ir` prints, with the scope of each node from the IR's scope table.",
+  "x-ess-name": "modelspec.diagram.DiagramGraph",
+  "x-ess-kind": "entity",
+  "type": "object",
+  "properties": {
+    "graph_id": {
+      "$ref": "#/$defs/modelspec.diagram.DiagramGraphId"
+    },
+    "view": {
+      "$ref": "#/$defs/modelspec.diagram.DiagramView"
+    },
+    "program": {
+      "description": "The train block's name.",
+      "type": "string"
+    },
+    "function": {
+      "description": "Present exactly on an Infer graph drawn for `--function <function>`.",
+      "type": "string"
+    },
+    "source_hash": {
+      "$ref": "#/$defs/modelspec.artifact.ContentHash",
+      "description": "blake3 of the source bytes, as CompiledArtifact.source_hash."
+    },
+    "ir_hash": {
+      "$ref": "#/$defs/modelspec.artifact.ContentHash",
+      "description": "blake3 of the printed training step, the value CompiledArtifact.ir_hash records for the same source, so a graph and an artifact of one program are matched by value; a graph is drawn from source without compiling an artifact, so it names no artifact. For an Infer graph of a function, blake3 of that function's printed program."
+    },
+    "scopes": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/modelspec.diagram.Scope"
+      }
+    },
+    "nodes": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/modelspec.diagram.DiagramNode"
+      }
+    },
+    "edges": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/modelspec.diagram.DiagramEdge"
+      }
+    },
+    "state": {
+      "$ref": "#/$defs/modelspec.diagram.DiagramGraph.State"
+    }
+  },
+  "required": [
+    "graph_id",
+    "view",
+    "program",
+    "source_hash",
+    "ir_hash",
+    "scopes",
+    "nodes",
+    "edges",
+    "state"
+  ],
+  "additionalProperties": false,
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "30fb804730c460a95541105dabb73eaf623a6992f5e63bfe6955e8f2c5b43643",
+    "contract_digest": "slice-sha256/2:ad2007a58634842ed186191f578cf7bdd35acbf26032ab8089cdb5e8c01f28b7",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.artifact.ContentHash": {
+      "title": "ContentHash",
+      "description": "A blake3 digest under explicit serialization and version rules (DESIGN.md § 7), written as its 32 bytes in 64 lowercase hexadecimal digits (story:content-hash-schema-constrained).",
+      "x-ess-name": "modelspec.artifact.ContentHash",
+      "x-ess-kind": "newtype",
+      "type": "string",
+      "pattern": "^[0-9a-f]*$",
+      "x-ess-invariants": [
+        "value.count == 64"
+      ],
+      "x-ess-alphabet": "0123456789abcdef"
+    },
+    "modelspec.checkpoint.DType": {
+      "title": "DType",
+      "description": "A tensor element type and its size in bytes; `f32` for every value, `i32` only for row ids an `embedding` reads, never a parameter or a checkpoint tensor (DESIGN.md § 2.2).",
+      "x-ess-name": "modelspec.checkpoint.DType",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "F32",
+        "I32"
+      ],
+      "x-ess-attributes": [
+        {
+          "kind": "integer",
+          "name": "size_bytes",
+          "type": "Integer",
+          "values": {
+            "F32": 4,
+            "I32": 4
+          }
+        }
+      ]
+    },
+    "modelspec.checkpoint.Shape": {
+      "title": "Shape",
+      "description": "A tensor shape; each dimension is a positive integer and rank 0 is a scalar (DESIGN.md § 2.2).",
+      "x-ess-name": "modelspec.checkpoint.Shape",
+      "x-ess-kind": "newtype",
+      "type": "array",
+      "items": {
+        "type": "integer"
+      },
+      "x-ess-invariants": [
+        "forall dim in value: (dim > 0)"
+      ]
+    },
+    "modelspec.diagram.DiagramEdge": {
+      "title": "DiagramEdge",
+      "description": "One tensor flowing from the node that defines it to a node that reads it, with the tensor's dtype and shape (DESIGN.md § 3.2 TensorNode.operands).",
+      "x-ess-name": "modelspec.diagram.DiagramEdge",
+      "x-ess-kind": "struct",
+      "type": "object",
+      "properties": {
+        "producer": {
+          "description": "node_key of the producing node.",
+          "type": "string"
+        },
+        "consumer": {
+          "description": "node_key of the consuming node.",
+          "type": "string"
+        },
+        "operand": {
+          "description": "The position of the tensor among the consumer's operands, from 0; operand order matters (Sub, MatMul).",
+          "type": "integer",
+          "minimum": 0
+        },
+        "dtype": {
+          "$ref": "#/$defs/modelspec.checkpoint.DType"
+        },
+        "shape": {
+          "$ref": "#/$defs/modelspec.checkpoint.Shape"
+        }
+      },
+      "required": [
+        "producer",
+        "consumer",
+        "operand",
+        "dtype",
+        "shape"
+      ],
+      "additionalProperties": false,
+      "x-ess-invariants": [
+        "operand >= 0"
+      ]
+    },
+    "modelspec.diagram.DiagramGraph.State": {
+      "title": "State",
+      "x-ess-name": "modelspec.diagram.DiagramGraph.State",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "Derived"
+      ]
+    },
+    "modelspec.diagram.DiagramGraphId": {
+      "title": "DiagramGraphId",
+      "description": "The identity of a graph, derived and never drawn at random, so the same IR gives the same bytes (DESIGN.md § 13.5); the view's lower-case name, a slash and the graph's ir_hash, with `:<function>` after the view of an Infer graph drawn for `--function <function>`.",
+      "x-ess-name": "modelspec.diagram.DiagramGraphId",
+      "x-ess-kind": "newtype",
+      "type": "string"
+    },
+    "modelspec.diagram.DiagramNode": {
+      "title": "DiagramNode",
+      "description": "One node of a graph. An Operator node is one Tensor IR node and carries its ValueId, operation, dtype, shape and, in a pipeline view, its Training IR subgraph; a Composite node stands for the scope named by composite_of and is drawn in that scope's parent; an Endpoint node has a role and no value.",
+      "x-ess-name": "modelspec.diagram.DiagramNode",
+      "x-ess-kind": "struct",
+      "type": "object",
+      "properties": {
+        "node_key": {
+          "description": "Unique within the graph; `%<k>` for an Operator node, the scope key for a Composite, `endpoint:<role>` for an Endpoint.",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/modelspec.diagram.NodeKind"
+        },
+        "scope": {
+          "$ref": "#/$defs/modelspec.diagram.ScopeKey",
+          "description": "The innermost scope the node is drawn in."
+        },
+        "composite_of": {
+          "$ref": "#/$defs/modelspec.diagram.ScopeKey",
+          "description": "Present exactly on a Composite node, the scope it stands for."
+        },
+        "value_id": {
+          "description": "The SSA value an Operator node defines, as Tensor IR prints it (DESIGN.md § 3.2 ValueId).",
+          "type": "integer"
+        },
+        "op": {
+          "$ref": "#/$defs/modelspec.observatory.TensorOperator"
+        },
+        "family": {
+          "$ref": "#/$defs/modelspec.diagram.OperatorFamily"
+        },
+        "glyph": {
+          "$ref": "#/$defs/modelspec.diagram.GlyphId"
+        },
+        "label": {
+          "description": "The text drawn beside the glyph; a glyph never carries meaning alone.",
+          "type": "string"
+        },
+        "dtype": {
+          "$ref": "#/$defs/modelspec.checkpoint.DType"
+        },
+        "shape": {
+          "$ref": "#/$defs/modelspec.checkpoint.Shape"
+        },
+        "subgraph": {
+          "$ref": "#/$defs/modelspec.observatory.Subgraph",
+          "description": "The Training IR subgraph of an Operator node of a Train, Eval or Infer graph (DESIGN.md § 3.1)."
+        },
+        "endpoint": {
+          "$ref": "#/$defs/modelspec.diagram.EndpointRole"
+        },
+        "source_span": {
+          "description": "The source construct the node came from, `file:line:column` (TensorNode.source_span).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "node_key",
+        "kind",
+        "scope",
+        "glyph",
+        "label"
+      ],
+      "additionalProperties": false,
+      "x-ess-invariants": [
+        "((kind == Operator and defined(value_id) and defined(op) and defined(family) and defined(dtype) and defined(shape) and not (defined(composite_of)) and not (defined(endpoint))) or (kind == Composite and defined(composite_of) and not (defined(value_id)) and not (defined(endpoint))) or (kind == Endpoint and defined(endpoint) and not (defined(value_id)) and not (defined(composite_of))))"
+      ]
+    },
+    "modelspec.diagram.DiagramView": {
+      "title": "DiagramView",
+      "description": "What a graph shows (DESIGN.md § 13.4). Model is the forward slice that reaches the model's prediction; Train is the whole training step (data, parameters, forward, loss, backward, optimizer update, checkpoint); Eval is the held-out evaluation, forward and loss with dropout the identity; Infer is what `modelspec infer` runs from a checkpoint, or one model function with `--function`.",
+      "x-ess-name": "modelspec.diagram.DiagramView",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "Model",
+        "Train",
+        "Eval",
+        "Infer"
+      ]
+    },
+    "modelspec.diagram.EndpointRole": {
+      "title": "EndpointRole",
+      "description": "What an Endpoint node stands for in a pipeline view (DESIGN.md § 13.4). The parameters' next state version is a sink, not an edge back to the Parameters stage, so every view is acyclic. CheckpointSink is the parameters' next version in Train, CheckpointSource the checkpoint Infer reads, PredictionSink the forward output `infer` writes.",
+      "x-ess-name": "modelspec.diagram.EndpointRole",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "DataSource",
+        "CheckpointSource",
+        "CheckpointSink",
+        "PredictionSink"
+      ]
+    },
+    "modelspec.diagram.GlyphId": {
+      "title": "GlyphId",
+      "description": "The id of one SVG symbol of the glyph set (DESIGN.md § 13.1). `op-<operator>` for each Tensor IR operation, the operator in kebab case (`op-mat-mul`, `op-layer-norm-grad-x`), an Input also `op-input-token` for a dropout RNG token and `op-input-step` for a host input of an AdamW step; `scope-<kind>` for a composite of a Function, Adjoint, Module or Layer scope and `scope-update-<optimizer>` for an Update scope; `stage-<stage>` for a pipeline stage; `endpoint-<role>` for an endpoint. Every TensorOp variant has exactly one, and a gradient op's glyph is its forward operator's with the gradient mark.",
+      "x-ess-name": "modelspec.diagram.GlyphId",
+      "x-ess-kind": "newtype",
+      "type": "string"
+    },
+    "modelspec.diagram.NodeKind": {
+      "title": "NodeKind",
+      "description": "Operator is one Tensor IR node; Composite stands for a whole scope, drawn when the scope is collapsed; Endpoint is a source or sink outside the IR that a pipeline view draws (a data split, a checkpoint file, a prediction file).",
+      "x-ess-name": "modelspec.diagram.NodeKind",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "Operator",
+        "Composite",
+        "Endpoint"
+      ]
+    },
+    "modelspec.diagram.OperatorFamily": {
+      "title": "OperatorFamily",
+      "description": "The class of an operator; every glyph of one family shares an outline and an accent colour, a CSS custom property of the diagram's style (DESIGN.md § 13.1). Elementwise covers add, sub, mul, relu, gelu, sqrt, div, abs and the scalar constant; Contraction matmul; Reduction sum, mean and sum_rows; Normalization layer_norm and softmax; Attention attention; Embedding embedding and add_rows; Layout transpose, broadcast, reshape, concat and stop_gradient; Stochastic dropout and its RNG token; Loss mse, cross_entropy, smooth_l1 and any regularization term; Optimizer the update arithmetic of sgd, adamw and muon; DataIo Input and ParamRead.",
+      "x-ess-name": "modelspec.diagram.OperatorFamily",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "Elementwise",
+        "Contraction",
+        "Reduction",
+        "Normalization",
+        "Attention",
+        "Embedding",
+        "Layout",
+        "Stochastic",
+        "Loss",
+        "Optimizer",
+        "DataIo"
+      ]
+    },
+    "modelspec.diagram.PipelineStage": {
+      "title": "PipelineStage",
+      "description": "A stage of a pipeline view, each one composite node of the view's root (DESIGN.md § 13.4). Forward, Loss, Backward and Optimizer are the Training IR subgraphs Forward, Loss, Gradient and Optimizer; Data holds the program's Input nodes (inputs, targets, packed batch tensors, dropout RNG tokens, the host inputs of an AdamW step); Parameters holds every ParamRead at its state version. A checkpoint and a prediction are Endpoint nodes (EndpointRole), never stages.",
+      "x-ess-name": "modelspec.diagram.PipelineStage",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "Data",
+        "Parameters",
+        "Forward",
+        "Loss",
+        "Backward",
+        "Optimizer"
+      ]
+    },
+    "modelspec.diagram.Port": {
+      "title": "Port",
+      "description": "A tensor crossing a scope's boundary; a collapsed scope's composite node draws one port per entry, and an edge to or from a node inside the scope attaches to it (DESIGN.md § 13.3).",
+      "x-ess-name": "modelspec.diagram.Port",
+      "x-ess-kind": "struct",
+      "type": "object",
+      "properties": {
+        "direction": {
+          "$ref": "#/$defs/modelspec.diagram.PortDirection"
+        },
+        "value_id": {
+          "description": "The value that crosses, defined outside the scope for In and inside it for Out.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "dtype": {
+          "$ref": "#/$defs/modelspec.checkpoint.DType"
+        },
+        "shape": {
+          "$ref": "#/$defs/modelspec.checkpoint.Shape"
+        }
+      },
+      "required": [
+        "direction",
+        "value_id",
+        "dtype",
+        "shape"
+      ],
+      "additionalProperties": false,
+      "x-ess-invariants": [
+        "value_id >= 0"
+      ]
+    },
+    "modelspec.diagram.PortDirection": {
+      "title": "PortDirection",
+      "x-ess-name": "modelspec.diagram.PortDirection",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "In",
+        "Out"
+      ]
+    },
+    "modelspec.diagram.Scope": {
+      "title": "Scope",
+      "description": "One scope of the graph's scope tree with its boundary ports, outermost segment first.",
+      "x-ess-name": "modelspec.diagram.Scope",
+      "x-ess-kind": "struct",
+      "type": "object",
+      "properties": {
+        "key": {
+          "$ref": "#/$defs/modelspec.diagram.ScopeKey"
+        },
+        "parent": {
+          "$ref": "#/$defs/modelspec.diagram.ScopeKey",
+          "description": "Absent exactly on the root, the Program scope."
+        },
+        "path": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/modelspec.diagram.ScopeSegment"
+          }
+        },
+        "stage": {
+          "$ref": "#/$defs/modelspec.diagram.PipelineStage",
+          "description": "The pipeline stage the scope sits in, absent in a Model graph."
+        },
+        "glyph": {
+          "$ref": "#/$defs/modelspec.diagram.GlyphId"
+        },
+        "ports": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/modelspec.diagram.Port"
+          }
+        }
+      },
+      "required": [
+        "key",
+        "path",
+        "glyph",
+        "ports"
+      ],
+      "additionalProperties": false,
+      "x-ess-invariants": [
+        "path.count >= 1"
+      ]
+    },
+    "modelspec.diagram.ScopeKey": {
+      "title": "ScopeKey",
+      "description": "The canonical text of a scope path, unique within a graph and used as the composite node's key, an anchor on the documentation site and a file name (DESIGN.md § 13.2). The segments joined by `/`; a Program segment is the train block's name; a Stage segment its lower-case name; a Function segment `<fn>` for the first inlining of the function in the program and `<fn>@<c>` for inlining c from 1, the naming of dropout sites (DESIGN.md § 2.3); an Adjoint segment `grad%<k>`, k the forward ValueId; an Update segment `update@<parameter path>`.",
+      "x-ess-name": "modelspec.diagram.ScopeKey",
+      "x-ess-kind": "newtype",
+      "type": "string"
+    },
+    "modelspec.diagram.ScopeKind": {
+      "title": "ScopeKind",
+      "description": "What one segment of a scope path names (DESIGN.md § 13.2). Program is the root, the train block; Stage a PipelineStage; Function one inlining of a model function at one call site; Adjoint the gradient nodes the rule of one forward node emitted; Update the optimizer nodes of one parameter; Module and Layer are reserved for the module and layer instances of DESIGN.md § 11 iteration 3 and are emitted by no compiler before it.",
+      "x-ess-name": "modelspec.diagram.ScopeKind",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "Program",
+        "Stage",
+        "Function",
+        "Adjoint",
+        "Update",
+        "Module",
+        "Layer"
+      ]
+    },
+    "modelspec.diagram.ScopeSegment": {
+      "title": "ScopeSegment",
+      "description": "One step of a scope path, outermost first.",
+      "x-ess-name": "modelspec.diagram.ScopeSegment",
+      "x-ess-kind": "struct",
+      "type": "object",
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/modelspec.diagram.ScopeKind"
+        },
+        "name": {
+          "description": "The train block's name, the stage's lower-case name, the function's name, the forward value as `%<k>` or the parameter's canonical path (DESIGN.md § 2.3).",
+          "type": "string"
+        },
+        "instance": {
+          "description": "For a Function segment, which inlining of the function in the program, from 0; 0 for every other kind.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "call_site": {
+          "description": "For a Function segment, the source position of the call as a diagnostic prints it, `file:line:column` (DESIGN.md § 8.1); absent for every other kind.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "name",
+        "instance"
+      ],
+      "additionalProperties": false,
+      "x-ess-invariants": [
+        "instance >= 0"
+      ]
+    },
+    "modelspec.observatory.Subgraph": {
+      "title": "Subgraph",
+      "description": "The Training IR subgraph of a node; Gradient is the backward computation (DESIGN.md § 3.1; `Subgraph` in `modelspec-core/src/ir/training.rs`).",
+      "x-ess-name": "modelspec.observatory.Subgraph",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "Forward",
+        "Loss",
+        "Gradient",
+        "Optimizer"
+      ]
+    },
+    "modelspec.observatory.TensorOperator": {
+      "title": "TensorOperator",
+      "description": "The Tensor IR operations, ReluGrad, BroadcastScalar, EmbeddingGrad, SumRows, GeluGrad, LayerNormGradX, LayerNormGradGamma, SoftmaxGrad, AttentionGradQ, AttentionGradK, AttentionGradV, CrossEntropyGrad and DropoutGrad being internal gradient ops and Sqrt and Div internal ops of the optimizer subgraph of an AdamW step (DESIGN.md § 3.1, § 4; `TensorOp` in `modelspec-core/src/ir/tensor.rs`). The operators of epic:bert-from-scratch join as the compiler gains them.",
+      "x-ess-name": "modelspec.observatory.TensorOperator",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "Input",
+        "ParamRead",
+        "Scalar",
+        "Add",
+        "Sub",
+        "Mul",
+        "MatMul",
+        "Relu",
+        "Transpose",
+        "ReduceSum",
+        "ReduceMean",
+        "Mse",
+        "ReluGrad",
+        "BroadcastScalar",
+        "Embedding",
+        "EmbeddingGrad",
+        "AddRows",
+        "SumRows",
+        "Gelu",
+        "GeluGrad",
+        "LayerNorm",
+        "LayerNormGradX",
+        "LayerNormGradGamma",
+        "Softmax",
+        "SoftmaxGrad",
+        "Attention",
+        "AttentionGradQ",
+        "AttentionGradK",
+        "AttentionGradV",
+        "CrossEntropy",
+        "CrossEntropyGrad",
+        "Dropout",
+        "DropoutGrad",
+        "Sqrt",
+        "Div"
+      ]
+    }
+  }
+}

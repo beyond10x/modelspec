@@ -1,0 +1,15 @@
+{
+  "at": "2026-10-28T18:20:51Z",
+  "actor": "human:timo",
+  "artifact": "epic:ir-svg-gallery",
+  "kind": "epic",
+  "revision": 6,
+  "change": {
+    "change": "evidence",
+    "kind": "review_outcome",
+    "source": "review-result:plan-critic-scope-ir-svg-gallery-round-1",
+    "reference": ".engineering/planning/story/diagram-docs-blocks.md",
+    "review": "review-result:plan-critic-scope-ir-svg-gallery-round-1",
+    "outcome": "fixed"
+  }
+}
