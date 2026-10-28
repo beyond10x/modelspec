@@ -6,7 +6,7 @@ const sidebars: SidebarsConfig = {
       type: 'category',
       label: 'Start here',
       collapsed: false,
-      items: ['index', 'getting-started', 'status', 'benchmarks', 'roadmap'],
+      items: ['index', 'concepts/north-star', 'getting-started', 'status', 'benchmarks', 'roadmap'],
     },
     {
       type: 'category',

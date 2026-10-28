@@ -8,6 +8,7 @@ summary: Read-only shape-only tensors from arange, repeat_each, tile and fill, c
 relations:
 - decomposes: epic:decider-training-support
 - serves: vision:modelspec
+- depends_on: story:decider-loss-terms-and-rank-probe
 scope:
 - confidence: cited
   path: CHANGELOG.md
@@ -61,11 +62,12 @@ scope:
   path: ui/src/generated
 - confidence: cited
   path: website
-revision: 4
+revision: 5
 ---
 # const tensors with index generators
 
-`depends_on: none`
+`depends_on: story:decider-loss-terms-and-rank-probe`; lands sixth of the epic's eight, see the
+epic's § Landing order.
 
 ## Outcome
 
@@ -82,9 +84,11 @@ and uploaded once per run, and reads like any other tensor in a model function.
   every step today (`fold_rows` alone is 4.3 MB a step). `const` is E-SYNTAX-010 ("arrives with
   DESIGN.md § 11 iteration 3", `crates/modelspec-core/src/syntax/mod.rs:53-54`); DESIGN.md § 2.1
   lowers `const` to a "Constant IR value".
-- Once S2's `reshape` lands, the three `fold_*` tensors go away; the remaining four need
-  `arange`, `repeat_each` and `tile`. The name `repeat` is taken: E-SYNTAX-011 reserves the
-  `repeat` construct (`syntax/mod.rs:55-56`).
+- Once the `reshape` of `story:decider-shape-operators` lands, the three `fold_*` tensors go away;
+  the remaining four need `arange`, `repeat_each` and `tile`. The name `repeat` is taken:
+  E-SYNTAX-011 reserves the `repeat` construct (`syntax/mod.rs:55-56`).
+- Codes: the stories that land before this one take E-TYPE-027 to E-TYPE-034 (E-TYPE-026 is
+  `story:jepa-stop-gradient`'s), so this story takes E-TYPE-035 to E-TYPE-037.
 
 ## Spec first
 
@@ -111,9 +115,9 @@ Then `task spec-validate`, `task schema-generate` (both `schema/` trees), `task 
 
 - **const-generators**: `cargo test -p modelspec-cli --test check_const`: `ir --stage tensor` of a
   fixture prints the values of `arange(0, 4)`, `arange(3, 256)`, `repeat_each(arange(0, 3), 2)`,
-  `tile(arange(0, 3), 2)` and `fill(1.0)` as the test expects; a declared shape whose element
-  count the generator cannot fill, a `const` used as a parameter, and an `f32` generator for an
-  `i32` const are each refused with their code.
+  `tile(arange(0, 3), 2)` and `fill(1.0)` as the test expects; each refused at the declaration or
+  use: a declared shape whose element count the generator cannot fill with E-TYPE-035, a `const`
+  used as a parameter with E-TYPE-036, and an `f32` generator for an `i32` const with E-TYPE-037.
 - **const-equals-data-cpu**: `cargo test -p modelspec-cli --test train_const`: a fixture that
   multiplies by an `f32` const, and the same program reading those values from a dense `--data`
   `.f32` file, print identical `step` lines over 10 CPU steps.
@@ -127,6 +131,7 @@ Then `task spec-validate`, `task schema-generate` (both `schema/` trees), `task 
 
 ## Out of scope
 
-- A block one-hot generator: S2's `reshape` removes the `fold_*` tensors that needed it.
+- A block one-hot generator: the `reshape` of `story:decider-shape-operators` removes the
+  `fold_*` tensors that needed it.
 - Constants computed from other expressions, constants read from files, `repeat` (E-SYNTAX-011).
 - Rewriting the decider fixture: the epic's closing check.

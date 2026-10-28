@@ -1,7 +1,7 @@
 ---
 title: The language
 description: A tour of the .mspec language from DESIGN.md § 2, the subset the 0.21.0 compiler accepts, and the target language it grows into.
-sidebar_position: 1
+sidebar_position: 2
 lede: "A .mspec file is declarative, statically typed and pure, and 0.21.0 parses and checks a subset of the language DESIGN.md § 2 designs, refusing each construct beyond it with its own code."
 source: "DESIGN.md § 2; crates/modelspec-core/src/syntax, resolve.rs, types.rs and ops.rs; the tests syntax.rs of crates/modelspec-core and check.rs, check_i32.rs, check_attention.rs and check_dropout.rs of crates/modelspec-cli; the diagnostic reference generated from crates/modelspec-core/src/diag.rs."
 ---

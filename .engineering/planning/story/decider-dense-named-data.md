@@ -40,7 +40,8 @@ transitions:
 ---
 # Dense --data with any number of named f32 and i32 inputs and targets
 
-`depends_on: none` · first: nothing of the decider trains until this lands.
+`depends_on: none` · first: nothing of the decider trains until this lands; first of the epic's
+eight in its § Landing order.
 
 ## Outcome
 
@@ -103,8 +104,16 @@ rule on both backends. Then `task spec-validate`, `task schema-generate`.
 - **dense-named-i32-refusals**: a missing `NAME.i32`, an `.i32` file that is not a whole number of
   samples, and files of different sample counts are refused with E-DATA-007 before the first
   step; an `f32` declaration with only `NAME.i32` present is refused naming the expected file.
+- **dense-named-scalar-loss**: a fixture with exactly one target, of a type other than the model
+  output's, whose loss is the scalar its `forward` returns, trains on `--backend cpu` without
+  E-DATA-002; the same target compared by the loss with a model output of another type is still
+  refused with E-DATA-002 before the first step. No test on `impl/decider-dense-named-data`
+  (3af084f) holds this: every `train_dense_named.rs` fixture whose loss is the scalar `forward`
+  returns (`NAMED`, `PROBE`, `decider_small.mspec`) declares two targets, where E-DATA-002 never
+  applies. The adversary pass must cover it.
 - **dense-named-eval-cpu**: `--eval DIR` prints `eval loss=<mean>` over every block; `accuracy=`
-  appears only where DESIGN.md § 8 (as amended here) defines it.
+  is printed only when the block's one target is compared by the loss with the model output and
+  that target is `f32`, and is absent for a loss that is the scalar `forward` returns.
 - **decider-small-cpu**: `decider_small.mspec` (the decider program in its 0.21.0 workaround form,
   without `stop_gradient` and `sigreg`, at sizes small enough for a test) trains 10 steps on the
   CPU from a directory of its 19 tensors the test writes.

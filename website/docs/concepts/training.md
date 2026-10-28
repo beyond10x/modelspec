@@ -1,7 +1,7 @@
 ---
 title: Training
 description: What modelspec train does - seeded initialization, synthetic, dense or packed data, SGD on the CPU reference or a Vulkan GPU - and why two runs print the same bytes.
-sidebar_position: 3
+sidebar_position: 4
 lede: "modelspec train runs the compiled training step on the CPU reference or one Vulkan device, and every random value is addressed by seed, stream and id, so two CPU runs with the same file, data and seed print identical bytes."
 source: "DESIGN.md § 2.2, § 2.3, § 9 and ADR-009; crates/modelspec-cli/src/train.rs and crates/modelspec-runtime/src/train and cpu; the tests train_linear.rs, train_dense_data.rs, train_data.rs and train_dropout.rs of crates/modelspec-cli."
 ---

@@ -5,6 +5,7 @@ A Rust compiler and runtime for `.mspec` tensor-program specifications. Humans s
 
 ## Serves
 
+- **The north star: `vision:modelspec` § North star (2026-10-28)**; public pages label its speed claim planned.
 - **The goal (2026-10-28): `initiative:transformer-within-3x-of-pytorch`.** A transformer trained on
   the GPU through Vulkan within 3× of PyTorch eager's step time; the order of work (B, A, C, D) and
   how to pick the next unit are the repository skill `goal` (`.agents/skills/goal/SKILL.md`,
