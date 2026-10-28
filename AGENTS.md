@@ -5,6 +5,10 @@ A Rust compiler and runtime for `.mspec` tensor-program specifications. Humans s
 
 ## Serves
 
+- **The goal (2026-10-28): `initiative:transformer-within-3x-of-pytorch`.** A transformer trained on
+  the GPU through Vulkan within 3× of PyTorch eager's step time; the order of work (B, A, C, D) and
+  how to pick the next unit are the repository skill `goal` (`.agents/skills/goal/SKILL.md`,
+  `/goal` in Claude Code). Where the skill and the store disagree, the store wins.
 - **O6 — self-improvement, built into all of it.** Every compile and training run leaves a typed
   record (artifact and source hashes, the deterministic setting, run steps and resume checkpoint in
   `spec/`), so a change to the compiler can be re-measured against the same run before and after.
@@ -85,11 +89,11 @@ output changes.
 CI: `check.yml` runs `task ci`; `shared-gates.yml` runs the
 common source gates; `pages.yml` and `b10x-docs-site.yml` build and publish the documentation site.
 
-## Paused (2026-10-26)
+## Resumed (2026-10-27)
 
-Development paused after release 0.20.0 (Timo, 2026-10-26). A session that resumes it reads
-`.engineering/paused-2026-10-26.md` first: the state at the pause and the plan to run next, the
-transformer-block benchmark against PyTorch CUDA, with its brief and landing scripts beside it.
+Development paused after release 0.20.0 (Timo, 2026-10-26) and resumed on 2026-10-27 with unit 22,
+`story:transformer-block-benchmark` (release 0.21.0). The pause record is
+`.engineering/paused-2026-10-26.md`; the work that follows is the `goal` skill's order.
 
 ## Commands
 
