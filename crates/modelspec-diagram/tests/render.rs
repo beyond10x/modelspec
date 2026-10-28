@@ -6,7 +6,9 @@ use std::path::PathBuf;
 
 use modelspec_core::compile;
 use modelspec_core::ir::print::print;
-use modelspec_diagram::layout::{RenderRequest, render};
+use modelspec_diagram::layout::{
+    RenderRequest, crossings, detours, render, route_crossings, route_length,
+};
 use modelspec_diagram::model::{DType, DiagramGraph, DiagramRender, NodeKind};
 use modelspec_diagram::{json, model_graph, svg};
 
@@ -541,4 +543,176 @@ fn standalone_svg() {
         let edges = svg.matches("<path class=\"edge\" data-from=\"").count();
         assert_eq!(edges, render.routes.len(), "{file}: one path per route");
     }
+}
+
+/// The crossings recorded for each checked example's default render: the layout may not exceed
+/// them (a ratchet; lower the number when the layout improves).
+const RECORDED_CROSSINGS: &[(&str, u64)] = &[
+    ("examples/linear_regression.mspec", 0),
+    ("examples/mnist_mlp.mspec", 0),
+    ("examples/bert_tiny.mspec", 2),
+    ("examples/transformer_block.mspec", 0),
+    (TWO_LAYER, 0),
+];
+
+/// diagram.crossings-ratchet
+#[test]
+fn crossings_ratchet() {
+    let mut risen = Vec::new();
+    for file in layered_files() {
+        let render = default_render(&graph(file));
+        let count = crossings(&render);
+        eprintln!(
+            "{file}: {count} crossings, route length {}, {} long edges outside their endpoints' span, {}x{}",
+            route_length(&render),
+            detours(&render),
+            render.width,
+            render.height
+        );
+        let recorded = RECORDED_CROSSINGS
+            .iter()
+            .find(|(f, _)| *f == file)
+            .map(|&(_, c)| c)
+            .unwrap_or_else(|| panic!("{file}: no recorded crossing count; it has {count}"));
+        if count > recorded {
+            risen.push(format!("{file}: {count} crossings, recorded {recorded}"));
+        }
+    }
+    assert!(risen.is_empty(), "crossings rose: {risen:#?}");
+}
+
+/// diagram.no-crossings: the three chain-like models draw without a crossing.
+#[test]
+fn no_crossings() {
+    for file in [
+        "examples/linear_regression.mspec",
+        "examples/mnist_mlp.mspec",
+        TWO_LAYER,
+    ] {
+        let render = default_render(&graph(file));
+        assert_eq!(crossings(&render), 0, "{file}: {:?}", render.routes);
+    }
+}
+
+fn reach<'a>(graph: &'a DiagramGraph, from: &'a str, down: bool) -> BTreeSet<&'a str> {
+    let mut seen = BTreeSet::new();
+    let mut stack = vec![from];
+    while let Some(key) = stack.pop() {
+        if seen.insert(key) {
+            for e in &graph.edges {
+                let (here, next) = if down {
+                    (&e.producer, &e.consumer)
+                } else {
+                    (&e.consumer, &e.producer)
+                };
+                if here == key {
+                    stack.push(next.as_str());
+                }
+            }
+        }
+    }
+    seen
+}
+
+/// diagram.attention-clear-of-residual: in each layer of transformer_block, no route from the
+/// layer's input or the key mask to its attention crosses the layer's residual edge, and each
+/// input sits within one rank of its first consumer.
+#[test]
+fn attention_clear_of_residual() {
+    let file = "examples/transformer_block.mspec";
+    let graph = graph(file);
+    let render = default_render(&graph);
+    let op = |key: &str| {
+        graph
+            .nodes
+            .iter()
+            .find(|n| n.node_key == key)
+            .and_then(|n| n.op.as_deref())
+            .unwrap_or("")
+    };
+    let value = |key: &str| key[1..].parse::<u32>().unwrap();
+    let route = |p: &str, c: &str, o: i64| {
+        render
+            .routes
+            .iter()
+            .find(|r| r.producer == p && r.consumer == c && r.operand == o)
+            .unwrap_or_else(|| panic!("no route {p} -> {c} operand {o}"))
+    };
+    let attentions: Vec<&str> = graph
+        .nodes
+        .iter()
+        .filter(|n| n.op.as_deref() == Some("Attention"))
+        .map(|n| n.node_key.as_str())
+        .collect();
+    assert_eq!(attentions.len(), 2, "{file}: two layers");
+    let mut failures = Vec::new();
+    for attention in attentions {
+        let below = reach(&graph, attention, true);
+        let add = below
+            .iter()
+            .copied()
+            .filter(|k| op(k) == "Add")
+            .min_by_key(|k| value(k))
+            .expect("a residual Add below the attention");
+        let residual: Vec<_> = graph
+            .edges
+            .iter()
+            .filter(|e| e.consumer == add && !below.contains(e.producer.as_str()))
+            .collect();
+        assert_eq!(residual.len(), 1, "{add}: one residual operand");
+        let residual = residual[0];
+        let residual_route = route(&residual.producer, add, residual.operand);
+        let above = reach(&graph, attention, false);
+        let from_input = reach(&graph, &residual.producer, true);
+        let fed: BTreeSet<&str> = graph
+            .edges
+            .iter()
+            .filter(|e| e.consumer == attention)
+            .map(|e| e.producer.as_str())
+            .collect();
+        let block: BTreeSet<&str> = above
+            .iter()
+            .copied()
+            .filter(|k| from_input.contains(k) || fed.contains(k))
+            .collect();
+        for e in &graph.edges {
+            if block.contains(e.producer.as_str()) && block.contains(e.consumer.as_str()) {
+                let n = route_crossings(route(&e.producer, &e.consumer, e.operand), residual_route);
+                if n > 0 {
+                    failures.push(format!(
+                        "{} -> {} (operand {}) crosses the residual {} -> {add} {n} times",
+                        e.producer, e.consumer, e.operand, residual.producer
+                    ));
+                }
+            }
+        }
+    }
+    let rank: BTreeMap<&str, i64> = render
+        .boxes
+        .iter()
+        .map(|b| (b.node_key.as_str(), b.rank))
+        .collect();
+    for node in graph
+        .nodes
+        .iter()
+        .filter(|n| n.op.as_deref() == Some("Input"))
+    {
+        let Some(&at) = rank.get(node.node_key.as_str()) else {
+            continue;
+        };
+        let first = graph
+            .edges
+            .iter()
+            .filter(|e| e.producer == node.node_key)
+            .filter_map(|e| rank.get(e.consumer.as_str()).copied())
+            .min()
+            .expect("a read input");
+        if first - at > 1 {
+            failures.push(format!(
+                "{} sits in rank {at}, its first consumer in rank {first}",
+                node.node_key
+            ));
+        }
+    }
+    assert!(failures.is_empty(), "{file}: {failures:#?}");
 }

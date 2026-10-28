@@ -225,7 +225,7 @@ types:
         type: Integer
       - name: rank
         type: Integer
-        summary: The layer of the layered layout, 0 at the sources; every visible edge goes from a lower rank to a higher one.
+        summary: The layer of the layered layout, 0 at the top; a source sits in rank 0 or just above its first reader, and every visible edge goes from a lower rank to a higher one.
     invariants:
       - x >= 0
       - y >= 0

@@ -70,8 +70,8 @@
   "x-ess-provenance": {
     "system": "modelspec",
     "specification_version": "v1",
-    "source_digest": "30fb804730c460a95541105dabb73eaf623a6992f5e63bfe6955e8f2c5b43643",
-    "contract_digest": "slice-sha256/2:a499a968ab30003aa42b42ffbef1d905d31661b3dd3a2dac822c1fbf6b12b8d8",
+    "source_digest": "6fc233eab2deb1118c304dd86328c2b979f842293c64d6b20cd40dd9ac9b6f73",
+    "contract_digest": "slice-sha256/2:b89df2eec7e9f142e05e558309db2f86c04ac2bf6c871d10118306e295999d71",
     "regenerate": "ess generate"
   },
   "$defs": {
@@ -162,7 +162,7 @@
           "minimum": 1
         },
         "rank": {
-          "description": "The layer of the layered layout, 0 at the sources; every visible edge goes from a lower rank to a higher one.",
+          "description": "The layer of the layered layout, 0 at the top; a source sits in rank 0 or just above its first reader, and every visible edge goes from a lower rank to a higher one.",
           "type": "integer",
           "minimum": 0
         }
