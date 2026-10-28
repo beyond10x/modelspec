@@ -205,6 +205,7 @@ fn gradient_ops_are_their_forward_glyph_with_the_gradient_mark() {
             TensorOp::DropoutGrad { p: 0.5 },
             TensorOp::Dropout { p: 0.5 },
         ),
+        (TensorOp::SigregColumnsGrad, TensorOp::SigregColumns),
     ];
     let svg = sprite();
     let all = symbols(&svg);
@@ -353,6 +354,33 @@ fn every_family_stage_endpoint_and_scope_has_its_glyph() {
     let ids: BTreeSet<&str> = catalog.iter().map(|g| g.id.as_str()).collect();
     let drawn: BTreeSet<&str> = all.iter().map(|(id, _)| id.as_str()).collect();
     assert_eq!(ids, drawn, "the catalog lists every symbol");
+}
+
+/// The JEPA operators take the families DESIGN.md § 13.1 gives them: `stop_gradient` is Layout,
+/// `sigreg` a regularization term of the Loss family, and its column kernel and that kernel's
+/// gradient parts of that loss; each has a symbol of its own.
+#[test]
+fn jepa_operators_take_their_families() {
+    let svg = sprite();
+    let all = symbols(&svg);
+    let cases = [
+        (TensorOp::StopGradient, OperatorFamily::Layout),
+        (TensorOp::Sigreg { slices: 4 }, OperatorFamily::Loss),
+        (TensorOp::SigregColumns, OperatorFamily::Loss),
+        (TensorOp::SigregColumnsGrad, OperatorFamily::Loss),
+    ];
+    let mut marks = BTreeSet::new();
+    for (op, family) in &cases {
+        assert_eq!(family_of(op), *family, "{}", op.name());
+        let content = symbol(&all, glyph_of(op, InputRole::Data).as_str());
+        if !has_gradient_mark(content) {
+            assert!(
+                marks.insert(content.to_owned()),
+                "{} is drawn unlike the others",
+                op.name()
+            );
+        }
+    }
 }
 
 /// Acceptance 4, `glyph.themable`.

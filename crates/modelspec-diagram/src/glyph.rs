@@ -259,8 +259,12 @@ pub fn operators() -> Vec<TensorOp> {
         TensorOp::CrossEntropyGrad,
         TensorOp::Dropout { p: 0.0 },
         TensorOp::DropoutGrad { p: 0.0 },
+        TensorOp::StopGradient,
         TensorOp::Sqrt,
         TensorOp::Div,
+        TensorOp::Sigreg { slices: 1 },
+        TensorOp::SigregColumns,
+        TensorOp::SigregColumnsGrad,
     ]
 }
 
@@ -305,8 +309,12 @@ pub fn glyph_of(op: &TensorOp, role: InputRole) -> GlyphId {
         TensorOp::CrossEntropyGrad => "op-cross-entropy-grad",
         TensorOp::Dropout { .. } => "op-dropout",
         TensorOp::DropoutGrad { .. } => "op-dropout-grad",
+        TensorOp::StopGradient => "op-stop-gradient",
         TensorOp::Sqrt => "op-sqrt",
         TensorOp::Div => "op-div",
+        TensorOp::Sigreg { .. } => "op-sigreg",
+        TensorOp::SigregColumns => "op-sigreg-columns",
+        TensorOp::SigregColumnsGrad => "op-sigreg-columns-grad",
     };
     GlyphId(id.to_owned())
 }
@@ -339,9 +347,14 @@ pub fn family_of(op: &TensorOp) -> OperatorFamily {
         | TensorOp::AttentionGradK { .. }
         | TensorOp::AttentionGradV { .. } => Attention,
         TensorOp::Embedding | TensorOp::EmbeddingGrad { .. } | TensorOp::AddRows => Embedding,
-        TensorOp::Transpose | TensorOp::BroadcastScalar { .. } => Layout,
+        TensorOp::Transpose | TensorOp::BroadcastScalar { .. } | TensorOp::StopGradient => Layout,
         TensorOp::Dropout { .. } | TensorOp::DropoutGrad { .. } => Stochastic,
-        TensorOp::Mse | TensorOp::CrossEntropy | TensorOp::CrossEntropyGrad => Loss,
+        TensorOp::Mse
+        | TensorOp::CrossEntropy
+        | TensorOp::CrossEntropyGrad
+        | TensorOp::Sigreg { .. }
+        | TensorOp::SigregColumns
+        | TensorOp::SigregColumnsGrad => Loss,
     }
 }
 
@@ -606,11 +619,16 @@ fn op_mark(op: &TensorOp, role: InputRole) -> Mark {
         TensorOp::Dropout { .. } | TensorOp::DropoutGrad { .. } => {
             line("M7 7V17M17 7V17M10 10L14 14M14 10L10 14")
         }
+        TensorOp::StopGradient => line("M5 12H14M11 9L14 12L11 15M18 7V17"),
         TensorOp::Sqrt => line("M6 13L8 12L10 17L13 7H18"),
         TensorOp::Div => mark(
             "M7 12H17",
             "M11 8A1 1 0 0 1 13 8A1 1 0 0 1 11 8ZM11 16A1 1 0 0 1 13 16A1 1 0 0 1 11 16Z",
         ),
+        TensorOp::Sigreg { .. } => line("M7 15C10 15 10 9 12 9S14 15 17 15M7 17H17"),
+        TensorOp::SigregColumns | TensorOp::SigregColumnsGrad => {
+            line("M7 15C10 15 10 9 12 9S14 15 17 15M9 17V19M12 17V19M15 17V19")
+        }
     }
 }
 
@@ -635,6 +653,7 @@ fn gradient(op: &TensorOp) -> Option<(TensorOp, Option<(u32, u32)>)> {
         }
         TensorOp::CrossEntropyGrad => Some((TensorOp::CrossEntropy, None)),
         TensorOp::DropoutGrad { p } => Some((TensorOp::Dropout { p: *p }, None)),
+        TensorOp::SigregColumnsGrad => Some((TensorOp::SigregColumns, None)),
         TensorOp::Input { .. }
         | TensorOp::ParamRead { .. }
         | TensorOp::Scalar(_)
@@ -657,8 +676,11 @@ fn gradient(op: &TensorOp) -> Option<(TensorOp, Option<(u32, u32)>)> {
         | TensorOp::Attention { .. }
         | TensorOp::CrossEntropy
         | TensorOp::Dropout { .. }
+        | TensorOp::StopGradient
         | TensorOp::Sqrt
-        | TensorOp::Div => None,
+        | TensorOp::Div
+        | TensorOp::Sigreg { .. }
+        | TensorOp::SigregColumns => None,
     }
 }
 
