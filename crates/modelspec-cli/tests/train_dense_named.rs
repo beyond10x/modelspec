@@ -110,6 +110,57 @@ train Fit {
 }
 ";
 
+/// Exactly one target, the `f32[4]` weights, of a type other than the model output's (`f32[]`),
+/// and a loss that is the scalar the forward function returns: no model output is compared
+/// with the target, so E-DATA-002 does not apply.
+const SCALAR: &str = "\
+model Scalar {
+    param w: Tensor<f32, [2, 3]> = xavier_uniform();
+
+    fn forward(x: Tensor<f32, [4, 2]>, labels: Tensor<i32, [4]>, weights: Tensor<f32, [4]>)
+        -> Tensor<f32, []> {
+        return cross_entropy(matmul(x, w), labels, weights);
+    }
+}
+
+train Fit {
+    model = Scalar;
+    input x: Tensor<f32, [4, 2]>;
+    input labels: Tensor<i32, [4]>;
+    target weights: Tensor<f32, [4]>;
+    loss = model.forward(x, labels, weights);
+    optimizer = sgd(lr = 0.1);
+    steps = 4;
+    seed = 7;
+    device = cpu;
+}
+";
+
+/// The same one target, now compared by the loss with a model output of another type: the
+/// forward function returns the `f32[4, 3]` logits and the loss reads them beside the `f32[4]`
+/// weights, so E-DATA-002 holds the target to the output type.
+const SCALAR_COMPARED: &str = "\
+model Logits {
+    param w: Tensor<f32, [2, 3]> = xavier_uniform();
+
+    fn forward(x: Tensor<f32, [4, 2]>) -> Tensor<f32, [4, 3]> {
+        return matmul(x, w);
+    }
+}
+
+train Fit {
+    model = Logits;
+    input x: Tensor<f32, [4, 2]>;
+    input labels: Tensor<i32, [4]>;
+    target weights: Tensor<f32, [4]>;
+    loss = cross_entropy(model.forward(x), labels, weights);
+    optimizer = sgd(lr = 0.1);
+    steps = 4;
+    seed = 7;
+    device = cpu;
+}
+";
+
 const DECIDER: &str = "tests/fixtures/decider_small.mspec";
 
 fn text(bytes: &[u8]) -> String {
@@ -297,21 +348,64 @@ fn ok(output: &Output) -> String {
     text(&output.stdout)
 }
 
-/// The stderr of a run refused with `code` before its first step: exit 1, stderr opening with
-/// the code and no `step` line.
-fn refused(output: &Output, code: &str) -> String {
+/// The stderr of `modelspec train <file> --backend cpu --data <data>` with `extra`, refused with
+/// `code` before its first step: exit 1, stderr opening with the code, a record that ends in the
+/// `RunFailed` of `code` and holds no `StepCompleted`, and no checkpoint file. The run records
+/// to `refused/run.jsonl` beside `data` and asks for a checkpoint after every step into
+/// `refused/ck/`, a fresh directory each call. Stdout cannot show "before the first step": a run
+/// that fails after steps ran prints no `step` line either (ADV-DN-2).
+fn refused(file: &Path, data: &Path, extra: &[&str], code: &str) -> String {
+    let probe = data.with_file_name("refused");
+    if probe.exists() {
+        std::fs::remove_dir_all(&probe).expect("the old probe is removed");
+    }
+    let checkpoints = probe.join("ck");
+    std::fs::create_dir_all(&checkpoints).expect("the build directory is writable");
+    let record = probe.join("run.jsonl");
+    let checkpoint = checkpoints.join("run.msckpt");
+    let mut args = vec![
+        "--record",
+        path(&record),
+        "--checkpoint",
+        path(&checkpoint),
+        "--checkpoint-every",
+        "1",
+    ];
+    args.extend_from_slice(extra);
+    let output = train(file, "cpu", data, &args);
     let stderr = text(&output.stderr);
-    let stdout = text(&output.stdout);
     assert_eq!(output.status.code(), Some(1), "stderr: {stderr}");
     assert!(
         stderr.starts_with(&format!("{code}: ")),
         "expected {code}, stderr: {stderr}"
     );
+    let events = recorded_events(&record);
+    let steps: Vec<&Value> = events
+        .iter()
+        .filter(|event| event["body"]["kind"] == "StepCompleted")
+        .collect();
+    assert!(steps.is_empty(), "steps ran: {steps:?}; stderr: {stderr}");
+    let last = events.last().expect("the record holds the run's end");
+    assert_eq!(last["body"]["kind"], "RunFailed", "{last}");
+    assert_eq!(last["body"]["value"]["code"], code, "{last}");
+    let written: Vec<_> = std::fs::read_dir(&checkpoints)
+        .expect("the checkpoint directory")
+        .map(|entry| entry.expect("an entry").file_name())
+        .collect();
     assert!(
-        !stdout.lines().any(|line| line.starts_with("step ")),
-        "a step ran: {stdout}"
+        written.is_empty(),
+        "checkpoints {written:?}; stderr: {stderr}"
     );
     stderr
+}
+
+/// Every event of the recorded run `file`, in order.
+fn recorded_events(file: &Path) -> Vec<Value> {
+    std::fs::read_to_string(file)
+        .expect("the recording")
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).expect("a JSON event"))
+        .collect()
 }
 
 /// The `step <k> loss <v>` lines of `stdout`.
@@ -415,28 +509,28 @@ fn dense_named_i32_refusals_come_before_the_first_step() {
 
     write_dir(&data, &tensors);
     std::fs::remove_file(data.join("labels.i32")).unwrap();
-    let stderr = refused(&train(&file, "cpu", &data, &[]), "E-DATA-007");
+    let stderr = refused(&file, &data, &[], "E-DATA-007");
     assert!(stderr.contains("labels.i32"), "{stderr}");
 
     write_dir(&data, &tensors);
     std::fs::write(data.join("b.i32"), i32_bytes(&[1; 8])).unwrap();
-    let stderr = refused(&train(&file, "cpu", &data, &[]), "E-DATA-007");
+    let stderr = refused(&file, &data, &[], "E-DATA-007");
     assert!(stderr.contains("samples"), "{stderr}");
 
     write_dir(&data, &tensors);
     std::fs::write(data.join("a.i32"), &i32_bytes(&[1; NAMED_SAMPLES])[..47]).unwrap();
-    let stderr = refused(&train(&file, "cpu", &data, &[]), "E-DATA-007");
+    let stderr = refused(&file, &data, &[], "E-DATA-007");
     assert!(stderr.contains("a.i32"), "{stderr}");
 
     write_dir(&data, &tensors);
     std::fs::rename(data.join("x.f32"), data.join("x.i32")).unwrap();
-    let stderr = refused(&train(&file, "cpu", &data, &[]), "E-DATA-007");
+    let stderr = refused(&file, &data, &[], "E-DATA-007");
     assert!(stderr.contains("x.f32"), "{stderr}");
     assert!(stderr.contains("x.i32"), "{stderr}");
     std::fs::rename(data.join("x.i32"), data.join("x.f32")).unwrap();
 
     std::fs::rename(data.join("a.i32"), data.join("a.f32")).unwrap();
-    let stderr = refused(&train(&file, "cpu", &data, &[]), "E-DATA-007");
+    let stderr = refused(&file, &data, &[], "E-DATA-007");
     assert!(stderr.contains("a.i32"), "{stderr}");
     assert!(stderr.contains("a.f32"), "{stderr}");
 
@@ -444,9 +538,69 @@ fn dense_named_i32_refusals_come_before_the_first_step() {
     let probe_data_dir = probe_root.join("data");
     write_dir(&probe_data_dir, &probe_data(21, PROBE_BLOCKS));
     std::fs::write(probe_data_dir.join("a.i32"), i32_bytes(&[0; 5])).unwrap();
-    let stderr = refused(&train(&probe, "cpu", &probe_data_dir, &[]), "E-DATA-007");
+    let stderr = refused(&probe, &probe_data_dir, &[], "E-DATA-007");
     assert!(stderr.contains("a.i32"), "{stderr}");
     assert!(stderr.contains("not a whole number of samples"), "{stderr}");
+}
+
+/// An `i32` value outside the bound of an op that reads it, in a later block of a `--data` file
+/// or in an `--eval` file, is E-DATA-011 before the first step, naming the file, the element
+/// position and the bound: an id at or past the 6 rows of the `embedding` table, a label at or
+/// past the 3 classes of the `cross_entropy` logits, and a negative id (ADV-DN-1).
+#[test]
+fn dense_named_i32_values_outside_their_bound_are_refused_before_the_first_step() {
+    let (root, file) = case("out_of_range", NAMED);
+    let data = root.join("data");
+    let tensors = named_data(11, NAMED_SAMPLES);
+    let with = |name: &'static str, position: usize, value: i32| {
+        let mut changed = tensors.clone();
+        if let Some(Values::I32(values)) = changed.get_mut(name) {
+            values[position] = value;
+        }
+        changed
+    };
+
+    write_dir(&data, &with("a", 8, 6));
+    let stderr = refused(&file, &data, &[], "E-DATA-011");
+    for expected in [
+        "a.i32",
+        "position: 8",
+        "value: 6",
+        "0 <= value < 6",
+        "`embedding` table",
+    ] {
+        assert!(stderr.contains(expected), "{expected}: {stderr}");
+    }
+
+    write_dir(&data, &with("labels", 5, 3));
+    let stderr = refused(&file, &data, &[], "E-DATA-011");
+    for expected in [
+        "labels.i32",
+        "position: 5",
+        "value: 3",
+        "0 <= value < 3",
+        "`cross_entropy` logits",
+    ] {
+        assert!(stderr.contains(expected), "{expected}: {stderr}");
+    }
+
+    write_dir(&data, &tensors);
+    let eval = root.join("eval");
+    let mut held = named_data(12, 8);
+    if let Some(Values::I32(b)) = held.get_mut("b") {
+        b[7] = -1;
+    }
+    write_dir(&eval, &held);
+    let stderr = refused(&file, &data, &["--eval", path(&eval)], "E-DATA-011");
+    let eval_file = eval.join("b.i32");
+    for expected in [
+        path(&eval_file),
+        "position: 7",
+        "value: -1",
+        "0 <= value < 6",
+    ] {
+        assert!(stderr.contains(expected), "{expected}: {stderr}");
+    }
 }
 
 /// dense-named-eval-cpu: `--eval DIR` reads the same layout and prints `eval loss=<mean>` over
@@ -487,6 +641,45 @@ fn dense_named_eval_cpu_prints_the_mean_block_loss() {
     let line = eval_line(&stdout);
     assert!(line.starts_with("eval loss="), "{line}");
     assert!(line.contains(" accuracy="), "{line}");
+}
+
+/// dense-named-scalar-loss: a block with exactly one target, of a type other than the model
+/// output's, whose loss is the scalar the forward function returns, trains on the CPU without
+/// E-DATA-002; the same target compared by the loss with a model output of another type is
+/// refused with E-DATA-002 before the first step.
+#[test]
+fn dense_named_scalar_loss_holds_no_target_to_the_model_output_type() {
+    let mut s = Stream(13);
+    let tensors = BTreeMap::from([
+        ("x", Values::F32((0..8 * 2).map(|_| s.f32()).collect())),
+        ("labels", Values::I32((0..8).map(|_| s.below(3)).collect())),
+        (
+            "weights",
+            Values::F32((0..8).map(|_| 0.5 + (s.next() % 4) as f32 / 4.0).collect()),
+        ),
+    ]);
+
+    let (root, file) = case("scalar_loss", SCALAR);
+    let data = root.join("data");
+    write_dir(&data, &tensors);
+    let record = root.join("run.jsonl");
+    let stdout = ok(&train(&file, "cpu", &data, &["--record", path(&record)]));
+    let steps = step_lines(&stdout);
+    assert!(steps[0].starts_with("step 0 loss "), "{stdout}");
+    assert!(
+        steps.last().unwrap().starts_with("step 4 loss "),
+        "{stdout}"
+    );
+    let losses = recorded_losses(&record);
+    assert_eq!(losses.len(), 5, "{losses:?}");
+    assert!(losses.values().all(|l| l.is_finite()), "{losses:?}");
+
+    let (root, file) = case("scalar_loss_compared", SCALAR_COMPARED);
+    let data = root.join("data");
+    write_dir(&data, &tensors);
+    let stderr = refused(&file, &data, &[], "E-DATA-002");
+    assert!(stderr.contains("Tensor<f32, [4]>"), "{stderr}");
+    assert!(stderr.contains("Tensor<f32, [4, 3]>"), "{stderr}");
 }
 
 /// The 19 tensors of `decider_small.mspec` for `blocks` steps: a pool of 4 events of 4 tokens,

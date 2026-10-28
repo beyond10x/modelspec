@@ -70,14 +70,17 @@ builds a packed directory and trains on it.
 
 In a dense directory, a sample is one row along the leading dimension every declaration shares;
 when they share none, a sample is the whole declared tensor. Without `order.u32`, step `k` reads
-block `k` of every file, wrapping at the end.
+block `k` of every file, wrapping at the end. Before the first step, every value of an `i32`
+file is checked against the rows of each `embedding` table and the classes of each
+`cross_entropy` that read it, so an id or label out of range is refused before anything trains.
 
 `--init <dir>` starts each parameter that has a file `<dir>/<P>.f32`, `P` its path without the model name, from that file, and
 `--eval <dir>` runs the forward program over every sample of a dense directory after the last
 step and prints the mean batch loss, with an accuracy only when the loss compares the model
-output with the block's one target. `--init` runs on `--backend cpu` only, `--data` and `--eval`
+output with the block's one `f32` target; a classifier whose one target is `i32` labels prints
+the loss alone. `--init` runs on `--backend cpu` only, `--data` and `--eval`
 on both backends; `--eval` beside a packed `--data` is a usage error. Each refusal of a data source has its code, `E-DATA-001` to
-`E-DATA-009` ([Diagnostics](../reference/diagnostics.md#training-data)).
+`E-DATA-009` and `E-DATA-011` ([Diagnostics](../reference/diagnostics.md#training-data)).
 
 ## Reproducible to the byte
 

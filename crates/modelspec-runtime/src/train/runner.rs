@@ -532,7 +532,7 @@ pub struct Eval {
     /// The fraction of target rows, rows along the target's leading dimension (one row for a
     /// rank-0 target), whose prediction row has its first maximum at the index of the first
     /// maximum of the target row; a prediction row holding a NaN is never correct. `None` unless
-    /// the loss compares the model output with the block's one target
+    /// the loss compares the model output with the block's one target and that target is `f32`
     /// ([`DenseData::compared_target`]; story:decider-dense-named-data).
     pub accuracy: Option<f64>,
 }

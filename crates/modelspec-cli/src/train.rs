@@ -70,10 +70,11 @@
 //! for every `input` and `target` declaration by its dtype, step `k` feeding block `k` of every
 //! file (story:decider-dense-named-data), `--init <dir>` starts the parameters that have a file
 //! from it, and `--eval <dir>` adds a last line `eval loss=<mean loss>`, with
-//! ` accuracy=<fraction>` when the loss compares the model output with the block's one target
-//! (DESIGN.md § 8; `spec/domains/data.yaml`). Every file is read before the first step; one that
-//! cannot be used is refused with `E-DATA-007`, `E-DATA-008` or `E-DATA-009` and no `step` line
-//! is printed.
+//! ` accuracy=<fraction>` when the loss compares the model output with the block's one `f32`
+//! target, never for `i32` labels (DESIGN.md § 8; `spec/domains/data.yaml`). Every file is read
+//! before the first step, on both backends; one that cannot be used is refused with
+//! `E-DATA-007`, `E-DATA-008` or `E-DATA-009`, and an `i32` value outside the rows or classes
+//! that read it with `E-DATA-011`, and no step runs.
 //!
 //! A `--data` directory that holds `binding.json` is a packed masked-language-model directory of
 //! `modelspec data pack` instead ([`data::source`], [`data::packed`]; story:bert-train-data-binding,
@@ -238,7 +239,7 @@ pub struct Args {
     pub init: Option<PathBuf>,
     /// After the last step, run the forward program over every sample of DIR, dense files laid
     /// out as for a dense --data, and print `eval loss=<mean loss>`, followed by
-    /// ` accuracy=<fraction>` when the loss compares the model output with the block's one
+    /// ` accuracy=<fraction>` when the loss compares the model output with the block's one f32
     /// target; on the CPU and on Vulkan. Beside a packed --data directory it is a usage error.
     #[arg(long, value_name = "DIR")]
     pub eval: Option<PathBuf>,

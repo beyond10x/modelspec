@@ -68,8 +68,10 @@ on the `corpus-tokenizer` fixture.
 `train <file> --backend cpu --data <dir>` on a packed directory (one holding `binding.json`) feeds
 step `k` the `Train` batch of step `k`, each `input` and `target` naming a batch tensor (`ids`,
 `positions`, `key_mask`, `labels`, `weights`), and prints a `data` line first (DESIGN.md 0.46);
-any other `--data` directory holds dense `f32` files. `--data`, `--init` and `--eval` are CPU only.
-Its tests are `cargo test -p modelspec-cli --test train_data`.
+any other `--data` directory is dense and takes `f32` and `i32` files by declaration name,
+`NAME.f32` and `NAME.i32` (story:decider-dense-named-data). `--data` and `--eval` work on the CPU
+and on Vulkan; `--init` stays CPU only. Its tests are `cargo test -p modelspec-cli --test
+train_data`, `--test train_dense_named` and `--test adversary_dense_named`.
 `examples/bert_tiny.mspec` is BERT-tiny written out at the 8,192-token vocabulary of the corpus
 tokenizer (1,486,720 parameters; Turc et al.'s BERT-tiny has 4.4M at 30,522 tokens; `cargo test -p
 modelspec-cli --test bert_tiny`), and `crates/modelspec-cli/tests/fixtures/bert_cpu.mspec` is the

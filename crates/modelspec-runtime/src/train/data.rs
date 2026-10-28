@@ -21,15 +21,20 @@
 //! after the last update reads. A file that cannot be read as samples, or an `f32` file that
 //! holds a NaN or an infinity, is [`E_DATA_007`], an order that does not cover the run is
 //! [`E_DATA_008`], and an eval directory that is not a whole number of batches is
-//! [`E_DATA_009`].
+//! [`E_DATA_009`]. An `i32` value is a row id or a class label, and once the files are read,
+//! before the first step on either backend, a value that is negative or not below the rows of an
+//! `embedding` table or the classes of `cross_entropy` logits that read it is [`E_DATA_011`]
+//! ([`refuse_out_of_range`]), so the device never receives an id it would read out of bounds.
 //!
 //! A declaration the loss does not read has no `Input` node after dead-code elimination, so the
 //! program could not take a value for it; it is refused at its declaration ([`E_DATA_003`])
 //! before anything runs. Synthetic data supplies exactly one drawn `f32` input and one `f32`
 //! target ([`E_DATA_001`], [`E_DATA_004`]); dense data takes any number of either dtype and
 //! holds a single target to the model output type ([`E_DATA_002`]) only when the loss compares
-//! the model output with it, that is when the block declares exactly one target and the loss is
-//! not the scalar the forward function returns.
+//! the model output with it, that is when the block declares exactly one target, the loss is
+//! not the scalar the forward function returns, and the target is not `i32` labels that a
+//! `cross_entropy` reads: such a classifier's labels are never of the output type, it trains,
+//! and its `--eval` line has no accuracy, which only an `f32` target has.
 //!
 //! Packed masked-language-model data ([`source`], [`packed`]; story:bert-train-data-binding,
 //! coordinator decision D48): a `--data` directory that holds [`BINDING_FILE`] is a directory
@@ -49,7 +54,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
-use modelspec_core::diag::{Code, Diagnostic};
+use modelspec_core::diag::{Code, Diagnostic, SourceSpan};
 use modelspec_core::hir::DataRole;
 use modelspec_core::ir::tensor::{DType, Dim, ParamId, TensorOp, TensorType, ValueId};
 use modelspec_core::ir::training::{DataDecl, TrainConfig};
@@ -67,8 +72,8 @@ use crate::dataset::mlm::{
 /// `target`. Dense data: the block declares no `input` or `target` at all.
 pub const E_DATA_001: Code = Code::new("E-DATA-001");
 /// The `target` is not of the model output type: for synthetic data always checked, for dense
-/// data only when the block declares exactly one target and the loss is not the scalar the
-/// forward function returns.
+/// data only when the block declares exactly one target, the loss is not the scalar the
+/// forward function returns, and the target is not `i32` labels a `cross_entropy` reads.
 pub const E_DATA_002: Code = Code::new("E-DATA-002");
 /// A declared `input` or `target` is not read by the loss.
 pub const E_DATA_003: Code = Code::new("E-DATA-003");
@@ -97,6 +102,11 @@ pub const E_DATA_007: Code = Code::new("E-DATA-007");
 pub const E_DATA_008: Code = Code::new("E-DATA-008");
 /// The `--eval` sample count is not a multiple of the batch dimension `B`.
 pub const E_DATA_009: Code = Code::new("E-DATA-009");
+/// A value of a dense `i32` file of `--data` or `--eval` is negative or not below the rows of an
+/// `embedding` table that reads it as ids, or the classes of `cross_entropy` logits that read it
+/// as labels; refused once the files are read and before the first step, on either backend,
+/// naming the file, the element position and the bound. (E-DATA-010 is reserved.)
+pub const E_DATA_011: Code = Code::new("E-DATA-011");
 
 /// The data of a synthetic run.
 #[derive(Clone, Debug, PartialEq)]
@@ -296,7 +306,8 @@ pub struct DenseData {
     /// The indices of `order.u32`, when the directory has one.
     order: Option<Vec<u32>>,
     /// The target whose rows `--eval` counts as correct or not: the one target, when the loss
-    /// compares the model output with it ([`E_DATA_002`] holds it to the output type).
+    /// compares the model output with it and it is `f32` ([`E_DATA_002`] holds it to the output
+    /// type); never the `i32` labels of a classifier.
     compared: Option<String>,
 }
 
@@ -362,8 +373,9 @@ impl DenseData {
     }
 
     /// The target `--eval` measures an accuracy on: the one target when the loss compares the
-    /// model output with it, `None` when the block declares another number of targets or the
-    /// loss is the scalar the forward function returns.
+    /// model output with it, which is then `f32`; `None` when the block declares another number
+    /// of targets, the loss is the scalar the forward function returns, or the one target is the
+    /// `i32` labels a `cross_entropy` reads.
     pub fn compared_target(&self) -> Option<&str> {
         self.compared.as_deref()
     }
@@ -537,13 +549,31 @@ fn loss_is_the_forward_value(lowered: &LoweredProgram) -> bool {
     lowered.program.outputs.first() == Some(&lowered.prediction)
 }
 
+/// Whether a `cross_entropy` of `lowered`'s forward program reads the `Input` named `name` as
+/// its labels, its second operand.
+fn read_as_labels(lowered: &LoweredProgram, name: &str) -> bool {
+    let forward = &lowered.program;
+    forward.nodes.iter().any(|node| {
+        matches!(node.op, TensorOp::CrossEntropy)
+            && node
+                .operands
+                .get(1)
+                .and_then(|&v| forward.node(v))
+                .is_some_and(
+                    |labels| matches!(&labels.op, TensorOp::Input { name: input } if input == name),
+                )
+    })
+}
+
 /// The files of `dir` of every declaration of `config`, in source order, without an order.
 /// Refused, in this order: with [`E_DATA_001`] at the block when it declares no `input` or
 /// `target`; with [`E_DATA_002`] at the one target when the block declares exactly one, the loss
-/// is not the scalar the forward function returns, and the target is not of the model output
-/// type; with [`E_DATA_003`] at a declaration the loss does not read; then with [`E_DATA_007`] at
-/// the first file in source order that cannot be read as samples ([`read_tensor`]), and when the
-/// files differ in sample count.
+/// is not the scalar the forward function returns, the target is not `i32` labels a
+/// `cross_entropy` reads, and the target is not of the model output type; with [`E_DATA_003`] at
+/// a declaration the loss does not read; then with [`E_DATA_007`] at the first file in source
+/// order that cannot be read as samples ([`read_tensor`]), and when the files differ in sample
+/// count; then with [`E_DATA_011`] at the first `i32` value outside a bound that reads it
+/// ([`refuse_out_of_range`]).
 fn read_dense(
     dir: &Path,
     config: &TrainConfig,
@@ -562,6 +592,8 @@ fn read_dense(
         [target] if !loss_is_the_forward_value(lowered) => Some(target),
         _ => None,
     };
+    let compared = compared
+        .filter(|target| !(target.ty.dtype == DType::I32 && read_as_labels(lowered, &target.name)));
     if let Some(target) = compared {
         let prediction = lowered.prediction;
         let output = &lowered
@@ -610,15 +642,139 @@ fn read_dense(
         }
         return Err(DataError::Refused(diagnostic));
     }
+    refuse_out_of_range(dir, &decls, &tensors, lowered)?;
     Ok(DenseData {
         batch,
         samples,
         tensors,
         order: None,
-        compared: compared
-            .filter(|t| t.ty.dtype == DType::F32)
-            .map(|t| t.name.clone()),
+        compared: compared.map(|t| t.name.clone()),
     })
+}
+
+/// A bound on the values of an `i32` input: an op of the forward program reads the input as an
+/// index below `bound`.
+struct IndexBound {
+    /// The name of the `Input` the op reads.
+    input: String,
+    /// The values must lie in `0..bound`.
+    bound: u64,
+    /// What the bound counts, for the diagnostic: "the 6 rows of the `embedding` table
+    /// `Named.table`".
+    what: String,
+    /// Where the op is, when the lowering kept it.
+    span: Option<SourceSpan>,
+}
+
+/// Every index bound of `lowered`'s forward program, in program order. An `i32` value is only
+/// a program input (DESIGN.md § 2.2), and the only operands that read one are the ids of
+/// `embedding`, below the rows of its table, and the labels of `cross_entropy`, below the classes
+/// of its logits; the internal `EmbeddingGrad` and `CrossEntropyGrad` read the same inputs with
+/// the same bounds, and the RNG token of `Dropout` is no declaration.
+fn index_bounds(lowered: &LoweredProgram) -> Vec<IndexBound> {
+    let forward = &lowered.program;
+    let mut bounds = Vec::new();
+    for node in &forward.nodes {
+        let (op, count, axis) = match node.op {
+            TensorOp::Embedding => ("`embedding` table", "rows", 0),
+            TensorOp::CrossEntropy => ("`cross_entropy` logits", "classes", 1),
+            _ => continue,
+        };
+        let Some(&operand) = node.operands.first() else {
+            continue;
+        };
+        let Some(input) = node
+            .operands
+            .get(1)
+            .and_then(|&v| forward.node(v))
+            .and_then(|n| match &n.op {
+                TensorOp::Input { name } => Some(name.clone()),
+                _ => None,
+            })
+        else {
+            continue;
+        };
+        let Some(value) = forward.node(operand) else {
+            continue;
+        };
+        let Some(&Dim::Static(bound)) = value.ty.shape.get(axis) else {
+            continue;
+        };
+        bounds.push(IndexBound {
+            input,
+            bound,
+            what: format!(
+                "the {bound} {count} of the {op} `{}`",
+                value_name(lowered, operand)
+            ),
+            span: node.source_span.clone(),
+        });
+    }
+    bounds
+}
+
+/// The name of the value `id` of `lowered`'s forward program in a diagnostic: the canonical
+/// path of the parameter it reads, else its value id.
+fn value_name(lowered: &LoweredProgram, id: ValueId) -> String {
+    let forward = &lowered.program;
+    match forward.node(id).map(|n| &n.op) {
+        Some(TensorOp::ParamRead { param }) => forward
+            .params
+            .get(param)
+            .map_or_else(|| id.to_string(), |p| p.path.clone()),
+        _ => id.to_string(),
+    }
+}
+
+/// [`E_DATA_011`] at the first `i32` declaration, in source order, whose file `<dir>/<name>.i32`
+/// holds a value that is negative or not below the smallest of its [`index_bounds`], naming the
+/// file, the value's element position in it and that bound. Every value of the file is checked,
+/// not only those a step reads, so the refusal comes before the first step on both backends and
+/// does not depend on the order or the number of steps.
+fn refuse_out_of_range(
+    dir: &Path,
+    decls: &[(&DataDecl, &'static str)],
+    tensors: &[DenseTensor],
+    lowered: &LoweredProgram,
+) -> Result<(), DataError> {
+    let bounds = index_bounds(lowered);
+    for (&(decl, role), tensor) in decls.iter().zip(tensors) {
+        let DenseValues::I32(values) = &tensor.values else {
+            continue;
+        };
+        let Some(tightest) = bounds
+            .iter()
+            .filter(|b| b.input == tensor.name)
+            .min_by_key(|b| b.bound)
+        else {
+            continue;
+        };
+        let Some((position, &value)) = values
+            .iter()
+            .enumerate()
+            .find(|&(_, &v)| v < 0 || v as u64 >= tightest.bound)
+        else {
+            continue;
+        };
+        let path = dir.join(format!("{}.i32", tensor.name));
+        let mut diagnostic = Diagnostic::new(
+            E_DATA_011,
+            format!(
+                "the data file of the {role} `{}` holds {value}, outside {}",
+                tensor.name, tightest.what
+            ),
+        )
+        .at(decl.span.clone())
+        .with("file", path.display().to_string())
+        .with("position", position.to_string())
+        .with("value", value.to_string())
+        .with("bound", format!("0 <= value < {}", tightest.bound));
+        if let Some(span) = &tightest.span {
+            diagnostic = diagnostic.with("read at", span.to_string());
+        }
+        return Err(DataError::Refused(diagnostic));
+    }
+    Ok(())
 }
 
 /// The samples of `decl`, of shape `shape` and `sample` values a sample, in `<dir>/<name>.f32`

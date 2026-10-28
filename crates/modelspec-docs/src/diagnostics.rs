@@ -68,6 +68,7 @@ fn stages() -> Vec<Stage> {
                 modelspec_runtime::train::data::E_DATA_007,
                 modelspec_runtime::train::data::E_DATA_008,
                 modelspec_runtime::train::data::E_DATA_009,
+                modelspec_runtime::train::data::E_DATA_011,
             ],
         },
         Stage {
