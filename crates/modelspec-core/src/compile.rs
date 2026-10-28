@@ -60,6 +60,11 @@ pub struct CompiledTraining {
     /// reading its operand ([`stop_gradient::eliminate`]): what the data loader, the final loss
     /// line, evaluation and inference run. Its node ids are those of the training step.
     pub forward: LoweredProgram,
+    /// The Tensor IR before autodiff, every dropout and `StopGradient` kept: what
+    /// [`compile_tensor`] returns and `modelspec ir --stage tensor` prints, the program the model
+    /// view of an architecture diagram draws (DESIGN.md § 13.4). Its node ids are those of the
+    /// training step. From [`compile_function`] it is [`Self::forward`].
+    pub tensor: LoweredProgram,
     /// The `train` block's learning rate, steps, seed and data declarations; its optimizer rule
     /// is the step's.
     pub config: TrainConfig,
@@ -74,6 +79,7 @@ pub fn compile_training(path: &str, source: &str) -> Result<CompiledTraining, Ve
     let config = TrainConfig::from_hir(&hir.train);
     let lowered = tensor_stage(&hir, dce::eliminate)?;
     let training = training_stage(&lowered.program, config.lr, hir.train.optimizer)?;
+    let tensor = lowered.clone();
     let forward = without_stop_gradient(lower::without_dropout(lowered));
     if let Err(error) = verify(&forward.program) {
         return Err(vec![compiler_bug(
@@ -84,6 +90,7 @@ pub fn compile_training(path: &str, source: &str) -> Result<CompiledTraining, Ve
     Ok(CompiledTraining {
         training,
         forward,
+        tensor,
         config,
     })
 }
@@ -179,6 +186,7 @@ pub fn compile_function(
         .map_err(FunctionError::Diagnostics)?;
     Ok(CompiledTraining {
         training,
+        tensor: lowered.clone(),
         forward: lowered,
         config,
     })

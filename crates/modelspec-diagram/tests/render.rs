@@ -542,3 +542,133 @@ fn standalone_svg() {
         assert_eq!(edges, render.routes.len(), "{file}: one path per route");
     }
 }
+
+const JEPA: &str = "examples/jepa_tiny.mspec";
+
+/// diagram.stop-gradient-branch: the model view of a joint-embedding model draws the branch a
+/// `stop_gradient` cuts beside the prediction's: the nodes are the `ir --stage tensor` lines the
+/// prediction or a `StopGradient` reaches, the `StopGradient` node among them with its line as its
+/// title, the parameters both branches read drawn once with a route to each, and the route into
+/// the `StopGradient` dashed and marked; the loss, `Mse` and the `sigreg` kernels, is not drawn.
+#[test]
+fn stop_gradient_branch() {
+    assert!(
+        layered_files().contains(&JEPA),
+        "check-examples checks {JEPA}, so every render test covers it"
+    );
+    let (lines, prediction) = ir_lines(JEPA);
+    let graph = graph(JEPA);
+    let stops: Vec<u32> = lines
+        .values()
+        .filter(|l| l.op == "StopGradient")
+        .map(|l| l.id)
+        .collect();
+    assert_eq!(stops.len(), 1, "one stop_gradient in {JEPA}");
+    let mut expected = forward_slice(&lines, prediction);
+    expected.extend(forward_slice(&lines, stops[0]));
+    let ids: BTreeSet<u32> = graph
+        .nodes
+        .iter()
+        .map(|n| n.value_id.unwrap() as u32)
+        .collect();
+    assert_eq!(
+        ids, expected,
+        "the prediction's slice and the stopped branch's"
+    );
+    for node in &graph.nodes {
+        let line = &lines[&(node.value_id.unwrap() as u32)];
+        assert_eq!(node.op.as_deref(), Some(line.op.as_str()), "{}", line.text);
+    }
+    for absent in ["Mse", "SigregColumns", "ReduceMean"] {
+        assert!(
+            graph.nodes.iter().all(|n| n.op.as_deref() != Some(absent)),
+            "no {absent} in the model view"
+        );
+    }
+    let input = |name: &str| {
+        lines
+            .values()
+            .find(|l| l.text.ends_with(&format!("= Input \"{name}\"")))
+            .unwrap_or_else(|| panic!("no input {name}"))
+            .id
+    };
+    let context = forward_slice(&lines, prediction);
+    let stopped = forward_slice(&lines, stops[0]);
+    assert!(context.contains(&input("context")) && !context.contains(&input("view")));
+    assert!(stopped.contains(&input("view")) && !stopped.contains(&input("context")));
+
+    let render = default_render(&graph);
+    let svg = svg::svg(&graph, &render, &ir_lines_of(JEPA));
+    let stop_key = format!("%{}", stops[0]);
+    let stop_line = lines[&stops[0]]
+        .text
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;");
+    assert!(
+        node_group(&svg, &stop_key).contains(&format!("<title>{stop_line}</title>")),
+        "{stop_key} is drawn with its IR line"
+    );
+    assert!(
+        node_group(&svg, &stop_key).contains("<use href=\"#ms-op-stop-gradient\""),
+        "{stop_key} has the stop-gradient glyph"
+    );
+    let shared: Vec<&str> = graph
+        .nodes
+        .iter()
+        .filter(|n| n.op.as_deref() == Some("ParamRead"))
+        .filter(|n| {
+            let readers: BTreeSet<&str> = graph
+                .edges
+                .iter()
+                .filter(|e| e.producer == n.node_key)
+                .map(|e| e.consumer.as_str())
+                .collect();
+            readers
+                .iter()
+                .any(|r| context.contains(&r[1..].parse().unwrap()))
+                && readers
+                    .iter()
+                    .any(|r| stopped.contains(&r[1..].parse().unwrap()))
+        })
+        .map(|n| n.node_key.as_str())
+        .collect();
+    assert_eq!(
+        shared.len(),
+        2,
+        "the encoder's weight and bias serve both branches"
+    );
+    for key in &shared {
+        assert!(
+            render.boxes.iter().any(|b| b.node_key == *key),
+            "{key} is a box, not a chip"
+        );
+        assert_eq!(
+            render.routes.iter().filter(|r| r.producer == *key).count(),
+            2,
+            "{key} routes to both branches"
+        );
+    }
+    let paths: Vec<&str> = svg
+        .split("<path class=\"edge\" ")
+        .skip(1)
+        .map(|p| &p[..p.find("/>").unwrap()])
+        .collect();
+    let into_stop = format!("data-to=\"{stop_key}\"");
+    for path in &paths {
+        let marked = path.contains(" data-stop-gradient=\"true\"");
+        let dashed = path.contains(" stroke-dasharray=\"");
+        if path.contains(&into_stop) {
+            assert!(
+                marked && dashed,
+                "the route into {stop_key} is marked: {path}"
+            );
+        } else {
+            assert!(
+                !marked && !dashed,
+                "only the stopped route is marked: {path}"
+            );
+        }
+    }
+    assert_eq!(paths.iter().filter(|p| p.contains(&into_stop)).count(), 1);
+}

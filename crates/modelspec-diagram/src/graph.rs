@@ -1,11 +1,14 @@
 //! The `DiagramGraph` of a verified program (DESIGN.md § 13.2), built from
 //! [`compile_training`](modelspec_core::compile::compile_training)'s output; nothing is parsed.
 //!
-//! The model view is the forward slice of the training step: every Tensor IR node the model's
-//! prediction ([`LoweredProgram::prediction`](modelspec_core::lower::LoweredProgram)) reaches
-//! through its operands, in definition order, dropouts and their RNG tokens included, so each node
-//! is a line `modelspec ir --stage tensor` prints. The loss and the targets only it reads are not
-//! in it. One edge per operand carries the producer's dtype and shape. Every node sits in the
+//! The model view is the forward slice of the Tensor IR before autodiff
+//! ([`CompiledTraining::tensor`]): every node the model's prediction
+//! ([`LoweredProgram::prediction`](modelspec_core::lower::LoweredProgram)) reaches through its
+//! operands, in definition order, dropouts and their RNG tokens included, and every node a
+//! `StopGradient` reaches, the `StopGradient` too: the branch that computes a target the model
+//! sets itself, such as a joint-embedding model's target embedding. Each node is a line
+//! `modelspec ir --stage tensor` prints. The loss and the targets only it reads are not in it.
+//! One edge per operand carries the producer's dtype and shape. Every node sits in the
 //! Program scope, the train block; function, adjoint and update scopes arrive with the IR's scope
 //! table (story:diagram-scope-provenance) and are drawn by story:diagram-zoom.
 
@@ -26,10 +29,13 @@ use crate::model::{
 /// The model view of `compiled`, the train block named `program`, compiled from `source`.
 pub fn model(compiled: &CompiledTraining, program: &str, source: &str) -> DiagramGraph {
     let training = &compiled.training.training;
-    let ir = &training.program;
+    let ir = &compiled.tensor.program;
     let by_id: BTreeMap<ValueId, &TensorNode> = ir.nodes.iter().map(|n| (n.id, n)).collect();
-    let slice = reaches(&by_id, compiled.forward.prediction);
-    let roles = input_roles(ir, &training.subgraphs);
+    let mut slice = reaches(&by_id, compiled.tensor.prediction);
+    for stop in ir.nodes.iter().filter(|n| n.op == TensorOp::StopGradient) {
+        slice.extend(reaches(&by_id, stop.id));
+    }
+    let roles = input_roles(&training.program, &training.subgraphs);
     let root = ScopeKey(program.to_owned());
     let ir_hash = blake3::hash(print_step(&compiled.training).as_bytes())
         .to_hex()
@@ -82,18 +88,28 @@ pub type IrLines = BTreeMap<String, String>;
 
 /// The line of every node of `compiled`'s training step, as `modelspec ir` prints it
 /// (`%2: Tensor<f32, [16, 8]> = MatMul %0, %1`): the same line under `--stage tensor` for each
-/// node of the forward program.
+/// node of the forward program; and the `--stage tensor` line of each node autodiff removes, a
+/// `StopGradient`.
 pub fn ir_lines(compiled: &CompiledTraining) -> IrLines {
-    let program = &compiled.training.training.program;
-    program
+    let step = &compiled.training.training.program;
+    let tensor = &compiled.tensor.program;
+    let mut lines: IrLines = step
         .nodes
         .iter()
         .map(|node| {
             let mut line = String::new();
-            let _ = write_node(&mut line, program, node);
+            let _ = write_node(&mut line, step, node);
             (key(node.id), line)
         })
-        .collect()
+        .collect();
+    for node in &tensor.nodes {
+        lines.entry(key(node.id)).or_insert_with(|| {
+            let mut line = String::new();
+            let _ = write_node(&mut line, tensor, node);
+            line
+        });
+    }
+    lines
 }
 
 /// The node key of a value, `%<k>`.

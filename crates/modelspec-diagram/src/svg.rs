@@ -6,7 +6,8 @@
 //! the class `ms-glyphs`, on which the theme's custom properties sit (a page restyles a diagram
 //! by setting them there). Each route is one `<path class="edge" data-from data-to
 //! data-operand>`, curved between ranks, straight through each dummy's rank, with its arrowhead
-//! as a second subpath. Each visible node is one
+//! as a second subpath; a route into a `StopGradient`, across which no gradient flows back, is
+//! dashed and carries `data-stop-gradient="true"`. Each visible node is one
 //! `<g class="node" data-key data-op data-family data-dtype data-shape>` holding a `<title>` with
 //! the line `modelspec ir` prints for it, its box, its glyph `<use href="#ms-…">`, its two label
 //! lines, and its chips, each a `<g class="chip" data-key data-operand>` with its own title, glyph
@@ -94,12 +95,20 @@ pub fn svg(graph: &DiagramGraph, render: &DiagramRender, ir_lines: &IrLines) -> 
 
     out.push_str("<g class=\"edges\" fill=\"none\" stroke=\"var(--ms-diagram-edge, var(--ms-diagram-muted, #606770))\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\">");
     for route in &render.routes {
+        let stopped = index
+            .get(route.consumer.as_str())
+            .is_some_and(|&i| graph.nodes[i].op.as_deref() == Some("StopGradient"));
         let _ = write!(
             out,
-            "<path class=\"edge\" data-from=\"{}\" data-to=\"{}\" data-operand=\"{}\" d=\"{}\"/>",
+            "<path class=\"edge\" data-from=\"{}\" data-to=\"{}\" data-operand=\"{}\"{} d=\"{}\"/>",
             attribute(&route.producer),
             attribute(&route.consumer),
             route.operand,
+            if stopped {
+                " data-stop-gradient=\"true\" stroke-dasharray=\"6 5\""
+            } else {
+                ""
+            },
             route_path(&route.points)
         );
     }
