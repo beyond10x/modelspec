@@ -2450,3 +2450,93 @@ runs:
     note: torch.compile mode default, tf32 off
     source: verification-report:transformer-block-benchmark-2026-10-27, raw records benchmarks/raw/2026-10-27-transformer-block/pytorch.jsonl
     state: Recorded
+  - run_id: bert-tiny-pretrain-modelspec-vulkan-0.21.0
+    date: "2026-10-28"
+    workload: bert-tiny-pretrain
+    side: ModelSpecVulkan
+    modelspec_version: "0.21.0"
+    commit: 3b9869fe878c34debcb5ecdbb30ebde32da1bc96
+    mode: Timed
+    batch: 32
+    tokens_per_step: 4096
+    flop_per_step: 37446746112
+    flop_rule: MatmulOnly
+    target_loss: 6.926537926202018
+    steps_to_target: 1100
+    seconds_to_target: 245.968547
+    train_seconds: 2225.760356
+    eval_every: 100
+    final_heldout_loss: 6.7674985
+    timed_steps: 10000
+    repeat_count: 3
+    repeats_us_per_step:
+      - 222576.0356
+      - 220421.5402
+      - 223085.2576
+    median_us_per_step: 222576.0356
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 600–1965 (median 1890, n=26738) over the 3 runs, held-out evaluations included"
+    note: loaded host, 1-minute load 6.2–75.5 (median 18.6) over the 3 runs; the step time is under investigation
+    source: verification-report:bert-tiny-vs-pytorch-2026-10-28, raw records benchmarks/raw/2026-10-28-bert-tiny-pretrain/modelspec-1.stdout.txt, modelspec-2.stdout.txt, modelspec-3.stdout.txt
+    state: Recorded
+  - run_id: bert-tiny-pretrain-pytorch-cuda-eager-0.21.0
+    date: "2026-10-28"
+    workload: bert-tiny-pretrain
+    side: PyTorchCudaEager
+    commit: 3b9869fe878c34debcb5ecdbb30ebde32da1bc96
+    opponent_version: torch 2.14.1+cu130, CUDA 13.0
+    mode: Timed
+    batch: 32
+    tokens_per_step: 4096
+    flop_per_step: 37446746112
+    flop_rule: MatmulOnly
+    target_loss: 6.926537926202018
+    steps_to_target: 1100
+    seconds_to_target: 9.820157743059099
+    train_seconds: 98.97472609393299
+    eval_every: 100
+    final_heldout_loss: 6.767257660737013
+    timed_steps: 10000
+    repeat_count: 3
+    repeats_us_per_step:
+      - 8770.881640352309
+      - 10740.165596827865
+      - 9897.472609393299
+    median_us_per_step: 9897.472609393299
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 240–1935 (median 1890, n=995) over the 3 runs, held-out evaluations included"
+    note: tf32 off; loaded host, 1-minute load 14.7–32.7 (median 19.0) over the 3 runs
+    source: verification-report:bert-tiny-vs-pytorch-2026-10-28, raw records benchmarks/raw/2026-10-28-bert-tiny-pretrain/pytorch-eager-1.jsonl, pytorch-eager-2.jsonl, pytorch-eager-3.jsonl
+    state: Recorded
+  - run_id: bert-tiny-pretrain-pytorch-cuda-compile-0.21.0
+    date: "2026-10-28"
+    workload: bert-tiny-pretrain
+    side: PyTorchCudaCompile
+    commit: 3b9869fe878c34debcb5ecdbb30ebde32da1bc96
+    opponent_version: torch 2.14.1+cu130, CUDA 13.0
+    mode: Timed
+    batch: 32
+    tokens_per_step: 4096
+    flop_per_step: 37446746112
+    flop_rule: MatmulOnly
+    target_loss: 6.926537926202018
+    steps_to_target: 1100
+    seconds_to_target: 4.881181318312883
+    train_seconds: 48.874912169761956
+    eval_every: 100
+    final_heldout_loss: 6.7675071221200005
+    timed_steps: 10000
+    repeat_count: 3
+    repeats_us_per_step:
+      - 4634.821026585996
+      - 4887.491216976196
+      - 7931.971526704729
+    median_us_per_step: 4887.491216976196
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 210–1935 (median 1875, n=816) over the 3 runs, held-out evaluations included"
+    note: torch.compile mode default, tf32 off; loaded host, 1-minute load 14.4–50.7 (median 35.0) over the 3 runs
+    source: verification-report:bert-tiny-vs-pytorch-2026-10-28, raw records benchmarks/raw/2026-10-28-bert-tiny-pretrain/pytorch-compile-1.jsonl, pytorch-compile-2.jsonl, pytorch-compile-3.jsonl
+    state: Recorded

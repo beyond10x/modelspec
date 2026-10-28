@@ -55,9 +55,26 @@
 //! does, and shows the step to the observer ([`StepSeen`]). A step whose loss is not
 //! finite stops the run with one more host wait, which reads the parameters and moments the
 //! diverged run holds.
+//!
+//! The run keeps a training clock (story:bert-tiny-vs-pytorch-cuda, coordinator decision D87):
+//! [`RunStats::training`] sums, over the updates, the time from recording the step's command
+//! buffer to the end of its host wait; the held-out batches of an evaluated step are timed apart
+//! into [`RunStats::evaluation`], from recording the first batch's command buffer to the host's
+//! tally of the last. Neither holds the plan build, the SPIR-V emission and pipeline creation,
+//! the batch the host draws and stages before each step, the final loss evaluation and the dense
+//! eval batches before it (the CPU run measures `--eval` after its loop), or the checkpoint
+//! files and the observer, which run outside both spans. [`StepSeen::trained`] is the clock
+//! through the updates before the step.
+//!
+//! A profiled run ([`train_stepwise_profiled`], `train --profile`) writes a timestamp before and
+//! after each dispatch of a step's command buffer into one query pool, reset at the start of each
+//! step's command buffer and read after its host wait, so it adds no host wait; the held-out
+//! and dense eval batches are not timed. The stamps of every step, then those of the final loss
+//! evaluation, make the [`Profile`] of the chunked run ([`super::profile::timings`]); its steady time per step
+//! also holds the host's time between two steps' command buffers and any evaluation between them.
 
 use std::collections::BTreeMap;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use modelspec_core::artifact::{CompiledArtifact, check_device};
 use modelspec_core::compile::CompiledTraining;
@@ -74,10 +91,12 @@ use super::Device;
 use super::dispatch::Recording;
 use super::memory::{Buffer, MemorySpan};
 use super::negotiate::Negotiated;
-use super::pipeline::{Pipeline, reads_seed};
+use super::pipeline::{Pipeline, PipelineStatistics, reads_seed};
+use super::profile::{PlanName, Profile, Site, timings};
 use super::runner::{
-    Action, Checkpoints, DeviceRunError, DivergedOnDevice, RunStats, VulkanRunError, actions,
-    buffer, count_u32, descriptors, numerics_class, on_device, parameters, record, state_of,
+    Action, Checkpoints, DeviceRunError, DivergedOnDevice, RunStats, Stamps, VulkanRunError,
+    actions, buffer, count_u32, descriptors, numerics_class, on_device, parameters, record,
+    state_of,
 };
 use super::sync::{Barrier, recorded_barriers};
 use crate::cpu::HostTensor;
@@ -134,12 +153,10 @@ pub struct StepSeen<'a> {
     /// The parameters after `step` updates where the host holds them without another read-back:
     /// at the first step, the values it uploaded, and at the last, the values it read back.
     pub values: Option<&'a BTreeMap<ParamId, HostTensor<f32>>>,
+    /// The training clock through the updates before `step` ([`RunStats::training`]): 0 at the
+    /// first step.
+    pub trained: Duration,
 }
-
-/// Why a stepwise run is not profiled: `--profile` times the chunked run's dispatch sites.
-pub const NOT_PROFILED: &str = "--profile times the chunked device run; a run with dropout, \
-                                sigreg, AdamW, --data or --eval-every records one command \
-                                buffer per step and has no profile yet";
 
 /// The observer of a stepwise run: an error stops the run at that step and is its error.
 pub type Observe<'f> = dyn FnMut(&StepSeen<'_>) -> Result<(), Box<RunError>> + 'f;
@@ -153,18 +170,20 @@ pub fn needed(compiled: &CompiledTraining, artifact: &CompiledArtifact) -> bool 
         || !sigreg_sites(&compiled.training.training.program).is_empty()
 }
 
-/// Loads Vulkan, selects device `device` (0 when `None`), negotiates and opens it, and runs
-/// [`train_stepwise`] on it.
+/// Loads Vulkan, selects device `device` (0 when `None`), negotiates and opens it, with the
+/// pipeline executable statistics when `profiled` and the device offers them, and runs
+/// [`train_stepwise_profiled`] on it.
 pub fn train_stepwise_on_device(
     device: Option<usize>,
+    profiled: bool,
     compiled: &CompiledTraining,
     artifact: &CompiledArtifact,
     options: StepwiseOptions<'_, '_>,
     observe: &mut Observe<'_>,
-) -> Result<(Run, RunStats), DeviceRunError> {
-    on_device(device, false, artifact, |opened, profile, negotiated| {
-        Ok(train_stepwise(
-            opened, profile, negotiated, compiled, artifact, options, observe,
+) -> Result<(Run, RunStats, Option<Profile>), DeviceRunError> {
+    on_device(device, profiled, artifact, |opened, profile, negotiated| {
+        Ok(train_stepwise_profiled(
+            opened, profile, negotiated, compiled, artifact, profiled, options, observe,
         )?)
     })
 }
@@ -204,6 +223,29 @@ pub fn train_stepwise(
     options: StepwiseOptions<'_, '_>,
     observe: &mut Observe<'_>,
 ) -> Result<(Run, RunStats), VulkanRunError> {
+    let (run, stats, _) = train_stepwise_profiled(
+        device, profile, negotiated, compiled, artifact, false, options, observe,
+    )?;
+    Ok((run, stats))
+}
+
+/// [`train_stepwise`], and when `profiled` with a timestamp before and after every dispatch of
+/// each step's command buffer on a device with timestamp queries, read back after the step's
+/// host wait (the module documentation): the run's commands, results and [`RunStats`] are those
+/// of [`train_stepwise`], and the [`Profile`] is that of the chunked run, `None` when not
+/// `profiled`. A run that diverges returns the profile of the steps it recorded, without the
+/// final loss evaluation, in its [`DivergedOnDevice`].
+#[allow(clippy::too_many_arguments)]
+pub fn train_stepwise_profiled(
+    device: &Device<'_>,
+    profile: &DeviceProfile,
+    negotiated: &Negotiated,
+    compiled: &CompiledTraining,
+    artifact: &CompiledArtifact,
+    profiled: bool,
+    options: StepwiseOptions<'_, '_>,
+    observe: &mut Observe<'_>,
+) -> Result<(Run, RunStats, Option<Profile>), VulkanRunError> {
     check_device(artifact, profile).map_err(|refused| VulkanRunError::Plan(refused.to_string()))?;
     let plan = &artifact.execution;
     let config = &compiled.config;
@@ -326,7 +368,10 @@ pub fn train_stepwise(
 
     // The device memory of the run: every buffer it makes is made after this.
     let memory = MemorySpan::start();
+    let emitting = Instant::now();
     let modules = emit_kernels(artifact, profile)?;
+    let emitted = emitting.elapsed();
+    let creating = Instant::now();
     let mut pipelines = Vec::with_capacity(plan.kernels.len());
     for (kernel, module) in plan.kernels.iter().zip(&modules) {
         pipelines.push(if reads_seed(kernel) {
@@ -335,6 +380,19 @@ pub fn train_stepwise(
             device.kernel_pipeline(kernel, &module.spirv)?
         });
     }
+    let pipeline_creation = creating.elapsed();
+    // The statistics of every kernel's pipeline, read once when profiled on a device opened with
+    // the pipeline executable extension, as the chunked run reads them.
+    let pipeline_statistics = if profiled && device.pipeline_statistics_enabled() {
+        PipelineStatistics::collect(
+            plan.kernels
+                .iter()
+                .zip(&pipelines)
+                .map(|(kernel, pipeline)| (kernel.id, pipeline.statistics())),
+        )
+    } else {
+        PipelineStatistics::NotCaptured
+    };
     // Each `Dropout` at `p = 0`: the pipelines the loss steps run with dropout off.
     let mut identities: BTreeMap<usize, Pipeline<'_>> = BTreeMap::new();
     for (at, kernel) in plan.kernels.iter().enumerate() {
@@ -495,6 +553,70 @@ pub fn train_stepwise(
         .collect();
     let loss = buffer(&buffers, &plan.loss_view)?;
 
+    // The dispatch sites a profile times, and the one timestamp pool every step's command buffer
+    // resets and writes: two queries per dispatch of the step plan or of the final loss
+    // evaluation, whichever records more.
+    let site = |plan_name: PlanName, action: &Action<'_>| match action {
+        Action::Dispatch(_, at) => {
+            let id = plan.step[*at].kernel_module_id?;
+            let entry = plan
+                .kernels
+                .iter()
+                .zip(&modules)
+                .find(|(kernel, _)| kernel.id == id)
+                .map(|(_, module)| module.entry_point.clone())?;
+            Site::new(plan, plan_name, *at, entry)
+        }
+        _ => None,
+    };
+    let step_sites: Vec<Site> = step_actions
+        .iter()
+        .filter_map(|action| site(PlanName::Step, action))
+        .collect();
+    let final_sites: Vec<Site> = loss_actions
+        .iter()
+        .filter_map(|action| site(PlanName::Final, action))
+        .collect();
+    let clock = device
+        .clock()
+        .filter(|_| profiled && profile.timestamp_queries);
+    let pool = match clock {
+        Some(_) => {
+            Some(device.timestamp_pool(count_u32(2 * step_sites.len().max(final_sites.len()))?)?)
+        }
+        None => None,
+    };
+    // The stamps read back so far: each recorded step's, then the final loss evaluation's.
+    let mut stamped: Vec<u64> = Vec::new();
+    // The profile of the steps whose stamps `stamped` holds, with the final loss evaluation's
+    // when `finished`.
+    let profile_of = |stamped: &[u64], finished: bool| -> Result<Option<Profile>, VulkanRunError> {
+        if !profiled {
+            return Ok(None);
+        }
+        let timings = match clock {
+            Some(clock) => {
+                let finals: &[Site] = if finished { &final_sites } else { &[] };
+                let per_step = 2 * step_sites.len();
+                let steps = match per_step {
+                    0 => 0,
+                    _ => stamped.len().saturating_sub(2 * finals.len()) / per_step,
+                };
+                Some(
+                    timings(&step_sites, finals, steps as u64, stamped, clock)
+                        .map_err(VulkanRunError::Plan)?,
+                )
+            }
+            None => None,
+        };
+        Ok(Some(Profile {
+            timings,
+            pipeline_creation,
+            compile: emitted,
+            pipeline_statistics: pipeline_statistics.clone(),
+        }))
+    };
+
     let class = numerics_class(negotiated, artifact);
     let waits_before = device.host_waits();
     let submits_before = device.submits();
@@ -504,10 +626,15 @@ pub fn train_stepwise(
     let mut dispatches_per_step = 0;
     let mut barriers_per_step = 0;
     let mut first_submit: Option<Instant> = None;
+    // The training clock and the held-out evaluations' (the module documentation).
+    let mut training = Duration::ZERO;
+    let mut evaluation = Duration::ZERO;
     let count = |ran: u64,
                  dispatches_per_step: u64,
                  barriers_per_step: u64,
-                 first_submit: Option<Instant>| RunStats {
+                 first_submit: Option<Instant>,
+                 training: Duration,
+                 evaluation: Duration| RunStats {
         steps: ran,
         host_waits: device.host_waits() - waits_before,
         submits: device.submits() - submits_before,
@@ -520,6 +647,8 @@ pub fn train_stepwise(
         peak_device_bytes: memory.peak_bytes(),
         class,
         elapsed: first_submit.map_or_else(Default::default, |at| at.elapsed()),
+        training,
+        evaluation,
     };
     // The parameters, then the moments, as the state download holds them.
     let state_views: Vec<BufferView> = plan
@@ -599,6 +728,7 @@ pub fn train_stepwise(
                     VulkanRunError::Plan("a held-out evaluation without its download".into())
                 })?;
                 let mut tally = held_out.tallying();
+                let evaluating = Instant::now();
                 for b in 0..eval_batches {
                     {
                         let mut recording = device.record()?;
@@ -651,10 +781,13 @@ pub fn train_stepwise(
                     }
                     tally.add(&download.read_f32()?).map_err(refused)?;
                 }
-                Some(tally.metrics().map_err(refused)?)
+                let metrics = tally.metrics().map_err(refused)?;
+                evaluation += evaluating.elapsed();
+                Some(metrics)
             }
             _ => None,
         };
+        let trained = training;
         // The last step of a run with `--eval`: before the step's command buffer, each dense eval
         // batch in one of its own, its loss, and its prediction when the accuracy is measured,
         // read back before the next batch overwrites them; the losses are summed in `f64` in
@@ -750,7 +883,12 @@ pub fn train_stepwise(
             _ => None,
         };
         {
+            let stepping = Instant::now();
             let mut recording = device.record()?;
+            let mut stamps = pool.as_ref().map(|pool| Stamps { pool, next: 0 });
+            if let Some(stamps) = &stamps {
+                recording.reset_timestamps(stamps.pool);
+            }
             open(
                 &mut recording,
                 &mut opened,
@@ -775,9 +913,14 @@ pub fn train_stepwise(
             recording.barrier(Barrier::TransferToCompute);
             let before = recording.dispatches();
             if last {
-                record(&mut recording, loss_actions.iter().copied(), &buffers, None)?;
+                record(
+                    &mut recording,
+                    loss_actions.iter().copied(),
+                    &buffers,
+                    stamps.as_mut(),
+                )?;
             } else {
-                record(&mut recording, &step_actions, &buffers, None)?;
+                record(&mut recording, &step_actions, &buffers, stamps.as_mut())?;
                 dispatches_per_step = recording.dispatches() - before;
             }
             recording.barrier(Barrier::ComputeToTransfer);
@@ -792,6 +935,12 @@ pub fn train_stepwise(
             let recorded = recording.finish()?;
             first_submit.get_or_insert_with(Instant::now);
             device.submit(recorded)?.wait()?;
+            if !last {
+                training += stepping.elapsed();
+            }
+            if let Some(stamps) = stamps {
+                stamped.extend(stamps.pool.read_first(stamps.next)?);
+            }
         }
         let loss_k = loss_download.read_f32()?[0];
         let state = if reads_state {
@@ -812,6 +961,7 @@ pub fn train_stepwise(
             held_out: metrics,
             dense_eval: dense_measured,
             values,
+            trained,
         })
         .map_err(VulkanRunError::Run)?;
         losses.push(loss_k);
@@ -847,8 +997,15 @@ pub fn train_stepwise(
             let ran = k - start;
             return Err(VulkanRunError::NonFinite(Box::new(DivergedOnDevice {
                 diverged: Diverged { diagnostic, run },
-                stats: count(ran, dispatches_per_step, barriers_per_step, first_submit),
-                profile: None,
+                stats: count(
+                    ran,
+                    dispatches_per_step,
+                    barriers_per_step,
+                    first_submit,
+                    training,
+                    evaluation,
+                ),
+                profile: profile_of(&stamped, last)?,
             })));
         }
         if let Some((values, read_moments)) = state {
@@ -865,7 +1022,10 @@ pub fn train_stepwise(
         dispatches_per_step,
         barriers_per_step,
         first_submit,
+        training,
+        evaluation,
     );
+    let profiled = profile_of(&stamped, true)?;
     let (values, read_moments) = finished.expect("the last step reads the state back");
     let mut state = state_of(compiled, values, end);
     state.moments.extend(read_moments);
@@ -878,6 +1038,7 @@ pub fn train_stepwise(
             teacher: feed.teacher(),
         },
         stats,
+        profiled,
     ))
 }
 

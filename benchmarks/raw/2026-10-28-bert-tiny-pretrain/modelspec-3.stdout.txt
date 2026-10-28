@@ -1,0 +1,304 @@
+data dataset 0ddcfa78-c328-8cc9-ae3b-490c096d55a5 tokenizer dfd98df4-cbd0-8076-b713-99ab202efa85 seq_len 128 masking 0.15/0.8/0.1/0.1 binding 668f3433-dbd7-8871-a5a7-a421c2bd1816
+step 0 loss 9.035597
+eval 0 loss 9.029767 accuracy 0.00019112694 train_seconds 0.000000
+step 50 loss 9.027942
+step 100 loss 9.011951
+eval 100 loss 9.00717 accuracy 0.00026279953 train_seconds 22.296531
+step 150 loss 8.970035
+step 200 loss 8.88838
+eval 200 loss 8.881183 accuracy 0.005877153 train_seconds 44.864512
+step 250 loss 8.748299
+step 300 loss 8.571261
+eval 300 loss 8.553788 accuracy 0.035788517 train_seconds 66.780516
+step 350 loss 8.404144
+step 400 loss 8.198336
+eval 400 loss 8.160546 accuracy 0.03772368 train_seconds 88.723998
+step 450 loss 7.950393
+step 500 loss 7.785091
+eval 500 loss 7.7516637 accuracy 0.03769979 train_seconds 110.376483
+step 550 loss 7.550701
+step 600 loss 7.4505258
+eval 600 loss 7.370238 accuracy 0.03769979 train_seconds 133.036654
+step 650 loss 7.244367
+step 700 loss 7.025592
+eval 700 loss 7.0944147 accuracy 0.03769979 train_seconds 155.138398
+step 750 loss 7.125413
+step 800 loss 7.115167
+eval 800 loss 6.9724994 accuracy 0.05349165 train_seconds 177.538359
+step 850 loss 7.0855904
+step 900 loss 6.8641562
+eval 900 loss 6.938306 accuracy 0.05349165 train_seconds 200.488444
+step 950 loss 7.1365457
+step 1000 loss 6.8899775
+eval 1000 loss 6.928237 accuracy 0.05349165 train_seconds 222.327315
+step 1050 loss 6.9689097
+step 1100 loss 6.9363556
+eval 1100 loss 6.9235697 accuracy 0.05349165 train_seconds 245.968547
+step 1150 loss 7.0709934
+step 1200 loss 6.780761
+eval 1200 loss 6.9203305 accuracy 0.05349165 train_seconds 268.973580
+step 1250 loss 6.989836
+step 1300 loss 6.903854
+eval 1300 loss 6.919305 accuracy 0.05349165 train_seconds 291.057724
+step 1350 loss 6.9725695
+step 1400 loss 7.0324545
+eval 1400 loss 6.919493 accuracy 0.05349165 train_seconds 313.326982
+step 1450 loss 7.0909243
+step 1500 loss 6.95485
+eval 1500 loss 6.9195824 accuracy 0.05349165 train_seconds 335.975323
+step 1550 loss 6.9837427
+step 1600 loss 6.863608
+eval 1600 loss 6.9175363 accuracy 0.05349165 train_seconds 357.860629
+step 1650 loss 7.025589
+step 1700 loss 6.8241973
+eval 1700 loss 6.9157243 accuracy 0.05349165 train_seconds 379.560860
+step 1750 loss 6.851167
+step 1800 loss 7.072536
+eval 1800 loss 6.9150496 accuracy 0.05349165 train_seconds 401.932332
+step 1850 loss 7.0579333
+step 1900 loss 6.926041
+eval 1900 loss 6.9151974 accuracy 0.05349165 train_seconds 423.760864
+step 1950 loss 6.8584156
+step 2000 loss 7.0497346
+eval 2000 loss 6.913918 accuracy 0.05349165 train_seconds 445.759931
+step 2050 loss 6.8190246
+step 2100 loss 7.033418
+eval 2100 loss 6.914126 accuracy 0.05349165 train_seconds 467.446932
+step 2150 loss 6.8819375
+step 2200 loss 7.076615
+eval 2200 loss 6.913253 accuracy 0.05349165 train_seconds 489.407643
+step 2250 loss 7.0276866
+step 2300 loss 7.032393
+eval 2300 loss 6.909996 accuracy 0.05349165 train_seconds 511.147848
+step 2350 loss 6.918658
+step 2400 loss 6.8852963
+eval 2400 loss 6.907103 accuracy 0.05349165 train_seconds 532.812136
+step 2450 loss 6.8998823
+step 2500 loss 6.8869667
+eval 2500 loss 6.9030714 accuracy 0.05349165 train_seconds 555.466339
+step 2550 loss 6.8904223
+step 2600 loss 7.037469
+eval 2600 loss 6.899245 accuracy 0.05349165 train_seconds 577.626092
+step 2650 loss 6.9465747
+step 2700 loss 6.8539724
+eval 2700 loss 6.896695 accuracy 0.05349165 train_seconds 599.834223
+step 2750 loss 7.197012
+step 2800 loss 6.9289136
+eval 2800 loss 6.8944488 accuracy 0.05349165 train_seconds 621.949523
+step 2850 loss 6.990609
+step 2900 loss 7.1066623
+eval 2900 loss 6.8924627 accuracy 0.05349165 train_seconds 643.790244
+step 2950 loss 6.7433767
+step 3000 loss 6.8695393
+eval 3000 loss 6.8897038 accuracy 0.05349165 train_seconds 665.484633
+step 3050 loss 6.845083
+step 3100 loss 7.031476
+eval 3100 loss 6.8877654 accuracy 0.05349165 train_seconds 687.174469
+step 3150 loss 7.0502915
+step 3200 loss 6.8496842
+eval 3200 loss 6.886344 accuracy 0.05349165 train_seconds 708.949261
+step 3250 loss 6.736315
+step 3300 loss 6.7675157
+eval 3300 loss 6.884075 accuracy 0.05349165 train_seconds 730.794782
+step 3350 loss 6.96176
+step 3400 loss 7.120426
+eval 3400 loss 6.8817005 accuracy 0.05349165 train_seconds 753.417197
+step 3450 loss 7.065383
+step 3500 loss 6.7505207
+eval 3500 loss 6.880594 accuracy 0.05349165 train_seconds 776.581636
+step 3550 loss 6.6666365
+step 3600 loss 7.0108824
+eval 3600 loss 6.878766 accuracy 0.05349165 train_seconds 799.616387
+step 3650 loss 6.8758535
+step 3700 loss 6.9566207
+eval 3700 loss 6.8784046 accuracy 0.05349165 train_seconds 822.976670
+step 3750 loss 6.96398
+step 3800 loss 6.811744
+eval 3800 loss 6.875513 accuracy 0.05349165 train_seconds 846.142645
+step 3850 loss 6.8505325
+step 3900 loss 7.0502462
+eval 3900 loss 6.8739924 accuracy 0.05349165 train_seconds 869.404636
+step 3950 loss 6.934384
+step 4000 loss 7.009967
+eval 4000 loss 6.871486 accuracy 0.05375445 train_seconds 892.583104
+step 4050 loss 7.0041475
+step 4100 loss 6.8930073
+eval 4100 loss 6.868565 accuracy 0.055211794 train_seconds 915.170184
+step 4150 loss 6.859113
+step 4200 loss 6.92094
+eval 4200 loss 6.866189 accuracy 0.056430228 train_seconds 936.980759
+step 4250 loss 6.927219
+step 4300 loss 7.001245
+eval 4300 loss 6.8645887 accuracy 0.0565019 train_seconds 958.678204
+step 4350 loss 6.90847
+step 4400 loss 6.901637
+eval 4400 loss 6.861665 accuracy 0.056597464 train_seconds 980.306881
+step 4450 loss 7.12654
+step 4500 loss 6.9636626
+eval 4500 loss 6.859753 accuracy 0.056621354 train_seconds 1003.702041
+step 4550 loss 6.836495
+step 4600 loss 6.8648596
+eval 4600 loss 6.856666 accuracy 0.056645244 train_seconds 1026.541914
+step 4650 loss 6.7916503
+step 4700 loss 6.9644675
+eval 4700 loss 6.8539453 accuracy 0.056645244 train_seconds 1048.714476
+step 4750 loss 6.9806805
+step 4800 loss 7.0620756
+eval 4800 loss 6.8516517 accuracy 0.056669135 train_seconds 1070.559083
+step 4850 loss 6.866865
+step 4900 loss 6.923736
+eval 4900 loss 6.848846 accuracy 0.056645244 train_seconds 1092.299210
+step 4950 loss 7.0048003
+step 5000 loss 6.9109597
+eval 5000 loss 6.84616 accuracy 0.056645244 train_seconds 1114.074718
+step 5050 loss 6.8250766
+step 5100 loss 7.016906
+eval 5100 loss 6.842681 accuracy 0.056884155 train_seconds 1135.715283
+step 5150 loss 6.8660083
+step 5200 loss 7.0968914
+eval 5200 loss 6.840537 accuracy 0.057648662 train_seconds 1157.576559
+step 5250 loss 6.9395847
+step 5300 loss 6.79049
+eval 5300 loss 6.8379703 accuracy 0.058365386 train_seconds 1179.224006
+step 5350 loss 6.8496704
+step 5400 loss 6.96941
+eval 5400 loss 6.8351007 accuracy 0.060276657 train_seconds 1202.520752
+step 5450 loss 6.74438
+step 5500 loss 6.950887
+eval 5500 loss 6.832896 accuracy 0.060491674 train_seconds 1226.015046
+step 5550 loss 6.880487
+step 5600 loss 7.0662704
+eval 5600 loss 6.8300724 accuracy 0.061853454 train_seconds 1249.484030
+step 5650 loss 6.8326306
+step 5700 loss 6.816191
+eval 5700 loss 6.8277473 accuracy 0.06202069 train_seconds 1272.886126
+step 5750 loss 6.908616
+step 5800 loss 6.6057186
+eval 5800 loss 6.824762 accuracy 0.06257018 train_seconds 1295.503280
+step 5850 loss 6.9121785
+step 5900 loss 7.026356
+eval 5900 loss 6.822185 accuracy 0.063358575 train_seconds 1317.170216
+step 5950 loss 6.822419
+step 6000 loss 6.912746
+eval 6000 loss 6.818888 accuracy 0.064624794 train_seconds 1339.054548
+step 6050 loss 6.79499
+step 6100 loss 6.844456
+eval 6100 loss 6.8170724 accuracy 0.0651265 train_seconds 1361.026955
+step 6150 loss 6.717765
+step 6200 loss 6.9571986
+eval 6200 loss 6.814433 accuracy 0.06641661 train_seconds 1383.392137
+step 6250 loss 6.7928114
+step 6300 loss 6.6292334
+eval 6300 loss 6.8122673 accuracy 0.06753948 train_seconds 1405.259482
+step 6350 loss 6.897317
+step 6400 loss 6.857352
+eval 6400 loss 6.8097634 accuracy 0.06756337 train_seconds 1427.752226
+step 6450 loss 6.934957
+step 6500 loss 6.890438
+eval 6500 loss 6.8074346 accuracy 0.068757914 train_seconds 1449.734135
+step 6550 loss 6.7544203
+step 6600 loss 6.7388115
+eval 6600 loss 6.805016 accuracy 0.06842344 train_seconds 1471.526217
+step 6650 loss 6.9086504
+step 6700 loss 7.030515
+eval 6700 loss 6.8037543 accuracy 0.069235735 train_seconds 1493.356684
+step 6750 loss 6.9610786
+step 6800 loss 6.96801
+eval 6800 loss 6.8013697 accuracy 0.06988078 train_seconds 1516.130107
+step 6850 loss 6.797743
+step 6900 loss 6.7912774
+eval 6900 loss 6.8000436 accuracy 0.07031082 train_seconds 1538.891920
+step 6950 loss 6.980507
+step 7000 loss 6.839261
+eval 7000 loss 6.798351 accuracy 0.07081253 train_seconds 1560.491499
+step 7050 loss 6.801634
+step 7100 loss 6.9396605
+eval 7100 loss 6.7963314 accuracy 0.07112311 train_seconds 1582.127737
+step 7150 loss 6.83235
+step 7200 loss 6.8966413
+eval 7200 loss 6.794686 accuracy 0.0714098 train_seconds 1605.045401
+step 7250 loss 6.759473
+step 7300 loss 7.092868
+eval 7300 loss 6.792917 accuracy 0.071672596 train_seconds 1628.002209
+step 7350 loss 6.7232084
+step 7400 loss 6.8071465
+eval 7400 loss 6.7915025 accuracy 0.07160093 train_seconds 1650.527994
+step 7450 loss 6.7043414
+step 7500 loss 6.829295
+eval 7500 loss 6.7896333 accuracy 0.072461 train_seconds 1672.688069
+step 7550 loss 6.8611875
+step 7600 loss 6.6606164
+eval 7600 loss 6.7883058 accuracy 0.07224598 train_seconds 1695.432881
+step 7650 loss 7.0465097
+step 7700 loss 6.9076962
+eval 7700 loss 6.7867155 accuracy 0.07277158 train_seconds 1718.474818
+step 7750 loss 6.9266496
+step 7800 loss 6.9225426
+eval 7800 loss 6.7854137 accuracy 0.073129945 train_seconds 1741.321099
+step 7850 loss 6.880218
+step 7900 loss 6.952533
+eval 7900 loss 6.7840834 accuracy 0.07305827 train_seconds 1764.886477
+step 7950 loss 6.7888722
+step 8000 loss 6.748133
+eval 8000 loss 6.782618 accuracy 0.07305827 train_seconds 1787.508463
+step 8050 loss 6.7399645
+step 8100 loss 6.918322
+eval 8100 loss 6.7818294 accuracy 0.07422892 train_seconds 1809.568325
+step 8150 loss 6.781184
+step 8200 loss 6.985034
+eval 8200 loss 6.7801595 accuracy 0.07420503 train_seconds 1831.559443
+step 8250 loss 6.837594
+step 8300 loss 6.7303915
+eval 8300 loss 6.7787046 accuracy 0.07456339 train_seconds 1853.482246
+step 8350 loss 6.953026
+step 8400 loss 6.895051
+eval 8400 loss 6.7779074 accuracy 0.07470674 train_seconds 1876.265127
+step 8450 loss 6.8712506
+step 8500 loss 6.9588294
+eval 8500 loss 6.776383 accuracy 0.07470674 train_seconds 1898.257713
+step 8550 loss 6.7900424
+step 8600 loss 6.9031744
+eval 8600 loss 6.7756057 accuracy 0.07492176 train_seconds 1920.630993
+step 8650 loss 6.8392663
+step 8700 loss 6.7811856
+eval 8700 loss 6.774767 accuracy 0.07492176 train_seconds 1942.585650
+step 8750 loss 6.7142425
+step 8800 loss 6.741662
+eval 8800 loss 6.7736316 accuracy 0.07539958 train_seconds 1964.510759
+step 8850 loss 6.903007
+step 8900 loss 6.7261434
+eval 8900 loss 6.772893 accuracy 0.07508899 train_seconds 1987.310946
+step 8950 loss 6.9399443
+step 9000 loss 6.768724
+eval 9000 loss 6.771761 accuracy 0.07511289 train_seconds 2010.244690
+step 9050 loss 6.9030156
+step 9100 loss 6.695873
+eval 9100 loss 6.7711244 accuracy 0.07499343 train_seconds 2032.869815
+step 9150 loss 6.805194
+step 9200 loss 6.71568
+eval 9200 loss 6.770505 accuracy 0.0753279 train_seconds 2054.629470
+step 9250 loss 6.9484835
+step 9300 loss 6.7462754
+eval 9300 loss 6.76978 accuracy 0.07544736 train_seconds 2076.219260
+step 9350 loss 6.98856
+step 9400 loss 6.690157
+eval 9400 loss 6.7693343 accuracy 0.07556681 train_seconds 2097.889538
+step 9450 loss 6.836898
+step 9500 loss 6.8189487
+eval 9500 loss 6.7688212 accuracy 0.07556681 train_seconds 2119.516569
+step 9550 loss 6.837841
+step 9600 loss 6.680764
+eval 9600 loss 6.7682304 accuracy 0.07573405 train_seconds 2141.131952
+step 9650 loss 6.752279
+step 9700 loss 6.928002
+eval 9700 loss 6.7678533 accuracy 0.07597295 train_seconds 2162.756680
+step 9750 loss 6.8201103
+step 9800 loss 6.89508
+eval 9800 loss 6.7676783 accuracy 0.075949065 train_seconds 2186.413425
+step 9850 loss 6.885496
+step 9900 loss 6.776336
+eval 9900 loss 6.7675323 accuracy 0.07604463 train_seconds 2208.639674
+step 9950 loss 6.740318
+step 10000 loss 6.8116674
+eval 10000 loss 6.7674985 accuracy 0.07592517 train_seconds 2230.852576
+train_seconds 2230.852576 eval_seconds 2393.134188 steps 10000

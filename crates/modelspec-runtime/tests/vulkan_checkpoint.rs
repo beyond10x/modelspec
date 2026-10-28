@@ -369,3 +369,82 @@ fn a_device_checkpoint_loads_into_cpu_and_device_inference() {
         prediction.ty.shape.len()
     );
 }
+
+/// story:bert-tiny-vs-pytorch-cuda, finding ADV-BP-3 (coordinator decision D89): a chunked run
+/// with `RunOptions::clock` (`train --clock`) keeps its checkpoint writes and its final loss
+/// evaluation off its training clock, as the `--clock` help says. Each of its 3 stops waits for
+/// its steps and then for its read-back, 6 host waits against the unclocked run's 3; 2 checkpoint
+/// writes that sleep 250 ms each are in its elapsed time and not in its training time; and it
+/// trains the same losses and parameters as the unclocked run.
+#[test]
+#[ignore = "needs a Vulkan device"]
+fn a_clocked_chunked_run_leaves_its_checkpoints_and_final_loss_off_the_training_clock() {
+    let (compiled, artifact) = compiled(1800);
+    let pause = std::time::Duration::from_millis(250);
+    let mut written = Vec::new();
+    let mut write = |step: u64, _: &Values| {
+        written.push(step);
+        std::thread::sleep(pause);
+        Ok::<(), checkpoint::CheckpointError>(())
+    };
+    let mut unclocked_written = Vec::new();
+    let mut unclocked_write = |step: u64, _: &Values| {
+        unclocked_written.push(step);
+        Ok::<(), checkpoint::CheckpointError>(())
+    };
+    let (clocked, unclocked) = on_device("clocked chunked run", |device, profile, negotiated| {
+        let clocked = train(
+            device,
+            profile,
+            negotiated,
+            &compiled,
+            &artifact,
+            RunOptions {
+                checkpoints: Some(Checkpoints {
+                    every: 600,
+                    write: &mut write,
+                }),
+                clock: true,
+                ..RunOptions::default()
+            },
+        );
+        let unclocked = train(
+            device,
+            profile,
+            negotiated,
+            &compiled,
+            &artifact,
+            RunOptions {
+                checkpoints: Some(Checkpoints {
+                    every: 600,
+                    write: &mut unclocked_write,
+                }),
+                ..RunOptions::default()
+            },
+        );
+        (clocked, unclocked)
+    });
+    eprintln!("clocked:\n{}", clocked.1);
+    eprintln!("unclocked:\n{}", unclocked.1);
+    eprintln!(
+        "clocked training {:?} of elapsed {:?}; unclocked training {:?} of elapsed {:?}",
+        clocked.1.training, clocked.1.elapsed, unclocked.1.training, unclocked.1.elapsed
+    );
+    assert_eq!(written, vec![600, 1200]);
+    assert_eq!(unclocked_written, vec![600, 1200]);
+    assert_eq!(
+        clocked.1.host_waits, 6,
+        "each stop's steps, then its read-back"
+    );
+    assert_eq!(unclocked.1.host_waits, 3, "one per stop");
+    assert!(clocked.1.training > std::time::Duration::ZERO);
+    assert!(
+        clocked.1.training + 2 * pause <= clocked.1.elapsed,
+        "the checkpoint writes are in elapsed {:?} but not in training {:?}",
+        clocked.1.elapsed,
+        clocked.1.training
+    );
+    assert_eq!(unclocked.1.training, unclocked.1.elapsed);
+    assert_eq!(clocked.0.losses, unclocked.0.losses);
+    assert_eq!(clocked.0.state.values, unclocked.0.state.values);
+}

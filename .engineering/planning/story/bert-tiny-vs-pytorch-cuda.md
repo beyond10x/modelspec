@@ -2,7 +2,7 @@
 format: aep.planning-md/3
 id: story:bert-tiny-vs-pytorch-cuda
 kind: story
-status: draft
+status: active
 title: BERT-tiny time to held-out loss against PyTorch CUDA
 relations:
 - decomposes: epic:transformer-vs-pytorch-cuda
@@ -10,7 +10,24 @@ relations:
 - depends_on: story:profile-achieved-throughput
 - depends_on: story:benchmark-results-page
 - depends_on: story:transformer-block-benchmark
-revision: 3
+- serves: vision:modelspec
+scope:
+- confidence: cited
+  path: crates/modelspec-cli/src/train.rs
+- confidence: cited
+  path: crates/modelspec-docs/src/benchmarks.rs
+- confidence: cited
+  path: crates/modelspec-runtime/benches
+- confidence: cited
+  path: crates/modelspec-runtime/src/vulkan/profile.rs
+- confidence: cited
+  path: opponents/bert_tiny_pretrain
+- confidence: cited
+  path: spec/domains/benchmark.yaml
+revision: 11
+transitions:
+- {from: "draft", to: "proposed", at: "2026-10-28T07:33:52Z", actor: "human:timo", revision: 4}
+- {from: "proposed", to: "active", at: "2026-10-28T07:33:53Z", actor: "human:timo", revision: 5}
 ---
 # BERT-tiny time to held-out loss against PyTorch CUDA
 

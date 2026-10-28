@@ -1,0 +1,18 @@
+modelspec-1 start 2026-10-28T10:41:57Z
+modelspec-1 rc=0 end 2026-10-28T11:54:07Z
+pytorch-eager-1 start 2026-10-28T11:54:07Z
+pytorch-eager-1 rc=0 end 2026-10-28T11:56:32Z
+pytorch-compile-1 start 2026-10-28T11:56:32Z
+pytorch-compile-1 rc=0 end 2026-10-28T11:58:10Z
+modelspec-2 start 2026-10-28T11:58:10Z
+modelspec-2 rc=0 end 2026-10-28T13:11:46Z
+pytorch-eager-2 start 2026-10-28T13:11:46Z
+pytorch-eager-2 rc=0 end 2026-10-28T13:14:48Z
+pytorch-compile-2 start 2026-10-28T13:14:48Z
+pytorch-compile-2 rc=0 end 2026-10-28T13:16:33Z
+modelspec-3 start 2026-10-28T13:16:33Z
+modelspec-3 rc=0 end 2026-10-28T14:33:51Z
+pytorch-eager-3 start 2026-10-28T14:33:51Z
+pytorch-eager-3 rc=0 end 2026-10-28T14:36:39Z
+pytorch-compile-3 start 2026-10-28T14:36:39Z
+pytorch-compile-3 rc=0 end 2026-10-28T14:40:02Z
