@@ -235,6 +235,11 @@ pub enum TensorOp {
     DropoutGrad {
         p: f32,
     },
+    /// `x` of any `f32` shape `-> x`'s type: `x` unchanged, through which no gradient flows
+    /// (DESIGN.md § 2.2, § 4). Autodiff does not walk through it, and the pass
+    /// [`crate::passes::stop_gradient`] removes it after autodiff, so no training step, CPU
+    /// evaluation of a step or schedule holds it.
+    StopGradient,
     /// Internal optimizer op: the correctly rounded square root of each element, on any `f32`
     /// shape. Only the `Optimizer` subgraph of an AdamW step has it (DESIGN.md § 2.1, § 8).
     Sqrt,
@@ -281,6 +286,7 @@ impl TensorOp {
             TensorOp::CrossEntropyGrad => "CrossEntropyGrad",
             TensorOp::Dropout { .. } => "Dropout",
             TensorOp::DropoutGrad { .. } => "DropoutGrad",
+            TensorOp::StopGradient => "StopGradient",
             TensorOp::Sqrt => "Sqrt",
             TensorOp::Div => "Div",
         }
@@ -620,6 +626,11 @@ impl TensorProgramBuilder {
         self.push(TensorOp::DropoutGrad { p }, &[token, g])
     }
 
+    /// `x` unchanged, through which no gradient flows.
+    pub fn stop_gradient(&mut self, x: ValueId) -> Result<ValueId, BuildError> {
+        self.push(TensorOp::StopGradient, &[x])
+    }
+
     /// Adds any op except `Input`, typed by the registry.
     pub fn push(&mut self, op: TensorOp, operands: &[ValueId]) -> Result<ValueId, BuildError> {
         self.push_at(op, operands, None)
@@ -733,6 +744,7 @@ mod tests {
             TensorOp::CrossEntropyGrad,
             TensorOp::Dropout { p: 0.5 },
             TensorOp::DropoutGrad { p: 0.5 },
+            TensorOp::StopGradient,
             TensorOp::Sqrt,
             TensorOp::Div,
         ];
@@ -771,6 +783,7 @@ mod tests {
                 | TensorOp::CrossEntropyGrad
                 | TensorOp::Dropout { .. }
                 | TensorOp::DropoutGrad { .. }
+                | TensorOp::StopGradient
                 | TensorOp::Sqrt
                 | TensorOp::Div => {}
             }

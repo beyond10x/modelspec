@@ -1,0 +1,20 @@
+model Target {
+    param w: Tensor<f32, [4, 4]> = xavier_uniform();
+    param v: Tensor<f32, [4, 4]> = xavier_uniform();
+
+    fn forward(x: Tensor<f32, [6, 4]>) -> Tensor<f32, [6, 4]> {
+        let held = stop_gradient(matmul(x, w));
+        return sub(matmul(x, v), held);
+    }
+}
+
+train Fit {
+    model = Target;
+    input x: Tensor<f32, [6, 4]>;
+    target y: Tensor<f32, [6, 4]>;
+    loss = mse(model.forward(x), y);
+    optimizer = sgd(lr = 0.1);
+    steps = 2;
+    seed = 7;
+    device = cpu;
+}

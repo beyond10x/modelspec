@@ -921,7 +921,8 @@ fn schedule_with(
             | TensorOp::Softmax
             | TensorOp::SoftmaxGrad
             | TensorOp::Dropout { .. }
-            | TensorOp::DropoutGrad { .. } => match built {
+            | TensorOp::DropoutGrad { .. }
+            | TensorOp::StopGradient => match built {
                 Kernels::None => continue,
                 Kernels::Vulkan => {
                     let no_kernel = || ScheduleError::NoKernel {

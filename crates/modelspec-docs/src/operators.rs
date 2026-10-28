@@ -140,6 +140,12 @@ const EXAMPLES: &[Examples] = &[
         accepted: &[&[&[8, 4]], &[&[2, 3, 4]], &[&[]]],
         refused: &[],
     },
+    Examples {
+        operator: "stop_gradient",
+        named: &[],
+        accepted: &[&[&[8, 4]], &[&[]], &[&[2, 3, 4]]],
+        refused: &[],
+    },
 ];
 
 /// `name(Tensor<...>, ..., heads = 2)`, as a call in source would read with typed operands and
@@ -351,14 +357,16 @@ pub fn page(root: &Path) -> Result<String> {
          the operator takes no argument of its name or it is given twice, `E-TYPE-019` for a \
          value that is not a literal of its kind; `E-TYPE-020` for `attention` heads that do not \
          divide the width, `E-TYPE-021` for a key mask, labels or weights that read a parameter, \
-         `E-TYPE-022` for a `dropout` `p` outside [0, 1) ([Diagnostics](diagnostics.md)).\n",
+         `E-TYPE-022` for a `dropout` `p` outside [0, 1); and, beyond the call itself, \
+         `E-TYPE-026` for a parameter the loss reads only through `stop_gradient` \
+         ([Diagnostics](diagnostics.md)).\n",
     );
     out.push_str(&details);
     let source = fs::read_to_string(root.join(OPS)).map_err(io(OPS))?;
     out.push_str(
         "\n## Gradients\n\nThe reverse-mode rule of each op, for `Y = op(A, B, C)` and `G = dL/dY` (`attention` has a fourth \
          operand `D`, its key mask, which takes no gradient; the labels `B` and weights `C` of \
-         `cross_entropy` take none either, nor does the RNG token `B` of `dropout`), from the doc comment of `ops::gradient`. `modelspec-runtime`'s gradient tests check every \
+         `cross_entropy` take none either, nor does the RNG token `B` of `dropout`, and `stop_gradient` passes none back at all), from the doc comment of `ops::gradient`. `modelspec-runtime`'s gradient tests check every \
          rule against central finite differences.\n\n",
     );
     for row in gradient_table(&source)? {
@@ -551,6 +559,33 @@ mod tests {
             .find(|l| l.starts_with("| `Dropout` | `dropout_grad(B, G)` ("))
             .expect("the Dropout gradient row");
         assert!(row.contains("`DropoutGrad`"), "{row}");
+    }
+
+    /// `stop_gradient` is on the page: one operand of any shape, its result of the same type,
+    /// `E-TYPE-026` in the page text and a gradient row that passes no gradient back.
+    #[test]
+    fn stop_gradient_is_on_the_page_with_no_gradient() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let page = page(&root).unwrap();
+        assert!(page.contains("\n## `stop_gradient`\n"));
+        assert!(page.contains("Tensor IR op `StopGradient`, 1 operand(s)."));
+        assert!(
+            page.contains("| `stop_gradient(Tensor<f32, [2, 3, 4]>)` | `Tensor<f32, [2, 3, 4]>` |")
+        );
+        assert!(page.contains(
+            "| [`stop_gradient`](#stop_gradient) | `StopGradient` | 1 | \
+             `stop_gradient(Tensor<f32, [8, 4]>)` | `Tensor<f32, [8, 4]>` |"
+        ));
+        assert!(
+            page.contains(
+                "`E-TYPE-026` for a parameter the loss reads only through `stop_gradient`"
+            )
+        );
+        let row = page
+            .lines()
+            .find(|l| l.starts_with("| `StopGradient` | none"))
+            .expect("the StopGradient gradient row");
+        assert!(row.contains("`passes::stop_gradient`"), "{row}");
     }
 
     #[test]
