@@ -1,0 +1,125 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/modelspec.artifact.KernelCacheKey",
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "100bc1979d4a196e83cfda9eb7e47c9f6bd31fc3e48f78ec2ca27cb50ad86317",
+    "contract_digest": "slice-sha256/2:3c4fcda2ef474c33cb6c43f4a7c4eebff4fbfa0beee22b3fe377b2ec91fd99e5",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.artifact.ContentHash": {
+      "title": "ContentHash",
+      "description": "A blake3 digest under explicit serialization and version rules (DESIGN.md § 7), written as its 32 bytes in 64 lowercase hexadecimal digits (story:content-hash-schema-constrained).",
+      "x-ess-name": "modelspec.artifact.ContentHash",
+      "x-ess-kind": "newtype",
+      "type": "string",
+      "pattern": "^[0-9a-f]*$",
+      "x-ess-invariants": [
+        "value.count == 64"
+      ],
+      "x-ess-alphabet": "0123456789abcdef"
+    },
+    "modelspec.artifact.KernelCacheKey": {
+      "title": "KernelCacheKey",
+      "description": "The key a kernel configuration is cached under (DESIGN.md § 5.3).",
+      "x-ess-name": "modelspec.artifact.KernelCacheKey",
+      "x-ess-kind": "struct",
+      "type": "object",
+      "properties": {
+        "ir_hash": {
+          "$ref": "#/$defs/modelspec.artifact.ContentHash",
+          "description": "Hash of the kernel's IR (DESIGN.md § 5.3)."
+        },
+        "shapes": {
+          "description": "The shapes the kernel was specialized for (DESIGN.md § 5.3).",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/modelspec.checkpoint.Shape"
+          }
+        },
+        "dtype": {
+          "$ref": "#/$defs/modelspec.checkpoint.DType"
+        },
+        "fast_math": {
+          "description": "Optimization setting (DESIGN.md § 3.3, § 5.3).",
+          "type": "boolean"
+        },
+        "deterministic": {
+          "description": "Optimization setting (DESIGN.md § 3.3, § 5.3).",
+          "type": "boolean"
+        },
+        "vendor_id": {
+          "description": "GPU vendor identifier, as DeviceProfile.vendor_id (DESIGN.md § 5.3).",
+          "type": "integer"
+        },
+        "device_id": {
+          "description": "GPU device identifier, as DeviceProfile.device_id (DESIGN.md § 5.3).",
+          "type": "integer"
+        },
+        "driver_version": {
+          "description": "Driver identifier, as DeviceProfile.driver_version (DESIGN.md § 5.3).",
+          "type": "integer"
+        },
+        "capabilities": {
+          "description": "The Vulkan extensions and SPIR-V capabilities the kernel uses, by name (DESIGN.md § 5.3 extension/capability set).",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "ir_hash",
+        "shapes",
+        "dtype",
+        "fast_math",
+        "deterministic",
+        "vendor_id",
+        "device_id",
+        "driver_version",
+        "capabilities"
+      ],
+      "additionalProperties": false,
+      "x-ess-invariants": [
+        "distinct capability in capabilities"
+      ]
+    },
+    "modelspec.checkpoint.DType": {
+      "title": "DType",
+      "description": "A tensor element type and its size in bytes; `f32` for every value, `i32` only for row ids an `embedding` reads, never a parameter or a checkpoint tensor (DESIGN.md § 2.2).",
+      "x-ess-name": "modelspec.checkpoint.DType",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "F32",
+        "I32"
+      ],
+      "x-ess-attributes": [
+        {
+          "kind": "integer",
+          "name": "size_bytes",
+          "type": "Integer",
+          "values": {
+            "F32": 4,
+            "I32": 4
+          }
+        }
+      ]
+    },
+    "modelspec.checkpoint.Shape": {
+      "title": "Shape",
+      "description": "A tensor shape; each dimension is a positive integer and rank 0 is a scalar (DESIGN.md § 2.2).",
+      "x-ess-name": "modelspec.checkpoint.Shape",
+      "x-ess-kind": "newtype",
+      "type": "array",
+      "items": {
+        "type": "integer"
+      },
+      "x-ess-invariants": [
+        "forall dim in value: (dim > 0)"
+      ]
+    }
+  }
+}

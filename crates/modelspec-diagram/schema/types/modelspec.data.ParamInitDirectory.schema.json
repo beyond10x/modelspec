@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/modelspec.data.ParamInitDirectory",
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "100bc1979d4a196e83cfda9eb7e47c9f6bd31fc3e48f78ec2ca27cb50ad86317",
+    "contract_digest": "slice-sha256/2:dc0b86299301e32c48e270170e643712a547c22df474aa48dc05345adc0ab356",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.data.ParamInitDirectory": {
+      "title": "ParamInitDirectory",
+      "description": "The directory `modelspec train --init <dir>` names; one ParamInitFile per parameter it overrides. A partial match is allowed, a parameter with no file keeping its initializer, and a file that names no parameter is ignored. A directory that cannot be read, or that holds no ParamInitFile of any parameter, is refused with E-DATA-007 before the first step.",
+      "x-ess-name": "modelspec.data.ParamInitDirectory",
+      "x-ess-kind": "struct",
+      "type": "object",
+      "properties": {
+        "files": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/modelspec.data.ParamInitFile"
+          }
+        }
+      },
+      "required": [
+        "files"
+      ],
+      "additionalProperties": false,
+      "x-ess-invariants": [
+        "distinct file in files by file.path"
+      ]
+    },
+    "modelspec.data.ParamInitFile": {
+      "title": "ParamInitFile",
+      "description": "One file `<p>.f32` of the directory `modelspec train --init <dir>` names (DESIGN.md § 8), where p is a parameter's canonical path without its leading model name (`w1` for `Mnist.w1`). Row-major little-endian f32 with no header, exactly elements values, the parameter's element count; the parameter starts from these values instead of its initializer. Another length, or a value that is NaN or infinite, is refused with E-DATA-007 before the first step. A parameter with no file keeps its initializer.",
+      "x-ess-name": "modelspec.data.ParamInitFile",
+      "x-ess-kind": "struct",
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "elements": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "path",
+        "elements"
+      ],
+      "additionalProperties": false,
+      "x-ess-invariants": [
+        "elements > 0"
+      ]
+    }
+  }
+}

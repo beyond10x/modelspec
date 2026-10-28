@@ -3,117 +3,130 @@ format: aep.planning-md/3
 id: story:observatory-architecture-graph
 kind: story
 status: draft
-title: 'Architecture view: the ModelGraph of the Tensor IR and Training IR'
-summary: The UI draws the two-layer-relu ModelGraph derived from verified Tensor and Training IR, every operator with its shape and forward/backward subgraphs told apart; settles the ModelGraph ownership marker.
+title: 'Architecture view: the diagram graph of the running program, zoomable in place'
+summary: The observatory serves the modelspec.diagram graph and renders of the live program and the Vue UI zooms them in place; replaces the observatory ModelGraph and its ownership marker.
 relations:
 - decomposes: epic:training-observatory
 - serves: vision:modelspec
 - depends_on: story:observatory-ui-live-loss-chart
 - depends_on: story:observatory-parameter-statistics
-revision: 3
+- depends_on: story:diagram-pipelines
+- depends_on: story:diagram-cli
+scope:
+- confidence: cited
+  path: CHANGELOG.md
+- confidence: cited
+  path: Cargo.lock
+- confidence: cited
+  path: crates/modelspec-cli/src/train.rs
+- confidence: cited
+  path: crates/modelspec-cli/tests/observatory_ui.rs
+- confidence: cited
+  path: crates/modelspec-observatory/Cargo.toml
+- confidence: cited
+  path: crates/modelspec-observatory/src/server.rs
+- confidence: cited
+  path: crates/modelspec-observatory/src/typescript.rs
+- confidence: cited
+  path: ui/src/App.vue
+- confidence: inferred
+  path: ui/src/components/ArchitectureView.vue
+- confidence: inferred
+  path: ui/src/generated/diagram.ts
+- confidence: inferred
+  path: ui/src/lib/diagram.test.ts
+- confidence: inferred
+  path: ui/src/lib/diagram.ts
+revision: 9
 ---
-# Architecture view: the ModelGraph of the Tensor IR and the training step
+# Architecture view: the diagram graph of the running program, zoomable in place
 
 ## Context
 
 `epic:training-observatory` (In scope, Views; third Acceptance bullet): the model architecture is
-drawn from the compiled IR, nodes are operators with shapes, edges are tensors, forward and
-backward told apart. `spec/domains/observatory.yaml` types the result as the entity
-`modelspec.observatory.ModelGraph` (`GraphNode`, `GraphEdge`, `IrStage`, `Subgraph`,
-`TensorOperator`). This story derives it in Rust from the same verified IR that
-`modelspec ir --stage tensor|training` prints, serves it to the UI and draws it.
+drawn from the compiled IR, with operators as nodes carrying their shapes, tensors as edges, and
+forward and backward told apart. Revised 2026-10-28: the graph is no longer an observatory noun.
+`modelspec.observatory.ModelGraph`, `GraphNode`, `GraphEdge`, `IrStage` and `ModelGraphId` are
+replaced by `spec/domains/diagram.yaml` (`modelspec.diagram.DiagramGraph`, `DiagramRender`),
+which `epic:ir-svg-gallery` also draws on the documentation site and through `modelspec diagram`
+(DESIGN.md § 13). The open question this story used to settle first, the marker on
+`ModelGraph.artifact_id`, is settled there: a graph names no artifact and carries the `ir_hash`
+that `CompiledArtifact.ir_hash` records for the same source. This story serves that graph from the
+training process and draws it in the Vue UI with semantic zoom (DESIGN.md § 13.3).
 
-The Training stage is derived from `TrainingStep` (`CompiledTraining.training`,
-`crates/modelspec-core/src/compile.rs`), not from `TrainingProgram`: `attach_sgd` adds the SGD nodes
-and tags them `Subgraph::Optimizer` in `training.subgraphs`
-(`crates/modelspec-core/src/ir/training.rs:192`, `:225`), so only the step has Optimizer nodes. It is
-what `ir --stage training` prints (`crates/modelspec-cli/src/ir.rs:4`; golden
-`crates/modelspec-cli/tests/golden/linear_regression.training.ir` lines 15-17 are `optimizer`).
+## What it adds
+
+- `crates/modelspec-observatory/src/server.rs`: `GET /diagram/graph?view=<view>` answers the
+  `DiagramGraph` JSON of the program the live `train` runs; `GET /diagram/render?view=&root=&depth=&expand=`
+  answers a `DiagramRender` laid out by `modelspec-diagram`; `GET /diagram/glyphs.svg` answers the
+  glyph sprite. The request line's query is parsed (today `parse_head` drops it,
+  `crates/modelspec-observatory/src/server.rs:319`). An unknown view or scope key answers `400`.
+- `crates/modelspec-observatory/Cargo.toml`: depends on `modelspec-diagram` with its `ts` feature.
+  The feature and the `ts_rs::TS` derives on the diagram types are already there: the enums of
+  `story:diagram-glyph-set` and the `model.rs` types of `story:ir-gallery-renderer`. This story
+  edits no file of `crates/modelspec-diagram`.
+- `crates/modelspec-observatory/src/typescript.rs` and the `modelspec-ui-types` binary:
+  `ui/src/generated/diagram.ts` from those types, written by `task ui-types` and checked by
+  `task ui-types-check` beside `observatory.ts`.
+- `ui/src/components/ArchitectureView.vue` and `ui/src/lib/diagram.ts`: an Architecture tab with
+  `model` and `train` views. Each visible node is a `<g data-key data-op data-shape data-subgraph>`
+  with `<use href="/diagram/glyphs.svg#ms-…">`. Pan and zoom are a transform on one group. Clicking
+  a composite, or zooming past twice its size, requests the render with it expanded; boxes with the
+  same `node_key` move to their new place, and the client computes no layout.
 
 ## Order on shared files
 
-This story, `story:observatory-parameter-statistics`, `story:observatory-activation-statistics` and
-`story:observatory-saliency-gradient-x-input` all edit `spec/domains/observatory.yaml`,
-`crates/modelspec-observatory/` and `ui/src/generated/`. They run in the order parameter-statistics,
-architecture-graph, activation-statistics, saliency. This story depends on
-`story:observatory-parameter-statistics` for those shared files. Activation-statistics comes after
-it because its settlement may key activations by `GraphNode.value_id` of this graph.
+This story, `story:observatory-activation-statistics` and `story:observatory-saliency-gradient-x-input`
+edit `crates/modelspec-observatory/` and `ui/`. They run in the order architecture-graph,
+activation-statistics, saliency. Activation-statistics may key activations by a node's `value_id`.
+`spec/domains/observatory.yaml` is not edited by this story. `Cargo.lock` changes with the new
+dependency; `story:diagram-cli`, which this story depends on, changes it before.
 
 ## Live only in this epic
 
-The graph endpoint serves the graph of the program a live `train` is running. A recording holds
-`RunEvent`s only (`story:observatory-run-recording-replay`), so a replay has no graph: the server
-answers the graph endpoint with 404 and the UI shows no architecture tab. The epic says the UI also
-works after the run (epic, In scope); for the architecture view that is out of scope here and
-recorded as such. The cheap way to put the graph into a recording, a `graph` field on `RunStarted`,
-is not taken: `RunStarted` is a unit variant whose payload the live story settles (marker on
-`RunEventBody`, "RunStarted, RunFinished and RunFailed are lifecycle changes of the run"), and the
-field would re-record both committed fixtures and change a contract three earlier stories built on.
-
-## Open questions settled first
-
-One `UNMAPPED:` marker of `spec/domains/observatory.yaml` stands in front of this story, named by
-where it sits and a quoted fragment of its text, never by line number. It is settled before any
-code, in that file, with `ess specify validate --path .` in `spec/` passing and its ESS-ENTITY-019
-warning on `modelspec.observatory.ModelGraph` gone. The settlement names its source (the operator,
-DESIGN.md or another ESS document); where none answers, the story stops at that step and reports
-the question instead of choosing.
-
-1. Marker on `ModelGraph.artifact_id`, text "a graph is derived from one artifact's IR": whether
-   `CompiledArtifact` owns its graphs or a graph references its artifact, and whether an artifact
-   has one graph per `IrStage`. Bound to it, because the answer needs it: what
-   `ModelGraph.artifact_id` names under M0, which writes no `CompiledArtifact`
-   (`story:m0-cpu-sgd-training`, Out of scope).
-
-## Domain relations
-
-- `ModelGraph` to `CompiledArtifact`: not settled; it is the marker above.
-- `GraphNode` from Tensor IR `TensorNode`: one node per SSA definition, `value_id` the
-  `ValueId`, `op` the `TensorOp` variant, dtype and shape the node type, `subgraph` the tag in
-  `TrainingStep.training.subgraphs`. Inferred from `crates/modelspec-core/src/ir/tensor.rs:175`
-  (`TensorNode { id, op, operands, ty }`) and `crates/modelspec-core/src/ir/training.rs:66`
-  (`subgraphs`); no ess/1 relation declares the mapping, `GraphNode` field summaries in
-  `spec/domains/observatory.yaml` describe it.
-- `GraphEdge` from an operand: one edge per entry of `TensorNode.operands`, `operand` its
-  position. Inferred from `crates/modelspec-core/src/ir/tensor.rs:175`; no ess/1 relation declares
-  it.
+The graph endpoints serve the program a live `train` is running. A recording holds `RunEvent`s only
+(`story:observatory-run-recording-replay`), so a replay has no graph: the server answers the
+diagram endpoints with `404` and the UI shows no Architecture tab. Putting the graph into the
+recording is not taken here: `RunStarted` is a unit variant whose payload other stories rely on, and
+`modelspec diagram <file> --format graph` already draws the same graph offline.
 
 ## Scope
 
-- `crates/modelspec-observatory/`: `ModelGraph` derivation from `TensorProgram` (Tensor stage) and
-  `TrainingStep` (Training stage); it reads `modelspec-core`, which stays free of Vulkan and of the
-  observatory. The graph endpoint; the generated TypeScript for the graph types.
-- `spec/domains/observatory.yaml` (the settlement, and a `relations:` entry if one is decided).
-- `ui/`: an architecture view, Tensor and Training stages, each node carrying `data-subgraph`,
-  `data-op` and `data-shape`.
-- `ui/src/generated/` regenerated; `CHANGELOG.md` one line.
-- Tests: a Rust test of the derivation and the headless browser test of the view.
+- `crates/modelspec-observatory/src/server.rs`, `src/typescript.rs`, `Cargo.toml` (add
+  `modelspec-diagram` with `features = ["ts"]`; cited), `Cargo.lock`.
+- `crates/modelspec-cli/src/train.rs` (hand the compiled program to the server; cited).
+- `ui/src/components/ArchitectureView.vue`, `ui/src/lib/diagram.ts`, `ui/src/lib/diagram.test.ts`
+  (new), `ui/src/App.vue` (the tab; cited), `ui/src/generated/diagram.ts` (generated).
+- `crates/modelspec-cli/tests/observatory_ui.rs` (the browser cases), `CHANGELOG.md` one line.
+- Not `crates/modelspec-diagram/**`.
 
 ## Acceptance
 
-Conformance scenarios, each a named test run by `task ci` except scenario 1, which is the command
-shown:
+Named tests run by `task ci`:
 
-1. `spec/domains/observatory.yaml` no longer contains the marker on `ModelGraph.artifact_id` ("a
-   graph is derived from one artifact's IR"); a typed declaration that cites its source stands in
-   its place, and `ess specify validate --path .` in `spec/` exits 0 without ESS-ENTITY-019 for
-   `modelspec.observatory.ModelGraph`.
-2. `observatory.graph.tensor-matches-ir`: for
-   `crates/modelspec-docs/models/two_layer_relu.mspec`, the Tensor-stage graph has exactly one node
-   per definition `modelspec ir --stage tensor` prints, each with that line's op, dtype and shape,
-   and one edge per operand; it validates against the ESS-generated JSON Schema of
-   `modelspec.observatory.ModelGraph`.
-3. `observatory.graph.training-subgraphs`: the Training-stage graph of the same file has one node
-   per definition `modelspec ir --stage training` prints, tagged with the subgraph that line starts
-   with (`forward`, `loss`, `gradient`, `optimizer`); it has at least one node of each.
-4. `observatory.ui.architecture-two-layer-relu`: in a headless browser, the Tensor stage of the
-   architecture view of two-layer-relu has one element per Tensor IR definition whose `data-op` and
-   `data-shape` equal the printed op and shape; in the Training stage each node element has
-   `data-subgraph="forward|loss|gradient|optimizer"` equal to the tag scenario 3 checks, and the
-   four values occur.
-5. `observatory.ui.replay-no-graph-tab`: in a headless browser, with the two-layer-relu fixture
-   recording replayed and no training process running, the UI has no architecture tab and the
-   graph endpoint answers 404; the loss chart still draws.
+1. `observatory.diagram.graph-matches-ir`: for a live `train --serve` of
+   `crates/modelspec-docs/models/two_layer_relu.mspec`, `GET /diagram/graph?view=model` equals
+   `modelspec diagram <file> --format graph` byte for byte and validates against the
+   `DiagramGraph` JSON Schema.
+2. `observatory.diagram.render-matches-cli`: `GET /diagram/render?view=train&depth=0&expand=<Backward key>`
+   equals `modelspec diagram <file> --view train --depth 0 --expand <key> --format json`.
+3. `observatory.diagram.bad-request`: an unknown view or scope key answers `400`; with no live run
+   (`observe` of a recording) every diagram path answers `404`.
+4. `observatory.ui.architecture-two-layer-relu` (headless browser, `task ui-browser`): the model
+   view has one element per visible node whose `data-op` and `data-shape` equal the render's; in the
+   train view, after expanding Forward and Backward, the node elements carry
+   `data-subgraph="forward|loss|gradient|optimizer"` matching the graph and all four occur.
+5. `observatory.ui.zoom-in-place` (headless browser): clicking the Backward composite replaces it
+   with its children without a page navigation; the node elements present before and after with the
+   same `data-key` are the same DOM elements.
+6. `observatory.ui.replay-no-graph-tab` (headless browser): with the two-layer-relu recording
+   replayed and no training process, the UI has no Architecture tab and the loss chart still draws.
+7. `observatory.ui-types.diagram`: `task ui-types-check` exits 1 naming `ui/src/generated/diagram.ts`
+   while that file is missing or differs by one byte from what `task ui-types` writes, and exits 0
+   after `task ui-types`.
+8. `diagram.test.ts`: `pnpm test` in `ui/` exits 0 with every case of `ui/src/lib/diagram.test.ts`
+   passed, among them one that places the boxes of a two-node render fixture at the render's
+   coordinates and one that keeps the element of a `node_key` present in two renders.
 
 ## Out of scope
 

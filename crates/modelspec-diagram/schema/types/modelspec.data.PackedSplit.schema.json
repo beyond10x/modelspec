@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/modelspec.data.PackedSplit",
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "100bc1979d4a196e83cfda9eb7e47c9f6bd31fc3e48f78ec2ca27cb50ad86317",
+    "contract_digest": "slice-sha256/2:28a053c4a1fe379ba9fac74e18b378984ea101b6eeac5f63c30cbfe855ac6186",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.artifact.ContentHash": {
+      "title": "ContentHash",
+      "description": "A blake3 digest under explicit serialization and version rules (DESIGN.md § 7), written as its 32 bytes in 64 lowercase hexadecimal digits (story:content-hash-schema-constrained).",
+      "x-ess-name": "modelspec.artifact.ContentHash",
+      "x-ess-kind": "newtype",
+      "type": "string",
+      "pattern": "^[0-9a-f]*$",
+      "x-ess-invariants": [
+        "value.count == 64"
+      ],
+      "x-ess-alphabet": "0123456789abcdef"
+    },
+    "modelspec.data.PackedSplit": {
+      "title": "PackedSplit",
+      "description": "One split of a PackedDataset, the file `train.tokens` for Train and `heldout.tokens` for HeldOut, little-endian `i32` token ids with no header, sequence_count × seq_len values (coordinator decision D26, 2026-10-24, `.engineering/waves/bert-1.md`).",
+      "x-ess-name": "modelspec.data.PackedSplit",
+      "x-ess-kind": "struct",
+      "type": "object",
+      "properties": {
+        "role": {
+          "$ref": "#/$defs/modelspec.data.SplitRole"
+        },
+        "sequence_count": {
+          "description": "The number of sequences of seq_len tokens the split's token stream holds, its partial tail dropped. A split whose stream is shorter than one sequence is refused (coordinator decision D26, 2026-10-24, `.engineering/waves/bert-1.md`).",
+          "type": "integer",
+          "minimum": 1
+        },
+        "content_hash": {
+          "$ref": "#/$defs/modelspec.artifact.ContentHash",
+          "description": "The blake3 hash of the split's packed file, 64 lowercase hexadecimal digits (coordinator decision D26, 2026-10-24, `.engineering/waves/bert-1.md`)."
+        }
+      },
+      "required": [
+        "role",
+        "sequence_count",
+        "content_hash"
+      ],
+      "additionalProperties": false,
+      "x-ess-invariants": [
+        "sequence_count > 0"
+      ]
+    },
+    "modelspec.data.SplitRole": {
+      "title": "SplitRole",
+      "description": "What a split is used for; MLM loss and accuracy are evaluated on the held-out split (epic:bert-from-scratch).",
+      "x-ess-name": "modelspec.data.SplitRole",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "Train",
+        "HeldOut"
+      ]
+    }
+  }
+}

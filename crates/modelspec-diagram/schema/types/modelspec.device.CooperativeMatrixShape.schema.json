@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/modelspec.device.CooperativeMatrixShape",
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "100bc1979d4a196e83cfda9eb7e47c9f6bd31fc3e48f78ec2ca27cb50ad86317",
+    "contract_digest": "slice-sha256/2:50a59b164deeef98a86da554b49e82041d388e7da4b45a4c08867a4d22f70f62",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.device.CooperativeMatrixShape": {
+      "title": "CooperativeMatrixShape",
+      "description": "One VkCooperativeMatrixPropertiesKHR entry, component types by Vulkan enum name (DESIGN.md § 5.1).",
+      "x-ess-name": "modelspec.device.CooperativeMatrixShape",
+      "x-ess-kind": "struct",
+      "type": "object",
+      "properties": {
+        "m": {
+          "type": "integer"
+        },
+        "n": {
+          "type": "integer"
+        },
+        "k": {
+          "type": "integer"
+        },
+        "a_type": {
+          "type": "string"
+        },
+        "b_type": {
+          "type": "string"
+        },
+        "c_type": {
+          "type": "string"
+        },
+        "result_type": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "m",
+        "n",
+        "k",
+        "a_type",
+        "b_type",
+        "c_type",
+        "result_type"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

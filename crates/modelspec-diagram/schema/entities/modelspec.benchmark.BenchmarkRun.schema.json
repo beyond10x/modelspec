@@ -1,0 +1,198 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "BenchmarkRun",
+  "description": "One measured run of a workload by one side, at one date and build, with the µs per step of each repeat and their median (story:benchmark-history). The median of an odd number of repeats is the middle one in ascending order, of an even number the mean of the middle two.",
+  "x-ess-name": "modelspec.benchmark.BenchmarkRun",
+  "x-ess-kind": "entity",
+  "type": "object",
+  "properties": {
+    "run_id": {
+      "$ref": "#/$defs/modelspec.benchmark.BenchmarkRunId"
+    },
+    "date": {
+      "description": "The day of the run, `YYYY-MM-DD`; for a figure that only a CHANGELOG release states, that release's date.",
+      "type": "string"
+    },
+    "workload": {
+      "description": "What was trained, `mnist-784-64-10` (examples/mnist_mlp.mspec on MNIST, batch 100), `mlp-784-H-10` (the `mlp_sweep` bench, 784 → H ReLU → 10 at the batch and hidden width of the run) or `transformer-block` (the `transformer_block` bench, examples/transformer_block.mspec at the batch of the run, in sequences of 128).",
+      "type": "string"
+    },
+    "side": {
+      "$ref": "#/$defs/modelspec.benchmark.Side"
+    },
+    "threads": {
+      "$ref": "#/$defs/modelspec.benchmark.PositiveInteger",
+      "description": "The CPU threads of a CPU side, where the source states them."
+    },
+    "modelspec_version": {
+      "description": "The ModelSpec release the run was built from, on a ModelSpec side.",
+      "type": "string"
+    },
+    "commit": {
+      "description": "The ModelSpec repository commit the run was built or run from, as the source states it, full or abbreviated.",
+      "type": "string"
+    },
+    "opponent_version": {
+      "description": "The opponent's version, such as `torch 2.14.1+cu130`, on an opponent side.",
+      "type": "string"
+    },
+    "mode": {
+      "$ref": "#/$defs/modelspec.benchmark.Mode"
+    },
+    "batch": {
+      "$ref": "#/$defs/modelspec.benchmark.PositiveInteger",
+      "description": "The batch of a workload that takes one as a parameter."
+    },
+    "hidden": {
+      "$ref": "#/$defs/modelspec.benchmark.PositiveInteger",
+      "description": "The hidden width H of a workload that takes one as a parameter."
+    },
+    "tokens_per_step": {
+      "$ref": "#/$defs/modelspec.benchmark.PositiveInteger",
+      "description": "The tokens of one step of a sequence workload, batch times sequence length, such as `1024` for `transformer-block` at a batch of 8 sequences of 128; with it the page shows tokens per second, tokens_per_step · 10⁶ / median_us_per_step."
+    },
+    "flop_per_step": {
+      "$ref": "#/$defs/modelspec.benchmark.PositiveInteger",
+      "description": "The FLOP of one step by flop_rule, where the source states it."
+    },
+    "flop_rule": {
+      "$ref": "#/$defs/modelspec.benchmark.FlopRule",
+      "description": "What flop_per_step counts; present exactly with flop_per_step."
+    },
+    "timed_steps": {
+      "$ref": "#/$defs/modelspec.benchmark.PositiveInteger",
+      "description": "The steps of one timed repeat, where the source states them."
+    },
+    "repeat_count": {
+      "$ref": "#/$defs/modelspec.benchmark.PositiveInteger",
+      "description": "The repeats the source measured, recorded in repeats_us_per_step or not."
+    },
+    "repeats_us_per_step": {
+      "description": "The µs per step of each repeat in the order the source lists them; null when the source states only the median. A source that gives seconds per repeat over timed_steps steps has each value as seconds · 10⁶ / timed_steps.",
+      "anyOf": [
+        {
+          "type": "array",
+          "items": {
+            "type": "number"
+          }
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "median_us_per_step": {
+      "description": "The median µs per step of the repeats, as the source states it, or computed from its median seconds as seconds · 10⁶ / timed_steps.",
+      "type": "number"
+    },
+    "gpu": {
+      "description": "The GPU of a GPU side, as the source names it.",
+      "type": "string"
+    },
+    "driver": {
+      "description": "The GPU driver version, as the source states it.",
+      "type": "string"
+    },
+    "sm_clock": {
+      "description": "The SM clock during the run as the source states it, in its own words; clocks were not locked.",
+      "type": "string"
+    },
+    "note": {
+      "description": "What the source says qualifies the figure, such as a loaded host.",
+      "type": "string"
+    },
+    "source": {
+      "description": "Where the figures are stated, a verification-report id such as `verification-report:mlp-size-sweep-2026-10-23` or a CHANGELOG release such as `CHANGELOG.md [0.6.0]`, followed by `raw records <path>` when the per-repeat values come from records committed under `benchmarks/raw/` that the report does not hold.",
+      "type": "string"
+    },
+    "state": {
+      "$ref": "#/$defs/modelspec.benchmark.BenchmarkRun.State"
+    }
+  },
+  "required": [
+    "run_id",
+    "date",
+    "workload",
+    "side",
+    "mode",
+    "repeat_count",
+    "repeats_us_per_step",
+    "median_us_per_step",
+    "source",
+    "state"
+  ],
+  "additionalProperties": false,
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "100bc1979d4a196e83cfda9eb7e47c9f6bd31fc3e48f78ec2ca27cb50ad86317",
+    "contract_digest": "slice-sha256/2:024da07c4850c02c7520d3fcb9a45969867490ceccdb0d725db2faa0dc8d7cd7",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.benchmark.BenchmarkRun.State": {
+      "title": "State",
+      "x-ess-name": "modelspec.benchmark.BenchmarkRun.State",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "Recorded"
+      ]
+    },
+    "modelspec.benchmark.BenchmarkRunId": {
+      "title": "BenchmarkRunId",
+      "description": "The name of one run in `benchmarks/runs.yaml`, unique in the file, such as `mnist-0.6.0-modelspec-vulkan`.",
+      "x-ess-name": "modelspec.benchmark.BenchmarkRunId",
+      "x-ess-kind": "newtype",
+      "type": "string"
+    },
+    "modelspec.benchmark.FlopRule": {
+      "title": "FlopRule",
+      "description": "What flop_per_step counts. MatmulOnly counts the matrix products of a step, forward and backward, by workload, `3196·B·H` for `mlp-784-H-10`, the matmuls of a 784 → H → 10 step at batch B, and `N·(42·H² + 24·H·F + 24·S·H)` with `N = B·S`, `H = 128`, `F = 512` and `S = 128`, that is `339,738,624·B`, for `transformer-block` at a batch of B sequences (benches/transformer_block/block.rs); AllSites is the `profile step_total` count over every dispatch site of the step (DESIGN.md § 3.1 counting rule).",
+      "x-ess-name": "modelspec.benchmark.FlopRule",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "MatmulOnly",
+        "AllSites"
+      ]
+    },
+    "modelspec.benchmark.Mode": {
+      "title": "Mode",
+      "description": "Timed is a run measured end to end over its timed span; Profiled is the steady µs per step of `modelspec train --backend vulkan --profile`, with timestamp queries in the run.",
+      "x-ess-name": "modelspec.benchmark.Mode",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "Timed",
+        "Profiled"
+      ]
+    },
+    "modelspec.benchmark.PositiveInteger": {
+      "title": "PositiveInteger",
+      "description": "A whole number of at least 1, the type of every count and size of a BenchmarkRun (threads, batch, hidden, tokens_per_step, flop_per_step, timed_steps, repeat_count); the generated JSON Schema carries it as `minimum` 1.",
+      "x-ess-name": "modelspec.benchmark.PositiveInteger",
+      "x-ess-kind": "newtype",
+      "type": "integer",
+      "minimum": 1,
+      "x-ess-invariants": [
+        "value >= 1"
+      ]
+    },
+    "modelspec.benchmark.Side": {
+      "title": "Side",
+      "description": "Who ran the workload, a ModelSpec backend or an opponent (AGENTS.md, an opponent is a competing implementation under `opponents/`), and how. PyTorchCudaCompile and PyTorchCpuCompile are `torch.compile`; the eager variants are PyTorch without it.",
+      "x-ess-name": "modelspec.benchmark.Side",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "ModelSpecCpu",
+        "ModelSpecVulkan",
+        "PyTorchCpuEager",
+        "PyTorchCpuCompile",
+        "PyTorchCudaEager",
+        "PyTorchCudaCompile"
+      ]
+    }
+  }
+}

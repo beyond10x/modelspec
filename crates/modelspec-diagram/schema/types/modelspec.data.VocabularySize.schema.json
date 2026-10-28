@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/modelspec.data.VocabularySize",
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "100bc1979d4a196e83cfda9eb7e47c9f6bd31fc3e48f78ec2ca27cb50ad86317",
+    "contract_digest": "slice-sha256/2:84be223bdea86a7a4f8b90edbd516f4e9c02e3f29be19dbb262e88b43936af33",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.data.VocabularySize": {
+      "title": "VocabularySize",
+      "description": "The number of tokens of a vocabulary, V, more than the five special tokens, so a random substitution has a token in [5, V) to draw; the type of PackedDataset.vocabulary_size, so the generated JSON Schema carries the bound as `minimum` 6 (story:content-hash-schema-constrained; coordinator decision D34, 2026-10-25, `.engineering/waves/bert-1.md`).",
+      "x-ess-name": "modelspec.data.VocabularySize",
+      "x-ess-kind": "newtype",
+      "type": "integer",
+      "minimum": 6,
+      "x-ess-invariants": [
+        "value > 5"
+      ]
+    }
+  }
+}

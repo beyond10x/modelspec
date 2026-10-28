@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/modelspec.training.MuonConfig",
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "100bc1979d4a196e83cfda9eb7e47c9f6bd31fc3e48f78ec2ca27cb50ad86317",
+    "contract_digest": "slice-sha256/2:24a7019c546a71a25e04963b280dfcc9e358be5b27c77041537c3df7ce74fdb3",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.training.MuonConfig": {
+      "title": "MuonConfig",
+      "description": "The hyperparameters of a Muon run besides those it shares with AdamW, settled by coordinator decision D67 of 2026-10-25 (DESIGN.md § 2.1). A matrix parameter no embedding reads takes the Muon update at OptimizerConfig.learning_rate; every other parameter takes AdamW at adam_learning_rate with the betas and epsilon of OptimizerConfig; both share its weight decay and schedule. The momentum buffer of each Muon parameter is not checkpointed, so a Muon run is neither checkpointed nor resumed.",
+      "x-ess-name": "modelspec.training.MuonConfig",
+      "x-ess-kind": "struct",
+      "type": "object",
+      "properties": {
+        "momentum": {
+          "description": "The momentum of the Nesterov buffer, in [0, 1).",
+          "type": "number"
+        },
+        "ns_steps": {
+          "description": "The Newton-Schulz steps that orthogonalize each update, in [1, 10].",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10
+        },
+        "adam_learning_rate": {
+          "description": "The peak learning rate of the parameters AdamW updates.",
+          "type": "number"
+        }
+      },
+      "required": [
+        "momentum",
+        "ns_steps",
+        "adam_learning_rate"
+      ],
+      "additionalProperties": false,
+      "x-ess-invariants": [
+        "momentum >= 0",
+        "momentum < 1",
+        "ns_steps >= 1",
+        "ns_steps <= 10",
+        "adam_learning_rate > 0"
+      ]
+    }
+  }
+}

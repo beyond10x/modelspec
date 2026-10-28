@@ -1,0 +1,109 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Insight",
+  "description": "One explainability result for a selected input at a step of a run, such as gradient times input saliency (epic:training-observatory). Its values match a finite-difference check within 1e-2 (epic acceptance).",
+  "x-ess-name": "modelspec.observatory.Insight",
+  "x-ess-kind": "entity",
+  "type": "object",
+  "properties": {
+    "insight_id": {
+      "$ref": "#/$defs/modelspec.observatory.InsightId"
+    },
+    "training_run_id": {
+      "$ref": "#/$defs/modelspec.training.TrainingRunId"
+    },
+    "step": {
+      "description": "The step whose parameters the insight was computed with (DESIGN.md § 6.1 step number).",
+      "type": "integer"
+    },
+    "method": {
+      "$ref": "#/$defs/modelspec.observatory.InsightMethod"
+    },
+    "input_name": {
+      "description": "The name of the input binding the insight attributes to, a DataSpec.name of the run's artifact with role Input (DESIGN.md § 2).",
+      "type": "string"
+    },
+    "shape": {
+      "$ref": "#/$defs/modelspec.checkpoint.Shape",
+      "description": "The shape of the attribution, the selected input's."
+    },
+    "values": {
+      "description": "The attribution per element of the selected input, in row-major order (DESIGN.md § 2.3); as many as the elements of shape, which ESS does not state here.",
+      "type": "array",
+      "items": {
+        "type": "number"
+      }
+    },
+    "state": {
+      "$ref": "#/$defs/modelspec.observatory.Insight.State"
+    }
+  },
+  "required": [
+    "insight_id",
+    "training_run_id",
+    "step",
+    "method",
+    "input_name",
+    "shape",
+    "values",
+    "state"
+  ],
+  "additionalProperties": false,
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "100bc1979d4a196e83cfda9eb7e47c9f6bd31fc3e48f78ec2ca27cb50ad86317",
+    "contract_digest": "slice-sha256/2:03c82bfd1d92089db64dee65f3c04c4204fa923b84d98e3f8e922abdbcbbe614",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.checkpoint.Shape": {
+      "title": "Shape",
+      "description": "A tensor shape; each dimension is a positive integer and rank 0 is a scalar (DESIGN.md § 2.2).",
+      "x-ess-name": "modelspec.checkpoint.Shape",
+      "x-ess-kind": "newtype",
+      "type": "array",
+      "items": {
+        "type": "integer"
+      },
+      "x-ess-invariants": [
+        "forall dim in value: (dim > 0)"
+      ]
+    },
+    "modelspec.observatory.Insight.State": {
+      "title": "State",
+      "x-ess-name": "modelspec.observatory.Insight.State",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "Computed"
+      ]
+    },
+    "modelspec.observatory.InsightId": {
+      "title": "InsightId",
+      "x-ess-name": "modelspec.observatory.InsightId",
+      "x-ess-kind": "newtype",
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    },
+    "modelspec.observatory.InsightMethod": {
+      "title": "InsightMethod",
+      "description": "The explainability method an insight was computed with; gradient times input saliency first, since the compiler already derives gradients (epic:training-observatory).",
+      "x-ess-name": "modelspec.observatory.InsightMethod",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "GradientTimesInput"
+      ]
+    },
+    "modelspec.training.TrainingRunId": {
+      "title": "TrainingRunId",
+      "x-ess-name": "modelspec.training.TrainingRunId",
+      "x-ess-kind": "newtype",
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    }
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/modelspec.diagram.ScopeKey",
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "100bc1979d4a196e83cfda9eb7e47c9f6bd31fc3e48f78ec2ca27cb50ad86317",
+    "contract_digest": "slice-sha256/2:ea42d4166ae1d4a7a60240db8fbba0f05162fae4b5d492fd79c0299d877f63f0",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.diagram.ScopeKey": {
+      "title": "ScopeKey",
+      "description": "The canonical text of a scope path, unique within a graph and used as the composite node's key, an anchor on the documentation site and a file name (DESIGN.md § 13.2). The segments joined by `/`; a Program segment is the train block's name; a Stage segment its lower-case name; a Function segment `<fn>` for the first inlining of the function in the program and `<fn>@<c>` for inlining c from 1, the naming of dropout sites (DESIGN.md § 2.3); an Adjoint segment `grad%<k>`, k the forward ValueId; an Update segment `update@<parameter path>`.",
+      "x-ess-name": "modelspec.diagram.ScopeKey",
+      "x-ess-kind": "newtype",
+      "type": "string"
+    }
+  }
+}

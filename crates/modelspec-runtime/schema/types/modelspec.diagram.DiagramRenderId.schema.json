@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/modelspec.diagram.DiagramRenderId",
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "100bc1979d4a196e83cfda9eb7e47c9f6bd31fc3e48f78ec2ca27cb50ad86317",
+    "contract_digest": "slice-sha256/2:5ca0f2ce1d5ff2918ee5c800687f1fd237126161f4ea98e0ce2d4d780c5b600d",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.diagram.DiagramRenderId": {
+      "title": "DiagramRenderId",
+      "description": "The identity of a render, derived from its graph_id, root, depth and expanded scopes, so two renders of one request are the same record.",
+      "x-ess-name": "modelspec.diagram.DiagramRenderId",
+      "x-ess-kind": "newtype",
+      "type": "string"
+    }
+  }
+}

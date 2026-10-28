@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/modelspec.observatory.ServeAddress",
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "100bc1979d4a196e83cfda9eb7e47c9f6bd31fc3e48f78ec2ca27cb50ad86317",
+    "contract_digest": "slice-sha256/2:bc0a98bd48b5397010213734878edaedf0a561795cd5ca8825bf7501cc71edbc",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.observatory.ServeAddress": {
+      "title": "ServeAddress",
+      "description": "The value of `modelspec train --serve <addr>` (epic:training-observatory, In scope, first bullet), a loopback socket address `<ip>:<port>` with an IPv4 address in 127.0.0.0/8, `[::1]` or `localhost` (127.0.0.1), so the stream is reachable from this machine only (epic, Out of scope, no remote access beyond localhost). Port 0 lets the system choose. Any other address is a usage error. Once bound the process prints `serving http://<bound address>/events` on stderr; stdout is what a run without the flag prints.",
+      "x-ess-name": "modelspec.observatory.ServeAddress",
+      "x-ess-kind": "newtype",
+      "type": "string"
+    }
+  }
+}

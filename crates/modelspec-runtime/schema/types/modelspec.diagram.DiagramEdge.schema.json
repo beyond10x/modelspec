@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/modelspec.diagram.DiagramEdge",
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "100bc1979d4a196e83cfda9eb7e47c9f6bd31fc3e48f78ec2ca27cb50ad86317",
+    "contract_digest": "slice-sha256/2:2476757f787c8786d009d5978538f8b3bc5408c1a239070ea30d89fd2f4c233a",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.checkpoint.DType": {
+      "title": "DType",
+      "description": "A tensor element type and its size in bytes; `f32` for every value, `i32` only for row ids an `embedding` reads, never a parameter or a checkpoint tensor (DESIGN.md § 2.2).",
+      "x-ess-name": "modelspec.checkpoint.DType",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "F32",
+        "I32"
+      ],
+      "x-ess-attributes": [
+        {
+          "kind": "integer",
+          "name": "size_bytes",
+          "type": "Integer",
+          "values": {
+            "F32": 4,
+            "I32": 4
+          }
+        }
+      ]
+    },
+    "modelspec.checkpoint.Shape": {
+      "title": "Shape",
+      "description": "A tensor shape; each dimension is a positive integer and rank 0 is a scalar (DESIGN.md § 2.2).",
+      "x-ess-name": "modelspec.checkpoint.Shape",
+      "x-ess-kind": "newtype",
+      "type": "array",
+      "items": {
+        "type": "integer"
+      },
+      "x-ess-invariants": [
+        "forall dim in value: (dim > 0)"
+      ]
+    },
+    "modelspec.diagram.DiagramEdge": {
+      "title": "DiagramEdge",
+      "description": "One tensor flowing from the node that defines it to a node that reads it, with the tensor's dtype and shape (DESIGN.md § 3.2 TensorNode.operands).",
+      "x-ess-name": "modelspec.diagram.DiagramEdge",
+      "x-ess-kind": "struct",
+      "type": "object",
+      "properties": {
+        "producer": {
+          "description": "node_key of the producing node.",
+          "type": "string"
+        },
+        "consumer": {
+          "description": "node_key of the consuming node.",
+          "type": "string"
+        },
+        "operand": {
+          "description": "The position of the tensor among the consumer's operands, from 0; operand order matters (Sub, MatMul).",
+          "type": "integer",
+          "minimum": 0
+        },
+        "dtype": {
+          "$ref": "#/$defs/modelspec.checkpoint.DType"
+        },
+        "shape": {
+          "$ref": "#/$defs/modelspec.checkpoint.Shape"
+        }
+      },
+      "required": [
+        "producer",
+        "consumer",
+        "operand",
+        "dtype",
+        "shape"
+      ],
+      "additionalProperties": false,
+      "x-ess-invariants": [
+        "operand >= 0"
+      ]
+    }
+  }
+}

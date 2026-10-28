@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/modelspec.data.InferenceOutputFile",
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "100bc1979d4a196e83cfda9eb7e47c9f6bd31fc3e48f78ec2ca27cb50ad86317",
+    "contract_digest": "slice-sha256/2:544b10baa04b2a69e6bfb71299e68d5ef3726329fc064463c067cae02494d1db",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.checkpoint.DType": {
+      "title": "DType",
+      "description": "A tensor element type and its size in bytes; `f32` for every value, `i32` only for row ids an `embedding` reads, never a parameter or a checkpoint tensor (DESIGN.md § 2.2).",
+      "x-ess-name": "modelspec.checkpoint.DType",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "F32",
+        "I32"
+      ],
+      "x-ess-attributes": [
+        {
+          "kind": "integer",
+          "name": "size_bytes",
+          "type": "Integer",
+          "values": {
+            "F32": 4,
+            "I32": 4
+          }
+        }
+      ]
+    },
+    "modelspec.data.InferenceOutputFile": {
+      "title": "InferenceOutputFile",
+      "description": "The file `modelspec infer <file> --backend cpu|vulkan --checkpoint <path> --data <dir> --function <name> --out <path>` writes (DESIGN.md § 8, story:decider-infer-on-data). The DenseDataDirectory `<dir>` is read as `--eval` reads it, with the arguments of the model function `function` in place of the train block's declarations, each argument binding the DenseTensorFile of its name, so `<dir>/<argument>.f32` or `<dir>/<argument>.i32` by the argument's dtype; B is the leading dimension every argument shares, else 1; the sample count N must be a multiple of B, else E-DATA-009. The function runs with the checkpoint's parameters on every block of B samples in block order, and the file holds its results one after the other, row-major little-endian with no header, 4 bytes per value, of the function's result dtype (F32; the checker refuses a function that returns I32, E-TYPE-018), so it reads back with the layout of a DenseTensorFile of sample_elements row_elements. rows is N, one row per sample of `<dir>`, each row the function's result for that sample, row_elements values; the function's result is `[B, d1, ...]` when B is above 1, a row being d1 × ... values, and a row is the whole result when B is 1. A name that is not a function of the model, or a function whose result is not one row per sample, is refused with E-DATA-010 naming the model's functions; a path that resolves to a file the run reads (the model file, the checkpoint or an argument's file) is refused with E-DATA-010 naming `--out` and that file; an argument with no file, E-DATA-007; nothing is written on a refusal, and the file is written beside `<path>` and renamed over it, so an existing `<path>` is replaced whole or kept.",
+      "x-ess-name": "modelspec.data.InferenceOutputFile",
+      "x-ess-kind": "struct",
+      "type": "object",
+      "properties": {
+        "function": {
+          "type": "string"
+        },
+        "dtype": {
+          "$ref": "#/$defs/modelspec.checkpoint.DType"
+        },
+        "row_elements": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "rows": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "function",
+        "dtype",
+        "row_elements",
+        "rows"
+      ],
+      "additionalProperties": false,
+      "x-ess-invariants": [
+        "row_elements > 0",
+        "rows > 0"
+      ]
+    }
+  }
+}

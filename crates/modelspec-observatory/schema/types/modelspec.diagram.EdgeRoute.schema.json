@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/modelspec.diagram.EdgeRoute",
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "100bc1979d4a196e83cfda9eb7e47c9f6bd31fc3e48f78ec2ca27cb50ad86317",
+    "contract_digest": "slice-sha256/2:76a1d6e83f6e94d0c69bcc50b8c39a74b8d506affacfba89159df748ed2e0d3e",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.diagram.EdgeRoute": {
+      "title": "EdgeRoute",
+      "description": "The polyline of one visible edge, after the edges into and out of collapsed scopes are attached to their ports and parallel ones merged.",
+      "x-ess-name": "modelspec.diagram.EdgeRoute",
+      "x-ess-kind": "struct",
+      "type": "object",
+      "properties": {
+        "producer": {
+          "type": "string"
+        },
+        "consumer": {
+          "type": "string"
+        },
+        "operand": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "points": {
+          "description": "x0, y0, x1, y1 and so on, at least two points, every coordinate an integer.",
+          "type": "array",
+          "items": {
+            "type": "integer"
+          }
+        }
+      },
+      "required": [
+        "producer",
+        "consumer",
+        "operand",
+        "points"
+      ],
+      "additionalProperties": false,
+      "x-ess-invariants": [
+        "operand >= 0",
+        "points.count >= 4"
+      ]
+    }
+  }
+}

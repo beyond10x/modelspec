@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/modelspec.artifact.KernelModule.State",
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "100bc1979d4a196e83cfda9eb7e47c9f6bd31fc3e48f78ec2ca27cb50ad86317",
+    "contract_digest": "slice-sha256/2:bf58a6efc0d023e9296991b2a8ba1a7bed0446b4ee99b9f10ab50d946df25a24",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.artifact.KernelModule.State": {
+      "title": "State",
+      "x-ess-name": "modelspec.artifact.KernelModule.State",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "Emitted"
+      ]
+    }
+  }
+}

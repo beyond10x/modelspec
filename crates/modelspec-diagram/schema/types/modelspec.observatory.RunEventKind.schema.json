@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/modelspec.observatory.RunEventKind",
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "100bc1979d4a196e83cfda9eb7e47c9f6bd31fc3e48f78ec2ca27cb50ad86317",
+    "contract_digest": "slice-sha256/2:010d8e71f974f75b2c1a658870d75bacc08103428f2353c92c34c09e2a64ecbf",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.observatory.RunEventKind": {
+      "title": "RunEventKind",
+      "description": "The SSE `event:` name of a StreamFrame, the `kind` tag of its RunEvent's body (RunEventBody).",
+      "x-ess-name": "modelspec.observatory.RunEventKind",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "RunStarted",
+        "StepCompleted",
+        "RunFinished",
+        "RunFailed"
+      ]
+    }
+  }
+}

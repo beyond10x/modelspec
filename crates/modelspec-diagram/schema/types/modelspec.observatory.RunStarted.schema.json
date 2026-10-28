@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/modelspec.observatory.RunStarted",
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "100bc1979d4a196e83cfda9eb7e47c9f6bd31fc3e48f78ec2ca27cb50ad86317",
+    "contract_digest": "slice-sha256/2:4375b25daca24753ac85f97eaf70e71587dc422b8c2204bed6bde1818339c842",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.data.TrainingDataBindingId": {
+      "title": "TrainingDataBindingId",
+      "x-ess-name": "modelspec.data.TrainingDataBindingId",
+      "x-ess-kind": "newtype",
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    },
+    "modelspec.observatory.RunStarted": {
+      "title": "RunStarted",
+      "description": "The event of a run starting, the first of its stream (RunEventBody). It carries the two TrainingRun fields that say which steps follow, start_step through start_step + steps (DESIGN.md § 6), and the TrainingRun field that says what a masked-language-model run trains on, data_binding_id; the other record fields are the run's artifact and record, which M0 does not write (story:m0-cpu-sgd-training, Out of scope).",
+      "x-ess-name": "modelspec.observatory.RunStarted",
+      "x-ess-kind": "struct",
+      "type": "object",
+      "properties": {
+        "steps": {
+          "description": "TrainingRun.steps, the steps of this invocation.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "start_step": {
+          "description": "TrainingRun.start_step, the step of the first StepCompleted.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "data_binding_id": {
+          "$ref": "#/$defs/modelspec.data.TrainingDataBindingId",
+          "description": "TrainingRun.data_binding_id, the binding_id of the `binding.json` of the packed directory `modelspec train --data` trains on; absent for a run on synthetic or dense data (story:bert-train-data-binding, coordinator decision D48, 2026-10-25, `.engineering/waves/bert-1.md`)."
+        }
+      },
+      "required": [
+        "steps",
+        "start_step"
+      ],
+      "additionalProperties": false,
+      "x-ess-invariants": [
+        "steps >= 0",
+        "start_step >= 0"
+      ]
+    }
+  }
+}

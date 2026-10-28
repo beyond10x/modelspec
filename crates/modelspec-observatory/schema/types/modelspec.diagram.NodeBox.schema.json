@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/modelspec.diagram.NodeBox",
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "100bc1979d4a196e83cfda9eb7e47c9f6bd31fc3e48f78ec2ca27cb50ad86317",
+    "contract_digest": "slice-sha256/2:e265f828d8f77b5e9b36fb726321e185320c04f7a7dcfc40e9a803d2c3f12f00",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.diagram.NodeBox": {
+      "title": "NodeBox",
+      "description": "Where a visible node is drawn, in integer units of the diagram's coordinate system (DESIGN.md § 13.5).",
+      "x-ess-name": "modelspec.diagram.NodeBox",
+      "x-ess-kind": "struct",
+      "type": "object",
+      "properties": {
+        "node_key": {
+          "type": "string"
+        },
+        "x": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "y": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "width": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "rank": {
+          "description": "The layer of the layered layout, 0 at the sources; every visible edge goes from a lower rank to a higher one.",
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "node_key",
+        "x",
+        "y",
+        "width",
+        "height",
+        "rank"
+      ],
+      "additionalProperties": false,
+      "x-ess-invariants": [
+        "x >= 0",
+        "y >= 0",
+        "width > 0",
+        "height > 0",
+        "rank >= 0"
+      ]
+    }
+  }
+}

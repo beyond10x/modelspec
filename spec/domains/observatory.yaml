@@ -1,6 +1,6 @@
 domain: modelspec.observatory
 
-summary: What the training observatory reads from a training run, the architecture it draws and the insights it shows (epic:training-observatory). The event stream of a run is its RunEvents in sequence order, served live as `text/event-stream` (ServeAddress, StreamFrame) or replayed from a recorded run file.
+summary: What the training observatory reads from a training run, and the insights it shows (epic:training-observatory); the architecture it draws is the modelspec.diagram graph, which also serves the documentation site and `modelspec diagram`. The event stream of a run is its RunEvents in sequence order, served live as `text/event-stream` (ServeAddress, StreamFrame) or replayed from a recorded run file.
 
 types:
   - name: modelspec.observatory.RecordedRunFile
@@ -187,16 +187,6 @@ types:
     invariants:
       - id >= 0
 
-  - name: modelspec.observatory.ModelGraphId
-    kind: newtype
-    of: Uuid
-
-  - name: modelspec.observatory.IrStage
-    kind: enum
-    naming:
-      summary: The IR level a graph is drawn from, as `modelspec ir --stage tensor|training` prints it (DESIGN.md § 3.1, § 8).
-    variants: [Tensor, Training]
-
   - name: modelspec.observatory.TensorOperator
     kind: enum
     naming:
@@ -208,45 +198,6 @@ types:
     naming:
       summary: The Training IR subgraph of a node; Gradient is the backward computation (DESIGN.md § 3.1; `Subgraph` in `modelspec-core/src/ir/training.rs`).
     variants: [Forward, Loss, Gradient, Optimizer]
-
-  - name: modelspec.observatory.GraphNode
-    kind: struct
-    naming:
-      summary: One operator of the graph and the tensor it defines, with its dtype and shape (DESIGN.md § 3.1, every tensor value has a shape, dtype and defining operation).
-    fields:
-      - name: value_id
-        type: Integer
-        summary: The SSA value the node defines, as Tensor IR prints it (DESIGN.md § 3.2 ValueId).
-      - name: op
-        type: modelspec.observatory.TensorOperator
-      - name: dtype
-        type: modelspec.checkpoint.DType
-      - name: shape
-        type: modelspec.checkpoint.Shape
-      - name: subgraph
-        type: Optional<modelspec.observatory.Subgraph>
-        summary: Present exactly on a node of a Training-stage graph, so forward and backward are told apart (epic:training-observatory).
-    invariants:
-      - value_id >= 0
-
-  - name: modelspec.observatory.GraphEdge
-    kind: struct
-    naming:
-      summary: One tensor flowing from the node that defines it to a node that reads it; its dtype and shape are its producer's (DESIGN.md § 3.2 TensorNode.operands).
-    fields:
-      - name: producer
-        type: Integer
-        summary: value_id of the node defining the tensor.
-      - name: consumer
-        type: Integer
-        summary: value_id of the node reading it.
-      - name: operand
-        type: Integer
-        summary: The position of the tensor among the consumer's operands, from 0; operand order matters (Sub, MatMul).
-    invariants:
-      - producer >= 0
-      - consumer >= 0
-      - operand >= 0
 
   - name: modelspec.observatory.InsightId
     kind: newtype
@@ -295,40 +246,6 @@ entities:
       initial: Computed
       states: [Computed]
       terminal: [Computed]
-
-  - name: modelspec.observatory.ModelGraph
-    naming:
-      summary: The architecture view of one compiled program, derived from its verified IR (epic:training-observatory). Every edge's producer and consumer is a node of the same graph, which ESS does not state here.
-    identity:
-      name: model_graph_id
-      type: modelspec.observatory.ModelGraphId
-    fields:
-      - name: artifact_id
-        type: modelspec.artifact.ArtifactId
-        summary: The compiled artifact whose IR (artifact ir_hash) the graph is drawn from; a run's graph is its artifact's (TrainingRun.artifact_id).
-      # UNMAPPED: a graph is derived from one artifact's IR, but nothing says whether it is the
-      # artifact's (owns, from CompiledArtifact) or stands on its own (references), nor whether an
-      # artifact has one graph per IrStage. No relation entry is declared, so validate warns
-      # ESS-ENTITY-019 here. Open question for the owner.
-      - name: stage
-        type: modelspec.observatory.IrStage
-      - name: nodes
-        type: List<modelspec.observatory.GraphNode>
-      - name: edges
-        type: List<modelspec.observatory.GraphEdge>
-    invariants:
-      - distinct: {in: nodes, as: node, by: node.value_id}
-      - any:
-          - all:
-              - stage == Training
-              - forall: {in: nodes, as: node, that: defined(node.subgraph)}
-          - all:
-              - stage == Tensor
-              - forall: {in: nodes, as: node, that: not defined(node.subgraph)}
-    lifecycle:
-      initial: Derived
-      states: [Derived]
-      terminal: [Derived]
 
   - name: modelspec.observatory.RunEvent
     naming:

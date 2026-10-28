@@ -1013,6 +1013,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "modelspec-diagram"
+version = "0.22.0"
+dependencies = [
+ "blake3",
+ "jsonschema",
+ "modelspec-core",
+ "serde",
+ "serde_json",
+ "ts-rs",
+]
+
+[[package]]
 name = "modelspec-docs"
 version = "0.22.0"
 dependencies = [

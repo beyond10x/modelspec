@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/modelspec.artifact.MatMulLimits",
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "100bc1979d4a196e83cfda9eb7e47c9f6bd31fc3e48f78ec2ca27cb50ad86317",
+    "contract_digest": "slice-sha256/2:a304c509621c59f08f1b165b9c14fdfa77667801a83eebb8ea568c8156478b20",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.artifact.MatMulLimits": {
+      "title": "MatMulLimits",
+      "description": "The device limits a plan's matmul tiles were scheduled within, read from the DeviceProfile the compile was given (DESIGN.md § 3.1, § 5.2, § 7.1).",
+      "x-ess-name": "modelspec.artifact.MatMulLimits",
+      "x-ess-kind": "struct",
+      "type": "object",
+      "properties": {
+        "invocations": {
+          "description": "Invocations per workgroup, the smaller of DeviceProfile.max_workgroup_invocations and max_workgroup_size.x.",
+          "type": "integer",
+          "minimum": 128
+        },
+        "shared_bytes": {
+          "description": "Bytes of workgroup memory, DeviceProfile.max_shared_memory_bytes.",
+          "type": "integer",
+          "minimum": 16384
+        }
+      },
+      "required": [
+        "invocations",
+        "shared_bytes"
+      ],
+      "additionalProperties": false,
+      "x-ess-invariants": [
+        "invocations >= 128",
+        "shared_bytes >= 16384"
+      ]
+    }
+  }
+}

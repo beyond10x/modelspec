@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/modelspec.diagram.EndpointRole",
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "100bc1979d4a196e83cfda9eb7e47c9f6bd31fc3e48f78ec2ca27cb50ad86317",
+    "contract_digest": "slice-sha256/2:01234e6076600d5a648324efe1b778c188bd2524e5687833e59a873c13512b46",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.diagram.EndpointRole": {
+      "title": "EndpointRole",
+      "description": "What an Endpoint node stands for in a pipeline view (DESIGN.md § 13.4). The parameters' next state version is a sink, not an edge back to the Parameters stage, so every view is acyclic. CheckpointSink is the parameters' next version in Train, CheckpointSource the checkpoint Infer reads, PredictionSink the forward output `infer` writes.",
+      "x-ess-name": "modelspec.diagram.EndpointRole",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "DataSource",
+        "CheckpointSource",
+        "CheckpointSink",
+        "PredictionSink"
+      ]
+    }
+  }
+}

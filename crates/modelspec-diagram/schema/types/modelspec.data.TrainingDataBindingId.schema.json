@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/modelspec.data.TrainingDataBindingId",
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "100bc1979d4a196e83cfda9eb7e47c9f6bd31fc3e48f78ec2ca27cb50ad86317",
+    "contract_digest": "slice-sha256/2:dd036ee36d36adf379882bef5458b09bd954fb6e21ccdeac388c17dfb77bb4a0",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.data.TrainingDataBindingId": {
+      "title": "TrainingDataBindingId",
+      "x-ess-name": "modelspec.data.TrainingDataBindingId",
+      "x-ess-kind": "newtype",
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    }
+  }
+}

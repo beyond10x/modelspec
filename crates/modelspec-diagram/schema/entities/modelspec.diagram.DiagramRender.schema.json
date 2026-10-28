@@ -1,0 +1,195 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DiagramRender",
+  "description": "One laid-out projection of a graph (DESIGN.md § 13.3, § 13.5). The root scope is drawn with its direct children; a child scope is expanded when it is within depth levels of the root or listed in expanded, and drawn as one Composite node otherwise. Every coordinate comes from the deterministic layered layout in Rust; a client pans and zooms the boxes and never lays them out.",
+  "x-ess-name": "modelspec.diagram.DiagramRender",
+  "x-ess-kind": "entity",
+  "type": "object",
+  "properties": {
+    "render_id": {
+      "$ref": "#/$defs/modelspec.diagram.DiagramRenderId"
+    },
+    "graph_id": {
+      "$ref": "#/$defs/modelspec.diagram.DiagramGraphId",
+      "x-ess-relation": {
+        "name": "graph",
+        "kind": "references",
+        "source": "modelspec.diagram.DiagramRender",
+        "target": "modelspec.diagram.DiagramGraph",
+        "cardinality": "one",
+        "via": "graph_id"
+      }
+    },
+    "root": {
+      "$ref": "#/$defs/modelspec.diagram.ScopeKey"
+    },
+    "depth": {
+      "type": "integer"
+    },
+    "expanded": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/modelspec.diagram.ScopeKey"
+      }
+    },
+    "width": {
+      "type": "integer"
+    },
+    "height": {
+      "type": "integer"
+    },
+    "boxes": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/modelspec.diagram.NodeBox"
+      }
+    },
+    "routes": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/modelspec.diagram.EdgeRoute"
+      }
+    },
+    "state": {
+      "$ref": "#/$defs/modelspec.diagram.DiagramRender.State"
+    }
+  },
+  "required": [
+    "render_id",
+    "graph_id",
+    "root",
+    "depth",
+    "expanded",
+    "width",
+    "height",
+    "boxes",
+    "routes",
+    "state"
+  ],
+  "additionalProperties": false,
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "100bc1979d4a196e83cfda9eb7e47c9f6bd31fc3e48f78ec2ca27cb50ad86317",
+    "contract_digest": "slice-sha256/2:9c8ba0e33433839ef3ca80d568626a614979a0c48e5fbffa55387c4b10639eb2",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.diagram.DiagramGraphId": {
+      "title": "DiagramGraphId",
+      "description": "The identity of a graph, derived and never drawn at random, so the same IR gives the same bytes (DESIGN.md § 13.5); the view's lower-case name, a slash and the graph's ir_hash, with `:<function>` after the view of an Infer graph drawn for `--function <function>`.",
+      "x-ess-name": "modelspec.diagram.DiagramGraphId",
+      "x-ess-kind": "newtype",
+      "type": "string"
+    },
+    "modelspec.diagram.DiagramRender.State": {
+      "title": "State",
+      "x-ess-name": "modelspec.diagram.DiagramRender.State",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "LaidOut"
+      ]
+    },
+    "modelspec.diagram.DiagramRenderId": {
+      "title": "DiagramRenderId",
+      "description": "The identity of a render, derived from its graph_id, root, depth and expanded scopes, so two renders of one request are the same record.",
+      "x-ess-name": "modelspec.diagram.DiagramRenderId",
+      "x-ess-kind": "newtype",
+      "type": "string"
+    },
+    "modelspec.diagram.EdgeRoute": {
+      "title": "EdgeRoute",
+      "description": "The polyline of one visible edge, after the edges into and out of collapsed scopes are attached to their ports and parallel ones merged.",
+      "x-ess-name": "modelspec.diagram.EdgeRoute",
+      "x-ess-kind": "struct",
+      "type": "object",
+      "properties": {
+        "producer": {
+          "type": "string"
+        },
+        "consumer": {
+          "type": "string"
+        },
+        "operand": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "points": {
+          "description": "x0, y0, x1, y1 and so on, at least two points, every coordinate an integer.",
+          "type": "array",
+          "items": {
+            "type": "integer"
+          }
+        }
+      },
+      "required": [
+        "producer",
+        "consumer",
+        "operand",
+        "points"
+      ],
+      "additionalProperties": false,
+      "x-ess-invariants": [
+        "operand >= 0",
+        "points.count >= 4"
+      ]
+    },
+    "modelspec.diagram.NodeBox": {
+      "title": "NodeBox",
+      "description": "Where a visible node is drawn, in integer units of the diagram's coordinate system (DESIGN.md § 13.5).",
+      "x-ess-name": "modelspec.diagram.NodeBox",
+      "x-ess-kind": "struct",
+      "type": "object",
+      "properties": {
+        "node_key": {
+          "type": "string"
+        },
+        "x": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "y": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "width": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "rank": {
+          "description": "The layer of the layered layout, 0 at the sources; every visible edge goes from a lower rank to a higher one.",
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "node_key",
+        "x",
+        "y",
+        "width",
+        "height",
+        "rank"
+      ],
+      "additionalProperties": false,
+      "x-ess-invariants": [
+        "x >= 0",
+        "y >= 0",
+        "width > 0",
+        "height > 0",
+        "rank >= 0"
+      ]
+    },
+    "modelspec.diagram.ScopeKey": {
+      "title": "ScopeKey",
+      "description": "The canonical text of a scope path, unique within a graph and used as the composite node's key, an anchor on the documentation site and a file name (DESIGN.md § 13.2). The segments joined by `/`; a Program segment is the train block's name; a Stage segment its lower-case name; a Function segment `<fn>` for the first inlining of the function in the program and `<fn>@<c>` for inlining c from 1, the naming of dropout sites (DESIGN.md § 2.3); an Adjoint segment `grad%<k>`, k the forward ValueId; an Update segment `update@<parameter path>`.",
+      "x-ess-name": "modelspec.diagram.ScopeKey",
+      "x-ess-kind": "newtype",
+      "type": "string"
+    }
+  }
+}

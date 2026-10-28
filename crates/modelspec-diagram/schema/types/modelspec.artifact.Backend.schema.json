@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/modelspec.artifact.Backend",
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "100bc1979d4a196e83cfda9eb7e47c9f6bd31fc3e48f78ec2ca27cb50ad86317",
+    "contract_digest": "slice-sha256/2:0ed413dce47de244d9bea858dca6f341e8ff95330c6a9e5284913080a441da47",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.artifact.Backend": {
+      "title": "Backend",
+      "x-ess-name": "modelspec.artifact.Backend",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "Cpu",
+        "Vulkan"
+      ]
+    }
+  }
+}

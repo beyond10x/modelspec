@@ -10,7 +10,7 @@ relations:
 - serves: vision:modelspec
 - depends_on: story:observatory-parameter-statistics
 - depends_on: story:observatory-architecture-graph
-revision: 3
+revision: 4
 ---
 # Activation statistics per step
 
@@ -84,3 +84,11 @@ shown:
 
 - Attributions (`story:observatory-saliency-gradient-x-input`).
 - Activation statistics on any backend other than CPU.
+
+## Graph types moved (2026-10-28)
+
+On 2026-10-28 `modelspec.observatory.GraphNode` and the observatory's other graph types were replaced
+by `spec/domains/diagram.yaml` (DESIGN.md § 13, `story:observatory-architecture-graph` revision 5).
+Where this story speaks of a `GraphNode.value_id` of the run's Tensor-stage graph, read the
+`value_id` of an Operator `modelspec.diagram.DiagramNode` in the run's `model` or `train`
+`DiagramGraph`; it is the same Tensor IR `ValueId`.

@@ -1,0 +1,328 @@
+domain: modelspec.diagram
+
+summary: The architecture diagram of a ModelSpec program, derived from its verified IR and never from a second parse (DESIGN.md § 13, epic:ir-svg-gallery). A DiagramGraph holds every operator node, every edge and the scope tree the nodes came from (pipeline stage, train block, inlined function and its call site, the gradient rule of one forward node, the update of one parameter); a DiagramRender is one laid-out projection of it, with chosen scopes expanded and every other scope collapsed into one composite node. The documentation site, `modelspec diagram` and the observatory UI all draw these two records, so a diagram means the same thing wherever it appears.
+
+types:
+  - name: modelspec.diagram.DiagramGraphId
+    kind: newtype
+    of: String
+    naming:
+      summary: The identity of a graph, derived and never drawn at random, so the same IR gives the same bytes (DESIGN.md § 13.5); the view's lower-case name, a slash and the graph's ir_hash, with `:<function>` after the view of an Infer graph drawn for `--function <function>`.
+
+  - name: modelspec.diagram.DiagramRenderId
+    kind: newtype
+    of: String
+    naming:
+      summary: The identity of a render, derived from its graph_id, root, depth and expanded scopes, so two renders of one request are the same record.
+
+  - name: modelspec.diagram.DiagramView
+    kind: enum
+    naming:
+      summary: What a graph shows (DESIGN.md § 13.4). Model is the forward slice that reaches the model's prediction; Train is the whole training step (data, parameters, forward, loss, backward, optimizer update, checkpoint); Eval is the held-out evaluation, forward and loss with dropout the identity; Infer is what `modelspec infer` runs from a checkpoint, or one model function with `--function`.
+    variants: [Model, Train, Eval, Infer]
+
+  - name: modelspec.diagram.PipelineStage
+    kind: enum
+    naming:
+      summary: A stage of a pipeline view, each one composite node of the view's root (DESIGN.md § 13.4). Forward, Loss, Backward and Optimizer are the Training IR subgraphs Forward, Loss, Gradient and Optimizer; Data holds the program's Input nodes (inputs, targets, packed batch tensors, dropout RNG tokens, the host inputs of an AdamW step); Parameters holds every ParamRead at its state version. A checkpoint and a prediction are Endpoint nodes (EndpointRole), never stages.
+    variants: [Data, Parameters, Forward, Loss, Backward, Optimizer]
+
+  - name: modelspec.diagram.ScopeKind
+    kind: enum
+    naming:
+      summary: What one segment of a scope path names (DESIGN.md § 13.2). Program is the root, the train block; Stage a PipelineStage; Function one inlining of a model function at one call site; Adjoint the gradient nodes the rule of one forward node emitted; Update the optimizer nodes of one parameter; Module and Layer are reserved for the module and layer instances of DESIGN.md § 11 iteration 3 and are emitted by no compiler before it.
+    variants: [Program, Stage, Function, Adjoint, Update, Module, Layer]
+
+  - name: modelspec.diagram.ScopeKey
+    kind: newtype
+    of: String
+    naming:
+      summary: The canonical text of a scope path, unique within a graph and used as the composite node's key, an anchor on the documentation site and a file name (DESIGN.md § 13.2). The segments joined by `/`; a Program segment is the train block's name; a Stage segment its lower-case name; a Function segment `<fn>` for the first inlining of the function in the program and `<fn>@<c>` for inlining c from 1, the naming of dropout sites (DESIGN.md § 2.3); an Adjoint segment `grad%<k>`, k the forward ValueId; an Update segment `update@<parameter path>`.
+
+  - name: modelspec.diagram.ScopeSegment
+    kind: struct
+    naming:
+      summary: One step of a scope path, outermost first.
+    fields:
+      - name: kind
+        type: modelspec.diagram.ScopeKind
+      - name: name
+        type: String
+        summary: The train block's name, the stage's lower-case name, the function's name, the forward value as `%<k>` or the parameter's canonical path (DESIGN.md § 2.3).
+      - name: instance
+        type: Integer
+        summary: For a Function segment, which inlining of the function in the program, from 0; 0 for every other kind.
+      - name: call_site
+        type: Optional<String>
+        summary: For a Function segment, the source position of the call as a diagnostic prints it, `file:line:column` (DESIGN.md § 8.1); absent for every other kind.
+    invariants:
+      - instance >= 0
+
+  - name: modelspec.diagram.OperatorFamily
+    kind: enum
+    naming:
+      summary: The class of an operator; every glyph of one family shares an outline and an accent colour, a CSS custom property of the diagram's style (DESIGN.md § 13.1). Elementwise covers add, sub, mul, relu, gelu, sqrt, div, abs and the scalar constant; Contraction matmul; Reduction sum, mean and sum_rows; Normalization layer_norm and softmax; Attention attention; Embedding embedding and add_rows; Layout transpose, broadcast, reshape, concat and stop_gradient; Stochastic dropout and its RNG token; Loss mse, cross_entropy, smooth_l1 and any regularization term; Optimizer the update arithmetic of sgd, adamw and muon; DataIo Input and ParamRead.
+    variants: [Elementwise, Contraction, Reduction, Normalization, Attention, Embedding, Layout, Stochastic, Loss, Optimizer, DataIo]
+
+  - name: modelspec.diagram.GlyphId
+    kind: newtype
+    of: String
+    naming:
+      summary: The id of one SVG symbol of the glyph set (DESIGN.md § 13.1). `op-<operator>` for each Tensor IR operation, the operator in kebab case (`op-mat-mul`, `op-layer-norm-grad-x`), an Input also `op-input-token` for a dropout RNG token and `op-input-step` for a host input of an AdamW step; `scope-<kind>` for a composite of a Function, Adjoint, Module or Layer scope and `scope-update-<optimizer>` for an Update scope; `stage-<stage>` for a pipeline stage; `endpoint-<role>` for an endpoint. Every TensorOp variant has exactly one, and a gradient op's glyph is its forward operator's with the gradient mark.
+
+  - name: modelspec.diagram.NodeKind
+    kind: enum
+    naming:
+      summary: Operator is one Tensor IR node; Composite stands for a whole scope, drawn when the scope is collapsed; Endpoint is a source or sink outside the IR that a pipeline view draws (a data split, a checkpoint file, a prediction file).
+    variants: [Operator, Composite, Endpoint]
+
+  - name: modelspec.diagram.EndpointRole
+    kind: enum
+    naming:
+      summary: What an Endpoint node stands for in a pipeline view (DESIGN.md § 13.4). The parameters' next state version is a sink, not an edge back to the Parameters stage, so every view is acyclic. CheckpointSink is the parameters' next version in Train, CheckpointSource the checkpoint Infer reads, PredictionSink the forward output `infer` writes.
+    variants: [DataSource, CheckpointSource, CheckpointSink, PredictionSink]
+
+  - name: modelspec.diagram.DiagramNode
+    kind: struct
+    naming:
+      summary: One node of a graph. An Operator node is one Tensor IR node and carries its ValueId, operation, dtype, shape and, in a pipeline view, its Training IR subgraph; a Composite node stands for the scope named by composite_of and is drawn in that scope's parent; an Endpoint node has a role and no value.
+    fields:
+      - name: node_key
+        type: String
+        summary: Unique within the graph; `%<k>` for an Operator node, the scope key for a Composite, `endpoint:<role>` for an Endpoint.
+      - name: kind
+        type: modelspec.diagram.NodeKind
+      - name: scope
+        type: modelspec.diagram.ScopeKey
+        summary: The innermost scope the node is drawn in.
+      - name: composite_of
+        type: Optional<modelspec.diagram.ScopeKey>
+        summary: Present exactly on a Composite node, the scope it stands for.
+      - name: value_id
+        type: Optional<Integer>
+        summary: The SSA value an Operator node defines, as Tensor IR prints it (DESIGN.md § 3.2 ValueId).
+      - name: op
+        type: Optional<modelspec.observatory.TensorOperator>
+      - name: family
+        type: Optional<modelspec.diagram.OperatorFamily>
+      - name: glyph
+        type: modelspec.diagram.GlyphId
+      - name: label
+        type: String
+        summary: The text drawn beside the glyph; a glyph never carries meaning alone.
+      - name: dtype
+        type: Optional<modelspec.checkpoint.DType>
+      - name: shape
+        type: Optional<modelspec.checkpoint.Shape>
+      - name: subgraph
+        type: Optional<modelspec.observatory.Subgraph>
+        summary: The Training IR subgraph of an Operator node of a Train, Eval or Infer graph (DESIGN.md § 3.1).
+      - name: endpoint
+        type: Optional<modelspec.diagram.EndpointRole>
+      - name: source_span
+        type: Optional<String>
+        summary: The source construct the node came from, `file:line:column` (TensorNode.source_span).
+    invariants:
+      - any:
+          - all:
+              - kind == Operator
+              - defined(value_id)
+              - defined(op)
+              - defined(family)
+              - defined(dtype)
+              - defined(shape)
+              - not defined(composite_of)
+              - not defined(endpoint)
+          - all:
+              - kind == Composite
+              - defined(composite_of)
+              - not defined(value_id)
+              - not defined(endpoint)
+          - all:
+              - kind == Endpoint
+              - defined(endpoint)
+              - not defined(value_id)
+              - not defined(composite_of)
+
+  - name: modelspec.diagram.DiagramEdge
+    kind: struct
+    naming:
+      summary: One tensor flowing from the node that defines it to a node that reads it, with the tensor's dtype and shape (DESIGN.md § 3.2 TensorNode.operands).
+    fields:
+      - name: producer
+        type: String
+        summary: node_key of the producing node.
+      - name: consumer
+        type: String
+        summary: node_key of the consuming node.
+      - name: operand
+        type: Integer
+        summary: The position of the tensor among the consumer's operands, from 0; operand order matters (Sub, MatMul).
+      - name: dtype
+        type: modelspec.checkpoint.DType
+      - name: shape
+        type: modelspec.checkpoint.Shape
+    invariants:
+      - operand >= 0
+
+  - name: modelspec.diagram.PortDirection
+    kind: enum
+    variants: [In, Out]
+
+  - name: modelspec.diagram.Port
+    kind: struct
+    naming:
+      summary: A tensor crossing a scope's boundary; a collapsed scope's composite node draws one port per entry, and an edge to or from a node inside the scope attaches to it (DESIGN.md § 13.3).
+    fields:
+      - name: direction
+        type: modelspec.diagram.PortDirection
+      - name: value_id
+        type: Integer
+        summary: The value that crosses, defined outside the scope for In and inside it for Out.
+      - name: dtype
+        type: modelspec.checkpoint.DType
+      - name: shape
+        type: modelspec.checkpoint.Shape
+    invariants:
+      - value_id >= 0
+
+  - name: modelspec.diagram.Scope
+    kind: struct
+    naming:
+      summary: One scope of the graph's scope tree with its boundary ports, outermost segment first.
+    fields:
+      - name: key
+        type: modelspec.diagram.ScopeKey
+      - name: parent
+        type: Optional<modelspec.diagram.ScopeKey>
+        summary: Absent exactly on the root, the Program scope.
+      - name: path
+        type: List<modelspec.diagram.ScopeSegment>
+      - name: stage
+        type: Optional<modelspec.diagram.PipelineStage>
+        summary: The pipeline stage the scope sits in, absent in a Model graph.
+      - name: glyph
+        type: modelspec.diagram.GlyphId
+      - name: ports
+        type: List<modelspec.diagram.Port>
+    invariants:
+      - path.count >= 1
+
+  - name: modelspec.diagram.NodeBox
+    kind: struct
+    naming:
+      summary: Where a visible node is drawn, in integer units of the diagram's coordinate system (DESIGN.md § 13.5).
+    fields:
+      - name: node_key
+        type: String
+      - name: x
+        type: Integer
+      - name: y
+        type: Integer
+      - name: width
+        type: Integer
+      - name: height
+        type: Integer
+      - name: rank
+        type: Integer
+        summary: The layer of the layered layout, 0 at the sources; every visible edge goes from a lower rank to a higher one.
+    invariants:
+      - x >= 0
+      - y >= 0
+      - width > 0
+      - height > 0
+      - rank >= 0
+
+  - name: modelspec.diagram.EdgeRoute
+    kind: struct
+    naming:
+      summary: The polyline of one visible edge, after the edges into and out of collapsed scopes are attached to their ports and parallel ones merged.
+    fields:
+      - name: producer
+        type: String
+      - name: consumer
+        type: String
+      - name: operand
+        type: Integer
+      - name: points
+        type: List<Integer>
+        summary: x0, y0, x1, y1 and so on, at least two points, every coordinate an integer.
+    invariants:
+      - operand >= 0
+      - points.count >= 4
+
+entities:
+  - name: modelspec.diagram.DiagramGraph
+    naming:
+      summary: The whole diagram of one program in one view, every scope level at once; a render picks what is visible (DESIGN.md § 13.2). Built by `modelspec-diagram` from the verified Tensor IR or training step that `modelspec ir` prints, with the scope of each node from the IR's scope table.
+    identity:
+      name: graph_id
+      type: modelspec.diagram.DiagramGraphId
+    fields:
+      - name: view
+        type: modelspec.diagram.DiagramView
+      - name: program
+        type: String
+        summary: The train block's name.
+      - name: function
+        type: Optional<String>
+        summary: Present exactly on an Infer graph drawn for `--function <function>`.
+      - name: source_hash
+        type: modelspec.artifact.ContentHash
+        summary: blake3 of the source bytes, as CompiledArtifact.source_hash.
+      - name: ir_hash
+        type: modelspec.artifact.ContentHash
+        summary: blake3 of the printed training step, the value CompiledArtifact.ir_hash records for the same source, so a graph and an artifact of one program are matched by value; a graph is drawn from source without compiling an artifact, so it names no artifact. For an Infer graph of a function, blake3 of that function's printed program.
+      - name: scopes
+        type: List<modelspec.diagram.Scope>
+      - name: nodes
+        type: List<modelspec.diagram.DiagramNode>
+      - name: edges
+        type: List<modelspec.diagram.DiagramEdge>
+    invariants:
+      - distinct: {in: nodes, as: node, by: node.node_key}
+      - distinct: {in: scopes, as: scope, by: scope.key}
+      - scopes.count >= 1
+    lifecycle:
+      initial: Derived
+      states: [Derived]
+      terminal: [Derived]
+
+  - name: modelspec.diagram.DiagramRender
+    naming:
+      summary: One laid-out projection of a graph (DESIGN.md § 13.3, § 13.5). The root scope is drawn with its direct children; a child scope is expanded when it is within depth levels of the root or listed in expanded, and drawn as one Composite node otherwise. Every coordinate comes from the deterministic layered layout in Rust; a client pans and zooms the boxes and never lays them out.
+    identity:
+      name: render_id
+      type: modelspec.diagram.DiagramRenderId
+    fields:
+      - name: graph_id
+        type: modelspec.diagram.DiagramGraphId
+      - name: root
+        type: modelspec.diagram.ScopeKey
+      - name: depth
+        type: Integer
+      - name: expanded
+        type: List<modelspec.diagram.ScopeKey>
+      - name: width
+        type: Integer
+      - name: height
+        type: Integer
+      - name: boxes
+        type: List<modelspec.diagram.NodeBox>
+      - name: routes
+        type: List<modelspec.diagram.EdgeRoute>
+    invariants:
+      - depth >= 0
+      - width > 0
+      - height > 0
+      - distinct: {in: boxes, as: box, by: box.node_key}
+    relations:
+      - name: graph
+        kind: references
+        target: modelspec.diagram.DiagramGraph
+        cardinality: one
+        via: graph_id
+    lifecycle:
+      initial: LaidOut
+      states: [LaidOut]
+      terminal: [LaidOut]

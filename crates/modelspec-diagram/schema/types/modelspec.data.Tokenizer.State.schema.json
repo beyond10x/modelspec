@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/modelspec.data.Tokenizer.State",
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "100bc1979d4a196e83cfda9eb7e47c9f6bd31fc3e48f78ec2ca27cb50ad86317",
+    "contract_digest": "slice-sha256/2:c46de4e1b00940eff8a2d5bd8a5dce345828091a17ce99eb9536d861179fc1c5",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.data.Tokenizer.State": {
+      "title": "State",
+      "x-ess-name": "modelspec.data.Tokenizer.State",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "Recorded"
+      ]
+    }
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/modelspec.observatory.StatisticsSubject",
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "100bc1979d4a196e83cfda9eb7e47c9f6bd31fc3e48f78ec2ca27cb50ad86317",
+    "contract_digest": "slice-sha256/2:5bb61810f696cd76883ff9a14392ae2c70c3ac31bed0297d030840ba79066945",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.observatory.StatisticsSubject": {
+      "title": "StatisticsSubject",
+      "description": "Whether statistics describe a parameter's values or the gradient of the loss with respect to it (epic:training-observatory parameter/gradient histograms and norms).",
+      "x-ess-name": "modelspec.observatory.StatisticsSubject",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "Value",
+        "Gradient"
+      ]
+    }
+  }
+}

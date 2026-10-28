@@ -46,18 +46,20 @@ tasks:
       - ess specify validate --path .
 
   schema-generate:
-    desc: Write the JSON Schema of spec/ into crates/modelspec-observatory/schema and crates/modelspec-runtime/schema
+    desc: Write the JSON Schema of spec/ into crates/modelspec-observatory/schema, crates/modelspec-runtime/schema and crates/modelspec-diagram/schema
     dir: spec
     cmds:
       - ess generate --kind schema --path . --out ../crates/modelspec-observatory
       - ess generate --kind schema --path . --out ../crates/modelspec-runtime
+      - ess generate --kind schema --path . --out ../crates/modelspec-diagram
 
   schema-check:
-    desc: Fail when a JSON Schema under crates/modelspec-observatory/schema or crates/modelspec-runtime/schema differs from what spec/ generates
+    desc: Fail when a JSON Schema under crates/modelspec-observatory/schema, crates/modelspec-runtime/schema or crates/modelspec-diagram/schema differs from what spec/ generates
     dir: spec
     cmds:
       - ess generate --kind schema --path . --out ../crates/modelspec-observatory --check
       - ess generate --kind schema --path . --out ../crates/modelspec-runtime --check
+      - ess generate --kind schema --path . --out ../crates/modelspec-diagram --check
 
   ui-types:
     cmds:

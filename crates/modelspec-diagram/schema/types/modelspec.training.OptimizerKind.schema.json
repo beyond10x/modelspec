@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/modelspec.training.OptimizerKind",
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "100bc1979d4a196e83cfda9eb7e47c9f6bd31fc3e48f78ec2ca27cb50ad86317",
+    "contract_digest": "slice-sha256/2:b34b8861091fa30a77f3ebc11e3d3cb63f23aa2c78e31e323a9a3e8e6c1df66b",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.training.OptimizerKind": {
+      "title": "OptimizerKind",
+      "description": "SGD from M0; AdamW with decoupled weight decay and a warmup schedule from M3, written `adamw(lr = F, weight_decay = F, beta1 = F, beta2 = F, eps = F, warmup_steps = N)` (DESIGN.md § 1, § 2.1, § 11 iteration 4; epic:bert-from-scratch); Muon, orthogonalized momentum for the matrix parameters no embedding reads and AdamW for the others, written `muon(lr = F, momentum = F, weight_decay = F, ns_steps = N, warmup_steps = N, adam_lr = F, beta1 = F, beta2 = F, eps = F)` (DESIGN.md § 2.1, revision 0.51; story:muon-optimizer).",
+      "x-ess-name": "modelspec.training.OptimizerKind",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "Sgd",
+        "AdamW",
+        "Muon"
+      ]
+    }
+  }
+}

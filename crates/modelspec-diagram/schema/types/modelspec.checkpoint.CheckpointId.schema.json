@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/modelspec.checkpoint.CheckpointId",
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "100bc1979d4a196e83cfda9eb7e47c9f6bd31fc3e48f78ec2ca27cb50ad86317",
+    "contract_digest": "slice-sha256/2:5d259bf3b543564e6d94fc98814a509fbe62f4df5b5118262d72efc08659f042",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.checkpoint.CheckpointId": {
+      "title": "CheckpointId",
+      "x-ess-name": "modelspec.checkpoint.CheckpointId",
+      "x-ess-kind": "newtype",
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    }
+  }
+}

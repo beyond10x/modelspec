@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/$defs/modelspec.observatory.InsightMethod",
+  "x-ess-provenance": {
+    "system": "modelspec",
+    "specification_version": "v1",
+    "source_digest": "100bc1979d4a196e83cfda9eb7e47c9f6bd31fc3e48f78ec2ca27cb50ad86317",
+    "contract_digest": "slice-sha256/2:e96eeb22ec74e1cd4c6ebe06c3ae27ea44212b70763647fde7e46f32c991d16c",
+    "regenerate": "ess generate"
+  },
+  "$defs": {
+    "modelspec.observatory.InsightMethod": {
+      "title": "InsightMethod",
+      "description": "The explainability method an insight was computed with; gradient times input saliency first, since the compiler already derives gradients (epic:training-observatory).",
+      "x-ess-name": "modelspec.observatory.InsightMethod",
+      "x-ess-kind": "enum",
+      "type": "string",
+      "enum": [
+        "GradientTimesInput"
+      ]
+    }
+  }
+}

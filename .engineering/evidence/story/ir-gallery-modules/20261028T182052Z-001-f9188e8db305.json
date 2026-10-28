@@ -1,0 +1,15 @@
+{
+  "at": "2026-10-28T18:20:52Z",
+  "actor": "human:timo",
+  "artifact": "story:ir-gallery-modules",
+  "kind": "story",
+  "revision": 6,
+  "change": {
+    "change": "evidence",
+    "kind": "review_outcome",
+    "source": "review-result:plan-critic-parallel-safety-ir-svg-gallery-round-1",
+    "reference": ".engineering/planning/story/ir-gallery-modules.md",
+    "review": "review-result:plan-critic-parallel-safety-ir-svg-gallery-round-1",
+    "outcome": "fixed"
+  }
+}

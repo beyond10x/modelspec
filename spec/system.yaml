@@ -8,5 +8,6 @@ domains:
   - modelspec.checkpoint
   - modelspec.data
   - modelspec.device
+  - modelspec.diagram
   - modelspec.observatory
   - modelspec.training
