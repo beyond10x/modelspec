@@ -11,6 +11,7 @@ history.
 
 ### Added
 
+- `stop_gradient(x)`: a source operator that returns `x` unchanged and passes no gradient back, removed by a pass after autodiff so neither the CPU interpreter nor the Vulkan scheduler sees it, and `E-TYPE-026` for a parameter that reaches the loss only through it, at the call (DESIGN.md revision 0.56) (story:jepa-stop-gradient).
 - The loss operator `sigreg(z, slices = M)`, LeJEPA's SIGReg: the Epps–Pulley statistic of `M` random unit directions, drawn anew each step on Philox stream tag 6, against the standard normal, with its gradient, on the CPU backend; `--backend vulkan` answers E-TARGET-011 (story:jepa-sigreg-cpu).
 
 ## [0.21.0] - 2026-10-28

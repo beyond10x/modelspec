@@ -1077,6 +1077,7 @@ impl<'p, T: Element> Prepared<'p, T> {
             }
             TensorOp::Dropout { p } => self.masked(data, arg(0).data, operands[1], *p, ids),
             TensorOp::DropoutGrad { p } => self.masked(data, arg(1).data, operands[0], *p, ids),
+            TensorOp::StopGradient => data.extend_from_slice(arg(0).data),
             TensorOp::Sqrt => data.extend(arg(0).data.iter().map(|&x| x.sqrt())),
             TensorOp::Div => elementwise(data, arg(0), arg(1), |a, b| a / b),
             TensorOp::SigregColumns => sigreg_columns(data, arg(0)),

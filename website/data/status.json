@@ -262,6 +262,13 @@
       "status": "shipped"
     },
     {
+      "area": "Language",
+      "detail": "Not yet released: `stop_gradient(x)` returns `x` unchanged and passes no gradient back, and a pass after autodiff removes it; a parameter that reaches the loss only through it is E-TYPE-026. The gradient of a parameter is checked against central differences with the stopped term held constant. Held by test stop_gradient_gradient_of_w_matches_the_function_with_the_stopped_term_held in crates/modelspec-runtime/tests/gradients_stop_gradient.rs.",
+      "href": "/docs/reference/operators",
+      "label": "`stop_gradient`",
+      "status": "shipped"
+    },
+    {
       "area": "BERT operators",
       "detail": "Since 0.10.0: a row lookup from an `f32[V,H]` table by `i32[N]` ids; the table gradient is a scatter-add checked against central differences. Held by test embedding_table_gradient_matches_central_differences in crates/modelspec-runtime/tests/gradients_embedding.rs.",
       "href": "/docs/concepts/bert-operators",

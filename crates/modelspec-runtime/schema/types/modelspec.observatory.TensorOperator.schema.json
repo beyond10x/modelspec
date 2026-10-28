@@ -4,14 +4,14 @@
   "x-ess-provenance": {
     "system": "modelspec",
     "specification_version": "v1",
-    "source_digest": "1e638e8b0ac411eee3b47277497d7bc95984e22968d6792a08012fd3c7165037",
-    "contract_digest": "slice-sha256/2:d1e36b7700a4b423987b7d851d904d32c6ae505d3859875363239b9aa9d2264e",
+    "source_digest": "bd47215dcedc48d6a4c385ba10638e1e37b89e897aa1d2af0f0d1dc8ef56b5e3",
+    "contract_digest": "slice-sha256/2:21f19445b2ca271a86d3181a89f4ccc6487103401c003e47f6508883d10dd809",
     "regenerate": "ess generate"
   },
   "$defs": {
     "modelspec.observatory.TensorOperator": {
       "title": "TensorOperator",
-      "description": "The Tensor IR operations, ReluGrad, BroadcastScalar, EmbeddingGrad, SumRows, GeluGrad, LayerNormGradX, LayerNormGradGamma, SoftmaxGrad, AttentionGradQ, AttentionGradK, AttentionGradV, CrossEntropyGrad, DropoutGrad and SigregColumnsGrad being internal gradient ops, Sqrt and Div internal ops of the optimizer subgraph of an AdamW step, SigregColumns the internal op that sigreg lowers to, and Sigreg the source operator, which no verified program holds (DESIGN.md § 3.1, § 4; `TensorOp` in `modelspec-core/src/ir/tensor.rs`). The operators of epic:bert-from-scratch join as the compiler gains them.",
+      "description": "The Tensor IR operations, ReluGrad, BroadcastScalar, EmbeddingGrad, SumRows, GeluGrad, LayerNormGradX, LayerNormGradGamma, SoftmaxGrad, AttentionGradQ, AttentionGradK, AttentionGradV, CrossEntropyGrad, DropoutGrad and SigregColumnsGrad being internal gradient ops, StopGradient a source op that the pass after autodiff removes so that no training step holds it, Sqrt and Div internal ops of the optimizer subgraph of an AdamW step, SigregColumns the internal op that sigreg lowers to, and Sigreg the source operator, which no verified program holds (DESIGN.md § 3.1, § 4; `TensorOp` in `modelspec-core/src/ir/tensor.rs`). The operators of epic:bert-from-scratch join as the compiler gains them.",
       "x-ess-name": "modelspec.observatory.TensorOperator",
       "x-ess-kind": "enum",
       "type": "string",
@@ -49,6 +49,7 @@
         "CrossEntropyGrad",
         "Dropout",
         "DropoutGrad",
+        "StopGradient",
         "Sqrt",
         "Div",
         "Sigreg",

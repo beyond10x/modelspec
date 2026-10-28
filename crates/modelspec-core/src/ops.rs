@@ -244,6 +244,7 @@ pub fn arity(op: &TensorOp) -> usize {
         | TensorOp::SumRows
         | TensorOp::Gelu
         | TensorOp::Softmax
+        | TensorOp::StopGradient
         | TensorOp::Sqrt
         | TensorOp::Sigreg { .. }
         | TensorOp::SigregColumns => 1,
@@ -371,7 +372,9 @@ pub fn infer(
                 shape: vec![lhs.shape[0], rhs.shape[1]],
             })
         }
-        TensorOp::Relu | TensorOp::Gelu | TensorOp::Sqrt => Ok(operands[0].clone()),
+        TensorOp::Relu | TensorOp::Gelu | TensorOp::StopGradient | TensorOp::Sqrt => {
+            Ok(operands[0].clone())
+        }
         TensorOp::Transpose => {
             let a = operands[0];
             rank(name, a, 2)?;
@@ -645,6 +648,7 @@ pub trait GradientSink {
 /// | `Attention` | `attention_grad_q(A, B, C, D, G)` (`AttentionGradQ`: `scale * dS K` per sequence and head) | `attention_grad_k(A, B, C, D, G)` (`AttentionGradK`: `scale * dS^T Q`, 0 at a masked key) | `attention_grad_v(A, B, C, D, G)` (`AttentionGradV`: `P^T G`, 0 at a masked key) |
 /// | `CrossEntropy` | `cross_entropy_grad(A, B, C, G)` (`CrossEntropyGrad`: `G * C[n] / sum(C) * (P[n, v] - [v = B[n]])`) | none: `B` is `i32` labels | none: `C` is constant weights |
 /// | `Dropout` | `dropout_grad(B, G)` (`DropoutGrad`: `G * (1 / (1 - p))` where the mask of token `B` keeps the element, 0 elsewhere) | none: `B` is the `i32` RNG token | |
+/// | `StopGradient` | none: no gradient flows back through it; the pass `passes::stop_gradient` replaces it by `A` after autodiff | | |
 /// | `SigregColumns` | `sigreg_columns_grad(A, G)` (`SigregColumnsGrad`: `2 G[m] sum_j c_j t_j (S_j cos(t_j A) - (C_j - phi_j) sin(t_j A))` in column `m`) | | |
 ///
 /// The constants `1 / numel` and `2 / numel` are `f32` scalars. `Mse`'s `B` is a target in a
@@ -661,7 +665,9 @@ pub trait GradientSink {
 /// softmax `P` of `A` through the loss's own code path, and gives zero everywhere when
 /// `sum(C) = 0`. `Dropout`'s operand `B` is the site's RNG token, which takes no gradient;
 /// `DropoutGrad` recomputes the mask from the same token through the code path of `Dropout`, so
-/// no mask is stored, and multiplies by the same `f32` scale `1 / (1 - p)`. `SigregColumnsGrad`
+/// no mask is stored, and multiplies by the same `f32` scale `1 / (1 - p)`. `StopGradient` gives
+/// no contribution to its operand: autodiff does not walk through it ([`crate::autodiff`]), so a
+/// value read only through it receives no adjoint from that read. `SigregColumnsGrad`
 /// recomputes the column means `C_j` and `S_j` of `cos(t_j A)` and `sin(t_j A)` through the code
 /// path of `SigregColumns`; the projection that `sigreg` multiplies `z` by is an internal input,
 /// which takes no gradient, so `MatMul`'s rule gives `dz`.
@@ -816,6 +822,7 @@ pub fn gradient<S: GradientSink + ?Sized>(
                 out[0] = Some(sink.emit(TensorOp::DropoutGrad { p: *p }, &[operands[1], g])?);
             }
         }
+        TensorOp::StopGradient => {}
         TensorOp::SigregColumns => {
             if want(0) {
                 out[0] = Some(sink.emit(TensorOp::SigregColumnsGrad, &[operands[0], g])?);
@@ -1565,6 +1572,30 @@ mod tests {
             gradient(&mut sink, &grad, &[token, g], ValueId(4), g, &[false, true]),
             Ok(None)
         );
+    }
+
+    /// `stop_gradient` keeps the type of any `f32` operand, refuses an `i32` one, and its rule
+    /// gives its operand no contribution and emits nothing, even when the operand is wanted.
+    #[test]
+    fn stop_gradient_keeps_the_type_and_gives_no_gradient() {
+        for shape in [&[][..], &[7], &[5, 3], &[2, 3, 4]] {
+            let ty = f32(shape);
+            assert_eq!(infer(&TensorOp::StopGradient, &[&ty], None), Ok(ty));
+        }
+        assert!(matches!(
+            infer(&TensorOp::StopGradient, &[&i32(&[4])], None),
+            Err(OpError::OperandDType { index: 0, .. })
+        ));
+        assert_eq!(arity(&TensorOp::StopGradient), 1);
+        assert!(constant_operands(&TensorOp::StopGradient).is_empty());
+        let (x, y, g) = (ValueId(0), ValueId(1), ValueId(2));
+        let mut sink = Recorder {
+            types: vec![f32(&[3, 4]), f32(&[3, 4]), f32(&[3, 4])],
+            emitted: Vec::new(),
+        };
+        let out = gradient(&mut sink, &TensorOp::StopGradient, &[x], y, g, &[true]);
+        assert_eq!(out, Ok(Some(vec![None])));
+        assert!(sink.emitted.is_empty());
     }
 
     /// `cross_entropy` of `[N, V]` logits, `i32[N]` labels and `f32[N]` weights is rank 0; its

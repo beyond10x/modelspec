@@ -63,10 +63,19 @@ fn losses(stdout: &str) -> Vec<(u64, String)> {
 
 /// The values of the line `param @<path>: <type> = [v, ...]`.
 fn final_values(stdout: &str, path: &str) -> Vec<f32> {
-    let head = format!("param @{path}: ");
+    line_values(stdout, &format!("param @{path}: "))
+}
+
+/// The values of the line `init @<path>: <type> = [v, ...]`.
+fn init_values(stdout: &str, path: &str) -> Vec<f32> {
+    line_values(stdout, &format!("init @{path}: "))
+}
+
+/// The values of the line that starts with `head` and ends in ` = [v, ...]`.
+fn line_values(stdout: &str, head: &str) -> Vec<f32> {
     let line = stdout
         .lines()
-        .find(|line| line.starts_with(&head))
+        .find(|line| line.starts_with(head))
         .unwrap_or_else(|| panic!("no `{head}` line in:\n{stdout}"));
     let list = line
         .split_once(" = [")
@@ -171,4 +180,61 @@ fn infer_sigreg_uses_the_projection_of_the_checkpoint_step() {
         .find_map(|l| l.strip_prefix("loss "))
         .unwrap_or_else(|| panic!("no loss line:\n{inferred}"));
     assert_eq!(loss, last, "infer prints the last step loss");
+}
+
+/// The bits of each value, so `-0.0` and `0.0` differ and NaN equals itself.
+fn bits(values: &[f32]) -> Vec<u32> {
+    values.iter().map(|v| v.to_bits()).collect()
+}
+
+/// A `stop_gradient` inside a `sigreg` operand works: the lowering expands `sigreg` before
+/// autodiff, autodiff does not walk through the `StopGradient`, and the pass after autodiff
+/// removes it (DESIGN.md § 2.2, § 4). The fixture's loss is
+/// `sigreg(stop_gradient(matmul(x, w)), slices = 4) + mse(matmul(x, v), y)`; `w` is read only
+/// under `stop_gradient` apart from `0 mean(matmul(x, w))`, the live read E-TYPE-026 asks for,
+/// whose gradient is zero. So `w` ends every run bit for bit where it started, while `v` trains.
+/// The same file without `stop_gradient` moves `w`, so the sigreg gradient would reach it.
+#[test]
+fn stop_gradient_inside_a_sigreg_operand_gives_its_parameter_no_update() {
+    const STOPPED: &str = "sigreg_stop_gradient.mspec";
+    const OPERAND: &str = "sigreg(stop_gradient(model.encode(x)), slices = 4)";
+    let run = |path: &str| {
+        let output = modelspec(&["train", path, "--backend", "cpu"]);
+        assert_eq!(output.status.code(), Some(0), "{}", text(&output.stderr));
+        text(&output.stdout)
+    };
+    let stopped = run(&format!("{FIXTURES}/{STOPPED}"));
+    assert_eq!(
+        bits(&final_values(&stopped, "Joint.w")),
+        bits(&init_values(&stopped, "Joint.w")),
+        "w is read only under stop_gradient and takes no update:\n{stopped}"
+    );
+    assert_ne!(
+        bits(&final_values(&stopped, "Joint.v")),
+        bits(&init_values(&stopped, "Joint.v")),
+        "v trains on the mse term:\n{stopped}"
+    );
+
+    let source = std::fs::read_to_string(repo_root().join(FIXTURES).join(STOPPED))
+        .expect("the fixture exists");
+    assert_eq!(source.matches(OPERAND).count(), 1, "{source}");
+    let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("train_sigreg_stop_gradient");
+    std::fs::create_dir_all(&out).unwrap();
+    let live = out.join("sigreg_live.mspec");
+    std::fs::write(
+        &live,
+        source.replace(OPERAND, "sigreg(model.encode(x), slices = 4)"),
+    )
+    .unwrap();
+    let flowing = run(live.to_str().unwrap());
+    assert_eq!(
+        bits(&init_values(&flowing, "Joint.w")),
+        bits(&init_values(&stopped, "Joint.w")),
+        "one seed, one start"
+    );
+    assert_ne!(
+        bits(&final_values(&flowing, "Joint.w")),
+        bits(&init_values(&flowing, "Joint.w")),
+        "without stop_gradient the sigreg gradient moves w:\n{flowing}"
+    );
 }
