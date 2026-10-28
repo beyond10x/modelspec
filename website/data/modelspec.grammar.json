@@ -17,6 +17,7 @@
     "attention",
     "cross_entropy",
     "dropout",
+    "sigreg",
     "xavier_uniform",
     "zeros",
     "ones",

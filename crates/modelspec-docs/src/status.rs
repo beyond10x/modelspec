@@ -477,6 +477,15 @@ pub const CAPABILITIES: &[Capability] = &[
         "/docs/concepts/bert-operators",
     ),
     shipped(
+        "Training",
+        "`sigreg`",
+        "Not yet released: `sigreg(z, slices = M)`, LeJEPA's SIGReg, the Epps–Pulley statistic of M unit directions drawn anew each step against the standard normal, with its gradient checked against central differences, on the CPU backend; --backend vulkan answers E-TARGET-011 at the call.",
+        Evidence::Test(
+            "crates/modelspec-runtime/tests/gradients_sigreg.rs::gradients_sigreg_match_central_differences_at_a_fixed_projection",
+        ),
+        "/docs/reference/operators",
+    ),
+    shipped(
         "BERT operators",
         "No Vulkan kernel yet for muon",
         "Since 0.15.0: train --backend vulkan and ir --stage kernel answer E-TARGET-011 for a `muon` step at its train block, before a device is opened; it trains with --backend cpu. The BERT operators and AdamW have Vulkan kernels.",

@@ -91,6 +91,9 @@ pub enum VerifyError {
     ParamDType { param: ParamId, ty: TensorType },
     #[error("output {output} is not f32; an i32 value is read only as ids")]
     IntegerOutput { output: ValueId },
+    /// A source operator the lowering expands ([`ops::expanded`]), such as `Sigreg`.
+    #[error("{node} is the source operator {op}, which lowering expands; Tensor IR never holds it")]
+    Expanded { node: ValueId, op: &'static str },
 }
 
 /// Per-thread counts of the verifier's work, for the tests of a runtime that verifies once per
@@ -197,6 +200,12 @@ pub fn verify(program: &TensorProgram) -> Result<(), VerifyError> {
             _ => &node.ty,
         };
         check_concrete(Site::Value(node.id), &node.ty)?;
+        if ops::expanded(&node.op) {
+            return Err(VerifyError::Expanded {
+                node: node.id,
+                op: node.op.name(),
+            });
+        }
         let inferred = ops::infer(&node.op, &operand_types, Some(declared)).map_err(|source| {
             VerifyError::Op {
                 node: node.id,
@@ -2505,6 +2514,34 @@ mod tests {
     #[test]
     fn an_embedding_over_i32_ids_verifies() {
         assert_eq!(verify(&lookup()), Ok(()));
+    }
+
+    /// `Sigreg` types a source call, but the lowering expands it: a Tensor IR node of it is
+    /// refused, and its expansion `ReduceMean(SigregColumns(MatMul(z, proj)))` verifies.
+    #[test]
+    fn a_sigreg_node_is_refused_and_its_expansion_verifies() {
+        let mut b = crate::ir::tensor::TensorProgramBuilder::new();
+        let z = b.input("z", TensorType::f32(&[33, 8])).unwrap();
+        let s = b.push(TensorOp::Sigreg { slices: 16 }, &[z]).unwrap();
+        b.output(s).unwrap();
+        assert_eq!(
+            verify(&b.finish()),
+            Err(VerifyError::Expanded {
+                node: s,
+                op: "Sigreg"
+            })
+        );
+
+        let mut b = crate::ir::tensor::TensorProgramBuilder::new();
+        let z = b.input("z", TensorType::f32(&[33, 8])).unwrap();
+        let proj = b
+            .input("M.forward.sigreg#0", TensorType::f32(&[8, 16]))
+            .unwrap();
+        let p = b.matmul(z, proj).unwrap();
+        let columns = b.sigreg_columns(p).unwrap();
+        let loss = b.reduce_mean(columns).unwrap();
+        b.output(loss).unwrap();
+        assert_eq!(verify(&b.finish()), Ok(()));
     }
 
     /// A parameter is `f32`, read or not.

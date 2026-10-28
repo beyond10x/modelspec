@@ -1708,7 +1708,8 @@ mod tests {
                 "softmax",
                 "attention",
                 "cross_entropy",
-                "dropout"
+                "dropout",
+                "sigreg"
             ]
         );
     }

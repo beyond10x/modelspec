@@ -92,6 +92,11 @@ impl Element for Counted {
     fn ln(self) -> Self {
         Counted(self.0.ln())
     }
+
+    fn sin_cos(self) -> (Self, Self) {
+        let (sin, cos) = <f32 as Element>::sin_cos(self.0);
+        (Counted(sin), Counted(cos))
+    }
 }
 
 /// The clones `f` makes on this thread, and its result.

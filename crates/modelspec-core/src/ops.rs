@@ -157,14 +157,29 @@ const P: NamedParameter = NamedParameter {
     kind: NamedKind::Probability,
 };
 
+/// `slices = <integer>` of `sigreg`, the number of random projections.
+const SLICES: NamedParameter = NamedParameter {
+    name: "slices",
+    kind: NamedKind::PositiveInteger,
+};
+
 /// The named compile-time arguments the source operator `op` takes, every one of them required,
 /// in the order [`with_named`] takes their values; empty for an operator that takes none.
 pub fn named_parameters(op: &TensorOp) -> &'static [NamedParameter] {
     match op {
         TensorOp::Attention { .. } => &[HEADS],
         TensorOp::Dropout { .. } => &[P],
+        TensorOp::Sigreg { .. } => &[SLICES],
         _ => &[],
     }
+}
+
+/// Whether `op` is a source operator that the lowering expands into other ops, so that Tensor IR
+/// never holds it: `Sigreg`, which becomes `ReduceMean(SigregColumns(MatMul(z, proj)))` over the
+/// projection input of its site (DESIGN.md § 2.2). The type checker types its call through
+/// [`infer`] like any other; the verifier refuses it.
+pub fn expanded(op: &TensorOp) -> bool {
+    matches!(op, TensorOp::Sigreg { .. })
 }
 
 /// `op` with the values of its named arguments, one per entry of [`named_parameters`] and in its
@@ -175,6 +190,9 @@ pub fn with_named(op: &TensorOp, values: &[NamedValue]) -> TensorOp {
             TensorOp::Attention { heads: *heads }
         }
         (TensorOp::Dropout { .. }, [NamedValue::Float(p)]) => TensorOp::Dropout { p: *p },
+        (TensorOp::Sigreg { .. }, [NamedValue::Integer(slices)]) => {
+            TensorOp::Sigreg { slices: *slices }
+        }
         _ => op.clone(),
     }
 }
@@ -226,7 +244,9 @@ pub fn arity(op: &TensorOp) -> usize {
         | TensorOp::SumRows
         | TensorOp::Gelu
         | TensorOp::Softmax
-        | TensorOp::Sqrt => 1,
+        | TensorOp::Sqrt
+        | TensorOp::Sigreg { .. }
+        | TensorOp::SigregColumns => 1,
         TensorOp::Add
         | TensorOp::Sub
         | TensorOp::Mul
@@ -241,7 +261,8 @@ pub fn arity(op: &TensorOp) -> usize {
         | TensorOp::SoftmaxGrad
         | TensorOp::Dropout { .. }
         | TensorOp::DropoutGrad { .. }
-        | TensorOp::Div => 2,
+        | TensorOp::Div
+        | TensorOp::SigregColumnsGrad => 2,
         TensorOp::LayerNorm | TensorOp::LayerNormGradX | TensorOp::CrossEntropy => 3,
         TensorOp::Attention { .. } | TensorOp::CrossEntropyGrad => 4,
         TensorOp::AttentionGradQ { .. }
@@ -476,6 +497,28 @@ pub fn infer(
             }
             Ok(operands[1 - index].clone())
         }
+        TensorOp::Sigreg { .. } => {
+            rank(name, operands[0], 2)?;
+            Ok(scalar_of(operands[0]))
+        }
+        TensorOp::SigregColumns => {
+            let p = operands[0];
+            rank(name, p, 2)?;
+            Ok(TensorType {
+                dtype: p.dtype,
+                shape: vec![p.shape[1]],
+            })
+        }
+        TensorOp::SigregColumnsGrad => {
+            let (p, g) = (operands[0], operands[1]);
+            same_dtype(name, p, g)?;
+            rank(name, p, 2)?;
+            rank(name, g, 1)?;
+            if g.shape[0] != p.shape[1] {
+                return Err(shape_mismatch(name, p, g));
+            }
+            Ok(p.clone())
+        }
     }
 }
 
@@ -576,9 +619,10 @@ pub trait GradientSink {
 /// op receives the sum of its broadcast contribution. Returns `Ok(None)` for the internal
 /// gradient ops `ReluGrad`, `BroadcastScalar`, `EmbeddingGrad`, `SumRows`, `GeluGrad`,
 /// `LayerNormGradX`, `LayerNormGradGamma`, `SoftmaxGrad`, `AttentionGradQ`, `AttentionGradK`,
-/// `AttentionGradV`, `CrossEntropyGrad` and `DropoutGrad`, which have no rule, and for the internal
-/// optimizer ops `Sqrt` and `Div`, which only the `Optimizer` subgraph of an AdamW step has and
-/// through which no gradient is taken.
+/// `AttentionGradV`, `CrossEntropyGrad`, `DropoutGrad` and `SigregColumnsGrad`, which have no
+/// rule, for the internal optimizer ops `Sqrt` and `Div`, which only the `Optimizer` subgraph of
+/// an AdamW step has and through which no gradient is taken, and for the source operator
+/// `Sigreg`, which the lowering expands ([`expanded`]) and the verifier refuses in Tensor IR.
 ///
 /// The rules, for `Y = op(A, B, C)` and `G = dL/dY`:
 ///
@@ -601,6 +645,7 @@ pub trait GradientSink {
 /// | `Attention` | `attention_grad_q(A, B, C, D, G)` (`AttentionGradQ`: `scale * dS K` per sequence and head) | `attention_grad_k(A, B, C, D, G)` (`AttentionGradK`: `scale * dS^T Q`, 0 at a masked key) | `attention_grad_v(A, B, C, D, G)` (`AttentionGradV`: `P^T G`, 0 at a masked key) |
 /// | `CrossEntropy` | `cross_entropy_grad(A, B, C, G)` (`CrossEntropyGrad`: `G * C[n] / sum(C) * (P[n, v] - [v = B[n]])`) | none: `B` is `i32` labels | none: `C` is constant weights |
 /// | `Dropout` | `dropout_grad(B, G)` (`DropoutGrad`: `G * (1 / (1 - p))` where the mask of token `B` keeps the element, 0 elsewhere) | none: `B` is the `i32` RNG token | |
+/// | `SigregColumns` | `sigreg_columns_grad(A, G)` (`SigregColumnsGrad`: `2 G[m] sum_j c_j t_j (S_j cos(t_j A) - (C_j - phi_j) sin(t_j A))` in column `m`) | | |
 ///
 /// The constants `1 / numel` and `2 / numel` are `f32` scalars. `Mse`'s `B` is a target in a
 /// training program, an input that receives no gradient; a trainable `B` receives `-dA`.
@@ -616,7 +661,10 @@ pub trait GradientSink {
 /// softmax `P` of `A` through the loss's own code path, and gives zero everywhere when
 /// `sum(C) = 0`. `Dropout`'s operand `B` is the site's RNG token, which takes no gradient;
 /// `DropoutGrad` recomputes the mask from the same token through the code path of `Dropout`, so
-/// no mask is stored, and multiplies by the same `f32` scale `1 / (1 - p)`.
+/// no mask is stored, and multiplies by the same `f32` scale `1 / (1 - p)`. `SigregColumnsGrad`
+/// recomputes the column means `C_j` and `S_j` of `cos(t_j A)` and `sin(t_j A)` through the code
+/// path of `SigregColumns`; the projection that `sigreg` multiplies `z` by is an internal input,
+/// which takes no gradient, so `MatMul`'s rule gives `dz`.
 pub fn gradient<S: GradientSink + ?Sized>(
     sink: &mut S,
     op: &TensorOp,
@@ -768,6 +816,11 @@ pub fn gradient<S: GradientSink + ?Sized>(
                 out[0] = Some(sink.emit(TensorOp::DropoutGrad { p: *p }, &[operands[1], g])?);
             }
         }
+        TensorOp::SigregColumns => {
+            if want(0) {
+                out[0] = Some(sink.emit(TensorOp::SigregColumnsGrad, &[operands[0], g])?);
+            }
+        }
         TensorOp::ReluGrad
         | TensorOp::BroadcastScalar { .. }
         | TensorOp::EmbeddingGrad { .. }
@@ -782,7 +835,9 @@ pub fn gradient<S: GradientSink + ?Sized>(
         | TensorOp::CrossEntropyGrad
         | TensorOp::DropoutGrad { .. }
         | TensorOp::Sqrt
-        | TensorOp::Div => {
+        | TensorOp::Div
+        | TensorOp::Sigreg { .. }
+        | TensorOp::SigregColumnsGrad => {
             return Ok(None);
         }
     }
@@ -1616,5 +1671,59 @@ mod tests {
         assert!(named_parameters(&TensorOp::CrossEntropy).is_empty());
         assert_eq!(operand_dtype(&TensorOp::CrossEntropyGrad, 1), DType::I32);
         assert_eq!(operand_dtype(&TensorOp::CrossEntropyGrad, 3), DType::F32);
+    }
+
+    /// `sigreg(z: f32[N, K], slices = M) -> f32[]`; `z` of another rank is a rank error, an
+    /// `i32` `z` an operand dtype error; `slices` is a positive integer and the op is expanded by
+    /// the lowering.
+    #[test]
+    fn sigreg_types_a_rank_2_f32_operand_to_a_scalar() {
+        let op = with_named(&TensorOp::Sigreg { slices: 1 }, &[NamedValue::Integer(16)]);
+        assert_eq!(op, TensorOp::Sigreg { slices: 16 });
+        assert_eq!(named_parameters(&op), &[SLICES]);
+        assert_eq!(SLICES.kind.integer(0), None);
+        assert!(expanded(&op));
+        assert!(!expanded(&TensorOp::SigregColumns));
+        assert_eq!(source_arity(&op), 1);
+        assert!(constant_operands(&op).is_empty());
+        assert_eq!(infer(&op, &[&f32(&[33, 8])], None), Ok(f32(&[])));
+        assert_eq!(
+            infer(&op, &[&f32(&[8])], None),
+            Err(OpError::Rank {
+                op: "Sigreg",
+                expected: 2,
+                got: f32(&[8]),
+            })
+        );
+        assert_eq!(
+            infer(&op, &[&i32(&[33, 8])], None),
+            Err(OpError::OperandDType {
+                op: "Sigreg",
+                index: 0,
+                expected: DType::F32,
+                got: i32(&[33, 8]),
+            })
+        );
+    }
+
+    /// `SigregColumns(P: [N, M]) -> [M]`; `SigregColumnsGrad(P, G: [M]) -> [N, M]`, a `G` of
+    /// another length a shape mismatch; the gradient of `SigregColumns` is `SigregColumnsGrad`
+    /// of its operand and the adjoint.
+    #[test]
+    fn sigreg_columns_and_its_gradient_type_per_column() {
+        let p = f32(&[33, 16]);
+        assert_eq!(infer(&TensorOp::SigregColumns, &[&p], None), Ok(f32(&[16])));
+        assert_eq!(
+            infer(&TensorOp::SigregColumnsGrad, &[&p, &f32(&[16])], None),
+            Ok(p.clone())
+        );
+        assert_eq!(
+            infer(&TensorOp::SigregColumnsGrad, &[&p, &f32(&[15])], None),
+            Err(OpError::ShapeMismatch {
+                op: "SigregColumnsGrad",
+                lhs: p.clone(),
+                rhs: f32(&[15]),
+            })
+        );
     }
 }

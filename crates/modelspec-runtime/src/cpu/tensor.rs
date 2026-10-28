@@ -65,6 +65,11 @@ pub trait Element:
     /// the interpreter's `cross_entropy` and its gradient use it (DESIGN.md § 4).
     fn ln(self) -> Self;
 
+    /// `(sin(self), cos(self))`: for `f32` the shared written-out routine [`sin_cos`], the one a
+    /// Vulkan kernel is to reproduce, and for `f64` the standard library, the reference math of the
+    /// gradient checks. The interpreter's `SigregColumns` and its gradient use it (DESIGN.md § 4).
+    fn sin_cos(self) -> (Self, Self);
+
     /// The AVX2 `matmul` kernel for this type ([`Kernel::Avx2`](super::matmul::Kernel::Avx2)):
     /// writes `out`, `m * n` elements, and returns true; `m`, `k` and `n` are nonzero. False,
     /// writing nothing, where the type has no such kernel or the CPU no AVX2 or no FMA, which is
@@ -121,6 +126,10 @@ impl Element for f32 {
         f32::ln(self)
     }
 
+    fn sin_cos(self) -> (Self, Self) {
+        sin_cos(self)
+    }
+
     #[cfg(target_arch = "x86_64")]
     fn matmul_avx2(
         out: &mut [Self],
@@ -170,6 +179,10 @@ impl Element for f64 {
         f64::ln(self)
     }
 
+    fn sin_cos(self) -> (Self, Self) {
+        (f64::sin(self), f64::cos(self))
+    }
+
     #[cfg(target_arch = "x86_64")]
     fn matmul_avx2(
         out: &mut [Self],
@@ -181,6 +194,54 @@ impl Element for f64 {
         n: usize,
     ) -> bool {
         super::matmul::avx2::f64x4::matmul(out, a, lhs, b, m, k, n)
+    }
+}
+
+/// `2 / pi` in `f32`, the scale of the quadrant count of [`sin_cos`].
+const FRAC_2_PI: f32 = std::f32::consts::FRAC_2_PI;
+/// `pi / 2` in three parts, `P1 + P2 + P3`, for Cody–Waite reduction: twice the constants `DP1`,
+/// `DP2` and `DP3` of Cephes `sinf`.
+const PI_2_P1: f32 = 1.570_312_5;
+const PI_2_P2: f32 = 4.837_513e-4;
+const PI_2_P3: f32 = 7.549_79e-8;
+/// The minimax polynomial of `(sin(r) / r - 1) / z` in `z = r^2` on `|r| <= pi/4`, highest degree
+/// first (Cephes `sinf`).
+const SIN_P: [f32; 3] = [-1.951_529_6e-4, 8.332_161e-3, -1.666_665_5e-1];
+/// The minimax polynomial of `(cos(r) - 1 + z/2) / z^2` in `z = r^2` on `|r| <= pi/4`, highest
+/// degree first (Cephes `cosf`).
+const COS_P: [f32; 3] = [2.443_315_7e-5, -1.388_731_6e-3, 4.166_664_6e-2];
+
+/// `(sin(x), cos(x))` in `f32` by one written-out sequence of `f32` operations, the same on every
+/// platform, so that a Vulkan kernel can emit it instruction for instruction (DESIGN.md § 4,
+/// story:jepa-sigreg-cpu). It is not the platform `sinf`, and not `GLSL.std.450 Sin`, which only
+/// promises `2^-11` absolute error on `[-pi, pi]`.
+///
+/// The quadrant count is `q = round_ties_even(x * (2/pi))`. Cody–Waite reduction gives
+/// `r = x - q (P1 + P2 + P3)` as three fused multiply-adds, `r = fma(-q, P1, x)`, then `P2`, then
+/// `P3`. With `z = r * r`, `s = r + (z ((S0 z + S1) z + S2)) r` and
+/// `c = (1 - z/2) + (z ((C0 z + C1) z + C2)) z`: Horner's rule with each step a fused
+/// multiply-add, `1 - z/2` as `fma(-0.5, z, 1)`, and each final `(p * z) * r + r` and
+/// `(p * z) * z + (1 - z/2)` the product `p * z` rounded and then one fused multiply-add. The
+/// quadrant `q mod 4` (two's complement of `q as i32`) maps `(s, c)` to `(s, c)`, `(c, -s)`,
+/// `(-s, -c)` or `(-c, s)`.
+///
+/// Measured: within 1.43 `f32` ulp of `f64` `sin` and `cos` at every multiple of `1/256` in
+/// `[-64, 64]` (`tests/sin_cos.rs`). Outside `|x| < 2^9 pi/2` the reduction loses accuracy.
+pub fn sin_cos(x: f32) -> (f32, f32) {
+    let q = (x * FRAC_2_PI).round_ties_even();
+    let r = (-q).mul_add(PI_2_P1, x);
+    let r = (-q).mul_add(PI_2_P2, r);
+    let r = (-q).mul_add(PI_2_P3, r);
+    let z = r * r;
+    let s = SIN_P[0].mul_add(z, SIN_P[1]).mul_add(z, SIN_P[2]);
+    let s = (s * z).mul_add(r, r);
+    let c = COS_P[0].mul_add(z, COS_P[1]).mul_add(z, COS_P[2]);
+    let c = (c * z).mul_add(z, (-0.5f32).mul_add(z, 1.0));
+    match (q as i32) & 3 {
+        0 => (s, c),
+        1 => (c, -s),
+        2 => (-s, -c),
+        _ => (-c, s),
     }
 }
 

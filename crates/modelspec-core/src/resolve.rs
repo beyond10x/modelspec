@@ -61,7 +61,7 @@ pub mod codes {
 /// The built-in operators a source call may name, and the Tensor IR op each one is. An operator
 /// that takes named compile-time arguments (`crate::ops::named_parameters`) is listed with each
 /// at its smallest value; the checker replaces them with the call's (`crate::ops::with_named`).
-pub static OPERATORS: [(&str, TensorOp); 17] = [
+pub static OPERATORS: [(&str, TensorOp); 18] = [
     ("matmul", TensorOp::MatMul),
     ("add", TensorOp::Add),
     ("sub", TensorOp::Sub),
@@ -79,6 +79,7 @@ pub static OPERATORS: [(&str, TensorOp); 17] = [
     ("attention", TensorOp::Attention { heads: 1 }),
     ("cross_entropy", TensorOp::CrossEntropy),
     ("dropout", TensorOp::Dropout { p: 0.0 }),
+    ("sigreg", TensorOp::Sigreg { slices: 1 }),
 ];
 
 /// The Tensor IR op the source operator `name` is.

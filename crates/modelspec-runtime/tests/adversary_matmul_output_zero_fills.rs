@@ -68,6 +68,11 @@ impl Element for Plain {
     fn ln(self) -> Self {
         Plain(self.0.ln())
     }
+
+    fn sin_cos(self) -> (Self, Self) {
+        let (sin, cos) = <f64 as Element>::sin_cos(self.0);
+        (Plain(sin), Plain(cos))
+    }
 }
 
 fn operands<T: Element>(m: usize, k: usize, n: usize) -> (Vec<T>, Vec<T>) {

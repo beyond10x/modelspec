@@ -1079,7 +1079,9 @@ fn train(
         let observe = |o: &Observed<'_>| {
             let metrics = match (&held_out, files.eval_every) {
                 (Some(held_out), Some(n)) if o.step.is_multiple_of(n) || o.step == end => {
-                    let measured = held_out.evaluate(compiled, o.values).map_err(Box::new)?;
+                    let measured = held_out
+                        .evaluate_at(compiled, o.values, o.step)
+                        .map_err(Box::new)?;
                     evals.insert(o.step, measured);
                     metric_samples(measured)
                 }
@@ -1108,7 +1110,7 @@ fn train(
         };
         let eval = match &loaded.eval {
             None => None,
-            Some(data) => match runner::evaluate_dense(compiled, data, &run.state.values) {
+            Some(data) => match runner::evaluate_dense_at(compiled, data, &run.state.values, end) {
                 Ok(eval) => Some(eval),
                 Err(error) => break 'run Err(error.into()),
             },

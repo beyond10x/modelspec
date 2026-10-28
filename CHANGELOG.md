@@ -9,6 +9,10 @@ history.
 
 ## [Unreleased]
 
+### Added
+
+- The loss operator `sigreg(z, slices = M)`, LeJEPA's SIGReg: the Epps–Pulley statistic of `M` random unit directions, drawn anew each step on Philox stream tag 6, against the standard normal, with its gradient, on the CPU backend; `--backend vulkan` answers E-TARGET-011 (story:jepa-sigreg-cpu).
+
 ## [0.21.0] - 2026-10-28
 
 ModelSpec measures its first workload beyond the MLP sweep. `examples/transformer_block.mspec`, the two encoder layers of BERT-tiny, trains on the CPU and through Vulkan, and the bench `transformer_block` times it at batches of 8, 32 and 128 sequences against the same program in PyTorch CUDA, eager and `torch.compile` (`opponents/transformer_block/`), whose `--compare-step` takes one SGD step from a ModelSpec checkpoint and compares every parameter with ModelSpec's checkpoint of the next step. On an RTX 3090 at batch 8, ModelSpec Vulkan takes a median of 93.9 ms per step against 3.9 ms for PyTorch eager and 2.0 ms for `torch.compile`, and the Benchmarks page gains a Transformer block section with the figures of all three batches. `modelspec train --write-batch` writes the synthetic batch a run trains on, synthetic data feeds an input read only as an attention key mask with all ones, and the CPU interpreter accumulates every whole-tensor sum in `f64`, so the losses a CPU run prints can change in their last digits. The specification and CI use ESS 0.72.0.

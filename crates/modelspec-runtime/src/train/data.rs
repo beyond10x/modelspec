@@ -48,7 +48,9 @@ use modelspec_core::ir::training::{DataDecl, TrainConfig};
 use modelspec_core::lower::LoweredProgram;
 use thiserror::Error;
 
-use super::init::{InitError, Stream, initialize, standard_normal};
+use super::init::{
+    InitError, Stream, initialize, sigreg_projections, standard_normal, with_projections,
+};
 use crate::cpu::{HostTensor, RuntimeError, evaluate_all};
 use crate::dataset::SplitRole;
 use crate::dataset::mlm::{
@@ -127,6 +129,9 @@ pub enum DataError {
 /// when it is `i32`, with [`E_DATA_002`] unless the target has the type of the prediction, and
 /// with [`E_DATA_003`] at the first declaration of `lowered.declared_inputs` the program has no
 /// `Input` node for.
+///
+/// The teacher's targets read the projection of step 0 at every `sigreg` site
+/// (story:jepa-sigreg-cpu); the projections are not data inputs.
 pub fn synthetic(
     config: &TrainConfig,
     lowered: &LoweredProgram,
@@ -142,7 +147,9 @@ pub fn synthetic(
     for mask in config.inputs.iter().filter(|d| masks.contains(&d.name)) {
         inputs.insert(mask.name.clone(), filled(&mask.name, &mask.ty, 1.0)?);
     }
-    let mut values = evaluate_all(forward, &inputs, &teacher)?.values;
+    let projections = sigreg_projections(forward, config.seed, 0)?;
+    let mut values =
+        evaluate_all(forward, &with_projections(&inputs, &projections), &teacher)?.values;
     let y = values
         .remove(&prediction)
         .ok_or(DataError::UndefinedPrediction(prediction))?;

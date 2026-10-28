@@ -9,10 +9,12 @@
 //!   order, the [`Stream`] tag, and the 64-bit id of what is drawn — for a parameter its
 //!   canonical parameter id ([`canonical_id`] of its canonical path), for a data input the
 //!   [`canonical_id`] of its name, for a dropout site at a step the [`dropout_id`] of its site
-//!   name and the step.
+//!   name and the step, and for a `sigreg` site at a step the [`dropout_id`] of its site name
+//!   and the step.
 //!
 //! Stream tags: 0 initial values, 1 teacher, 2 synthetic data, 3 masking, 4 dropout, 5 epoch
-//! order. A dropout element is kept when its uniform draw `u >= p` ([`dropout_keeps`]).
+//! order, 6 `sigreg` projections. A dropout element is kept when its uniform draw `u >= p`
+//! ([`dropout_keeps`]).
 //!
 //! Element `i` takes block `philox4x32_10(counter(i), key)`. A uniform draw uses word 0 as
 //! `u = (w + 0.5) / 2^32`, in `(0, 1)`; a standard normal draw is Box-Muller over words 0 and 1,
@@ -23,12 +25,15 @@
 //! `modelspec train --init <dir>` replaces the draw of a parameter by the values of its file in
 //! `<dir>` ([`read_params`]).
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::io::ErrorKind;
 use std::path::Path;
 
 use modelspec_core::diag::Diagnostic;
-use modelspec_core::ir::tensor::{Dim, Initializer, ParamId, TensorProgram, TensorType};
+use modelspec_core::ir::tensor::{
+    Dim, Initializer, ParamId, TensorNode, TensorOp, TensorProgram, TensorType,
+};
 use thiserror::Error;
 
 use super::data::{DataError, E_DATA_007, non_finite, read_f32, unreadable};
@@ -51,6 +56,9 @@ pub enum Stream {
     /// The epoch order of packed `Train` sequences (`dataset::mlm`; coordinator decision D26),
     /// tag 5, after [`Stream::Dropout`].
     DataOrder,
+    /// The `sigreg` projections of the training step, one draw per site and step
+    /// ([`sigreg_projection`]; story:jepa-sigreg-cpu), tag 6, after [`Stream::DataOrder`].
+    Projection,
 }
 
 impl Stream {
@@ -63,6 +71,7 @@ impl Stream {
             Stream::Masking => 3,
             Stream::Dropout => 4,
             Stream::DataOrder => 5,
+            Stream::Projection => 6,
         }
     }
 }
@@ -225,6 +234,90 @@ pub fn standard_normal(
     draw(seed, stream, name, ty, |b| {
         (-2.0 * uniform(b[0]).ln()).sqrt() * (std::f64::consts::TAU * uniform(b[1])).cos()
     })
+}
+
+/// The Box-Muller standard normal of a block, `sqrt(-2 ln u0) * cos(2 pi u1)` in `f64`.
+fn normal(block: [u32; 4]) -> f64 {
+    (-2.0 * uniform(block[0]).ln()).sqrt() * (std::f64::consts::TAU * uniform(block[1])).cos()
+}
+
+/// The projection of the `sigreg` site `site` at step `step`, of type `ty` `[K, M]`
+/// (story:jepa-sigreg-cpu, DESIGN.md § 2.3): element `i = k M + m` is the Box-Muller normal of
+/// [`block`] `i` on [`Stream::Projection`] under `seed` with the draw id [`dropout_id`] of the
+/// site and step, in `f64`; each column is divided by its `f64` L2 norm, the squares summed in
+/// ascending row order from row 0, and each quotient is rounded to `f32` once. Every column is a
+/// unit direction, so the projection draws `M` directions on the sphere, new at every step.
+pub fn sigreg_projection(
+    seed: u64,
+    site: &str,
+    step: u64,
+    ty: &TensorType,
+) -> Result<HostTensor<f32>, InitError> {
+    let (shape, last) = dims(site, ty)?;
+    let [_, columns] = shape[..] else {
+        return Err(InitError::Rank {
+            path: site.into(),
+            ty: ty.clone(),
+        });
+    };
+    let id = dropout_id(site, step);
+    let normals: Vec<f64> = (0..=last)
+        .map(|i| normal(block(seed, Stream::Projection, id, i)))
+        .collect();
+    let columns = columns as usize;
+    let norms: Vec<f64> = (0..columns)
+        .map(|m| {
+            let mut squares = normals.iter().skip(m).step_by(columns).map(|v| v * v);
+            let first = squares.next().unwrap_or(0.0);
+            squares.fold(first, |acc, s| acc + s).sqrt()
+        })
+        .collect();
+    let data = normals
+        .iter()
+        .enumerate()
+        .map(|(i, v)| (v / norms[i % columns]) as f32)
+        .collect();
+    Ok(HostTensor::from_parts(shape, data))
+}
+
+/// The projection of every `sigreg` site of `program` at step `step`, keyed by its input name
+/// ([`modelspec_core::ir::training::sigreg_projection_inputs`]): the inputs the training host
+/// supplies beside the batch.
+pub fn sigreg_projections(
+    program: &TensorProgram,
+    seed: u64,
+    step: u64,
+) -> Result<BTreeMap<String, HostTensor<f32>>, InitError> {
+    modelspec_core::ir::training::sigreg_projection_inputs(program)
+        .into_iter()
+        .filter_map(|value| match program.node(value) {
+            Some(TensorNode {
+                op: TensorOp::Input { name },
+                ty,
+                ..
+            }) => Some((name, ty)),
+            _ => None,
+        })
+        .map(|(name, ty)| Ok((name.clone(), sigreg_projection(seed, name, step, ty)?)))
+        .collect()
+}
+
+/// `inputs` with `projections` added beside them: `inputs` itself when there are none, so a
+/// program without a `sigreg` site copies nothing.
+pub(crate) fn with_projections<'a>(
+    inputs: &'a BTreeMap<String, HostTensor<f32>>,
+    projections: &BTreeMap<String, HostTensor<f32>>,
+) -> Cow<'a, BTreeMap<String, HostTensor<f32>>> {
+    if projections.is_empty() {
+        return Cow::Borrowed(inputs);
+    }
+    let mut merged = inputs.clone();
+    merged.extend(
+        projections
+            .iter()
+            .map(|(name, value)| (name.clone(), value.clone())),
+    );
+    Cow::Owned(merged)
 }
 
 /// A tensor of type `ty` whose every element is `value`. It draws nothing, so it addresses no
