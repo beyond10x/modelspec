@@ -79,8 +79,19 @@ file is checked against the rows of each `embedding` table and the classes of ea
 step and prints the mean batch loss, with an accuracy only when the loss compares the model
 output with the block's one `f32` target; a classifier whose one target is `i32` labels prints
 the loss alone. `--init` runs on `--backend cpu` only, `--data` and `--eval`
-on both backends; `--eval` beside a packed `--data` is a usage error. Each refusal of a data source has its code, `E-DATA-001` to
-`E-DATA-009` and `E-DATA-011` ([Diagnostics](../reference/diagnostics.md#training-data)).
+on both backends; `--eval` beside a packed `--data` is a usage error.
+
+`modelspec infer --data <dir> --function <name> --out <file>` runs one model function, which need
+not be `forward` and need not return a loss, with a checkpoint's parameters over every block of a
+dense directory. Each argument of the function reads `<dir>/<argument>.f32` or `.i32` as a
+declaration of `--eval` does, its `i32` values checked against the `embedding` tables and
+`cross_entropy` logits of the function that read them, and the file receives the function's
+result for every block in block order, one row per sample, little-endian `f32` with no header. A
+function that calls `sigreg` reads the projection of the checkpoint's step on both backends. The
+file is written beside itself and renamed into place, so an existing file is replaced whole or
+kept, and a `--out` that is the model file, the checkpoint or one of the argument files is
+refused. Each refusal of a data source has its code, `E-DATA-001` to
+`E-DATA-011` ([Diagnostics](../reference/diagnostics.md#training-data)).
 
 ## Reproducible to the byte
 

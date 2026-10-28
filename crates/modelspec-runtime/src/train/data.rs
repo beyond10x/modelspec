@@ -25,6 +25,13 @@
 //! before the first step on either backend, a value that is negative or not below the rows of an
 //! `embedding` table or the classes of `cross_entropy` logits that read it is [`E_DATA_011`]
 //! ([`refuse_out_of_range`]), so the device never receives an id it would read out of bounds.
+//! `infer --data <dir> --function <name>` reads the same layout with the arguments of the model
+//! function in place of the declarations ([`dense_function`]; story:decider-infer-on-data), its
+//! `i32` arguments held to the bounds of the function's program by the same [`E_DATA_011`], and
+//! a name that is no function of the model, or a function whose result is not one row per
+//! sample ([`row_elements`]), is [`E_DATA_010`] naming the model's functions; so is an output
+//! file that resolves to a file the run reads, naming `--out` and that file
+//! ([`refuse_out_reading`]).
 //!
 //! A declaration the loss does not read has no `Input` node after dead-code elimination, so the
 //! program could not take a value for it; it is refused at its declaration ([`E_DATA_003`])
@@ -102,12 +109,21 @@ pub const E_DATA_006: Code = Code::new("E-DATA-006");
 pub const E_DATA_007: Code = Code::new("E-DATA-007");
 /// `order.u32` holds fewer than `steps · B` indices, or an index not below the sample count.
 pub const E_DATA_008: Code = Code::new("E-DATA-008");
-/// The `--eval` sample count is not a multiple of the batch dimension `B`.
+/// The `--eval` sample count, or the sample count of the `--data` directory of
+/// `infer --function`, is not a multiple of the batch dimension `B`.
 pub const E_DATA_009: Code = Code::new("E-DATA-009");
-/// A value of a dense `i32` file of `--data` or `--eval` is negative or not below the rows of an
-/// `embedding` table that reads it as ids, or the classes of `cross_entropy` logits that read it
-/// as labels; refused once the files are read and before the first step, on either backend,
-/// naming the file, the element position and the bound. (E-DATA-010 is reserved.)
+/// The `--function` of `infer --data` names no function of the model, or a function whose
+/// result is not one row per sample of the data: one that takes no argument, or, when the
+/// arguments share a leading dimension `B` above 1, one whose result does not have it; each of
+/// these refusals names the functions the model declares. Also the `--out` of
+/// `infer --data`, resolved, names a file the run reads: the model file, the checkpoint or an
+/// argument's file; the refusal names `--out` and that file (story:decider-infer-on-data).
+pub const E_DATA_010: Code = Code::new("E-DATA-010");
+/// A value of a dense `i32` file of `--data` or `--eval`, or of an argument's file of
+/// `infer --data --function`, is negative or not below the rows of an `embedding` table that
+/// reads it as ids, or the classes of `cross_entropy` logits that read it as labels; refused
+/// once the files are read and before the first step or block, on either backend, naming the
+/// file, the element position and the bound.
 pub const E_DATA_011: Code = Code::new("E-DATA-011");
 
 /// The data of a synthetic run.
@@ -618,6 +634,174 @@ fn read_dense(
         }
     }
     refuse_unread(lowered)?;
+    let mut data = read_files(dir, &decls)?;
+    refuse_out_of_range(dir, &decls, &data.tensors, lowered)?;
+    data.compared = compared.map(|t| t.name.clone());
+    Ok(data)
+}
+
+/// The data of `infer --data <dir> --function <name>` (story:decider-infer-on-data): the file
+/// of every argument of the function, the `input` declarations of `function`, the
+/// configuration of [`modelspec_core::compile::compile_function`] whose lowered program is
+/// `lowered`, read as [`dense_eval`] reads the declarations of a `train` block, with no order
+/// and no compared target. Refused with [`E_DATA_010`] at the function, naming the model's
+/// `functions`, when it takes no argument, so no file binds a sample to it; with
+/// [`E_DATA_007`] as [`read_tensor`] refuses an argument's file and when the files differ in
+/// sample count; with [`E_DATA_011`] at the first `i32` value outside a bound of `lowered`
+/// that reads it ([`refuse_out_of_range`]); and with [`E_DATA_009`] when the sample count is
+/// not a multiple of `B`.
+pub fn dense_function(
+    dir: &Path,
+    name: &str,
+    function: &TrainConfig,
+    lowered: &LoweredProgram,
+    functions: &[String],
+) -> Result<DenseData, DataError> {
+    let decls: Vec<(&DataDecl, &'static str)> =
+        function.inputs.iter().map(|d| (d, "argument")).collect();
+    if decls.is_empty() {
+        return Err(DataError::Refused(
+            Diagnostic::new(
+                E_DATA_010,
+                format!("the function `{name}` takes no argument a data file could bind"),
+            )
+            .at(function.span.clone())
+            .with("function", name)
+            .with("functions", functions.join(", ")),
+        ));
+    }
+    let data = read_files(dir, &decls)?;
+    refuse_out_of_range(dir, &decls, &data.tensors, lowered)?;
+    if !data.samples.is_multiple_of(data.batch) {
+        return Err(DataError::Refused(
+            Diagnostic::new(E_DATA_009, "the data is not a whole number of blocks")
+                .with("directory", dir.display().to_string())
+                .with("samples", data.samples.to_string())
+                .with("batch", data.batch.to_string()),
+        ));
+    }
+    Ok(data)
+}
+
+/// [`E_DATA_010`]: the model declares no function `name`; `functions` are those it declares.
+pub fn unknown_function(name: &str, functions: &[String]) -> DataError {
+    DataError::Refused(
+        Diagnostic::new(
+            E_DATA_010,
+            format!("the model declares no function `{name}`"),
+        )
+        .with("function", name)
+        .with("functions", functions.join(", ")),
+    )
+}
+
+/// The values of one row of the output of `infer --data --function` (`spec/domains/data.yaml`,
+/// `InferenceOutputFile`): one row per sample of a block of `batch` samples, so the result of
+/// the function `name`, of type `output`, is `[B, d1, …]` when `batch` is above 1, a row
+/// `d1 × …` values, and a row is the whole result when `batch` is 1. A result whose leading
+/// dimension is not `B`, when `B` is above 1, is not one row per sample and is refused with
+/// [`E_DATA_010`] naming the model's `functions`.
+pub fn row_elements(
+    name: &str,
+    output: &TensorType,
+    batch: usize,
+    functions: &[String],
+) -> Result<usize, DataError> {
+    let (shape, elements) = static_shape(name, output)?;
+    if batch == 1 {
+        return Ok(elements);
+    }
+    match shape.first() {
+        Some(&leading) if leading == batch as u64 => Ok(elements / batch),
+        _ => Err(DataError::Refused(
+            Diagnostic::new(
+                E_DATA_010,
+                format!("the result of the function `{name}` is not one row per sample"),
+            )
+            .with("function", name)
+            .with("result", output.to_string())
+            .with("batch", batch.to_string())
+            .with("functions", functions.join(", ")),
+        )),
+    }
+}
+
+/// The files `infer --data <dir> --function` reads for the arguments of `function`, the
+/// configuration of [`modelspec_core::compile::compile_function`], each with what it binds:
+/// [`dense_file`] of every argument.
+pub fn function_files(dir: &Path, function: &TrainConfig) -> Vec<(String, PathBuf)> {
+    function
+        .inputs
+        .iter()
+        .map(|decl| (format!("argument `{}`", decl.name), dense_file(dir, decl)))
+        .collect()
+}
+
+/// [`E_DATA_010`] when the output file `out` of `infer --data --function` resolves to one of
+/// `reads`, the files the run reads, each with what it is: the run would overwrite its own
+/// input. Both sides are canonicalized, a missing file by its canonical parent and its name,
+/// and on Unix an existing `out` also matches a file with its device and inode (a hard link).
+/// A file that cannot be resolved matches nothing.
+pub fn refuse_out_reading(out: &Path, reads: &[(String, PathBuf)]) -> Result<(), DataError> {
+    let Some(target) = resolved(out) else {
+        return Ok(());
+    };
+    for (what, file) in reads {
+        if resolved(file).as_ref() == Some(&target) || same_file(out, file) {
+            return Err(DataError::Refused(
+                Diagnostic::new(E_DATA_010, "`--out` names a file the run reads")
+                    .with("--out", out.display().to_string())
+                    .with(what.as_str(), file.display().to_string()),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// `path` canonicalized, or, when it does not exist, its canonical parent joined with its
+/// name; `None` when neither resolves.
+fn resolved(path: &Path) -> Option<PathBuf> {
+    if let Ok(path) = path.canonicalize() {
+        return Some(path);
+    }
+    let name = path.file_name()?;
+    let parent = match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
+    };
+    parent.canonicalize().ok().map(|parent| parent.join(name))
+}
+
+/// Whether `a` and `b` both exist and are one file: the same device and inode.
+#[cfg(unix)]
+fn same_file(a: &Path, b: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match (std::fs::metadata(a), std::fs::metadata(b)) {
+        (Ok(a), Ok(b)) => a.dev() == b.dev() && a.ino() == b.ino(),
+        _ => false,
+    }
+}
+
+/// Without device and inode numbers, canonical paths alone decide.
+#[cfg(not(unix))]
+fn same_file(_: &Path, _: &Path) -> bool {
+    false
+}
+
+/// The dense file of `decl` in `dir`: `<name>.f32` when it is `f32`, `<name>.i32` when `i32`.
+fn dense_file(dir: &Path, decl: &DataDecl) -> PathBuf {
+    let extension = match decl.ty.dtype {
+        DType::F32 => "f32",
+        DType::I32 => "i32",
+    };
+    dir.join(format!("{}.{extension}", decl.name))
+}
+
+/// The files of `dir` of the declarations `decls`, each with its role, in that order: `B` and
+/// the samples of each, without an order or a compared target. Refused with [`E_DATA_007`] at
+/// the first file that cannot be read as samples ([`read_tensor`]), and when the files differ in
+/// sample count.
+fn read_files(dir: &Path, decls: &[(&DataDecl, &'static str)]) -> Result<DenseData, DataError> {
     let shapes = decls
         .iter()
         .map(|(decl, _)| static_shape(&decl.name, &decl.ty))
@@ -649,13 +833,12 @@ fn read_dense(
         }
         return Err(DataError::Refused(diagnostic));
     }
-    refuse_out_of_range(dir, &decls, &tensors, lowered)?;
     Ok(DenseData {
         batch,
         samples,
         tensors,
         order: None,
-        compared: compared.map(|t| t.name.clone()),
+        compared: None,
     })
 }
 
@@ -794,11 +977,11 @@ fn read_tensor(
     shape: Vec<u64>,
     sample: usize,
 ) -> Result<DenseTensor, DataError> {
-    let (extension, other) = match decl.ty.dtype {
-        DType::F32 => ("f32", "i32"),
-        DType::I32 => ("i32", "f32"),
+    let other = match decl.ty.dtype {
+        DType::F32 => "i32",
+        DType::I32 => "f32",
     };
-    let path = dir.join(format!("{}.{extension}", decl.name));
+    let path = dense_file(dir, decl);
     let what = format!("the data file of the {role} `{}`", decl.name);
     let read = match decl.ty.dtype {
         DType::F32 => read_f32(&path).map(DenseValues::F32),

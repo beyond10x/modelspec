@@ -867,6 +867,173 @@ fn dense_named_jepa_sigreg_stop_gradient_cpu_trains_reproducibly() {
     assert_eq!(first, second);
 }
 
+/// The values of every `param @<path>: <type> = [v, ...]` line of `stdout`, by path.
+fn final_params(stdout: &str) -> BTreeMap<String, Vec<f32>> {
+    stdout
+        .lines()
+        .filter_map(|line| line.strip_prefix("param @"))
+        .map(|rest| {
+            let (name, rest) = rest.split_once(": ").expect("`@<path>: <type> = [..]`");
+            let (_, list) = rest.split_once(" = [").expect("a value list");
+            let list = list.strip_suffix(']').expect("a closed list");
+            let values = list
+                .split(", ")
+                .map(|v| v.parse::<f32>().expect("an f32"))
+                .collect();
+            (name.to_owned(), values)
+        })
+        .collect()
+}
+
+/// The `JEPA` program with one more model function, `spread`, that calls `sigreg`: every
+/// embedding row scaled by the `sigreg` statistic of the embedding, one row per token.
+fn jepa_with_spread() -> String {
+    JEPA.replace(
+        "    fn forward(",
+        "    fn spread(tokens: Tensor<i32, [32]>) -> Tensor<f32, [32, 8]> {\n        \
+         return mul(embedding(table, tokens), sigreg(embedding(table, tokens), slices = 4));\n    \
+         }\n\n    fn forward(",
+    )
+}
+
+/// The little-endian `f32` values of `file`.
+fn read_f32(file: &Path) -> Vec<f32> {
+    let bytes = std::fs::read(file).expect("the output file");
+    let (words, rest) = bytes.as_chunks::<4>();
+    assert!(
+        rest.is_empty(),
+        "{} is not whole f32 values",
+        file.display()
+    );
+    words.iter().map(|&w| f32::from_le_bytes(w)).collect()
+}
+
+/// `modelspec infer <file> --backend <backend> --checkpoint <ckpt> --data <data> --function
+/// <function> --out <out>`.
+fn infer(
+    file: &Path,
+    backend: &str,
+    ckpt: &Path,
+    data: &Path,
+    function: &str,
+    out: &Path,
+) -> Output {
+    modelspec(&[
+        "infer",
+        path(file),
+        "--backend",
+        backend,
+        "--checkpoint",
+        path(ckpt),
+        "--data",
+        path(data),
+        "--function",
+        function,
+        "--out",
+        path(out),
+    ])
+}
+
+/// A JEPA checkpoint: the case `name` of `source` trained 3 steps on the CPU from the dense
+/// directory of `jepa_data(31, 64)` (`tokens.i32`, `y.f32`), with `--checkpoint` after the last
+/// step. Returns the case root, the model file, the data directory, the checkpoint and the
+/// stdout of the run.
+fn jepa_checkpoint(name: &str, source: &str) -> (PathBuf, PathBuf, PathBuf, PathBuf, String) {
+    let (root, file) = case(name, source);
+    let data = root.join("data");
+    write_dir(&data, &jepa_data(31, 64));
+    let ckpt = root.join("run.msckpt");
+    let stdout = ok(&train(
+        &file,
+        "cpu",
+        &data,
+        &["--steps", "3", "--checkpoint", path(&ckpt)],
+    ));
+    assert!(ckpt.is_file(), "{stdout}");
+    (root, file, data, ckpt, stdout)
+}
+
+/// infer-function-jepa (CPU part; the device part is `device::` of the same name): a non-loss
+/// function of a JEPA checkpoint trained 3 steps from a dense directory with `i32` tokens runs
+/// over that directory on the CPU (story:decider-infer-on-data, story:jepa-sigreg-cpu,
+/// story:decider-dense-named-data). `embed` writes, for every one of the 64 tokens, the row of
+/// the checkpoint's `table` it names, bit for bit; `forward` writes 64 finite rows of 8.
+#[test]
+fn infer_function_on_a_jepa_checkpoint_matches_on_cpu_and_vulkan() {
+    let (root, file, data, ckpt, trained) = jepa_checkpoint("infer_jepa_cpu", JEPA);
+    let table = final_params(&trained)
+        .remove("Jepa.table")
+        .unwrap_or_else(|| panic!("no `param @Jepa.table` line: {trained}"));
+    assert_eq!(table.len(), 16 * 8);
+    let out = root.join("embed.f32");
+    let stdout = ok(&infer(&file, "cpu", &ckpt, &data, "embed", &out));
+    assert_eq!(
+        stdout,
+        format!("function embed blocks 2 rows 64 out {}\n", out.display())
+    );
+    let embedded = read_f32(&out);
+    assert_eq!(embedded.len(), 64 * 8);
+    let tokens = jepa_data(31, 64);
+    for (row, &token) in i32s(&tokens, "tokens").iter().enumerate() {
+        let token = usize::try_from(token).expect("a token id");
+        let expected: Vec<u32> = table[8 * token..8 * token + 8]
+            .iter()
+            .map(|v| v.to_bits())
+            .collect();
+        let got: Vec<u32> = embedded[8 * row..8 * row + 8]
+            .iter()
+            .map(|v| v.to_bits())
+            .collect();
+        assert_eq!(got, expected, "row {row}, token {token}");
+    }
+    let out = root.join("forward.f32");
+    ok(&infer(&file, "cpu", &ckpt, &data, "forward", &out));
+    let predicted = read_f32(&out);
+    assert_eq!(predicted.len(), 64 * 8);
+    assert!(predicted.iter().all(|v| v.is_finite()), "{predicted:?}");
+}
+
+/// infer-function-sigreg (CPU part; the device part is `device::` of the same name): a model
+/// function that calls `sigreg` runs over the dense directory on the CPU with the projection of
+/// the checkpoint's step, as `infer` without `--data` reads it, and writes 64 finite rows of 8.
+#[test]
+fn infer_function_calling_sigreg_matches_on_cpu_and_vulkan() {
+    let (root, file, data, ckpt, _) = jepa_checkpoint("infer_sigreg_cpu", &jepa_with_spread());
+    let out = root.join("spread.f32");
+    let stdout = ok(&infer(&file, "cpu", &ckpt, &data, "spread", &out));
+    assert_eq!(
+        stdout,
+        format!("function spread blocks 2 rows 64 out {}\n", out.display())
+    );
+    let spread = read_f32(&out);
+    assert_eq!(spread.len(), 64 * 8);
+    assert!(spread.iter().all(|v| v.is_finite()), "{spread:?}");
+}
+
+/// infer-function-e-data-011: an `i32` argument value that is not below the rows of the
+/// `embedding` table of the function that reads it is E-DATA-011, as for `train --data`, naming
+/// the file, the element position and the bound, before anything is written.
+#[test]
+fn infer_function_refuses_an_i32_argument_outside_its_bound_with_e_data_011() {
+    let (root, file, _, ckpt, _) = jepa_checkpoint("infer_out_of_range", JEPA);
+    let mut tokens = jepa_data(31, 64);
+    if let Some(Values::I32(ids)) = tokens.get_mut("tokens") {
+        ids[37] = 16;
+    }
+    let bad = root.join("bad");
+    write_dir(&bad, &tokens);
+    let out = root.join("forward.f32");
+    let output = infer(&file, "cpu", &ckpt, &bad, "forward", &out);
+    let stderr = text(&output.stderr);
+    assert_eq!(output.status.code(), Some(1), "stderr: {stderr}");
+    assert!(stderr.starts_with("E-DATA-011: "), "stderr: {stderr}");
+    assert!(stderr.contains("tokens.i32"), "stderr: {stderr}");
+    assert!(stderr.contains("37"), "stderr: {stderr}");
+    assert!(stderr.contains("0 <= value < 16"), "stderr: {stderr}");
+    assert!(!out.exists(), "stderr: {stderr}");
+    assert!(output.stdout.is_empty());
+}
+
 #[cfg(feature = "vulkan")]
 #[allow(dead_code)]
 #[path = "../../modelspec-runtime/tests/common/mod.rs"]
@@ -947,22 +1114,60 @@ mod device {
         assert!((g - c).abs() <= bound(c), "eval: vulkan {g}, cpu {c}");
     }
 
-    /// The values of every `param @<path>: <type> = [v, ...]` line of `stdout`, by path.
-    fn final_params(stdout: &str) -> BTreeMap<String, Vec<f32>> {
-        stdout
-            .lines()
-            .filter_map(|line| line.strip_prefix("param @"))
-            .map(|rest| {
-                let (name, rest) = rest.split_once(": ").expect("`@<path>: <type> = [..]`");
-                let (_, list) = rest.split_once(" = [").expect("a value list");
-                let list = list.strip_suffix(']').expect("a closed list");
-                let values = list
-                    .split(", ")
-                    .map(|v| v.parse::<f32>().expect("an f32"))
-                    .collect();
-                (name.to_owned(), values)
-            })
-            .collect()
+    /// `infer --data --function <function>` of the checkpoint `ckpt` of `file` on the CPU and on
+    /// Vulkan: the same stdout line but for the file, the same row count of `row` values, and
+    /// every value of the device's within the run tolerance of the CPU's.
+    fn infer_agrees(
+        file: &Path,
+        root: &Path,
+        data: &Path,
+        ckpt: &Path,
+        function: &str,
+        row: usize,
+    ) {
+        let (cpu_out, gpu_out) = (
+            root.join(format!("{function}-cpu.f32")),
+            root.join(format!("{function}-vulkan.f32")),
+        );
+        let cpu = ok(&infer(file, "cpu", ckpt, data, function, &cpu_out));
+        let gpu = ok(&infer(file, "vulkan", ckpt, data, function, &gpu_out));
+        assert_eq!(
+            cpu.replace(path(&cpu_out), "OUT"),
+            gpu.replace(path(&gpu_out), "OUT")
+        );
+        let (c, g) = (read_f32(&cpu_out), read_f32(&gpu_out));
+        assert_eq!(c.len(), 64 * row, "{cpu}");
+        assert_eq!(g.len(), c.len(), "{gpu}");
+        let outside: Vec<String> = c
+            .iter()
+            .zip(&g)
+            .enumerate()
+            .filter(|&(_, (&c, &g))| (f64::from(g) - f64::from(c)).abs() > bound(f64::from(c)))
+            .map(|(i, (c, g))| format!("{function}[{i}]: vulkan {g}, cpu {c}"))
+            .collect();
+        assert!(outside.is_empty(), "{outside:#?}");
+    }
+
+    /// infer-function-jepa (device part): `embed` and `forward` of a JEPA checkpoint trained 3
+    /// steps from a dense directory with `i32` tokens, on Vulkan, print the CPU run's line and
+    /// write as many rows, every value within the run tolerance of the CPU's.
+    #[test]
+    #[ignore = "needs a Vulkan device"]
+    fn infer_function_on_a_jepa_checkpoint_matches_on_cpu_and_vulkan() {
+        let (root, file, data, ckpt, _) = jepa_checkpoint("infer_jepa_vulkan", JEPA);
+        infer_agrees(&file, &root, &data, &ckpt, "embed", 8);
+        infer_agrees(&file, &root, &data, &ckpt, "forward", 8);
+    }
+
+    /// infer-function-sigreg (device part): a function that calls `sigreg`, on Vulkan, reads
+    /// the projection of the checkpoint's step as the CPU run does, so every value is within the
+    /// run tolerance of the CPU's.
+    #[test]
+    #[ignore = "needs a Vulkan device"]
+    fn infer_function_calling_sigreg_matches_on_cpu_and_vulkan() {
+        let (root, file, data, ckpt, _) =
+            jepa_checkpoint("infer_sigreg_vulkan", &jepa_with_spread());
+        infer_agrees(&file, &root, &data, &ckpt, "spread", 8);
     }
 
     /// dense-named-jepa-vulkan: the JEPA-shaped program trains on the device from the dense

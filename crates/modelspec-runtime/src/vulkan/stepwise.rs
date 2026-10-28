@@ -36,7 +36,9 @@
 //!   too when the accuracy is measured ([`DenseData::compared_target`]); the host sums the
 //!   losses in `f64` in batch order and counts the correct target rows as
 //!   [`crate::train::runner::evaluate_dense`] does, and shows the result at the last step
-//!   ([`StepSeen::dense_eval`]).
+//!   ([`StepSeen::dense_eval`]); with [`StepwiseOptions::dense_predictions`] each batch's
+//!   prediction comes down too and is kept in batch order, which `infer --data --function` runs
+//!   with 0 steps on the step of a model function (story:decider-infer-on-data).
 //!
 //! Dropout is off where the CPU run has none: in the evaluation of the loss after the last
 //! update and in held-out evaluation, which the CPU run computes with the forward program. There
@@ -108,6 +110,9 @@ pub struct StepwiseOptions<'o, 'h> {
     /// The dense eval data of `--eval`, measured with the parameters after the last update as
     /// [`crate::train::runner::evaluate_dense`] measures it on the CPU.
     pub dense_eval: Option<&'o DenseData>,
+    /// With [`Self::dense_eval`], where the prediction of every dense eval batch goes, appended
+    /// in batch order: what `infer --data --function` writes (story:decider-infer-on-data).
+    pub dense_predictions: Option<&'o mut Vec<f32>>,
     /// The checkpoints to write on the way.
     pub checkpoints: Option<Checkpoints<'o>>,
 }
@@ -210,6 +215,7 @@ pub fn train_stepwise(
         data,
         eval,
         dense_eval,
+        mut dense_predictions,
         checkpoints,
     } = options;
     let end = start.checked_add(config.steps).ok_or_else(|| {
@@ -450,9 +456,10 @@ pub fn train_stepwise(
     }
 
     // What comes down: the loss every step and every dense eval batch, the prediction of one
-    // batch after each held-out batch and each dense eval batch whose accuracy is measured, the
-    // parameters and moments at the end and at each checkpoint.
-    let predicted_batches = eval_batches + dense_compared.map_or(0, |_| dense_batches);
+    // batch after each held-out batch and each dense eval batch whose accuracy is measured or
+    // whose prediction is kept, the parameters and moments at the end and at each checkpoint.
+    let dense_predicted = dense_compared.is_some() || dense_predictions.is_some();
+    let predicted_batches = eval_batches + if dense_predicted { dense_batches } else { 0 };
     let download = download_bytes(&prediction, predicted_batches);
     let mut loss_download = device.download_buffer(download.loss)?;
     let mut prediction_download = download_buffer(device, download.prediction)?;
@@ -696,7 +703,7 @@ pub fn train_stepwise(
                         record(&mut recording, loss_actions.iter().copied(), &buffers, None)?;
                         recording.barrier(Barrier::ComputeToTransfer);
                         recording.copy_region(loss, plan.loss_view.offset, &loss_download, 0, 4)?;
-                        if dense_compared.is_some() {
+                        if dense_predicted {
                             let download = prediction_download.as_ref().ok_or_else(|| {
                                 VulkanRunError::Plan("a dense eval without its download".into())
                             })?;
@@ -714,19 +721,25 @@ pub fn train_stepwise(
                         device.submit(recorded)?.wait()?;
                     }
                     sum += f64::from(loss_download.read_f32()?[0]);
-                    if let (Some(target), Some(download)) =
-                        (dense_compared, prediction_download.as_mut())
-                    {
+                    let predicted = match prediction_download.as_mut() {
+                        Some(download) if dense_predicted => Some(download.read_f32()?),
+                        _ => None,
+                    };
+                    if let (Some(target), Some(predicted)) = (dense_compared, &predicted) {
                         dense.fill_eval_batch(b, &mut dense_batch);
                         let target = dense_batch.inputs().get(target).ok_or_else(|| {
                             VulkanRunError::Plan(format!(
                                 "the dense eval target {target} is missing"
                             ))
                         })?;
-                        let (batch_correct, batch_rows) =
-                            correct_rows(&download.read_f32()?, target);
+                        let (batch_correct, batch_rows) = correct_rows(predicted, target);
                         correct += batch_correct;
                         rows += batch_rows;
+                    }
+                    if let (Some(kept), Some(predicted)) =
+                        (dense_predictions.as_deref_mut(), predicted)
+                    {
+                        kept.extend_from_slice(&predicted);
                     }
                 }
                 Some(Eval {

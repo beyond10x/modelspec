@@ -937,6 +937,7 @@ fn train(
                         .zip(files.eval_every)
                         .map(|(held_out, every)| stepwise::Evaluation { held_out, every }),
                     dense_eval: loaded.eval.as_ref(),
+                    dense_predictions: None,
                     checkpoints: files.checkpoint_every.map(|every| Checkpoints {
                         every,
                         write: &mut write,

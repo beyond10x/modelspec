@@ -54,10 +54,12 @@ fn stages() -> Vec<Stage> {
             about: "The data loaders of `modelspec train`, synthetic data, the dense files of \
                     `--data`, `--init` and `--eval` and the packed masked-language-model \
                     directory of `--data`, which run after a file checks and before the first \
-                    step. A `--data` directory without `binding.json` is dense, and when every \
-                    declaration names a batch tensor its refusal follows a line naming the \
-                    directory and `binding.json`; `--eval` beside a packed `--data` is a usage \
-                    error, exit 2, because `--eval` reads dense evaluation tensors.",
+                    step, and of `modelspec infer --data --function`, the dense files of a \
+                    model function's arguments, read before the function runs and the output \
+                    file is written. A `--data` directory without `binding.json` is dense, and \
+                    when every declaration names a batch tensor its refusal follows a line \
+                    naming the directory and `binding.json`; `--eval` beside a packed `--data` \
+                    is a usage error, exit 2, because `--eval` reads dense evaluation tensors.",
             codes: vec![
                 modelspec_runtime::train::data::E_DATA_001,
                 modelspec_runtime::train::data::E_DATA_002,
@@ -68,6 +70,7 @@ fn stages() -> Vec<Stage> {
                 modelspec_runtime::train::data::E_DATA_007,
                 modelspec_runtime::train::data::E_DATA_008,
                 modelspec_runtime::train::data::E_DATA_009,
+                modelspec_runtime::train::data::E_DATA_010,
                 modelspec_runtime::train::data::E_DATA_011,
             ],
         },
@@ -360,6 +363,8 @@ mod tests {
             "E-TYPE-018",
             "E-DATA-003",
             "E-DATA-004",
+            "E-DATA-010",
+            "E-DATA-011",
             "E-TRAIN-001",
             "E-TARGET-001",
             "E-TARGET-002",

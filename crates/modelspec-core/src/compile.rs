@@ -13,9 +13,9 @@ use crate::artifact::{Backend, CompiledArtifact, E_ARTIFACT_005};
 use crate::autodiff::differentiate;
 use crate::device::DeviceProfile;
 use crate::diag::Diagnostic;
-use crate::hir::Hir;
+use crate::hir::{DataRef, DataRole, Hir, HirData, HirExpr, HirExprKind, HirTrain};
 use crate::ir::kernel::MatMulLimits;
-use crate::ir::tensor::{TensorProgram, ValueId};
+use crate::ir::tensor::{TensorOp, TensorProgram, TensorType, ValueId};
 use crate::ir::training::{OptimizerRule, TrainConfig, TrainingStep, attach};
 use crate::ir::verify::{verify, verify_plan_for, verify_step};
 use crate::lower::{self, LoweredProgram};
@@ -116,6 +116,147 @@ pub fn compile_artifact_for(
     profile: Option<&DeviceProfile>,
 ) -> Result<CompiledArtifact, Vec<Diagnostic>> {
     let compiled = compile_training(path, source)?;
+    artifact_of(&compiled, source, backend, profile)
+}
+
+/// Why [`compile_function`] compiled no function.
+#[derive(Clone, Debug, PartialEq)]
+pub enum FunctionError {
+    /// The file does not compile: its diagnostics, as [`compile_hir`] reports them.
+    Diagnostics(Vec<Diagnostic>),
+    /// The model declares no function `name`; `functions` names the ones it declares, in source
+    /// order.
+    Unknown {
+        name: String,
+        functions: Vec<String>,
+    },
+}
+
+/// The model function `name` of the file compiled as an inference entry
+/// (story:decider-infer-on-data): a [`CompiledTraining`] whose `train` block reads one `input`
+/// per argument of the function, named and typed as the argument and at its span, whose loss
+/// is the function's result itself when it is rank 0 and its `mean` otherwise, and whose
+/// prediction ([`LoweredProgram::prediction`]) is the function's result. The function's body
+/// is lowered as the training loss inlines it, with every dropout the identity
+/// ([`lower::without_dropout`]), into the same parameter table as the file's `train` block, so
+/// a checkpoint of the file supplies its parameters; the step differentiates that loss and
+/// attaches `sgd` at the block's learning rate whatever the block's optimizer, so a Vulkan plan
+/// can be scheduled for it, and nothing ever runs its update. The configuration keeps the
+/// block's seed and steps. The function need not be `forward` and need not return a loss.
+pub fn compile_function(
+    path: &str,
+    source: &str,
+    name: &str,
+) -> Result<CompiledTraining, FunctionError> {
+    let hir = compile_hir(path, source).map_err(FunctionError::Diagnostics)?;
+    let Some(entry) = function_entry(&hir, name) else {
+        return Err(FunctionError::Unknown {
+            name: name.to_owned(),
+            functions: hir.model.functions.iter().map(|f| f.name.clone()).collect(),
+        });
+    };
+    let config = TrainConfig::from_hir(&entry.train);
+    let lowered = lower::lower_predicting(&entry, name)
+        .map_err(|error| vec![compiler_bug("lowering refused checked HIR", &error)])
+        .and_then(|lowered| {
+            let forward = lower::without_dropout(lowered);
+            match verify(&forward.program) {
+                Ok(()) => Ok(forward),
+                Err(error) => Err(vec![compiler_bug(
+                    "the Tensor IR of the function does not verify",
+                    &error,
+                )]),
+            }
+        })
+        .map_err(FunctionError::Diagnostics)?;
+    if lowered.program.node(lowered.prediction).is_none() {
+        return Err(FunctionError::Diagnostics(vec![compiler_bug(
+            "the lowered Tensor IR lost its prediction",
+            &format!("prediction {} is not defined", lowered.prediction),
+        )]));
+    }
+    let training = training_stage(&lowered.program, config.lr, OptimizerRule::Sgd)
+        .map_err(FunctionError::Diagnostics)?;
+    Ok(CompiledTraining {
+        training,
+        forward: lowered,
+        config,
+    })
+}
+
+/// [`compile_function`], then the artifact of its step for `backend`, as
+/// [`compile_artifact`] makes one for the file's `train` block.
+pub fn compile_function_artifact(
+    path: &str,
+    source: &str,
+    name: &str,
+    backend: Backend,
+) -> Result<CompiledArtifact, FunctionError> {
+    let compiled = compile_function(path, source, name)?;
+    artifact_of(&compiled, source, backend, None).map_err(FunctionError::Diagnostics)
+}
+
+/// The checked `hir` with its `train` block replaced by the inference entry of the model
+/// function `name` ([`compile_function`]); `None` when the model declares no such function.
+fn function_entry(hir: &Hir, name: &str) -> Option<Hir> {
+    let (reference, function) = hir.model.function(name)?;
+    let data: Vec<HirData> = function
+        .args
+        .iter()
+        .map(|arg| HirData {
+            role: DataRole::Input,
+            name: arg.name.clone(),
+            ty: arg.ty.clone(),
+            span: arg.span.clone(),
+        })
+        .collect();
+    let call = HirExpr {
+        kind: HirExprKind::Call {
+            function: reference,
+            args: data
+                .iter()
+                .enumerate()
+                .map(|(at, decl)| HirExpr {
+                    kind: HirExprKind::Data(DataRef(at)),
+                    ty: decl.ty.clone(),
+                    span: decl.span.clone(),
+                })
+                .collect(),
+        },
+        ty: function.output.clone(),
+        span: function.span.clone(),
+    };
+    let loss = if function.output.rank() == 0 {
+        call
+    } else {
+        HirExpr {
+            kind: HirExprKind::Op {
+                op: TensorOp::ReduceMean,
+                args: vec![call],
+            },
+            ty: TensorType::f32(&[]),
+            span: function.span.clone(),
+        }
+    };
+    let mut entry = hir.clone();
+    entry.train = HirTrain {
+        data,
+        loss,
+        optimizer: OptimizerRule::Sgd,
+        span: function.span.clone(),
+        ..hir.train.clone()
+    };
+    Some(entry)
+}
+
+/// The artifact of `compiled`, compiled from `source`, for `backend`, scheduled within the
+/// limits of `profile` when there is one ([`compile_artifact_for`]).
+fn artifact_of(
+    compiled: &CompiledTraining,
+    source: &str,
+    backend: Backend,
+    profile: Option<&DeviceProfile>,
+) -> Result<CompiledArtifact, Vec<Diagnostic>> {
     let unsupported = match compiled.training.optimizer.rule {
         OptimizerRule::Sgd | OptimizerRule::AdamW(_) => None,
         OptimizerRule::Muon(_) => Some("muon"),
@@ -494,5 +635,127 @@ mod tests {
                 .contains("calls `model.forward` 2 time(s), not once"),
             "{diagnostic}"
         );
+    }
+
+    /// `forward` returns the loss; `scores` and `bias` read the parameters, `plain` none, and
+    /// `noisy` has a dropout.
+    const FUNCTIONS: &str = "model Two {
+    param w: Tensor<f32, [3, 2]> = xavier_uniform();
+    param b: Tensor<f32, [2]> = zeros();
+
+    fn forward(x: Tensor<f32, [4, 3]>, y: Tensor<f32, []>) -> Tensor<f32, []> {
+        let e = sub(add_rows(matmul(x, w), b), y);
+        return mean(mul(e, e));
+    }
+
+    fn scores(x: Tensor<f32, [4, 3]>) -> Tensor<f32, [4, 2]> {
+        return matmul(x, w);
+    }
+
+    fn plain(x: Tensor<f32, [4, 3]>, ids: Tensor<i32, [4]>) -> Tensor<f32, [4, 3]> {
+        return embedding(x, ids);
+    }
+
+    fn noisy(x: Tensor<f32, [4, 3]>) -> Tensor<f32, [4, 2]> {
+        return dropout(matmul(x, w), p = 0.5);
+    }
+}
+
+train Fit {
+    model = Two;
+    input x: Tensor<f32, [4, 3]>;
+    target y: Tensor<f32, []>;
+    loss = model.forward(x, y);
+    optimizer = adamw(lr = 0.1, weight_decay = 0.01, beta1 = 0.9, beta2 = 0.999, eps = 1e-8, warmup_steps = 1);
+    steps = 3;
+    seed = 5;
+    device = cpu;
+}
+";
+
+    fn input_names(program: &TensorProgram) -> Vec<&str> {
+        program
+            .nodes
+            .iter()
+            .filter_map(|n| match &n.op {
+                TensorOp::Input { name } => Some(name.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A function other than `forward` compiles as an entry: one input per argument, the
+    /// function's result the prediction, its mean the loss, `sgd` whatever the block's
+    /// optimizer, and the file's parameter table.
+    #[test]
+    fn a_named_function_compiles_with_its_arguments_as_inputs_and_its_result_predicted() {
+        let file = compile_training("two.mspec", FUNCTIONS).expect("the file compiles");
+        let compiled = compile_function("two.mspec", FUNCTIONS, "scores").expect("it compiles");
+        let forward = &compiled.forward;
+        assert_eq!(input_names(&forward.program), ["x"]);
+        let prediction = forward.program.node(forward.prediction).unwrap();
+        assert_eq!(prediction.op, TensorOp::MatMul);
+        assert_eq!(prediction.ty, TensorType::f32(&[4, 2]));
+        let loss = forward.program.node(forward.program.outputs[0]).unwrap();
+        assert_eq!(loss.op, TensorOp::ReduceMean);
+        assert_eq!(loss.operands, [forward.prediction]);
+        assert_eq!(compiled.training.optimizer.rule, OptimizerRule::Sgd);
+        assert_eq!(compiled.config.inputs.len(), 1);
+        assert!(compiled.config.targets.is_empty());
+        assert_eq!(compiled.config.seed, file.config.seed);
+        assert_eq!(forward.program.params, file.forward.program.params);
+        compile_function_artifact("two.mspec", FUNCTIONS, "scores", Backend::Vulkan)
+            .expect("its Vulkan artifact compiles");
+    }
+
+    /// `forward` itself is an entry too, its rank-0 result the loss and the prediction.
+    #[test]
+    fn forward_compiles_as_an_entry_with_its_result_as_the_loss() {
+        let compiled = compile_function("two.mspec", FUNCTIONS, "forward").expect("it compiles");
+        let forward = &compiled.forward;
+        assert_eq!(input_names(&forward.program), ["x", "y"]);
+        assert_eq!(forward.program.outputs, [forward.prediction]);
+    }
+
+    /// A function that reads no parameter, with an `i32` argument, compiles; a dropout in the
+    /// function is the identity.
+    #[test]
+    fn a_function_without_parameters_or_with_dropout_compiles() {
+        let plain = compile_function("two.mspec", FUNCTIONS, "plain").expect("it compiles");
+        assert_eq!(input_names(&plain.forward.program), ["x", "ids"]);
+        let noisy = compile_function("two.mspec", FUNCTIONS, "noisy").expect("it compiles");
+        assert!(
+            noisy
+                .training
+                .training
+                .program
+                .nodes
+                .iter()
+                .all(|n| !matches!(n.op, TensorOp::Dropout { .. }))
+        );
+        assert_eq!(input_names(&noisy.forward.program), ["x"]);
+    }
+
+    /// A name that is no function of the model names the ones it declares.
+    #[test]
+    fn an_unknown_function_names_the_functions_of_the_model() {
+        let error = compile_function("two.mspec", FUNCTIONS, "logits").unwrap_err();
+        assert_eq!(
+            error,
+            FunctionError::Unknown {
+                name: "logits".into(),
+                functions: vec![
+                    "forward".into(),
+                    "scores".into(),
+                    "plain".into(),
+                    "noisy".into()
+                ],
+            }
+        );
+        let broken = FUNCTIONS.replace("matmul(x, w);", "matmul(w, x);");
+        assert!(matches!(
+            compile_function("two.mspec", &broken, "scores"),
+            Err(FunctionError::Diagnostics(_))
+        ));
     }
 }

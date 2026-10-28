@@ -141,6 +141,9 @@ Usage: modelspec infer [OPTIONS] --backend <BACKEND>
 | `--backend <BACKEND>` | yes | none | The backend that runs the forward program. One of:<br/>`cpu`: The CPU interpreter<br/>`vulkan`: Vulkan compute on one device, in a build with the vulkan feature |
 | `--checkpoint <PATH>` | yes | none | The .msckpt file whose parameters the forward program reads. |
 | `--device <INDEX>` | no | none | With --backend vulkan, run on the physical device INDEX, in the order the Vulkan loader lists them, instead of device 0. |
+| `--data <DIR>` | no | none | Run the model function --function over every block of B samples of the dense directory DIR instead of the forward program on the synthetic batch: each argument NAME of the function reads DIR/NAME.f32 or DIR/NAME.i32 by its dtype, row-major little-endian, a sample one row along the leading dimension B every argument shares, else the whole argument (B = 1), and the sample count a multiple of B. |
+| `--function <NAME>` | no | none | With --data, the model function to run: any function of the model, not only forward, returning a loss or not. |
+| `--out <FILE>` | no | none | With --data, write the function's result for every block, in block order, to FILE: one row per sample, row-major little-endian f32 with no header, written once every block has run and not at all on a refusal; an existing FILE is replaced whole or kept. A FILE that is the model file, the checkpoint or an argument's file of DIR is refused. |
 
 ## `modelspec inspect-device`
 

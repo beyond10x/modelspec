@@ -298,6 +298,14 @@ mod tests {
             "Usage: modelspec infer [OPTIONS] --backend <BACKEND>\n       --checkpoint <PATH> <PATH>"
         ));
         assert!(page.contains("| `--resume <PATH>` | no | none |"));
+        let (_, infer) = page.split_once("## `modelspec infer`").unwrap();
+        let (infer, _) = infer.split_once("\n## ").unwrap();
+        for option in ["`--data <DIR>`", "`--function <NAME>`", "`--out <FILE>`"] {
+            assert!(
+                infer.contains(&format!("| {option} | no | none |")),
+                "{option}"
+            );
+        }
         assert!(page.contains("Usage: modelspec train [OPTIONS] --backend <BACKEND> <PATH>"));
         assert!(page.contains(
             "Every argument is required and has no default.\n\n| Argument | Meaning |\n|---|---|\n\

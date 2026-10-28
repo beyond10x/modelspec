@@ -43,6 +43,23 @@ types:
       - tensors.count > 0
       - distinct: {in: tensors, as: tensor, by: tensor.name}
 
+  - name: modelspec.data.InferenceOutputFile
+    kind: struct
+    naming:
+      summary: The file `modelspec infer <file> --backend cpu|vulkan --checkpoint <path> --data <dir> --function <name> --out <path>` writes (DESIGN.md § 8, story:decider-infer-on-data). The DenseDataDirectory `<dir>` is read as `--eval` reads it, with the arguments of the model function `function` in place of the train block's declarations, each argument binding the DenseTensorFile of its name, so `<dir>/<argument>.f32` or `<dir>/<argument>.i32` by the argument's dtype; B is the leading dimension every argument shares, else 1; the sample count N must be a multiple of B, else E-DATA-009. The function runs with the checkpoint's parameters on every block of B samples in block order, and the file holds its results one after the other, row-major little-endian with no header, 4 bytes per value, of the function's result dtype (F32; the checker refuses a function that returns I32, E-TYPE-018), so it reads back with the layout of a DenseTensorFile of sample_elements row_elements. rows is N, one row per sample of `<dir>`, each row the function's result for that sample, row_elements values; the function's result is `[B, d1, ...]` when B is above 1, a row being d1 × ... values, and a row is the whole result when B is 1. A name that is not a function of the model, or a function whose result is not one row per sample, is refused with E-DATA-010 naming the model's functions; a path that resolves to a file the run reads (the model file, the checkpoint or an argument's file) is refused with E-DATA-010 naming `--out` and that file; an argument with no file, E-DATA-007; nothing is written on a refusal, and the file is written beside `<path>` and renamed over it, so an existing `<path>` is replaced whole or kept.
+    fields:
+      - name: function
+        type: String
+      - name: dtype
+        type: modelspec.checkpoint.DType
+      - name: row_elements
+        type: Integer
+      - name: rows
+        type: Integer
+    invariants:
+      - row_elements > 0
+      - rows > 0
+
   - name: modelspec.data.ParamInitFile
     kind: struct
     naming:
