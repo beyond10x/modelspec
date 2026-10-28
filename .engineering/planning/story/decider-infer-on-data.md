@@ -9,6 +9,7 @@ relations:
 - decomposes: epic:decider-training-support
 - serves: vision:modelspec
 - depends_on: story:decider-dense-named-data
+- depends_on: story:decider-model-function-calls
 scope:
 - confidence: cited
   path: CHANGELOG.md
@@ -38,11 +39,13 @@ scope:
   path: spec/domains/data.yaml
 - confidence: cited
   path: website
-revision: 4
+revision: 5
 ---
 # infer --data DIR --function NAME --out FILE: score a dense directory with a named model function
 
-`depends_on: story:decider-dense-named-data` (it reads DIR as S1's dense reader does).
+`depends_on: story:decider-dense-named-data` (it reads DIR as S1's dense reader does) and
+`story:decider-model-function-calls`; lands last of the epic's eight, see the epic's § Landing
+order.
 
 ## Outcome
 
@@ -66,6 +69,7 @@ Without `--data`, `infer` behaves as today.
 - Vulkan: `runner::infer` and `infer_on_device`
   (`crates/modelspec-runtime/src/vulkan/runner.rs:327`, `:487`) run the loss steps once with one
   host wait.
+- Codes: E-DATA-009 is the last on main and S1 adds none, so this story takes E-DATA-010.
 
 ## Spec first
 
@@ -97,7 +101,14 @@ spec-validate`, `task schema-generate`.
   to a checkpoint with `--steps 0 --checkpoint`, and `infer --function scores --data DIR --out
   FILE` on a directory of three blocks writes `3·B·C` values equal, bit for bit, to the product
   the test computes on the host.
-- **infer-function-refusals**: an unknown `--function` is refused with a new code naming the
+- **infer-function-stdout**: in the same run, stdout is exactly one line, naming the function
+  (`scores`), the block count (3), the row count (`3·B`) and FILE.
+- **infer-without-data-unchanged**: `infer` of the same fixture and checkpoint without `--data`,
+  `--function` and `--out` exits 0 and prints the two lines it prints today, `prediction: <type> =
+  [...]` and `loss <v>` of `forward` on the synthetic batch of the `train` block, the expected
+  text held in the test; and the existing `infer` tests (`checkpoint_cpu.rs`, `checkpoint_vulkan.rs`
+  and the `adversary_*` tests that run `infer`) pass with no edit to their expectations.
+- **infer-function-refusals**: an unknown `--function` is refused with E-DATA-010 naming the
   model's functions; an argument with no file in DIR with E-DATA-007; a sample count that is not
   a multiple of `B` with E-DATA-009; `--function` or `--out` without `--data` is a usage error
   (exit 2). Nothing is written to FILE on a refusal.

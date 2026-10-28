@@ -8,6 +8,7 @@ summary: A model function calls another by name, parameters passed as arguments,
 relations:
 - decomposes: epic:decider-training-support
 - serves: vision:modelspec
+- depends_on: story:decider-const-tensors
 scope:
 - confidence: cited
   path: CHANGELOG.md
@@ -29,11 +30,12 @@ scope:
   path: crates/modelspec-runtime/tests/gradients_model_calls.rs
 - confidence: cited
   path: website
-revision: 4
+revision: 5
 ---
 # Calls between model functions, inlined
 
-`depends_on: none`
+`depends_on: story:decider-const-tensors`; lands seventh of the epic's eight, see the epic's
+§ Landing order.
 
 ## Outcome
 

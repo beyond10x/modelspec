@@ -7,7 +7,7 @@ title: 'Decider training support: train and score the decider model in ModelSpec
 summary: decider.mspec trains on the CPU and through Vulkan on the decider repository's batches, and infer scores held-out decisions; anything blocking the decider goes first.
 relations:
 - serves: vision:modelspec
-revision: 2
+revision: 3
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-28T12:12:29Z", actor: "human:timo", revision: 2}
 ---
@@ -43,8 +43,11 @@ the language, the compiler, the runtime and the CLI those runs use.
 
 1. `story:decider-dense-named-data` (S1, gap row 1): dense `--data` with any number of named `f32`
    and `i32` inputs and targets, on the CPU and on Vulkan, `--eval` included.
-2. `story:decider-small-operators` (S2, gap rows 5–10): `reshape`, last-axis `concat`,
-   `smooth_l1`, `sqrt`, `abs`, masked `cross_entropy` and negative float literals.
+2. S2, gap rows 5–10, split after the plan critics into three stories that supersede
+   `story:decider-small-operators`, each with its own gradient tests and Vulkan kernels:
+   `story:decider-shape-operators` (S2a: `reshape`, last-axis `concat`),
+   `story:decider-loss-operators` (S2b: `smooth_l1`, masked `cross_entropy`) and
+   `story:decider-elementwise-operators` (S2c: `sqrt`, `abs`, negative float literals).
 3. `story:decider-infer-on-data` (S3, gap row 3): `infer --data DIR --function NAME --out FILE`.
    Depends on S1.
 4. `story:decider-loss-terms-and-rank-probe` (S4, gap row 2): per-term loss records and an
@@ -56,6 +59,16 @@ The gap list ordered rows 1–13 by what blocks first; S2 is placed second becau
 remove most of the workarounds and the bulk of the per-step data (`fold_rows` alone is 4.3 MB a
 step), not because it is a precondition of S3–S6.
 
+## Landing order (the coordinator, 2026-10-28)
+
+The stories land strictly one at a time, each `depends_on` the one before it:
+S1 → S2a → S2b → S2c → S4 → S6 → S5 → S3 (S3 keeps its dependency on S1 as well). The reason:
+they share `train.rs`, `diagnostics.rs`, `resolve.rs`, `vulkan/runner.rs`, `observatory.yaml` and
+the generated UI types, and the CHANGELOG and DESIGN.md revisions are taken in this order. New
+diagnostic codes follow the same order: S2a E-TYPE-027 to 029, S2b E-TYPE-030 and 031, S4
+E-NAME-009 and E-TYPE-032 to 034, S6 E-TYPE-035 to 037, S3 E-DATA-010 (E-TYPE-026 is
+`story:jepa-stop-gradient`'s).
+
 ## Also needed: `epic:jepa-operators`
 
 `decider.mspec` also needs `stop_gradient` and SIGReg (`story:jepa-stop-gradient`,
@@ -65,7 +78,7 @@ every story here is testable on fixtures without them. The closing check below n
 
 ## Done when (the coordinator's closing check)
 
-- S1–S6 implemented, and `epic:jepa-operators` implemented.
+- S1, S2a–S2c and S3–S6 implemented, and `epic:jepa-operators` implemented.
 - The decider fixture S1 adds (`crates/modelspec-cli/tests/fixtures/decider_small.mspec`, the
   decider's program at reduced sizes) is rewritten without the workarounds above, with
   `stop_gradient` and `sigreg`, and trains from a dense directory on the CPU and on Vulkan, the

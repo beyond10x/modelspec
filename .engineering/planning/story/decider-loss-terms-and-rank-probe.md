@@ -8,6 +8,7 @@ summary: record = [...] and probe effective_rank(x) every N in the train block, 
 relations:
 - decomposes: epic:decider-training-support
 - serves: vision:modelspec
+- depends_on: story:decider-elementwise-operators
 scope:
 - confidence: cited
   path: CHANGELOG.md
@@ -55,11 +56,12 @@ scope:
   path: ui/src/generated
 - confidence: cited
   path: website
-revision: 3
+revision: 4
 ---
 # Per-term loss records and an effective_rank probe in the run record
 
-`depends_on: none`
+`depends_on: story:decider-elementwise-operators`; lands fifth of the epic's eight, see the epic's
+§ Landing order.
 
 ## Outcome
 
@@ -70,7 +72,9 @@ value that step's loss was computed from; and every step that is a multiple of t
 interval, and the run's first and last, carries `effective_rank:<let>`, the RankMe effective rank
 (Garrido et al. 2023: `exp` of the entropy of the normalised singular values) of that value,
 computed on the host in `f64`. Both work on `--backend cpu` and `--backend vulkan`, and both reach
-`--record`, `--serve` and the observatory UI through the existing metric samples.
+the run record `--record` writes as existing metric samples; this story promises and tests
+`--record` only, since `--serve` and the observatory UI read the same metric samples of the
+record format.
 
 ## Context
 
@@ -84,6 +88,9 @@ computed on the host in `f64`. Both work on `--backend cpu` and `--backend vulka
 - A Vulkan run keeps values on the device between host waits; per-term scalars travel with the
   loss slots, and a probed value is read back at the probe's steps only, one extra download (and,
   on the whole-run runner, one extra host wait) per probed step.
+- Codes: E-NAME-008 is the last on main; the operator stories that land before this one take
+  E-TYPE-027 to E-TYPE-031 (E-TYPE-026 is `story:jepa-stop-gradient`'s), so this story takes
+  E-NAME-009 and E-TYPE-032 to E-TYPE-034.
 
 ## Spec first
 
@@ -117,11 +124,13 @@ probe produce and on which steps. Then `task spec-validate`, `task schema-genera
 - **record-terms-cpu**: `cargo test -p modelspec-cli --test train_record_terms`: a fixture whose
   loss is `add(a, mul(b, 0.5))` with `record = [a, b];` writes, in `--record`, a metric sample
   `a` and `b` at every step whose weighted sum equals the step's loss within `TOL_F32`.
-- **probe-steps-cpu**: with `probe effective_rank(h) every 3;` over 7 steps, exactly steps 0, 3, 6
-  and 7 carry `effective_rank:h`.
-- **record-refusals**: a recorded name that is not a `let` of `forward`, a non-scalar recorded
-  term, a probe of a value that is not rank-2, and `every 0` are each refused by `check` with
-  their code.
+- **probe-steps-cpu**: with `probe effective_rank(h) every 3;` and `steps = 7`, the record holds
+  8 steps (0 to 7; `RunStarted`: `start_step` through `start_step + steps`), and exactly steps 0,
+  3, 6 and 7 carry `effective_rank:h` (0 the first, 3 and 6 the multiples of 3, 7 the last); steps
+  1, 2, 4 and 5 carry none.
+- **record-refusals**: each refused by `check` at the setting: a recorded name that is not a `let`
+  of `forward` with E-NAME-009, a non-scalar recorded term with E-TYPE-032, a probe of a value
+  that is not rank-2 with E-TYPE-033, and `every 0` with E-TYPE-034.
 - **record-terms-vulkan** (`#[ignore]`d, `--ignored`): the same fixtures on `--backend vulkan`,
   each term and probe within the DESIGN.md § 9 gate 5 tolerance of the CPU run, and `--stats`
   showing host waits increased by the probed steps only.
