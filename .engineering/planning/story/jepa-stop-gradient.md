@@ -2,7 +2,7 @@
 format: aep.planning-md/3
 id: story:jepa-stop-gradient
 kind: story
-status: active
+status: implemented
 title: 'stop_gradient: a value passes forward and no gradient flows back'
 summary: A source operator whose backward rule is zero, removed after autodiff, with E-TYPE-026 for a parameter that reaches the loss only through it.
 relations:
@@ -27,10 +27,11 @@ scope:
   path: ui/src/generated
 - confidence: cited
   path: website
-revision: 12
+revision: 13
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-28T10:45:52Z", actor: "human:timo", revision: 2}
 - {from: "proposed", to: "active", at: "2026-10-28T10:45:52Z", actor: "human:timo", revision: 3}
+- {from: "active", to: "implemented", at: "2026-10-28T18:59:49Z", actor: "human:timo", revision: 13, decided_on: {"recorded":{"test_result":1}}}
 ---
 
 `id: story:jepa-stop-gradient` · depends_on: none · size: about half a day

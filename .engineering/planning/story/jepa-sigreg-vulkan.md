@@ -2,7 +2,7 @@
 format: aep.planning-md/3
 id: story:jepa-sigreg-vulkan
 kind: story
-status: proposed
+status: implemented
 title: sigreg on Vulkan, held to the CPU oracle
 summary: Two GPU kernels for SIGReg with FLOP counting rules and per-step projection upload, within the run tolerance of the CPU.
 relations:
@@ -24,9 +24,11 @@ scope:
   path: crates/modelspec-runtime/src/vulkan
 - confidence: cited
   path: crates/modelspec-runtime/tests
-revision: 9
+revision: 11
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-28T10:45:53Z", actor: "human:timo", revision: 2}
+- {from: "proposed", to: "active", at: "2026-10-28T18:59:49Z", actor: "human:timo", revision: 10, decided_on: {"recorded":{"test_result":1}}}
+- {from: "active", to: "implemented", at: "2026-10-28T18:59:49Z", actor: "human:timo", revision: 11, decided_on: {"recorded":{"test_result":1}}}
 ---
 
 `id: story:jepa-sigreg-vulkan` · depends_on: `story:jepa-sigreg-cpu` · size: about one day

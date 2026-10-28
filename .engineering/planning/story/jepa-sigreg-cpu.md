@@ -2,7 +2,7 @@
 format: aep.planning-md/3
 id: story:jepa-sigreg-cpu
 kind: story
-status: active
+status: implemented
 title: sigreg on the CPU interpreter, gradient-checked
 summary: A built-in SIGReg loss operator in characteristic-function form with per-step projections, finite-difference gradient check and a run that lowers the statistic.
 relations:
@@ -32,10 +32,11 @@ scope:
   path: ui/src/generated
 - confidence: cited
   path: website
-revision: 14
+revision: 15
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-28T10:45:52Z", actor: "human:timo", revision: 2}
 - {from: "proposed", to: "active", at: "2026-10-28T11:57:32Z", actor: "human:timo", revision: 14}
+- {from: "active", to: "implemented", at: "2026-10-28T18:59:49Z", actor: "human:timo", revision: 15, decided_on: {"recorded":{"test_result":1}}}
 ---
 
 `id: story:jepa-sigreg-cpu` · depends_on: `story:jepa-stop-gradient` (shared files: `resolve.rs`,

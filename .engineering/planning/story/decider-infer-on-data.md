@@ -2,7 +2,7 @@
 format: aep.planning-md/3
 id: story:decider-infer-on-data
 kind: story
-status: draft
+status: implemented
 title: infer --data DIR --function NAME --out FILE
 summary: Score a dense directory with a named model function and write its rows.
 relations:
@@ -39,7 +39,11 @@ scope:
   path: spec/domains/data.yaml
 - confidence: cited
   path: website
-revision: 5
+revision: 8
+transitions:
+- {from: "draft", to: "proposed", at: "2026-10-28T18:59:49Z", actor: "human:timo", revision: 6, decided_on: {"recorded":{"test_result":1}}}
+- {from: "proposed", to: "active", at: "2026-10-28T18:59:49Z", actor: "human:timo", revision: 7, decided_on: {"recorded":{"test_result":1}}}
+- {from: "active", to: "implemented", at: "2026-10-28T18:59:49Z", actor: "human:timo", revision: 8, decided_on: {"recorded":{"test_result":1}}}
 ---
 # infer --data DIR --function NAME --out FILE: score a dense directory with a named model function
 
