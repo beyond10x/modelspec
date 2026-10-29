@@ -37,8 +37,12 @@ fn fake_loader() -> PathBuf {
 #[test]
 fn adversary2_create_device_refuses_or_reports_a_vulkan_1_1_device_truthfully() {
     let library = fake_loader();
-    // SAFETY: this test binary has one test, so no other thread reads the environment.
-    unsafe { std::env::set_var("MODELSPEC_VULKAN_LIBRARY", &library) };
+    // SAFETY: this test binary has one test, so no other thread reads the environment. The
+    // stand-in has no validation layer, so the run never asks for one.
+    unsafe {
+        std::env::set_var("MODELSPEC_VULKAN_LIBRARY", &library);
+        std::env::remove_var("MODELSPEC_VK_VALIDATION");
+    }
     let vulkan = Vulkan::load().expect("the stand-in loader opens");
     let candidates = vulkan.candidates().expect("the devices are probed");
     let old = candidates[1].profile.vulkan_api_version;

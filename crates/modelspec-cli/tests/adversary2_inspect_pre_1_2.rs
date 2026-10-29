@@ -47,6 +47,7 @@ fn inspect(device: &str, format: &str) -> Output {
             format,
         ])
         .env("MODELSPEC_VULKAN_LIBRARY", fake_loader())
+        .env_remove("MODELSPEC_VK_VALIDATION")
         .output()
         .expect("modelspec runs")
 }
