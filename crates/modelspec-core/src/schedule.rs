@@ -11,8 +11,8 @@
 //! Each row-wise op is one Dispatch of workgroups of 64 ([`rowwise_kernel`]): `Embedding`,
 //! `EmbeddingGrad`, `AddRows`, `Gelu`, `GeluGrad`, `Dropout` and `DropoutGrad` one invocation per
 //! output element, `LayerNorm`, `LayerNormGradX`, `Softmax` and `SoftmaxGrad` one per output row,
-//! and the column reductions `SumRows`, `LayerNormGradGamma`, `SigregColumns` and
-//! `SigregColumnsGrad` one per output column.
+//! `SigregColumns` and `SigregColumnsGrad` one per output column, and the column sums `SumRows`
+//! and `LayerNormGradGamma` one workgroup per [`column_sum_columns`] columns.
 //! `Attention`, `AttentionGradQ`, `AttentionGradK` and `AttentionGradV` are one Dispatch each of
 //! workgroups of [`ATTENTION_WORKGROUP`], one per sequence, head and tile of [`attention_tile`]
 //! rows ([`attention_workgroups`], story:vulkan-attention-workgroup-per-head), the head count a
@@ -1237,12 +1237,39 @@ fn spread_groups(groups: u64) -> Option<[u32; 3]> {
 /// The workgroup size of every row-wise kernel ([`KernelKind::workgroup_size`]).
 const ROWWISE_WORKGROUP: u64 = 64;
 
+/// The columns one workgroup of the column sum `op` over rows of `h` columns adds
+/// (story:vulkan-column-sums-coalesced, DESIGN.md § 5.2): the largest power of two of at most
+/// `h / 128`, within 2 and 64, for `SumRows`, and of at most `h / 16`, within 4 and 8, for
+/// `LayerNormGradGamma`, whose every workgroup computes the moments of every row, so fewer
+/// workgroups read the rows again. Its 64 invocations stage tiles of rows of these columns in
+/// workgroup memory, and invocation `c` adds column `c` in ascending row order. On the RTX 3090
+/// 2 columns take the `[4096, 128]` `SumRows` of BERT-tiny to 13.4 µs against 14.5 for 4, 17.5
+/// for 8 and 42.7 for the 64 of one column per invocation, and 64 take its `[832, 8192]` one to
+/// 39 µs against 61 for 8. `None` for another op.
+pub fn column_sum_columns(op: &TensorOp, h: u64) -> Option<u64> {
+    let (per, least, most) = match op {
+        TensorOp::SumRows => (128, 2, 64),
+        TensorOp::LayerNormGradGamma => (16, 4, 8),
+        _ => return None,
+    };
+    let columns = (h / per).clamp(least, most);
+    Some(1 << columns.ilog2())
+}
+
+/// The invocations of the column sum `op` over `h` columns: a workgroup of 64 per
+/// [`column_sum_columns`] columns.
+fn column_groups(op: &TensorOp, h: u64) -> Option<u64> {
+    h.div_ceil(column_sum_columns(op, h)?)
+        .checked_mul(ROWWISE_WORKGROUP)
+}
+
 /// The kernel kind of the row-wise op `op` over `operands` into `result`, and the invocations
 /// its dispatch runs: one per output element of a [`KernelKind::PerElement`] kernel, one per
-/// output row of a [`KernelKind::PerRow`] kernel and one per output column of a
-/// [`KernelKind::PerColumn`] kernel. `None` for another op, an immediate operand, a shape that
-/// is not static or a zero dimension, or operands that are not the op's: an `i32` buffer of ids
-/// or an `i32[2]` RNG token where the op reads one, `f32` elsewhere.
+/// output row of a [`KernelKind::PerRow`] kernel, one per output column of a `sigreg`
+/// [`KernelKind::PerColumn`] kernel and a workgroup of 64 per [`column_sum_columns`] columns of
+/// the column sums `SumRows` and `LayerNormGradGamma`. `None` for another op, an immediate
+/// operand, a shape that is not static or a zero dimension, or operands that are not the op's:
+/// an `i32` buffer of ids or an `i32[2]` RNG token where the op reads one, `f32` elsewhere.
 fn rowwise_shape(
     op: &TensorOp,
     operands: &[Operand],
@@ -1279,7 +1306,7 @@ fn rowwise_shape(
             f32s(&[0, 1]).then_some((KernelKind::PerElement, out_elements))?
         }
         (TensorOp::SumRows, [[_, h]], [rh]) if h == rh => {
-            f32s(&[0]).then_some((KernelKind::PerColumn, *h))?
+            f32s(&[0]).then_some((KernelKind::PerColumn, column_groups(op, *h)?))?
         }
         (TensorOp::Gelu, [x], _) if *x == out.as_slice() => {
             f32s(&[0]).then_some((KernelKind::PerElement, out_elements))?
@@ -1304,7 +1331,7 @@ fn rowwise_shape(
             f32s(&[0, 1, 2]).then_some((KernelKind::PerRow, *n))?
         }
         (TensorOp::LayerNormGradGamma, [[n, h], g], [rh]) if h == rh && *g == [*n, *h] => {
-            f32s(&[0, 1]).then_some((KernelKind::PerColumn, *h))?
+            f32s(&[0, 1]).then_some((KernelKind::PerColumn, column_groups(op, *h)?))?
         }
         (TensorOp::Softmax, [[n, h]], [rn, rh]) if (n, h) == (rn, rh) => {
             f32s(&[0]).then_some((KernelKind::PerRow, *n))?
