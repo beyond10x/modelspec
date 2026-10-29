@@ -204,7 +204,7 @@ use std::time::{Duration, Instant};
 
 use modelspec_core::compile::{self, CompiledTraining};
 use modelspec_core::diag::{Code, Diagnostic};
-use modelspec_core::ir::tensor::ParamId;
+use modelspec_core::ir::tensor::{Dim, ParamId, TensorOp};
 use modelspec_core::ir::training::OptimizerRule;
 use modelspec_observatory::{
     EVENTS_PATH, EventSequence, MetricSample, ParameterStatistics, Recorder, RunEventBody,
@@ -352,6 +352,45 @@ pub struct Args {
     /// for bit; two runs of it on one device and driver give the same bits.
     #[arg(long)]
     pub fast_math: bool,
+    /// Compute the loss's row-local head, the vocabulary projection, its bias, the cross-entropy
+    /// and its gradient on the rows of non-zero weight only, gathered at N rows per batch
+    /// (DESIGN.md § 3.3), with the bits of the step that computes every row; for a loss
+    /// `cross_entropy(logits, labels, weights)` of declared labels and weights. A batch with more
+    /// such rows than N is refused (E-DATA-012), never truncated; 0, or N of at least the
+    /// loss's rows, trains on every row. With --backend vulkan and a packed --data directory the
+    /// gather is on without the flag, N the multiple of 64 at or above the batch's expected
+    /// selected rows plus 8 standard deviations under the binding's selection rate. Beside
+    /// --eval it is a usage error.
+    #[arg(long, value_name = "N")]
+    pub masked_rows: Option<u64>,
+}
+
+/// The capacity of the masked-row gather for a batch of `rows` rows each selected with
+/// probability `rate`: the expected count plus 8 standard deviations, rounded up to a multiple
+/// of 64 and at most `rows`; 832 for BERT-tiny's 4096 rows at BERT's 0.15.
+fn default_masked_rows(rows: u64, rate: f64) -> u64 {
+    let n = rows as f64;
+    let rate = rate.clamp(0.0, 1.0);
+    let bound = n * rate + 8.0 * (n * rate * (1.0 - rate)).sqrt();
+    let capacity = (bound.ceil() as u64).div_ceil(64).saturating_mul(64);
+    capacity.min(rows)
+}
+
+/// The rows of the loss of `compiled` when it is a `cross_entropy`: its logits' leading
+/// dimension.
+fn loss_rows(compiled: &CompiledTraining) -> Option<u64> {
+    let program = &compiled.forward.program;
+    let [loss] = program.outputs[..] else {
+        return None;
+    };
+    let node = program.node(loss)?;
+    if node.op != TensorOp::CrossEntropy {
+        return None;
+    }
+    match program.node(*node.operands.first()?)?.ty.shape[..] {
+        [Dim::Static(rows), _] => Some(rows),
+        _ => None,
+    }
 }
 
 /// The flag of `args` the backend cannot take, if one is given.
@@ -531,7 +570,8 @@ pub enum Backend {
     Vulkan,
 }
 
-/// The artifact a Vulkan run of `source` executes, with the `fast_math` of `--fast-math`: its
+/// The artifact a Vulkan run of `source` executes, with the `fast_math` of `--fast-math` and the
+/// step gathered at `masked_rows` ([`compile::compile_artifact_with`]): its
 /// plan scheduled within the limits of the device the run selects
 /// ([`modelspec_runtime::vulkan::runner::device_profile`]), or for every Vulkan device when the
 /// loader reports no such device, whose run is then refused as it opens the device.
@@ -540,13 +580,15 @@ fn vulkan_artifact(
     file: &str,
     source: &str,
     args: &Args,
+    masked_rows: Option<u64>,
 ) -> Result<modelspec_core::artifact::CompiledArtifact, Vec<Diagnostic>> {
     let profile = modelspec_runtime::vulkan::runner::device_profile(args.device).ok();
-    let mut artifact = compile::compile_artifact_for(
+    let mut artifact = compile::compile_artifact_with(
         file,
         source,
         modelspec_core::artifact::Backend::Vulkan,
         profile.as_ref(),
+        masked_rows,
     )?;
     artifact.fast_math = args.fast_math;
     Ok(artifact)
@@ -662,6 +704,93 @@ pub fn run(args: Args, stdout: &mut dyn Write, stderr: &mut dyn Write) -> u8 {
             return crate::EXIT_USAGE;
         }
     }
+    let binding = match &args.data {
+        None => None,
+        Some(dir) => match data::source(dir, &compiled.config) {
+            Ok(DataSource::Dense) => None,
+            Ok(DataSource::Packed(binding)) => Some(binding),
+            Err(error) => {
+                let _ = writeln!(stderr, "modelspec train {file}: {error}");
+                return crate::EXIT_FAILURE;
+            }
+        },
+    };
+    if let (Some(dir), Some(_), Some(_)) = (&args.data, &binding, &args.eval) {
+        let _ = writeln!(
+            stderr,
+            "error: the argument '--eval' reads dense evaluation tensors, and the '--data' \
+             directory {} is a packed MLM directory",
+            dir.display()
+        );
+        return crate::EXIT_USAGE;
+    }
+    if let (Some(dir), None, Some(_)) = (&args.data, &binding, args.eval_every) {
+        let _ = writeln!(
+            stderr,
+            "error: the argument '--eval-every' evaluates the HeldOut split of a packed MLM \
+             directory, and the '--data' directory {} holds no binding.json",
+            dir.display()
+        );
+        return crate::EXIT_USAGE;
+    }
+    // The capacity of the masked-row gather: the flag's, or on Vulkan the one a packed
+    // directory's selection rate bounds; none beside `--eval`, whose dense batches the step's
+    // loss computes.
+    let rows = loss_rows(&compiled);
+    let masked_rows = match (args.masked_rows, &binding) {
+        (Some(_), _) if args.eval.is_some() => {
+            let _ = writeln!(
+                stderr,
+                "error: the argument '--masked-rows' cannot be used with '--eval': the step's loss \
+                 computes every dense eval batch on all its rows"
+            );
+            return crate::EXIT_USAGE;
+        }
+        (Some(0), _) => None,
+        (Some(capacity), _) => {
+            if rows.is_none() {
+                let _ = writeln!(
+                    stderr,
+                    "error: the argument '--masked-rows' gathers the rows of a loss \
+                     `cross_entropy(logits, labels, weights)`, and the loss of {file} is no \
+                     cross_entropy"
+                );
+                return crate::EXIT_USAGE;
+            }
+            Some(capacity)
+        }
+        (None, Some(binding)) if args.backend == Backend::Vulkan && args.eval.is_none() => {
+            rows.map(|rows| default_masked_rows(rows, binding.masking_policy.selection_rate))
+        }
+        (None, _) => None,
+    };
+    if let Some(capacity) = masked_rows {
+        match compile::compile_training_with(&file, &source, Some(capacity)) {
+            Ok(gathered) => {
+                let gathers =
+                    modelspec_core::passes::masked_rows::site(&gathered.training.training.program)
+                        .is_some();
+                let explicit = args.masked_rows.is_some();
+                if explicit && !gathers && rows.is_some_and(|rows| capacity < rows) {
+                    let _ = writeln!(
+                        stderr,
+                        "error: the argument '--masked-rows' gathers the rows of a loss \
+                         `cross_entropy(logits, labels, weights)` whose labels and weights are \
+                         declared inputs and whose logits come from a row-local head, and the \
+                         loss of {file} is no such cross_entropy"
+                    );
+                    return crate::EXIT_USAGE;
+                }
+                compiled.training = gathered.training;
+            }
+            Err(diagnostics) => {
+                for diagnostic in &diagnostics {
+                    let _ = writeln!(stderr, "{diagnostic}");
+                }
+                return crate::EXIT_FAILURE;
+            }
+        }
+    }
     let engine = match args.backend {
         Backend::Cpu => Engine::Cpu {
             statistics_every: args.statistics_every.unwrap_or(STATISTICS_EVERY),
@@ -669,7 +798,7 @@ pub fn run(args: Args, stdout: &mut dyn Write, stderr: &mut dyn Write) -> u8 {
         #[cfg(not(feature = "vulkan"))]
         Backend::Vulkan => unreachable!("refused above in a build without the vulkan feature"),
         #[cfg(feature = "vulkan")]
-        Backend::Vulkan => match vulkan_artifact(&file, &source, &args) {
+        Backend::Vulkan => match vulkan_artifact(&file, &source, &args, masked_rows) {
             Ok(artifact) => Engine::Vulkan {
                 artifact: Box::new(artifact),
                 device: args.device,
@@ -701,35 +830,6 @@ pub fn run(args: Args, stdout: &mut dyn Write, stderr: &mut dyn Write) -> u8 {
     {
         let _ = writeln!(stderr, "modelspec train {file}: {message}");
         return crate::EXIT_FAILURE;
-    }
-    let binding = match &args.data {
-        None => None,
-        Some(dir) => match data::source(dir, &compiled.config) {
-            Ok(DataSource::Dense) => None,
-            Ok(DataSource::Packed(binding)) => Some(binding),
-            Err(error) => {
-                let _ = writeln!(stderr, "modelspec train {file}: {error}");
-                return crate::EXIT_FAILURE;
-            }
-        },
-    };
-    if let (Some(dir), Some(_), Some(_)) = (&args.data, &binding, &args.eval) {
-        let _ = writeln!(
-            stderr,
-            "error: the argument '--eval' reads dense evaluation tensors, and the '--data' \
-             directory {} is a packed MLM directory",
-            dir.display()
-        );
-        return crate::EXIT_USAGE;
-    }
-    if let (Some(dir), None, Some(_)) = (&args.data, &binding, args.eval_every) {
-        let _ = writeln!(
-            stderr,
-            "error: the argument '--eval-every' evaluates the HeldOut split of a packed MLM \
-             directory, and the '--data' directory {} holds no binding.json",
-            dir.display()
-        );
-        return crate::EXIT_USAGE;
     }
     let read_as_dense = match (&args.data, &binding) {
         (Some(dir), None) => data::read_as_dense(dir, &compiled.config),
@@ -1491,10 +1591,26 @@ mod fast_math_tests {
         let off = args(&[]);
         let on = args(&["--fast-math"]);
         assert_eq!(on.backend, Backend::Vulkan);
-        let off = vulkan_artifact("mnist_mlp.mspec", EXAMPLE, &off).expect("compiles");
-        let on = vulkan_artifact("mnist_mlp.mspec", EXAMPLE, &on).expect("compiles");
+        let off = vulkan_artifact("mnist_mlp.mspec", EXAMPLE, &off, None).expect("compiles");
+        let on = vulkan_artifact("mnist_mlp.mspec", EXAMPLE, &on, None).expect("compiles");
         assert!(!off.fast_math, "without --fast-math");
         assert!(on.fast_math, "with --fast-math");
         assert_eq!(off.execution, on.execution, "the same plan");
+    }
+}
+
+/// story:vulkan-mlm-masked-row-gather: the capacity a packed directory gives the gather.
+#[cfg(test)]
+mod masked_rows_tests {
+    use super::default_masked_rows;
+
+    /// BERT-tiny's 4096 rows at 0.15: 614.4 expected, 22.85 standard deviation, 797.2 bound,
+    /// 832 rounded up to 64; a small batch is bounded by its rows.
+    #[test]
+    fn the_capacity_is_eight_deviations_above_the_expected_count() {
+        assert_eq!(default_masked_rows(4096, 0.15), 832);
+        assert_eq!(default_masked_rows(32, 0.15), 32);
+        assert_eq!(default_masked_rows(4096, 0.0), 0);
+        assert_eq!(default_masked_rows(4096, 1.0), 4096);
     }
 }
