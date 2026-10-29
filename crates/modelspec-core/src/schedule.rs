@@ -13,10 +13,15 @@
 //! output element, `LayerNorm`, `LayerNormGradX`, `Softmax` and `SoftmaxGrad` one per output row,
 //! `SigregColumns` and `SigregColumnsGrad` one per output column, and the column sums `SumRows`
 //! and `LayerNormGradGamma` one workgroup per [`column_sum_columns`] columns. `EmbeddingGrad`
-//! alone is two Dispatches ([`embedding_grad_kernels`], story:vulkan-embedding-grad-sorted-ids):
-//! an `Allocate` of an `i32[n, 2]` buffer, numbered after every other buffer, a sort of the `n`
-//! ids by id and position that writes it, one invocation per id, a `Barrier`, and the gradient
-//! over the sorted ids, one invocation per element of the table gradient.
+//! and `LayerNormGradGamma` are two Dispatches each. `EmbeddingGrad`
+//! ([`embedding_grad_kernels`], story:vulkan-embedding-grad-sorted-ids): an `Allocate` of an
+//! `i32[n, 2]` buffer, numbered after every other buffer, a sort of the `n` ids by id and
+//! position that writes it, one invocation per id, a `Barrier`, and the gradient over the sorted
+//! ids, one invocation per element of the table gradient. `LayerNormGradGamma`
+//! ([`layer_norm_grad_gamma_kernels`], story:vulkan-layer-norm-grad-gamma-row-moments): an
+//! `Allocate` of an `f32[n, 2]` buffer, numbered after every other buffer, the mean and `rstd`
+//! of each of the `n` rows written into it, one invocation per row, a `Barrier`, and the column
+//! sum that reads them.
 //! `Attention`, `AttentionGradQ`, `AttentionGradK` and `AttentionGradV` are one Dispatch each of
 //! workgroups of [`ATTENTION_WORKGROUP`], one per sequence, head and tile of [`attention_tile`]
 //! rows ([`attention_workgroups`], story:vulkan-attention-workgroup-per-head), the head count a
@@ -664,8 +669,9 @@ fn schedule_with(
     let mut host_inputs = Vec::new();
     let mut places: BTreeMap<ValueId, Place> = BTreeMap::new();
     let mut works: Vec<Work> = Vec::new();
-    // The works of each `EmbeddingGrad`, whose sorted ids get a buffer after every other.
-    let mut sorted_ids: Vec<usize> = Vec::new();
+    // The works of each `EmbeddingGrad` and `LayerNormGradGamma`, whose sorted ids or row
+    // moments get a buffer after every other.
+    let mut between: Vec<usize> = Vec::new();
     let mut prediction_view = None;
     for node in &program.nodes {
         let shape_error = || ScheduleError::Shape {
@@ -948,8 +954,25 @@ fn schedule_with(
                     spread(node, invocations.div_ceil(ROWWISE_WORKGROUP))?;
                     let [sort, gather] =
                         embedding_grad_kernels(operands, node.ty.clone()).ok_or_else(no_kernel)?;
-                    sorted_ids.push(works.len());
+                    between.push(works.len());
                     (vec![sort, gather], None)
+                }
+            },
+            TensorOp::LayerNormGradGamma => match built {
+                Kernels::None => continue,
+                Kernels::Vulkan => {
+                    let no_kernel = || ScheduleError::NoKernel {
+                        value: node.id,
+                        op: node.op.name(),
+                    };
+                    let (_, invocations) =
+                        rowwise_shape(&node.op, &operands, &node.ty).ok_or_else(no_kernel)?;
+                    spread(node, invocations.div_ceil(ROWWISE_WORKGROUP))?;
+                    let [moments, column] =
+                        layer_norm_grad_gamma_kernels(operands, node.ty.clone())
+                            .ok_or_else(no_kernel)?;
+                    between.push(works.len());
+                    (vec![moments, column], None)
                 }
             },
             TensorOp::Embedding
@@ -959,7 +982,6 @@ fn schedule_with(
             | TensorOp::GeluGrad
             | TensorOp::LayerNorm
             | TensorOp::LayerNormGradX
-            | TensorOp::LayerNormGradGamma
             | TensorOp::Softmax
             | TensorOp::SoftmaxGrad
             | TensorOp::Dropout { .. }
@@ -1120,9 +1142,12 @@ fn schedule_with(
         }
     }
 
-    // The sorted ids of each `EmbeddingGrad`: one buffer each, numbered after every other, which
-    // its work allocates before its sort writes it (story:vulkan-embedding-grad-sorted-ids).
-    for at in sorted_ids {
+    // The sorted ids of each `EmbeddingGrad` and the row moments of each `LayerNormGradGamma`:
+    // one buffer each, numbered after every other, the row moments first so the sorted ids stay
+    // the last buffers, which its work allocates before its first kernel writes it
+    // (story:vulkan-embedding-grad-sorted-ids, story:vulkan-layer-norm-grad-gamma-row-moments).
+    between.sort_by_key(|&at| works[at].kernels[0].op != TensorOp::LayerNormGradGamma.name());
+    for at in between {
         let work = &mut works[at];
         let ty = work.kernels[0].result.clone();
         let view = allocate(&mut buffers, &ty).ok_or_else(|| ScheduleError::Shape {
@@ -1272,17 +1297,16 @@ const ROWWISE_WORKGROUP: u64 = 64;
 
 /// The columns one workgroup of the column sum `op` over rows of `h` columns adds
 /// (story:vulkan-column-sums-coalesced, DESIGN.md § 5.2): the largest power of two of at most
-/// `h / 128`, within 2 and 64, for `SumRows`, and of at most `h / 16`, within 4 and 8, for
-/// `LayerNormGradGamma`, whose every workgroup computes the moments of every row, so fewer
-/// workgroups read the rows again. Its 64 invocations stage tiles of rows of these columns in
-/// workgroup memory, and invocation `c` adds column `c` in ascending row order. On the RTX 3090
-/// 2 columns take the `[4096, 128]` `SumRows` of BERT-tiny to 13.4 µs against 14.5 for 4, 17.5
-/// for 8 and 42.7 for the 64 of one column per invocation, and 64 take its `[832, 8192]` one to
-/// 39 µs against 61 for 8. `None` for another op.
+/// `h / 128`, within 2 and 64, for `SumRows` and for the column kernel of `LayerNormGradGamma`,
+/// which reads the row moments its first kernel wrote
+/// (story:vulkan-layer-norm-grad-gamma-row-moments). Its 64 invocations stage tiles of rows of
+/// these columns in workgroup memory, and invocation `c` adds column `c` in ascending row order.
+/// On the RTX 3090 2 columns take the `[4096, 128]` `SumRows` of BERT-tiny to 13.4 µs against
+/// 14.5 for 4, 17.5 for 8 and 42.7 for the 64 of one column per invocation, and 64 take its
+/// `[832, 8192]` one to 39 µs against 61 for 8. `None` for another op.
 pub fn column_sum_columns(op: &TensorOp, h: u64) -> Option<u64> {
     let (per, least, most) = match op {
-        TensorOp::SumRows => (128, 2, 64),
-        TensorOp::LayerNormGradGamma => (16, 4, 8),
+        TensorOp::SumRows | TensorOp::LayerNormGradGamma => (128, 2, 64),
         _ => return None,
     };
     let columns = (h / per).clamp(least, most);
@@ -1402,14 +1426,17 @@ fn static_dims(ty: &TensorType) -> Option<Vec<u64>> {
 /// workgroups of 64 over its invocations, and its module id. A `Dropout` or `DropoutGrad`
 /// carries its drop probability `p` as a last, immediate operand, so it is in the module id;
 /// the run key is not, the pipeline supplies it. `None` where [`rowwise_shape`] is: another
-/// op, or operands that are not the op's; and for `EmbeddingGrad`, which is two kernels
-/// ([`embedding_grad_kernels`]).
+/// op, or operands that are not the op's; and for `EmbeddingGrad` and `LayerNormGradGamma`,
+/// which are two kernels each ([`embedding_grad_kernels`], [`layer_norm_grad_gamma_kernels`]).
 pub fn rowwise_kernel(
     op: &TensorOp,
     mut operands: Vec<Operand>,
     result: TensorType,
 ) -> Option<Kernel> {
-    if matches!(op, TensorOp::EmbeddingGrad { .. }) {
+    if matches!(
+        op,
+        TensorOp::EmbeddingGrad { .. } | TensorOp::LayerNormGradGamma
+    ) {
         return None;
     }
     let (kind, invocations) = rowwise_shape(op, &operands, &result)?;
@@ -1450,6 +1477,46 @@ pub fn embedding_grad_kernels(operands: Vec<Operand>, result: TensorType) -> Opt
         invocations,
     )?;
     Some([sort, gather])
+}
+
+/// The two kernels of `LayerNormGradGamma` over its operands `x: f32[N, H]` and `g: f32[N, H]`
+/// into its `result: f32[H]`, as [`schedule`] builds them
+/// (story:vulkan-layer-norm-grad-gamma-row-moments): the moments, [`KernelKind::PerRow`] over
+/// `(x)` into `f32[N, 2]`, invocation `n` writing the mean and `rstd` of row `n` as `LayerNorm`
+/// computes them; and the column sum, [`KernelKind::PerColumn`] over `(moments, x, g)` into
+/// `result`, a workgroup of 64 per [`column_sum_columns`] columns, which adds `g · x̂` of each
+/// column over the rows in ascending order. `None` for operands or a result that are not the
+/// op's.
+pub fn layer_norm_grad_gamma_kernels(
+    operands: Vec<Operand>,
+    result: TensorType,
+) -> Option<[Kernel; 2]> {
+    let op = TensorOp::LayerNormGradGamma;
+    let (kind, invocations) = rowwise_shape(&op, &operands, &result)?;
+    let [x, g] = <[Operand; 2]>::try_from(operands).ok()?;
+    let rows = match &x {
+        Operand::Buffer(ty) => match ty.shape[..] {
+            [Dim::Static(rows), _] => rows,
+            _ => return None,
+        },
+        Operand::Immediate(_) => return None,
+    };
+    let moments_ty = TensorType::f32(&[rows, 2]);
+    let moments = rowwise_record(
+        KernelKind::PerRow,
+        &op,
+        vec![x.clone()],
+        moments_ty.clone(),
+        rows,
+    )?;
+    let column = rowwise_record(
+        kind,
+        &op,
+        vec![Operand::Buffer(moments_ty), x, g],
+        result,
+        invocations,
+    )?;
+    Some([moments, column])
 }
 
 /// The record of a row-wise kernel of `op`: `kind`, workgroups of 64 over `invocations`, and its

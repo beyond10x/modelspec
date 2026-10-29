@@ -2,11 +2,12 @@
 //! row-wise kernels (`Embedding`, `EmbeddingGrad`, `AddRows`, `SumRows`, `Gelu`, `GeluGrad`,
 //! `Dropout`, `DropoutGrad`, `LayerNorm`, `LayerNormGradX`, `LayerNormGradGamma`, `Softmax`,
 //! `SoftmaxGrad`) are scheduled as one dispatch each, `EmbeddingGrad` as two (a sort and a
-//! gradient), with a kernel record, a workgroup size and a module id, printed by
-//! `ir --stage kernel` with a FLOP and byte count; each module
-//! passes `spirv-val --target-env vulkan1.2`, on the shapes of a compiled program and on shapes
-//! whose edges do not fill a workgroup, and decorates every float add, subtract, multiply and
-//! `Fma` it computes `NoContraction` in the deterministic mode and none under `fast_math`.
+//! gradient) and `LayerNormGradGamma` as two (row moments and a column sum), with a kernel
+//! record, a workgroup size and a module id, printed by `ir --stage kernel` with a FLOP and
+//! byte count; each module passes `spirv-val --target-env vulkan1.2`, on the shapes of a compiled
+//! program and on shapes whose edges do not fill a workgroup, and decorates every float add,
+//! subtract, multiply and `Fma` it computes `NoContraction` in the deterministic mode and none
+//! under `fast_math`.
 //! Needs `spirv-val` on the path and fails, not skips, without it.
 #![cfg(feature = "vulkan")]
 
@@ -27,7 +28,9 @@ use modelspec_core::ir::kernel::{
 };
 use modelspec_core::ir::print::print_kernel;
 use modelspec_core::ir::tensor::{Dim, TensorOp, TensorType};
-use modelspec_core::schedule::{embedding_grad_kernels, rowwise_kernel};
+use modelspec_core::schedule::{
+    embedding_grad_kernels, layer_norm_grad_gamma_kernels, rowwise_kernel,
+};
 use modelspec_runtime::spirv::emit::{emit, emit_kernels};
 use modelspec_runtime::spirv::validate::validate;
 use modelspec_runtime::vulkan::dispatch::kernel_bindings;
@@ -247,6 +250,9 @@ fn kernels_of_shape(n: u64, h: u64, v: u64) -> Vec<Kernel> {
                 TensorOp::EmbeddingGrad { .. } => {
                     Vec::from(embedding_grad_kernels(operands, result).expect(&missing))
                 }
+                TensorOp::LayerNormGradGamma => {
+                    Vec::from(layer_norm_grad_gamma_kernels(operands, result).expect(&missing))
+                }
                 _ => vec![rowwise_kernel(&op, operands, result).expect(&missing)],
             }
         })
@@ -272,13 +278,21 @@ fn every_rowwise_kernel_on_unaligned_shapes_passes_spirv_val() {
         let ops: Vec<&str> = kernels.iter().map(|k| k.op).collect();
         let mut expected = ROWWISE.to_vec();
         expected.insert(1, "EmbeddingGrad");
-        assert_eq!(ops, expected, "one kernel per op, two for EmbeddingGrad");
+        let gamma = expected
+            .iter()
+            .position(|op| *op == "LayerNormGradGamma")
+            .expect("LayerNormGradGamma is row-wise");
+        expected.insert(gamma, "LayerNormGradGamma");
+        assert_eq!(
+            ops, expected,
+            "one kernel per op, two for EmbeddingGrad and LayerNormGradGamma"
+        );
         for kernel in &kernels {
             assert_valid(kernel);
             modules += 1;
         }
     }
-    assert_eq!(modules, 14 * SHAPES.len());
+    assert_eq!(modules, 15 * SHAPES.len());
 }
 
 /// The float adds, subtracts, multiplies and `Fma`s of a module, and how many of them are

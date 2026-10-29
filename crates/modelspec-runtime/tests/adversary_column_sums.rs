@@ -17,7 +17,7 @@ use common::words::instructions;
 use common::{Draw, GPU_ATOL, GPU_RTOL, GUARD_WORDS, flush_subnormals, guard, guarded, within};
 use modelspec_core::ir::kernel::{Kernel, Operand};
 use modelspec_core::ir::tensor::{TensorOp, TensorProgramBuilder, TensorType, ValueId};
-use modelspec_core::schedule::{column_sum_columns, rowwise_kernel};
+use modelspec_core::schedule::{column_sum_columns, layer_norm_grad_gamma_kernels, rowwise_kernel};
 use modelspec_runtime::cpu::interpreter::evaluate_seeded;
 use modelspec_runtime::cpu::tensor::HostTensor;
 use modelspec_runtime::spirv::emit::emit;
@@ -88,12 +88,26 @@ fn case(op: TensorOp, n: u64, h: u64, values: Vec<Vec<f32>>) -> Case {
     }
 }
 
-fn kernel_of(op: &TensorOp, n: u64, h: u64) -> Kernel {
+/// The kernels of `op` over `[n, h]`, as the schedule builds them: one for `SumRows`, the row
+/// moments and the column sum for `LayerNormGradGamma`
+/// (story:vulkan-layer-norm-grad-gamma-row-moments).
+fn kernels_of(op: &TensorOp, n: u64, h: u64) -> Vec<Kernel> {
     let operands = (0..arity(op))
         .map(|_| Operand::Buffer(TensorType::f32(&[n, h])))
         .collect();
-    rowwise_kernel(op, operands, TensorType::f32(&[h]))
-        .unwrap_or_else(|| panic!("{} [{n}, {h}] has a row-wise kernel", op.name()))
+    let kernels = if *op == TensorOp::LayerNormGradGamma {
+        layer_norm_grad_gamma_kernels(operands, TensorType::f32(&[h])).map(Vec::from)
+    } else {
+        rowwise_kernel(op, operands, TensorType::f32(&[h])).map(|kernel| vec![kernel])
+    };
+    kernels.unwrap_or_else(|| panic!("{} [{n}, {h}] has its kernels", op.name()))
+}
+
+/// The kernel of `op` over `[n, h]` that adds the columns: the last one.
+fn kernel_of(op: &TensorOp, n: u64, h: u64) -> Kernel {
+    kernels_of(op, n, h)
+        .pop()
+        .expect("a kernel writes the column sums")
 }
 
 fn cpu(case: &Case) -> Vec<f32> {
@@ -130,23 +144,35 @@ fn bytes_of(words: usize) -> u64 {
     (words * 4) as u64
 }
 
-/// The kernel of a case and its pipeline.
+/// The kernels of a case and their pipelines.
 struct Run<'d> {
-    kernel: Kernel,
-    pipeline: Pipeline<'d>,
+    kernels: Vec<Kernel>,
+    pipelines: Vec<Pipeline<'d>>,
 }
 
+/// The pipelines of the kernels of `op` over `[n, h]`, and the seconds the slowest took to
+/// create.
 fn pipeline<'d>(device: &'d Device<'_>, op: &TensorOp, n: u64, h: u64) -> (Run<'d>, f64) {
-    let kernel = kernel_of(op, n, h);
-    let words = emit(&kernel).expect("the kernel emits");
-    let started = Instant::now();
-    let pipeline = device
-        .kernel_pipeline(&kernel, &words)
-        .expect("the pipeline is created");
-    (Run { kernel, pipeline }, started.elapsed().as_secs_f64())
+    let kernels = kernels_of(op, n, h);
+    let mut slowest: f64 = 0.0;
+    let pipelines = kernels
+        .iter()
+        .map(|kernel| {
+            let words = emit(kernel).expect("the kernel emits");
+            let started = Instant::now();
+            let pipeline = device
+                .kernel_pipeline(kernel, &words)
+                .expect("the pipeline is created");
+            slowest = slowest.max(started.elapsed().as_secs_f64());
+            pipeline
+        })
+        .collect();
+    (Run { kernels, pipelines }, slowest)
 }
 
-/// One dispatch of `run` over `case` in one command buffer; the output and its guard words.
+/// One run of `run` over `case` in one command buffer; the output and its guard words. The row
+/// moments of `LayerNormGradGamma` read `x` into a buffer of `[n, 2]`, and after a barrier the
+/// column sum reads it, then `x` and `g`, as the step plan runs them.
 fn dispatch(device: &Device<'_>, run: &Run<'_>, case: &Case) -> Vec<f32> {
     let mut uploads: Vec<Vec<f32>> = case.operands.iter().map(|(_, v)| v.clone()).collect();
     uploads.push(guarded(&vec![f32::from_bits(UNWRITTEN); case.h as usize]));
@@ -169,15 +195,33 @@ fn dispatch(device: &Device<'_>, run: &Run<'_>, case: &Case) -> Vec<f32> {
         })
         .collect();
     let output = buffers.len() - 1;
-    let bound: Vec<&Buffer<'_>> = buffers.iter().collect();
+    let moments = device
+        .device_local_buffer(bytes_of(2 * case.n as usize))
+        .expect("a moments buffer");
     let mut recording = device.record().expect("a recording starts");
     for (from, to) in staging.iter().zip(&buffers) {
         recording.copy(from, to).expect("the upload is recorded");
     }
     recording.barrier(Barrier::TransferToCompute);
-    recording
-        .dispatch_kernel(&run.pipeline, &run.kernel, &bound)
-        .expect("the dispatch is recorded");
+    match (&run.kernels[..], &run.pipelines[..]) {
+        ([kernel], [pipeline]) => {
+            let bound: Vec<&Buffer<'_>> = buffers.iter().collect();
+            recording
+                .dispatch_kernel(pipeline, kernel, &bound)
+                .expect("the dispatch is recorded");
+        }
+        ([first, second], [first_pipeline, second_pipeline]) => {
+            recording
+                .dispatch_kernel(first_pipeline, first, &[&buffers[0], &moments])
+                .expect("the moments dispatch is recorded");
+            recording.barrier(Barrier::ComputeToCompute);
+            let bound: Vec<&Buffer<'_>> = [&moments].into_iter().chain(&buffers).collect();
+            recording
+                .dispatch_kernel(second_pipeline, second, &bound)
+                .expect("the column dispatch is recorded");
+        }
+        _ => unreachable!("one kernel or two"),
+    }
     recording.barrier(Barrier::ComputeToTransfer);
     recording
         .copy(&buffers[output], &staging[output])
@@ -346,6 +390,21 @@ fn adv_cs_every_attack_shape_emits_within_the_minimum_workgroup_memory() {
                     }
                     Err(e) => bad.push(format!("{label}: does not emit: {e}")),
                 }
+                let mut kernels = kernels_of(&op, n, h);
+                kernels.pop();
+                for moments in kernels {
+                    match emit(&moments) {
+                        Ok(words) => {
+                            let bytes = workgroup_bytes(&words);
+                            if bytes > MIN_SHARED_BYTES {
+                                bad.push(format!(
+                                    "{label} moments: {bytes} bytes of workgroup memory"
+                                ));
+                            }
+                        }
+                        Err(e) => bad.push(format!("{label} moments: does not emit: {e}")),
+                    }
+                }
             }
         }
     }
@@ -362,17 +421,41 @@ fn adv_cs_zero_rows_or_columns_are_refused_by_schedule_and_emitter() {
             let operands: Vec<Operand> = (0..arity(&op))
                 .map(|_| Operand::Buffer(TensorType::f32(&[n, h])))
                 .collect();
-            if rowwise_kernel(&op, operands.clone(), TensorType::f32(&[h])).is_some() {
+            let scheduled = match op {
+                TensorOp::LayerNormGradGamma => {
+                    layer_norm_grad_gamma_kernels(operands.clone(), TensorType::f32(&[h])).is_some()
+                }
+                _ => rowwise_kernel(&op, operands.clone(), TensorType::f32(&[h])).is_some(),
+            };
+            if scheduled {
                 bad.push(format!(
                     "{} [{n}, {h}]: the schedule gives a kernel",
                     op.name()
                 ));
             }
-            let mut kernel = kernel_of(&op, 1, 5);
-            kernel.operands = operands;
-            kernel.result = TensorType::f32(&[h]);
-            if emit(&kernel).is_ok() {
+            let mut kernels = kernels_of(&op, 1, 5);
+            let mut column = kernels.pop().expect("a column kernel");
+            let moments = TensorType::f32(&[n, 2]);
+            column.operands = match op {
+                TensorOp::LayerNormGradGamma => [Operand::Buffer(moments.clone())]
+                    .into_iter()
+                    .chain(operands.clone())
+                    .collect(),
+                _ => operands.clone(),
+            };
+            column.result = TensorType::f32(&[h]);
+            if emit(&column).is_ok() {
                 bad.push(format!("{} [{n}, {h}]: the emitter emits", op.name()));
+            }
+            for mut kernel in kernels {
+                kernel.operands = vec![operands[0].clone()];
+                kernel.result = moments.clone();
+                if emit(&kernel).is_ok() {
+                    bad.push(format!(
+                        "{} [{n}, {h}] moments: the emitter emits",
+                        op.name()
+                    ));
+                }
             }
         }
     }
@@ -610,66 +693,66 @@ fn adv_cs_wide_rows_are_the_cpu_bits() {
     });
 }
 
-/// The `LayerNormGradGamma` kernel over `[rows, width]`, as the schedule builds it.
-fn layer_norm_grad_gamma(rows: u64, width: u64) -> Kernel {
-    let operands = (0..2)
-        .map(|_| Operand::Buffer(TensorType::f32(&[rows, width])))
-        .collect();
-    rowwise_kernel(
-        &TensorOp::LayerNormGradGamma,
-        operands,
-        TensorType::f32(&[width]),
-    )
-    .expect("a row-wise kernel")
+/// The `LayerNormGradGamma` kernels over `[rows, width]`, as the schedule builds them: the row
+/// moments, then the column sum.
+fn layer_norm_grad_gamma(rows: u64, width: u64) -> Vec<Kernel> {
+    kernels_of(&TensorOp::LayerNormGradGamma, rows, width)
 }
 
-/// Finding CS-1: the `LayerNormGradGamma` module unrolls the moment loop, two steps of 16
-/// loads, stores and adds for every 16 columns of the row, once for the full tiles and once
-/// more for a last partial one, so its size grows with the row width. Before the unit it
-/// looped over the columns, and its size did not depend on the width. Over 4096 columns it is
-/// at most twice its size over 128.
+/// Finding CS-1: the `LayerNormGradGamma` module of story:vulkan-column-sums-coalesced unrolled
+/// the moment loop, two steps of 16 loads, stores and adds for every 16 columns of the row, so
+/// its size grew with the row width. Since story:vulkan-layer-norm-grad-gamma-row-moments the
+/// moments are a kernel of their own that loops over the columns, and the column sum unrolls
+/// nothing per column. Over 4096 columns each module is at most twice its size over 128.
 #[test]
-#[ignore = "finding CS-1: the LayerNormGradGamma module grows linearly with the row width"]
 fn adv_cs_1_layer_norm_grad_gamma_module_does_not_grow_with_the_row_width() {
-    let mut words = Vec::new();
+    let mut words: Vec<Vec<usize>> = Vec::new();
     for width in [128, 1024, 4096] {
-        let module = emit(&layer_norm_grad_gamma(4097, width)).expect("the kernel emits");
-        eprintln!("LayerNormGradGamma [4097, {width}]: {} words", module.len());
-        words.push(module.len());
+        let modules: Vec<usize> = layer_norm_grad_gamma(4097, width)
+            .iter()
+            .map(|kernel| emit(kernel).expect("the kernel emits").len())
+            .collect();
+        eprintln!("LayerNormGradGamma [4097, {width}]: {modules:?} words");
+        words.push(modules);
     }
-    assert!(
-        words[2] <= 2 * words[0],
-        "LayerNormGradGamma [4097, 4096] is {} words, [4097, 128] {}",
-        words[2],
-        words[0]
-    );
+    for (k, (&wide, &narrow)) in words[2].iter().zip(&words[0]).enumerate() {
+        assert!(
+            wide <= 2 * narrow,
+            "LayerNormGradGamma kernel {k} over [4097, 4096] is {wide} words, over [4097, 128] \
+             {narrow}"
+        );
+    }
 }
 
 /// Finding CS-1 on the device: `train --backend vulkan` creates every pipeline of the step
 /// before the first step, and the `LayerNormGradGamma` pipeline of a `[4097, 4096]` column sum
-/// (a `layer_norm` of width 4096 over 4097 rows) takes the driver minutes to compile. It is
-/// created within 10 s here.
+/// (a `layer_norm` of width 4096 over 4097 rows) took the driver minutes to compile. Each of its
+/// pipelines is created within 10 s here.
 #[test]
-#[ignore = "finding CS-1: the LayerNormGradGamma pipeline of 4096 columns takes minutes to create"]
+#[ignore = "device: LayerNormGradGamma pipelines of up to 4096 columns against a 10 s bound"]
 fn adv_cs_1_layer_norm_grad_gamma_pipeline_of_4096_columns_is_created_within_10_s() {
     with_device(|_, device| {
         let mut bad = Vec::new();
         for width in [128, 1024, 4096] {
-            let kernel = layer_norm_grad_gamma(4097, width);
-            let words = emit(&kernel).expect("the kernel emits");
-            let started = Instant::now();
-            let created = device.kernel_pipeline(&kernel, &words);
-            let seconds = started.elapsed().as_secs_f64();
-            eprintln!(
-                "LayerNormGradGamma [4097, {width}]: {} words, pipeline creation {seconds:.2} s",
-                words.len()
-            );
-            if created.is_err() {
-                bad.push(format!("[4097, {width}]: the pipeline is not created"));
-            } else if seconds > 10.0 {
-                bad.push(format!(
-                    "[4097, {width}]: pipeline creation took {seconds:.1} s"
-                ));
+            for (k, kernel) in layer_norm_grad_gamma(4097, width).iter().enumerate() {
+                let words = emit(kernel).expect("the kernel emits");
+                let started = Instant::now();
+                let created = device.kernel_pipeline(kernel, &words);
+                let seconds = started.elapsed().as_secs_f64();
+                eprintln!(
+                    "LayerNormGradGamma [4097, {width}] kernel {k}: {} words, pipeline \
+                     creation {seconds:.2} s",
+                    words.len()
+                );
+                if created.is_err() {
+                    bad.push(format!(
+                        "[4097, {width}] kernel {k}: the pipeline is not created"
+                    ));
+                } else if seconds > 10.0 {
+                    bad.push(format!(
+                        "[4097, {width}] kernel {k}: pipeline creation took {seconds:.1} s"
+                    ));
+                }
             }
         }
         assert!(bad.is_empty(), "{bad:#?}");

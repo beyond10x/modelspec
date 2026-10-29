@@ -158,7 +158,9 @@ pub enum KernelKind {
     /// `CrossEntropyGrad` (the maximum and exponential sum of each row, and from one more
     /// invocation the weight sum, which the per-element stage then reads); one invocation per id
     /// for the sort of `EmbeddingGrad`, which writes each id and its position into the row of its
-    /// rank by id and position, as `i32`; and one invocation per row and head of `Attention` and
+    /// rank by id and position, as `i32`; one invocation per row for the moments of
+    /// `LayerNormGradGamma`, which writes each row's mean and `rstd` into an `f32[n, 2]` that its
+    /// column sum reads; and one invocation per row and head of `Attention` and
     /// its three gradients, the head count a last, immediate operand ([`Kernel::heads`]).
     PerRow,
     /// A column reduction over the rows of its operands in ascending row order: `SigregColumns`
@@ -166,7 +168,8 @@ pub enum KernelKind {
     /// its column; and the column sums `SumRows` and `LayerNormGradGamma` one workgroup of 64
     /// invocations per [`crate::schedule::column_sum_columns`] columns, which stage tiles of
     /// rows in workgroup memory and add each column in one invocation
-    /// (story:vulkan-column-sums-coalesced).
+    /// (story:vulkan-column-sums-coalesced), `LayerNormGradGamma` reading the row moments of its
+    /// `per_row` kernel (story:vulkan-layer-norm-grad-gamma-row-moments).
     PerColumn,
 }
 
@@ -1031,8 +1034,11 @@ impl Kernel {
     /// output element for `AddRows`, `Dropout` and `DropoutGrad`; one per element of the
     /// gradient for `EmbeddingGrad` and of the operand for `SumRows`; 10 per element for `Gelu`
     /// and 24 for `GeluGrad`; 5 per element for `Softmax` and 4 for `SoftmaxGrad`; for an
-    /// `[n, h]` operand, `n·(8h + 3)` for `LayerNorm` and `LayerNormGradGamma` and
-    /// `n·(14h + 3)` for `LayerNormGradX` (DESIGN.md § 3.1). For `P: [n, m]`, the instructions
+    /// `[n, h]` operand, `n·(8h + 3)` for `LayerNorm` and `n·(14h + 3)` for `LayerNormGradX`,
+    /// and `n·(8h + 3)` for `LayerNormGradGamma`, `n·(4h + 3)` of them for its row moments (an
+    /// add, a subtraction and a fused square per element) and `4nh` for its column sum (a
+    /// subtraction, a product and a fused term per element) (DESIGN.md § 3.1). For `P: [n, m]`,
+    /// the instructions
     /// the kernel emits (DESIGN.md § 5.2), its written-out `sin`/`cos` 24 and each corrected
     /// division by `n` 6 (the `OpFDiv`, two `Fma`s and the compare of the residual step), a
     /// negation, rounding, conversion or select none: `m·(216n + 128)` for `SigregColumns`, per
@@ -1124,6 +1130,7 @@ impl Kernel {
             KernelKind::PerRow => match self.op {
                 "EmbeddingGrad" => Some(0),
                 "LayerNorm" => rows(8, 3),
+                "LayerNormGradGamma" => rows(4, 3),
                 "LayerNormGradX" => rows(14, 3),
                 "Softmax" => per_output(5),
                 "SoftmaxGrad" => per_output(4),
@@ -1136,7 +1143,7 @@ impl Kernel {
             },
             KernelKind::PerColumn => match self.op {
                 "SumRows" => elements(operand(0)?),
-                "LayerNormGradGamma" => rows(8, 3),
+                "LayerNormGradGamma" => elements(operand(1)?)?.checked_mul(4),
                 "SigregColumns" => sigreg(216, 128),
                 "SigregColumnsGrad" => sigreg(456, 97),
                 _ => None,

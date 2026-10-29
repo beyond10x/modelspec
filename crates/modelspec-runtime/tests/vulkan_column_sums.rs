@@ -19,7 +19,7 @@ use common::words::instructions;
 use common::{Draw, GUARD_WORDS, guard, guarded};
 use modelspec_core::ir::kernel::{Kernel, Operand};
 use modelspec_core::ir::tensor::{TensorOp, TensorProgramBuilder, TensorType, ValueId};
-use modelspec_core::schedule::rowwise_kernel;
+use modelspec_core::schedule::{layer_norm_grad_gamma_kernels, rowwise_kernel};
 use modelspec_runtime::cpu::interpreter::evaluate_seeded;
 use modelspec_runtime::cpu::tensor::HostTensor;
 use modelspec_runtime::spirv::emit::emit;
@@ -71,11 +71,26 @@ fn cases() -> Vec<Case> {
     ]
 }
 
-/// The kernel of `op` over `[N, H]` operands, as the schedule builds it.
-fn kernel_of(op: &TensorOp, operands: usize) -> Kernel {
+/// The kernels of `op` over `[N, H]` operands, as the schedule builds them: one for `SumRows`,
+/// the row moments and the column sum for `LayerNormGradGamma`
+/// (story:vulkan-layer-norm-grad-gamma-row-moments).
+fn kernels_of(op: &TensorOp, operands: usize) -> Vec<Kernel> {
     let operands = (0..operands).map(|_| Operand::Buffer(rows())).collect();
-    rowwise_kernel(op, operands, result())
-        .unwrap_or_else(|| panic!("{} has a row-wise kernel", op.name()))
+    if *op == TensorOp::LayerNormGradGamma {
+        let kernels = layer_norm_grad_gamma_kernels(operands, result());
+        return Vec::from(kernels.expect("LayerNormGradGamma has its two kernels"));
+    }
+    vec![
+        rowwise_kernel(op, operands, result())
+            .unwrap_or_else(|| panic!("{} has a row-wise kernel", op.name())),
+    ]
+}
+
+/// The kernel of `op` that adds the columns: the last one.
+fn kernel_of(op: &TensorOp, operands: usize) -> Kernel {
+    kernels_of(op, operands)
+        .pop()
+        .expect("a kernel writes the column sums")
 }
 
 /// What the kernel of `op` does not do of the story: workgroups of 64 invocations, at least
@@ -148,14 +163,21 @@ fn bytes_of(words: usize) -> u64 {
     (words * 4) as u64
 }
 
-/// Runs the kernel of `case` once on `device` in one command buffer with one host wait, and
-/// returns its output with the guard words after it.
+/// Runs the kernels of `case` once on `device` in one command buffer with one host wait, as the
+/// step plan runs them, and returns its output with the guard words after it. The row moments
+/// of `LayerNormGradGamma` read `x` into a buffer of `[N, 2]`, and after a barrier the column
+/// sum reads it, then `x` and `g`.
 fn gpu(device: &Device<'_>, case: &Case) -> Vec<f32> {
-    let kernel = kernel_of(&case.op, case.operands.len());
-    let words = emit(&kernel).expect("the kernel emits");
-    let pipeline = device
-        .kernel_pipeline(&kernel, &words)
-        .expect("the pipeline is created");
+    let kernels = kernels_of(&case.op, case.operands.len());
+    let pipelines: Vec<_> = kernels
+        .iter()
+        .map(|kernel| {
+            let words = emit(kernel).expect("the kernel emits");
+            device
+                .kernel_pipeline(kernel, &words)
+                .expect("the pipeline is created")
+        })
+        .collect();
     let mut uploads: Vec<Vec<f32>> = case.operands.iter().map(|(_, v)| v.clone()).collect();
     uploads.push(guarded(&vec![f32::from_bits(UNWRITTEN); H as usize]));
     let buffers: Vec<Buffer<'_>> = uploads
@@ -177,15 +199,33 @@ fn gpu(device: &Device<'_>, case: &Case) -> Vec<f32> {
         })
         .collect();
     let output = buffers.len() - 1;
-    let bound: Vec<&Buffer<'_>> = buffers.iter().collect();
+    let moments = device
+        .device_local_buffer(bytes_of(2 * N as usize))
+        .expect("a moments buffer");
     let mut recording = device.record().expect("a recording starts");
     for (from, to) in staging.iter().zip(&buffers) {
         recording.copy(from, to).expect("the upload is recorded");
     }
     recording.barrier(Barrier::TransferToCompute);
-    recording
-        .dispatch_kernel(&pipeline, &kernel, &bound)
-        .expect("the dispatch is recorded");
+    match (&kernels[..], &pipelines[..]) {
+        ([kernel], [pipeline]) => {
+            let bound: Vec<&Buffer<'_>> = buffers.iter().collect();
+            recording
+                .dispatch_kernel(pipeline, kernel, &bound)
+                .expect("the dispatch is recorded");
+        }
+        ([first, second], [first_pipeline, second_pipeline]) => {
+            recording
+                .dispatch_kernel(first_pipeline, first, &[&buffers[0], &moments])
+                .expect("the moments dispatch is recorded");
+            recording.barrier(Barrier::ComputeToCompute);
+            let bound: Vec<&Buffer<'_>> = [&moments].into_iter().chain(&buffers).collect();
+            recording
+                .dispatch_kernel(second_pipeline, second, &bound)
+                .expect("the column dispatch is recorded");
+        }
+        _ => unreachable!("one kernel or two"),
+    }
     recording.barrier(Barrier::ComputeToTransfer);
     recording
         .copy(&buffers[output], &staging[output])
