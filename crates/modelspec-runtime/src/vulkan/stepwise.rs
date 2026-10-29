@@ -1,7 +1,7 @@
 //! A training run on one Vulkan device that the host feeds before every step (coordinator decision
 //! D73, story:bert-vulkan-kernels-attention-loss-adamw): one command buffer and one host wait per
-//! step, and one per evaluated held-out batch, for a step plan that reads more than its
-//! parameters and one batch.
+//! step, and one per held-out batch an evaluation reduces on the host, for a step plan that reads
+//! more than its parameters and one batch.
 //!
 //! [`super::runner::train`] records up to [`super::runner::CHUNK_STEPS`] steps into one command
 //! buffer and uploads once, so it runs a step plan whose only inputs are the parameters and the
@@ -28,11 +28,17 @@
 //! - dense or packed `--data` ([`Data`]): the batch of step `k` is uploaded before it, as the CPU
 //!   run feeds it ([`crate::train::runner::run_checked`]);
 //! - held-out evaluation ([`Evaluation`], `--eval-every`): at every multiple of `every` and the last
-//!   step, before the step's command buffer, each `HeldOut` batch is a command buffer of its own
-//!   (coordinator decision D76, story:vulkan-eval-download-per-batch): it copies the batch into
-//!   the data views, runs the steps of the plan the prediction is computed from, without the
-//!   loss sum ([`modelspec_core::ir::kernel::ExecutionPlan::prediction_steps`]), with dropout
-//!   off and copies the
+//!   step, each `HeldOut` batch is copied into the data views and runs the steps of the plan the
+//!   prediction is computed from, without the loss sum
+//!   ([`modelspec_core::ir::kernel::ExecutionPlan::prediction_steps`]), with dropout off. With
+//!   [`HeldOutReduction::Device`] (story:vulkan-eval-metrics-on-device) every batch is recorded
+//!   at the start of the evaluated step's command buffer, followed by the kernels of
+//!   [`crate::spirv::emit::held_out_kernels`], which add its row losses and correct rows to a
+//!   device state of [`crate::spirv::emit::HELD_OUT_STATE`] floats; the state comes down with the
+//!   step's loss, and after the step's one host wait [`HeldOut::metrics_of_sums`] divides it as the
+//!   CPU evaluation divides its sums. With [`HeldOutReduction::Host`] (coordinator decision D76,
+//!   story:vulkan-eval-download-per-batch), and for a plan whose prediction does not start its
+//!   buffer, each batch is a command buffer of its own before the step's, which copies the
 //!   prediction into a download buffer of one prediction ([`download_bytes`]), and after its
 //!   host wait the host adds the logits to the reduction of the CPU evaluation, in batch order
 //!   ([`HeldOut::tallying`]), before the next batch overwrites them;
@@ -53,11 +59,12 @@
 //!
 //! The first command buffer of the run, a held-out batch's or step `start`'s, copies the
 //! parameters and the zero moments up. Step `k`'s command buffer, for `k` from the start to the
-//! end, after the held-out batches of an evaluated step: the step's batch, tokens and scalars are
-//! copied up, the step plan runs (the loss steps without dropout at the end), and the loss is
-//! copied down, with the parameters and moments after the last step and at each due checkpoint.
-//! The host waits once per step and once per held-out batch of an evaluated step, checks the
-//! loss, and the parameters and moments where it read them, with E-TRAIN-001 as the CPU run
+//! end, after the held-out batches an evaluation reduces on the host and after the batches and
+//! held-out kernels of one the device reduces: the step's batch, tokens and scalars are copied
+//! up, the step plan runs (the loss steps without dropout at the end), and the loss is copied
+//! down, with the device reduction's state on an evaluated step, and with the parameters and
+//! moments after the last step and at each due checkpoint. The host waits once per step and
+//! once per held-out batch an evaluation reduces on the host, checks the loss, and the parameters and moments where it read them, with E-TRAIN-001 as the CPU run
 //! does, and shows the step to the observer ([`StepSeen`]). A step whose loss is not
 //! finite stops the run with one more host wait, which reads the parameters and moments the
 //! diverged run holds.
@@ -95,7 +102,7 @@ use modelspec_core::passes::masked_rows;
 use modelspec_core::schedule::host_inputs;
 
 use super::Device;
-use super::dispatch::Recording;
+use super::dispatch::{Bound, DescriptorArena, Recording};
 use super::memory::{Buffer, MemorySpan};
 use super::negotiate::Negotiated;
 use super::pipeline::{Pipeline, PipelineRequest, PipelineStatistics, reads_seed};
@@ -108,7 +115,9 @@ use super::runner::{
 };
 use super::sync::{Barrier, recorded_barriers};
 use crate::cpu::HostTensor;
-use crate::spirv::emit::{emit_kernels, emit_module_with};
+use crate::spirv::emit::{
+    HELD_OUT_STATE, HeldOutKernels, emit_kernels, emit_module_with, held_out_kernels, held_out_sums,
+};
 use crate::train::data::{DenseBatch, DenseData, PackedBatch, synthetic};
 use crate::train::eval::{HeldOut, HeldOutMetrics};
 use crate::train::init::{Stream, dropout_token, initialize, sigreg_projection};
@@ -121,6 +130,27 @@ pub struct Evaluation<'o, 'h> {
     pub held_out: &'o HeldOut<'h>,
     /// The steps between two evaluations: positive.
     pub every: u64,
+    /// Where each batch's logits are reduced.
+    pub reduction: HeldOutReduction,
+}
+
+/// Where a stepwise run reduces the logits of each evaluated `HeldOut` batch to the loss and
+/// accuracy.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum HeldOutReduction {
+    /// On the device (story:vulkan-eval-metrics-on-device): the kernels of
+    /// [`crate::spirv::emit::held_out_kernels`] after each batch's prediction, the whole
+    /// evaluation in the evaluated step's command buffer, [`crate::spirv::emit::HELD_OUT_STATE`]
+    /// floats read back after its one host wait and finished by
+    /// [`HeldOut::metrics_of_sums`]. A plan whose prediction view does not start its buffer is
+    /// reduced on the host. The accuracy is the host reduction's bit for bit and the loss within 4
+    /// ulps of it (coordinator decision D141): the device's `Exp` and `Log` are not the host libm's.
+    #[default]
+    Device,
+    /// On the host (story:vulkan-eval-download-per-batch): each batch's logits read back after
+    /// a command buffer and host wait of its own and added to [`HeldOut::tallying`], the oracle
+    /// of the device reduction.
+    Host,
 }
 
 /// Where a stepwise run starts, what it trains on and what it does on the way; the default is a
@@ -540,6 +570,14 @@ pub fn train_stepwise_profiled(
     if let Some(upload) = &mut eval_upload {
         upload.write_f32(&eval_words)?;
     }
+    // The held-out reduction on the device, unless the evaluation asks for the host's or the
+    // prediction does not start its buffer, which a module binds whole.
+    let device_tally = match &eval {
+        Some(eval) if eval.reduction == HeldOutReduction::Device && prediction.offset == 0 => Some(
+            DeviceTally::new(device, profile, eval.held_out, &prediction)?,
+        ),
+        _ => None,
+    };
 
     // The dense eval batches of `--eval`, laid out as the data views, uploaded once.
     let dense_batches = dense_eval.map_or(0, |dense| dense.samples() / dense.batch());
@@ -567,10 +605,16 @@ pub fn train_stepwise_profiled(
     }
 
     // What comes down: the loss every step and every dense eval batch, the prediction of one
-    // batch after each held-out batch and each dense eval batch whose accuracy is measured or
-    // whose prediction is kept, the parameters and moments at the end and at each checkpoint.
+    // batch after each held-out batch reduced on the host and each dense eval batch whose
+    // accuracy is measured or whose prediction is kept, the state of the device reduction after
+    // each evaluated step, the parameters and moments at the end and at each checkpoint.
     let dense_predicted = dense_compared.is_some() || dense_predictions.is_some();
-    let predicted_batches = eval_batches + if dense_predicted { dense_batches } else { 0 };
+    let host_tallied = if device_tally.is_some() {
+        0
+    } else {
+        eval_batches
+    };
+    let predicted_batches = host_tallied + if dense_predicted { dense_batches } else { 0 };
     let download = download_bytes(&prediction, predicted_batches);
     let mut loss_download = device.download_buffer(download.loss)?;
     let mut prediction_download = download_buffer(device, download.prediction)?;
@@ -584,9 +628,13 @@ pub fn train_stepwise_profiled(
         .filter(|step| step.op == PlanOp::Dispatch)
         .count();
     let binds = if identities.is_empty() { 1 } else { 2 };
+    let (tally_sets, tally_descriptors) = match device_tally {
+        Some(_) => (DeviceTally::SETS, DeviceTally::DESCRIPTORS),
+        None => (0, 0),
+    };
     let arena = device.descriptor_arena(
-        count_u32(binds * dispatch_steps)?,
-        count_u32(binds * descriptors(plan))?,
+        count_u32(binds * dispatch_steps + tally_sets)?,
+        count_u32(binds * descriptors(plan) + tally_descriptors)?,
     )?;
     let stepping: Vec<&Pipeline<'_>> = pipelines.clone();
     let (step_actions, loss_at) = actions(plan, &arena, &stepping, &buffers)?;
@@ -616,6 +664,10 @@ pub fn train_stepwise_profiled(
         .map(|at| &step_actions[at])
         .collect();
     let loss = buffer(&buffers, &plan.loss_view)?;
+    let tally_bound = match &device_tally {
+        Some(tally) => Some(tally.bind(&arena, buffer(&buffers, &prediction)?)?),
+        None => None,
+    };
 
     // The dispatch sites a profile times, and the one timestamp pool every step's command buffer
     // resets and writes: two queries per dispatch of a training step or of the final loss
@@ -808,10 +860,11 @@ pub fn train_stepwise_profiled(
             }
             upload.write_f32(&words)?;
         }
-        // An evaluated step: before the step's command buffer, each held-out batch in one of its
-        // own, read back and tallied before the next batch overwrites the download.
+        // An evaluated step reduced on the host: before the step's command buffer, each held-out
+        // batch in one of its own, read back and tallied before the next batch overwrites the
+        // download. Reduced on the device, the batches open the step's command buffer.
         let metrics = match held_out {
-            Some(held_out) if evaluated => {
+            Some(held_out) if evaluated && tally_bound.is_none() => {
                 let download = prediction_download.as_mut().ok_or_else(|| {
                     VulkanRunError::Plan("a held-out evaluation without its download".into())
                 })?;
@@ -984,6 +1037,51 @@ pub fn train_stepwise_profiled(
                 &first_views,
                 &buffers,
             )?;
+            if let (Some(tally), Some(bound)) = (&device_tally, &tally_bound)
+                && evaluated
+            {
+                for b in 0..eval_batches {
+                    if b > 0 {
+                        recording.barrier(Barrier::ComputeToCompute);
+                        recording.barrier(Barrier::ComputeToTransfer);
+                        recording.barrier(Barrier::TransferToTransfer);
+                    }
+                    if let Some(upload) = &eval_upload {
+                        let mut at = b as u64 * data_bytes;
+                        for declaration in &plan.data {
+                            let view = declaration.view;
+                            recording.copy_region(
+                                upload,
+                                at,
+                                buffer(&buffers, &view)?,
+                                view.offset,
+                                view.size_bytes,
+                            )?;
+                            at += view.size_bytes;
+                        }
+                    }
+                    if let Some(upload) = &step_upload {
+                        for (at, view) in &projection_regions {
+                            recording.copy_region(
+                                upload,
+                                *at,
+                                buffer(&buffers, view)?,
+                                view.offset,
+                                view.size_bytes,
+                            )?;
+                        }
+                    }
+                    tally.copy_targets(&mut recording, b)?;
+                    recording.barrier(Barrier::TransferToCompute);
+                    record(&mut recording, eval_actions.iter().copied(), &buffers, None)?;
+                    recording.barrier(Barrier::ComputeToCompute);
+                    tally.reduce(&mut recording, bound, b == 0);
+                }
+                recording.barrier(Barrier::ComputeToCompute);
+                recording.barrier(Barrier::ComputeToTransfer);
+                recording.barrier(Barrier::TransferToTransfer);
+                tally.copy_state(&mut recording)?;
+            }
             let barriers_before = recorded_barriers();
             if let Some(upload) = &step_upload {
                 let mut at = 0;
@@ -1035,6 +1133,17 @@ pub fn train_stepwise_profiled(
                 stamped.extend(stamps.pool.read_first(stamps.next)?);
             }
         }
+        let metrics = match (&device_tally, held_out) {
+            (Some(tally), Some(held_out)) if evaluated => {
+                let (numerator, correct) = tally.sums()?;
+                Some(
+                    held_out
+                        .metrics_of_sums(numerator, correct)
+                        .map_err(refused)?,
+                )
+            }
+            _ => metrics,
+        };
         let loss_k = loss_download.read_f32()?[0];
         let state = if reads_state {
             Some(read_state(&state_download.read_f32()?)?)
@@ -1156,7 +1265,9 @@ impl DownloadBytes {
 /// The download buffers of a stepwise run whose plan predicts into `prediction` and which
 /// reads the prediction of `eval_batches` held-out or dense eval batches: the loss, and one
 /// batch's prediction whatever the number of batches, since each batch is evaluated in a command
-/// buffer of its own and read back before the next (story:vulkan-eval-download-per-batch).
+/// buffer of its own and read back before the next (story:vulkan-eval-download-per-batch). The
+/// held-out batches of an evaluation the device reduces ([`HeldOutReduction::Device`]) are not
+/// among them: their state comes down through a buffer of its own.
 pub fn download_bytes(prediction: &BufferView, eval_batches: usize) -> DownloadBytes {
     DownloadBytes {
         loss: 4,
@@ -1165,6 +1276,146 @@ pub fn download_bytes(prediction: &BufferView, eval_batches: usize) -> DownloadB
         } else {
             prediction.size_bytes
         },
+    }
+}
+
+/// The held-out reduction on the device ([`HeldOutReduction::Device`]): the kernels of
+/// [`held_out_kernels`] for the split's batches, their pipelines, each batch's labels and
+/// weights uploaded once, the device buffers the kernels bind beside the prediction, and the
+/// download of the state.
+struct DeviceTally<'d> {
+    kernels: HeldOutKernels,
+    /// The pipelines of `HeldOutRows`, the first `HeldOutSum` and the next ones.
+    pipelines: [Pipeline<'d>; 3],
+    /// Per batch, its labels' bits then its weights, `rows` words each.
+    upload: Buffer<'d>,
+    labels: Buffer<'d>,
+    weights: Buffer<'d>,
+    rows: Buffer<'d>,
+    state: Buffer<'d>,
+    download: Buffer<'d>,
+    /// The bytes of one batch's labels, and of its weights.
+    row_bytes: u64,
+}
+
+impl<'d> DeviceTally<'d> {
+    /// The descriptor sets [`DeviceTally::bind`] takes from the run's arena, and their
+    /// descriptors.
+    const SETS: usize = 3;
+    const DESCRIPTORS: usize = 9;
+
+    /// The reduction of `held_out` on `device`, whose plan predicts into `prediction`: one
+    /// batch's logits, `rows` rows of the split's classes.
+    fn new(
+        device: &'d Device<'_>,
+        profile: &DeviceProfile,
+        held_out: &HeldOut<'_>,
+        prediction: &BufferView,
+    ) -> Result<Self, VulkanRunError> {
+        let classes = held_out.classes() as u64;
+        let rows = held_out.targets(0).map_or(0, |(labels, _)| labels.len()) as u64;
+        if rows.checked_mul(classes) != Some(prediction.element_count) {
+            return Err(VulkanRunError::Plan(format!(
+                "the prediction {prediction} is not {rows} held-out rows of {classes} logits"
+            )));
+        }
+        let kernels = held_out_kernels(rows, classes)?;
+        let pipeline = |kernel: &Kernel| -> Result<Pipeline<'d>, VulkanRunError> {
+            let module = emit_module_with(kernel, profile, false)?;
+            Ok(device.kernel_pipeline(kernel, &module.spirv)?)
+        };
+        let pipelines = [
+            pipeline(&kernels.rows)?,
+            pipeline(&kernels.first)?,
+            pipeline(&kernels.next)?,
+        ];
+        let mut words = Vec::with_capacity(2 * rows as usize * held_out.batches());
+        for b in 0..held_out.batches() {
+            let (labels, weights) = held_out
+                .targets(b)
+                .filter(|(labels, weights)| {
+                    labels.len() as u64 == rows && weights.len() as u64 == rows
+                })
+                .ok_or_else(|| {
+                    VulkanRunError::Plan(format!("held-out batch {b} has not {rows} rows"))
+                })?;
+            words.extend(labels.iter().map(|&label| f32::from_bits(label as u32)));
+            words.extend_from_slice(weights);
+        }
+        let mut upload = device.staging_buffer(4 * words.len() as u64)?;
+        upload.write_f32(&words)?;
+        let row_bytes = 4 * rows;
+        Ok(DeviceTally {
+            kernels,
+            pipelines,
+            upload,
+            labels: device.device_local_buffer(row_bytes)?,
+            weights: device.device_local_buffer(row_bytes)?,
+            rows: device.device_local_buffer(2 * row_bytes)?,
+            state: device.device_local_buffer(4 * HELD_OUT_STATE)?,
+            download: device.download_buffer(4 * HELD_OUT_STATE)?,
+            row_bytes,
+        })
+    }
+
+    /// The three dispatches, bound in `arena`: `HeldOutRows` over `prediction`, the buffer of
+    /// the plan's prediction view, then the first and the next `HeldOutSum`.
+    fn bind<'a>(
+        &'a self,
+        arena: &'a DescriptorArena<'_>,
+        prediction: &'a Buffer<'_>,
+    ) -> Result<[Bound<'a>; 3], VulkanRunError> {
+        let [rows, first, next] = &self.pipelines;
+        let sum = [&self.rows, &self.weights, &self.state];
+        Ok([
+            arena.bind(
+                rows,
+                &self.kernels.rows,
+                &[prediction, &self.labels, &self.rows],
+            )?,
+            arena.bind(first, &self.kernels.first, &sum)?,
+            arena.bind(next, &self.kernels.next, &sum)?,
+        ])
+    }
+
+    /// Copies batch `b`'s labels and weights into the buffers the kernels read.
+    fn copy_targets<'r>(
+        &'r self,
+        recording: &mut Recording<'r>,
+        b: usize,
+    ) -> Result<(), VulkanRunError> {
+        let at = 2 * b as u64 * self.row_bytes;
+        recording.copy_region(&self.upload, at, &self.labels, 0, self.row_bytes)?;
+        recording.copy_region(
+            &self.upload,
+            at + self.row_bytes,
+            &self.weights,
+            0,
+            self.row_bytes,
+        )?;
+        Ok(())
+    }
+
+    /// Records the reduction of the batch whose prediction and targets are in place: its rows,
+    /// a compute-to-compute barrier, and its sum, the evaluation's first when `first`.
+    fn reduce<'r>(&self, recording: &mut Recording<'r>, bound: &'r [Bound<'_>; 3], first: bool) {
+        recording.dispatch_bound(&bound[0]);
+        recording.barrier(Barrier::ComputeToCompute);
+        recording.dispatch_bound(&bound[if first { 1 } else { 2 }]);
+    }
+
+    /// Copies the state down, after the barrier that orders it after the last sum.
+    fn copy_state<'r>(&'r self, recording: &mut Recording<'r>) -> Result<(), VulkanRunError> {
+        recording.copy_region(&self.state, 0, &self.download, 0, 4 * HELD_OUT_STATE)?;
+        Ok(())
+    }
+
+    /// The numerator and correct count of the state copied down, after the host wait.
+    fn sums(&self) -> Result<(f64, u64), VulkanRunError> {
+        let state: [f32; 4] = self.download.mapped_f32()?[..4]
+            .try_into()
+            .map_err(|_| VulkanRunError::Plan("the held-out state is not 4 floats".into()))?;
+        Ok(held_out_sums(state))
     }
 }
 

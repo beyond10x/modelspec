@@ -34,7 +34,10 @@
 //! A Vulkan run computes the logits of each batch on the device, from the tensors
 //! [`HeldOut::batch`] gives, and [`HeldOut::metrics_of`] reduces them as above
 //! (coordinator decision D73), or [`HeldOut::tallying`] one batch at a time in batch order, to
-//! the same bits (coordinator decision D76).
+//! the same bits (coordinator decision D76), or reduces them on the device to the weighted sum
+//! of the row losses and the count of correct rows, which [`HeldOut::metrics_of_sums`] divides by
+//! the sums of the weights and of the selected rows it takes from the batches' targets
+//! (story:vulkan-eval-metrics-on-device).
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -278,6 +281,54 @@ impl<'p> HeldOut<'p> {
     /// plan before it evaluates the batch.
     pub fn batch(&self, b: usize) -> Option<&PackedBatch> {
         self.batches.get(b).map(|batch| &batch.tensors)
+    }
+
+    /// The labels and weights of the rows of batch `b`, `b` below [`HeldOut::batches`]: what a
+    /// device run that reduces the logits on the device uploads beside the batch
+    /// ([`HeldOut::metrics_of_sums`]).
+    pub fn targets(&self, b: usize) -> Option<(&[i32], &[f32])> {
+        self.batches
+            .get(b)
+            .map(|batch| (batch.labels.as_slice(), batch.weights.as_slice()))
+    }
+
+    /// The held-out loss and accuracy of logits reduced elsewhere to `numerator`, the sum of
+    /// `weight · nll` over every row of every batch, and `correct`, the rows of positive weight
+    /// whose first largest logit is their label in a row without a NaN: the denominator and the
+    /// selected rows are the split's own weights, summed as [`HeldOut::metrics_of`] sums them,
+    /// and the quotient and the accuracy are `metrics_of`'s. A label outside the classes is the
+    /// error `metrics_of` gives for it, the first in batch and row order.
+    pub fn metrics_of_sums(
+        &self,
+        numerator: f64,
+        correct: u64,
+    ) -> Result<HeldOutMetrics, RunError> {
+        let mut tally = Tally::default();
+        for (b, batch) in self.batches.iter().enumerate() {
+            for (n, (&label, &weight)) in batch.labels.iter().zip(&batch.weights).enumerate() {
+                if usize::try_from(label)
+                    .ok()
+                    .filter(|&l| l < self.classes)
+                    .is_none()
+                {
+                    return Err(EvalError::Label {
+                        batch: b,
+                        row: n,
+                        label,
+                        classes: self.classes,
+                    }
+                    .into());
+                }
+                let wide = f64::from(weight);
+                tally.denominator = Some(tally.denominator.map_or(wide, |sum| sum + wide));
+                if weight > 0.0 {
+                    tally.selected += 1;
+                }
+            }
+        }
+        tally.numerator = Some(numerator);
+        tally.correct = correct;
+        Ok(tally.metrics())
     }
 
     /// The held-out loss and accuracy of the logits `logits[b]` of every batch `b`, each
