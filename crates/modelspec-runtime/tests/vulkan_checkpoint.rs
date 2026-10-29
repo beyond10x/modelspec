@@ -376,6 +376,15 @@ fn a_device_checkpoint_loads_into_cpu_and_device_inference() {
 /// its steps and then for its read-back, 6 host waits against the unclocked run's 3; 2 checkpoint
 /// writes that sleep 250 ms each are in its elapsed time and not in its training time; and it
 /// trains the same losses and parameters as the unclocked run.
+///
+/// The training time is held to the wall time of the `train` call, not to `elapsed`: the
+/// training clock of a stop starts when its first command buffer is recorded, and `elapsed` at
+/// the run's first submit, which follows the recording of the first stop's first chunk of
+/// `CHUNK_STEPS` steps (`RunStats`). So the training clock holds that recording and `elapsed`
+/// does not (27 to 77 ms of it measured), and `elapsed - training` fell short of the writes by
+/// it: 426 to 489 ms against the 500 ms written, on the RTX 3090 with the validation layer. The
+/// call holds the spans of the training clock and the writes between them, each once and
+/// disjoint, so `training + 2 · pause <= wall` holds however loaded the host and the device are.
 #[test]
 #[ignore = "needs a Vulkan device"]
 fn a_clocked_chunked_run_leaves_its_checkpoints_and_final_loss_off_the_training_clock() {
@@ -392,43 +401,47 @@ fn a_clocked_chunked_run_leaves_its_checkpoints_and_final_loss_off_the_training_
         unclocked_written.push(step);
         Ok::<(), checkpoint::CheckpointError>(())
     };
-    let (clocked, unclocked) = on_device("clocked chunked run", |device, profile, negotiated| {
-        let clocked = train(
-            device,
-            profile,
-            negotiated,
-            &compiled,
-            &artifact,
-            RunOptions {
-                checkpoints: Some(Checkpoints {
-                    every: 600,
-                    write: &mut write,
-                }),
-                clock: true,
-                ..RunOptions::default()
-            },
-        );
-        let unclocked = train(
-            device,
-            profile,
-            negotiated,
-            &compiled,
-            &artifact,
-            RunOptions {
-                checkpoints: Some(Checkpoints {
-                    every: 600,
-                    write: &mut unclocked_write,
-                }),
-                ..RunOptions::default()
-            },
-        );
-        (clocked, unclocked)
-    });
+    let (clocked, wall, unclocked) =
+        on_device("clocked chunked run", |device, profile, negotiated| {
+            let called = std::time::Instant::now();
+            let clocked = train(
+                device,
+                profile,
+                negotiated,
+                &compiled,
+                &artifact,
+                RunOptions {
+                    checkpoints: Some(Checkpoints {
+                        every: 600,
+                        write: &mut write,
+                    }),
+                    clock: true,
+                    ..RunOptions::default()
+                },
+            );
+            let wall = called.elapsed();
+            let unclocked = train(
+                device,
+                profile,
+                negotiated,
+                &compiled,
+                &artifact,
+                RunOptions {
+                    checkpoints: Some(Checkpoints {
+                        every: 600,
+                        write: &mut unclocked_write,
+                    }),
+                    ..RunOptions::default()
+                },
+            );
+            (clocked, wall, unclocked)
+        });
     eprintln!("clocked:\n{}", clocked.1);
     eprintln!("unclocked:\n{}", unclocked.1);
     eprintln!(
-        "clocked training {:?} of elapsed {:?}; unclocked training {:?} of elapsed {:?}",
-        clocked.1.training, clocked.1.elapsed, unclocked.1.training, unclocked.1.elapsed
+        "clocked training {:?} of elapsed {:?} in a call of {:?}; unclocked training {:?} of \
+         elapsed {:?}",
+        clocked.1.training, clocked.1.elapsed, wall, unclocked.1.training, unclocked.1.elapsed
     );
     assert_eq!(written, vec![600, 1200]);
     assert_eq!(unclocked_written, vec![600, 1200]);
@@ -439,9 +452,13 @@ fn a_clocked_chunked_run_leaves_its_checkpoints_and_final_loss_off_the_training_
     assert_eq!(unclocked.1.host_waits, 3, "one per stop");
     assert!(clocked.1.training > std::time::Duration::ZERO);
     assert!(
-        clocked.1.training + 2 * pause <= clocked.1.elapsed,
-        "the checkpoint writes are in elapsed {:?} but not in training {:?}",
-        clocked.1.elapsed,
+        2 * pause <= clocked.1.elapsed,
+        "the checkpoint writes are in elapsed {:?}",
+        clocked.1.elapsed
+    );
+    assert!(
+        clocked.1.training + 2 * pause <= wall,
+        "the checkpoint writes are in the call of {wall:?} but not in training {:?}",
         clocked.1.training
     );
     assert_eq!(unclocked.1.training, unclocked.1.elapsed);
