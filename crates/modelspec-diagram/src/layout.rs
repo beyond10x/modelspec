@@ -1,11 +1,12 @@
 //! The layered layout of DESIGN.md § 13.5: a `DiagramRender` of a graph's visible level, every
 //! coordinate an integer and every step deterministic (ordered maps, stable sorts, no float).
 //!
-//! 1. Visible: the nodes of the root scope (every node of a model graph; collapsed scopes and
-//!    their ports arrive with story:diagram-zoom).
-//! 2. Chips: a `ParamRead`, a `Scalar` or a dropout RNG token with exactly one visible reader is
-//!    drawn as a chip inside its reader's box, on the right, and gets neither a box nor a route
-//!    ([`chips`], [`chip_rects`]).
+//! 1. Visible: the visible graph of the request ([`crate::visible`]): the operators of the root
+//!    and its open scopes, one Composite node per collapsed scope, the root's ports as Boundary
+//!    nodes, edges attached to ports and parallel ones merged.
+//! 2. Chips: a `ParamRead`, a `Scalar` or a dropout RNG token with exactly one visible reader, an
+//!    operator, is drawn as a chip inside its reader's box, on the right, and gets neither a box
+//!    nor a route ([`chips`], [`chip_rects`]).
 //! 3. Ranks (`ranks_of`): longest-path ranks from the sources, then tightened so the edges are
 //!    short: a node with a consumer moves down to one rank above its first consumer when it has
 //!    at least as many consumers as producers (an input read deep in the graph sits just above
@@ -38,8 +39,9 @@ use std::collections::BTreeMap;
 
 use crate::model::{
     DiagramGraph, DiagramNode, DiagramRender, DiagramRenderId, DiagramRenderState, DiagramView,
-    EdgeRoute, NodeBox, NodeKind, ScopeKey,
+    EdgeRoute, NodeBox, NodeKind, Port, ScopeKey,
 };
+use crate::visible::{Role, Visible, VisibleNode, visible};
 
 /// The glyph's side.
 pub const GLYPH: i64 = 24;
@@ -100,34 +102,32 @@ pub fn default_depth(view: DiagramView) -> u32 {
 /// A node drawn as a chip on one operand slot of its only reader.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Chip {
-    /// The chip's node, an index into `graph.nodes`.
+    /// The chip's node, an index into [`Visible::nodes`].
     pub node: usize,
-    /// The reader's node, an index into `graph.nodes`.
+    /// The reader's node, an index into [`Visible::nodes`].
     pub reader: usize,
     pub operand: i64,
 }
 
-/// The chips of the level `root` of `graph`, in node order.
-pub fn chips(graph: &DiagramGraph, root: &ScopeKey) -> Vec<Chip> {
-    let index = key_index(graph);
-    let visible = |i: usize| graph.nodes[i].scope == *root;
+/// The chips of a visible graph, in node order.
+pub fn chips(visible: &Visible) -> Vec<Chip> {
     let mut readers: BTreeMap<usize, Vec<(usize, i64)>> = BTreeMap::new();
-    for edge in &graph.edges {
-        let (Some(&p), Some(&c)) = (
-            index.get(edge.producer.as_str()),
-            index.get(edge.consumer.as_str()),
-        ) else {
-            continue;
-        };
-        if visible(p) && visible(c) {
-            readers.entry(p).or_default().push((c, edge.operand));
+    for edge in &visible.edges {
+        for _ in 0..edge.count {
+            readers
+                .entry(edge.producer)
+                .or_default()
+                .push((edge.consumer, edge.slot));
         }
     }
+    let operator = |i: usize| visible.nodes[i].role == Role::Operator;
     let mut found = Vec::new();
     for (node, reads) in readers {
         if let [(reader, operand)] = reads[..]
-            && chip_kind(&graph.nodes[node])
-            && !chip_kind(&graph.nodes[reader])
+            && operator(node)
+            && operator(reader)
+            && chip_kind(&visible.nodes[node].node)
+            && !chip_kind(&visible.nodes[reader].node)
         {
             found.push(Chip {
                 node,
@@ -189,6 +189,47 @@ pub fn box_size(node: &DiagramNode, chips: &[&DiagramNode]) -> (i64, i64) {
     (PAD + GLYPH + INNER + text + columns + PAD, height)
 }
 
+/// The advance of one character of a port's label.
+pub const PORT_ADVANCE: i64 = 6;
+/// The height of a composite's port row, above its glyph and label.
+pub const PORT_ROW: i64 = COMPOSITE_HEIGHT - HEIGHT;
+
+/// The label of a port, its value `%<k>`.
+pub fn port_label(port: &Port) -> String {
+    format!("%{}", port.value_id)
+}
+
+/// The width of the cell each port of a row takes: its label and 12 units around it.
+fn port_cell(ports: &[Port]) -> i64 {
+    ports
+        .iter()
+        .map(|p| PORT_ADVANCE * chars(&port_label(p)) + 12)
+        .max()
+        .unwrap_or(0)
+}
+
+/// The size of a visible node's box with `chips`: an Operator's [`box_size`]; a Composite's as
+/// wide as its glyph and label or its port rows, whichever is wider, each port of a row taking an
+/// equal cell, and [`COMPOSITE_HEIGHT`] high; a Boundary's its label and padding, no glyph.
+pub fn node_size(node: &VisibleNode, chips: &[&DiagramNode]) -> (i64, i64) {
+    match node.role {
+        Role::Operator => box_size(&node.node, chips),
+        Role::Composite => {
+            let (width, height) = box_size(&node.node, &[]);
+            let ports = |row: &[Port]| port_cell(row) * row.len() as i64;
+            (
+                width.max(ports(&node.inputs)).max(ports(&node.outputs)),
+                height,
+            )
+        }
+        Role::Boundary(_) => {
+            let (first, second) = label_lines(&node.node);
+            let text = (ADVANCE * chars(first)).max(ADVANCE_SECOND * chars(second));
+            (PAD + text + PAD, HEIGHT)
+        }
+    }
+}
+
 /// Where each of `chips` (by operand) is drawn inside `node_box`: `(x, y, width, height)`.
 pub fn chip_rects(node_box: &NodeBox, chips: &[&DiagramNode]) -> Vec<(i64, i64, i64, i64)> {
     let columns = chip_columns(chips);
@@ -208,15 +249,6 @@ pub fn chip_rects(node_box: &NodeBox, chips: &[&DiagramNode]) -> Vec<(i64, i64, 
     rects
 }
 
-fn key_index(graph: &DiagramGraph) -> BTreeMap<&str, usize> {
-    graph
-        .nodes
-        .iter()
-        .enumerate()
-        .map(|(i, n)| (n.node_key.as_str(), i))
-        .collect()
-}
-
 /// One entry of a rank: a visible node or a dummy of a long edge.
 struct Item {
     rank: usize,
@@ -231,12 +263,14 @@ struct Item {
 }
 
 /// One step of an edge between two adjacent ranks, entering `lower` at operand slot `slot` of
-/// `slots` (a dummy has one slot).
+/// `slots` (a dummy has one slot), and leaving `upper` at the fixed place `port`, `(j, m)`, when
+/// `upper` is a composite and the link leaves at its Out port `j` of `m`.
 struct Link {
     upper: usize,
     lower: usize,
     slot: i64,
     slots: i64,
+    port: Option<(i64, i64)>,
 }
 
 fn connect(
@@ -246,6 +280,7 @@ fn connect(
     lower: usize,
     slot: i64,
     slots: i64,
+    port: Option<(i64, i64)>,
 ) {
     items[upper].outs.push(links.len());
     items[lower].ins.push(links.len());
@@ -254,6 +289,7 @@ fn connect(
         lower,
         slot,
         slots,
+        port,
     });
 }
 
@@ -313,19 +349,13 @@ fn ranks_of(nodes: &[usize], edges: &[(usize, usize, usize)]) -> BTreeMap<usize,
         .collect()
 }
 
-/// The render of `graph` that `request` asks for.
+/// The render of `graph` that `request` asks for: the layout of its visible graph
+/// ([`visible`]). Its `expanded` is the request's, sorted and without repeats, so the order a
+/// request lists them in does not change a byte.
 pub fn render(graph: &DiagramGraph, request: &RenderRequest) -> DiagramRender {
-    let root = request.root.clone().unwrap_or_else(|| {
-        graph
-            .scopes
-            .iter()
-            .find(|s| s.parent.is_none())
-            .map(|s| s.key.clone())
-            .unwrap_or_else(|| ScopeKey(graph.program.clone()))
-    });
-    let depth = request.depth.unwrap_or_else(|| default_depth(graph.view));
-    let index = key_index(graph);
-    let chip_list = chips(graph, &root);
+    let shown = visible(graph, request);
+    let nodes = &shown.nodes;
+    let chip_list = chips(&shown);
     let mut chips_of: BTreeMap<usize, Vec<(i64, usize)>> = BTreeMap::new();
     for chip in &chip_list {
         chips_of
@@ -337,45 +367,32 @@ pub fn render(graph: &DiagramGraph, request: &RenderRequest) -> DiagramRender {
         list.sort();
     }
     let is_chip = |i: usize| chip_list.iter().any(|c| c.node == i);
-    let ranked: Vec<usize> = (0..graph.nodes.len())
-        .filter(|&i| graph.nodes[i].scope == root && !is_chip(i))
-        .collect();
+    let ranked: Vec<usize> = (0..nodes.len()).filter(|&i| !is_chip(i)).collect();
     let ranked_set: std::collections::BTreeSet<usize> = ranked.iter().copied().collect();
-    let edges: Vec<(usize, usize, usize)> = graph
+    let edges: Vec<(usize, usize, usize)> = shown
         .edges
         .iter()
         .enumerate()
-        .filter_map(|(e, edge)| {
-            let p = *index.get(edge.producer.as_str())?;
-            let c = *index.get(edge.consumer.as_str())?;
-            (ranked_set.contains(&p) && ranked_set.contains(&c)).then_some((e, p, c))
-        })
+        .filter(|(_, e)| ranked_set.contains(&e.producer) && ranked_set.contains(&e.consumer))
+        .map(|(k, e)| (k, e.producer, e.consumer))
         .collect();
 
     let rank = ranks_of(&ranked, &edges);
-    let mut operands: BTreeMap<usize, i64> = BTreeMap::new();
-    for edge in &graph.edges {
-        if let Some(&c) = index.get(edge.consumer.as_str()) {
-            let n = operands.entry(c).or_insert(0);
-            *n = (*n).max(edge.operand + 1);
-        }
-    }
 
     let chips_for = |i: usize| -> Vec<&DiagramNode> {
         chips_of
             .get(&i)
-            .map(|list| list.iter().map(|&(_, n)| &graph.nodes[n]).collect())
+            .map(|list| list.iter().map(|&(_, n)| &nodes[n].node).collect())
             .unwrap_or_default()
     };
     let mut items: Vec<Item> = Vec::new();
     let mut item_of: BTreeMap<usize, usize> = BTreeMap::new();
     for &i in &ranked {
-        let node = &graph.nodes[i];
-        let (width, height) = box_size(node, &chips_for(i));
+        let (width, height) = node_size(&nodes[i], &chips_for(i));
         item_of.insert(i, items.len());
         items.push(Item {
             rank: rank[&i],
-            order: (node.value_id.unwrap_or(i64::MAX), 0, i),
+            order: (nodes[i].value, 0, i),
             width,
             height,
             dummy: false,
@@ -386,8 +403,11 @@ pub fn render(graph: &DiagramGraph, request: &RenderRequest) -> DiagramRender {
     let mut links: Vec<Link> = Vec::new();
     let mut chains: Vec<Vec<usize>> = Vec::new();
     let mut first_link: Vec<usize> = Vec::new();
-    for &(e, p, c) in &edges {
-        let producer_value = graph.nodes[p].value_id.unwrap_or(i64::MAX);
+    for &(k, p, c) in &edges {
+        let edge = &shown.edges[k];
+        let mut port = edge
+            .out_port
+            .map(|j| (j as i64, nodes[p].outputs.len().max(1) as i64));
         let mut previous = item_of[&p];
         let mut chain = Vec::new();
         first_link.push(links.len());
@@ -395,25 +415,25 @@ pub fn render(graph: &DiagramGraph, request: &RenderRequest) -> DiagramRender {
             let dummy = items.len();
             items.push(Item {
                 rank: r,
-                order: (producer_value, 1, e),
+                order: (nodes[p].value, 1, edge.edge),
                 width: 0,
                 height: 0,
                 dummy: true,
                 ins: Vec::new(),
                 outs: Vec::new(),
             });
-            connect(&mut items, &mut links, previous, dummy, 0, 1);
+            connect(&mut items, &mut links, previous, dummy, 0, 1, port.take());
             chain.push(dummy);
             previous = dummy;
         }
-        let slots = operands.get(&c).copied().unwrap_or(1).max(1);
         connect(
             &mut items,
             &mut links,
             previous,
             item_of[&c],
-            graph.edges[e].operand,
-            slots,
+            edge.slot,
+            nodes[c].slots,
+            port,
         );
         chains.push(chain);
     }
@@ -468,7 +488,7 @@ pub fn render(graph: &DiagramGraph, request: &RenderRequest) -> DiagramRender {
         .map(|&i| {
             let item = &items[item_of[&i]];
             NodeBox {
-                node_key: graph.nodes[i].node_key.clone(),
+                node_key: nodes[i].node.node_key.clone(),
                 x: x(item_of[&i]),
                 y: row_y[item.rank],
                 width: item.width,
@@ -479,12 +499,13 @@ pub fn render(graph: &DiagramGraph, request: &RenderRequest) -> DiagramRender {
         .collect();
 
     // A producer's routes leave its bottom at evenly spaced points, ordered by where each goes
-    // next ([`port_places`]), so a fan-out does not start as one stroke.
+    // next ([`port_places`]), so a fan-out does not start as one stroke; a composite's leave at
+    // their Out ports.
     let points: Vec<Vec<i64>> = edges
         .iter()
         .zip(&chains)
         .zip(&first_link)
-        .map(|((&(e, p, c), chain), &first)| {
+        .map(|((&(k, p, c), chain), &first)| {
             let pi = item_of[&p];
             let (j, m) = places[first];
             let mut points = vec![
@@ -496,9 +517,9 @@ pub fn render(graph: &DiagramGraph, request: &RenderRequest) -> DiagramRender {
                 points.extend([x(d), row_y[r], x(d), row_y[r] + row_height[r]]);
             }
             let ci = item_of[&c];
-            let n = operands.get(&c).copied().unwrap_or(1).max(1);
+            let n = nodes[c].slots;
             points.extend([
-                x(ci) + items[ci].width * (2 * graph.edges[e].operand + 1) / (2 * n),
+                x(ci) + items[ci].width * (2 * shown.edges[k].slot + 1) / (2 * n),
                 row_y[items[ci].rank],
             ]);
             points
@@ -507,28 +528,25 @@ pub fn render(graph: &DiagramGraph, request: &RenderRequest) -> DiagramRender {
     let routes = edges
         .iter()
         .zip(points)
-        .map(|(&(e, _, _), points)| {
-            let edge = &graph.edges[e];
-            EdgeRoute {
-                producer: edge.producer.clone(),
-                consumer: edge.consumer.clone(),
-                operand: edge.operand,
-                points,
-            }
+        .map(|(&(k, p, c), points)| EdgeRoute {
+            producer: nodes[p].node.node_key.clone(),
+            consumer: nodes[c].node.node_key.clone(),
+            operand: shown.edges[k].slot,
+            points,
         })
         .collect();
 
-    let mut render_id = format!("{}#{}@{depth}", graph.graph_id.0, root.0);
-    for scope in &request.expanded {
+    let mut render_id = format!("{}#{}@{}", graph.graph_id.0, shown.root.0, shown.depth);
+    for scope in &shown.expanded {
         render_id.push('+');
         render_id.push_str(&scope.0);
     }
     DiagramRender {
         render_id: DiagramRenderId(render_id),
         graph_id: graph.graph_id.clone(),
-        root,
-        depth: i64::from(depth),
-        expanded: request.expanded.clone(),
+        root: shown.root.clone(),
+        depth: i64::from(shown.depth),
+        expanded: shown.expanded.clone(),
         width,
         height,
         boxes,
@@ -665,7 +683,7 @@ fn lower_port(link: &Link, position: &[i64]) -> i64 {
 }
 
 /// The place `(j, m)` of every link among the `m` links leaving its upper item: ordered by where
-/// each enters the rank below, then by link.
+/// each enters the rank below, then by link; a link leaving a composite at an Out port, that port.
 fn port_places(items: &[Item], links: &[Link], position: &[i64]) -> Vec<(i64, i64)> {
     let mut places = vec![(0, 1); links.len()];
     for item in items {
@@ -677,7 +695,7 @@ fn port_places(items: &[Item], links: &[Link], position: &[i64]) -> Vec<(i64, i6
         outs.sort();
         let m = outs.len() as i64;
         for (j, &(_, l)) in outs.iter().enumerate() {
-            places[l] = (j as i64, m);
+            places[l] = links[l].port.unwrap_or((j as i64, m));
         }
     }
     places
@@ -700,7 +718,8 @@ fn gap_ports(
         outs.sort();
         let m = outs.len() as i64;
         for (j, &(lower, l)) in outs.iter().enumerate() {
-            let upper = position[u] * SCALE + SCALE * (2 * j as i64 + 1) / (2 * m);
+            let (j, m) = links[l].port.unwrap_or((j as i64, m));
+            let upper = position[u] * SCALE + SCALE * (2 * j + 1) / (2 * m);
             ports.push((l, upper, lower));
         }
     }

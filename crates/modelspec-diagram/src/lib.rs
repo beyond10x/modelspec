@@ -5,9 +5,10 @@
 //! that theme them.
 //!
 //! The model view (DESIGN.md § 13.2, § 13.5): [`graph`] builds the `DiagramGraph` of a verified
-//! program, [`layout`] lays out a `DiagramRender` of it, [`svg`] draws a render as a standalone
-//! SVG and [`json`] writes both records as JSON; [`model`] holds the records of
-//! `spec/domains/diagram.yaml`.
+//! program, [`visible`] picks what one level of it shows (DESIGN.md § 13.3: collapsed scopes as
+//! composite nodes with their ports), [`layout`] lays out a `DiagramRender` of it, [`svg`] draws a
+//! render as a standalone SVG and [`levels`] one SVG per scope linked by navigation, and [`json`]
+//! writes both records as JSON; [`model`] holds the records of `spec/domains/diagram.yaml`.
 
 pub mod glyph;
 pub mod graph;
@@ -15,6 +16,9 @@ pub mod json;
 pub mod layout;
 pub mod model;
 pub mod svg;
+pub mod visible;
+
+pub use svg::{levels, levels_titled};
 
 use modelspec_core::compile;
 use modelspec_core::diag::Diagnostic;

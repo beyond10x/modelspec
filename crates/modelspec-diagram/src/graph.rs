@@ -8,22 +8,29 @@
 //! `StopGradient` reaches, the `StopGradient` too: the branch that computes a target the model
 //! sets itself, such as a joint-embedding model's target embedding. Each node is a line
 //! `modelspec ir --stage tensor` prints. The loss and the targets only it reads are not in it.
-//! One edge per operand carries the producer's dtype and shape. Every node sits in the
-//! Program scope, the train block; function, adjoint and update scopes arrive with the IR's scope
-//! table (story:diagram-scope-provenance) and are drawn by story:diagram-zoom.
+//! One edge per operand carries the producer's dtype and shape.
+//!
+//! Every node sits in the scope the IR's scope table stamped on it (DESIGN.md § 13.2): the
+//! Program scope, the train block, or an inlined function's, keyed `<program>/<fn>` for its first
+//! inlining and `<program>/<fn>@<c>` from the second, as dropout sites are named. The graph holds
+//! the Program scope and every scope that holds a node of the slice, with their ancestors, parents
+//! before children, each with its ports: one per value crossing its boundary, In (defined outside,
+//! read inside) by ValueId, then Out (defined inside, read outside) by ValueId.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use modelspec_core::compile::CompiledTraining;
 use modelspec_core::ir::print::{print_step, write_node};
-use modelspec_core::ir::tensor::{self, Dim, TensorNode, TensorOp, TensorProgram, ValueId};
+use modelspec_core::ir::tensor::{
+    self, Dim, ScopeId, ScopeTable, TensorNode, TensorOp, TensorProgram, ValueId,
+};
 use modelspec_core::ir::training::Subgraph as IrSubgraph;
 use modelspec_core::ops;
 
 use crate::glyph::{InputRole, family_of, glyph_of};
 use crate::model::{
     DType, DiagramEdge, DiagramGraph, DiagramGraphId, DiagramGraphState, DiagramNode, DiagramView,
-    GlyphId, NodeKind, Scope, ScopeKey, ScopeKind, ScopeSegment,
+    GlyphId, NodeKind, Port, PortDirection, Scope, ScopeKey, ScopeKind, ScopeSegment,
 };
 
 /// The model view of `compiled`, the train block named `program`, compiled from `source`.
@@ -40,11 +47,16 @@ pub fn model(compiled: &CompiledTraining, program: &str, source: &str) -> Diagra
     let ir_hash = blake3::hash(print_step(&compiled.training).as_bytes())
         .to_hex()
         .to_string();
+    let table = &ir.scopes;
     let mut nodes = Vec::new();
     let mut edges = Vec::new();
     for node in ir.nodes.iter().filter(|n| slice.contains(&n.id)) {
         let role = roles.get(&node.id).copied().unwrap_or(InputRole::Data);
-        nodes.push(operator(ir, node, role, &root));
+        let scope = match table.scope_of(node.id) {
+            Some(s) if table.entry(s).is_some_and(|e| e.parent.is_some()) => ScopeKey(table.key(s)),
+            _ => root.clone(),
+        };
+        nodes.push(operator(ir, node, role, &scope));
         for (operand, value) in node.operands.iter().enumerate() {
             let producer = by_id[value];
             edges.push(DiagramEdge {
@@ -63,23 +75,159 @@ pub fn model(compiled: &CompiledTraining, program: &str, source: &str) -> Diagra
         function: None,
         source_hash: blake3::hash(source.as_bytes()).to_hex().to_string(),
         ir_hash,
-        scopes: vec![Scope {
-            key: root.clone(),
-            parent: None,
-            path: vec![ScopeSegment {
-                kind: ScopeKind::Program,
-                name: program.to_owned(),
-                instance: 0,
-                call_site: None,
-            }],
-            stage: None,
-            glyph: GlyphId("scope-function".to_owned()),
-            ports: Vec::new(),
-        }],
+        scopes: scopes(table, program, &nodes, &edges),
         nodes,
         edges,
         state: DiagramGraphState::Derived,
     }
+}
+
+/// The scopes of a graph whose nodes and edges are `nodes` and `edges`: the Program scope, then
+/// every scope of `table` below it that holds a node, with its ancestors, in table order (a
+/// parent before its children), each with its ports.
+fn scopes(
+    table: &ScopeTable,
+    program: &str,
+    nodes: &[DiagramNode],
+    edges: &[DiagramEdge],
+) -> Vec<Scope> {
+    let root = Scope {
+        key: ScopeKey(program.to_owned()),
+        parent: None,
+        path: vec![ScopeSegment {
+            kind: ScopeKind::Program,
+            name: program.to_owned(),
+            instance: 0,
+            call_site: None,
+        }],
+        stage: None,
+        glyph: GlyphId("scope-function".to_owned()),
+        ports: Vec::new(),
+    };
+    let held: BTreeSet<&str> = nodes.iter().map(|n| n.scope.0.as_str()).collect();
+    let mut kept: BTreeSet<usize> = BTreeSet::new();
+    for (i, entry) in table.entries.iter().enumerate() {
+        if entry.parent.is_none() || !held.contains(table.key(ScopeId(i as u32)).as_str()) {
+            continue;
+        }
+        let mut at = Some(ScopeId(i as u32));
+        while let Some(scope) = at {
+            let Some(entry) = table.entry(scope) else {
+                break;
+            };
+            if entry.parent.is_none() || !kept.insert(scope.0 as usize) {
+                break;
+            }
+            at = entry.parent;
+        }
+    }
+    let scope_of: BTreeMap<&str, &ScopeKey> = nodes
+        .iter()
+        .map(|n| (n.node_key.as_str(), &n.scope))
+        .collect();
+    let mut out = vec![root];
+    for i in kept {
+        let id = ScopeId(i as u32);
+        let path: Vec<ScopeSegment> = table.path(id).into_iter().map(segment).collect();
+        let parent = table.entries[i].parent.map(|p| ScopeKey(table.key(p)));
+        let key = ScopeKey(table.key(id));
+        let glyph = scope_glyph(path.last().map(|s| s.kind));
+        let ports = ports(&key, &scope_of, edges);
+        out.push(Scope {
+            key,
+            parent,
+            path,
+            stage: None,
+            glyph,
+            ports,
+        });
+    }
+    out
+}
+
+/// `key` is `scope` or a scope inside it.
+pub fn within(key: &ScopeKey, scope: &ScopeKey) -> bool {
+    key.0 == scope.0
+        || key
+            .0
+            .strip_prefix(scope.0.as_str())
+            .is_some_and(|rest| rest.starts_with('/'))
+}
+
+/// The ports of `scope`: every value an edge carries across its boundary, In ports by ValueId,
+/// then Out ports by ValueId.
+fn ports(
+    scope: &ScopeKey,
+    scope_of: &BTreeMap<&str, &ScopeKey>,
+    edges: &[DiagramEdge],
+) -> Vec<Port> {
+    let mut crossing: BTreeMap<(PortDirection, i64), Port> = BTreeMap::new();
+    for edge in edges {
+        let (Some(p), Some(c)) = (
+            scope_of.get(edge.producer.as_str()),
+            scope_of.get(edge.consumer.as_str()),
+        ) else {
+            continue;
+        };
+        let direction = match (within(p, scope), within(c, scope)) {
+            (false, true) => PortDirection::In,
+            (true, false) => PortDirection::Out,
+            _ => continue,
+        };
+        let Some(value_id) = edge.producer.strip_prefix('%').and_then(|v| v.parse().ok()) else {
+            continue;
+        };
+        crossing.entry((direction, value_id)).or_insert(Port {
+            direction,
+            value_id,
+            dtype: edge.dtype,
+            shape: edge.shape.clone(),
+        });
+    }
+    crossing.into_values().collect()
+}
+
+fn segment(segment: &tensor::ScopeSegment) -> ScopeSegment {
+    let (kind, name, instance, call_site) = match segment {
+        tensor::ScopeSegment::Program(name) => (ScopeKind::Program, name.clone(), 0, None),
+        tensor::ScopeSegment::Function {
+            name,
+            instance,
+            call_span,
+        } => (
+            ScopeKind::Function,
+            name.clone(),
+            *instance,
+            call_span.as_ref().map(ToString::to_string),
+        ),
+        tensor::ScopeSegment::Adjoint(_) => (ScopeKind::Adjoint, segment.key(), 0, None),
+        tensor::ScopeSegment::Update(path) => (ScopeKind::Update, path.clone(), 0, None),
+        tensor::ScopeSegment::Module(name) => (ScopeKind::Module, name.clone(), 0, None),
+        tensor::ScopeSegment::Layer(name) => (ScopeKind::Layer, name.clone(), 0, None),
+    };
+    ScopeSegment {
+        kind,
+        name,
+        instance,
+        call_site,
+    }
+}
+
+/// The composite glyph of a scope whose innermost segment is `kind` (DESIGN.md § 13.1); an
+/// Update scope's optimizer is the pipeline view's to name, so it takes `scope-update-sgd` here.
+fn scope_glyph(kind: Option<ScopeKind>) -> GlyphId {
+    GlyphId(
+        match kind {
+            Some(ScopeKind::Adjoint) => "scope-adjoint",
+            Some(ScopeKind::Update) => "scope-update-sgd",
+            Some(ScopeKind::Module) => "scope-module",
+            Some(ScopeKind::Layer) => "scope-layer",
+            Some(ScopeKind::Program | ScopeKind::Function | ScopeKind::Stage) | None => {
+                "scope-function"
+            }
+        }
+        .to_owned(),
+    )
 }
 
 /// The line `modelspec ir` prints for each node, by node key; a `DiagramNode` does not carry it,
