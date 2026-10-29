@@ -1969,12 +1969,14 @@ impl Shell {
     /// values as for the operand bound as is; every product and sum is that of the operand bound
     /// as is, and the instructions for an operand bound as is are unchanged.
     ///
-    /// A tile with [`MatMulTile::vector_reads`] (the block of 256 invocations) gives each
-    /// invocation runs of 4 adjacent columns and rows, stages both blocks `k`-major
-    /// ([`MatMulTile::vector_layout`]) in workgroup memory declared as `vec4`s, and per `k` reads
-    /// each run of 4 values of `b` and of `a` with one vector load, then fuses the products of
-    /// that `k` in the order of the scalar reads, row by row and column by column: every
-    /// product and sum is the one the scalar tile computes for that output element.
+    /// A tile with [`MatMulTile::vector_reads`] (the block of 256 invocations and the long-`k`
+    /// tiles) gives each invocation runs of [`MatMulTile::vector_runs`] adjacent columns and
+    /// rows, stages both blocks `k`-major ([`MatMulTile::vector_layout`]) in workgroup memory
+    /// declared as `vec4`s, and per `k` reads each run of 4 values of `b` and of `a` with one
+    /// vector load and each run of 1 with one scalar load, then fuses the products of that `k`
+    /// in the order of the scalar reads, row by row and column by column: every product and
+    /// sum is the one the scalar tile computes for that output element. A long-`k` tile
+    /// ([`MatMulTile::long_k`]) stages its operands by the rule that method states.
     fn matmul(
         &mut self,
         [m, k, n]: [u32; 3],
@@ -2017,12 +2019,17 @@ impl Shell {
         let b_stride_c = self.uint(layout.b_stride);
         // Per column `c` of the invocation's block: its output column `j`, and where its `b`
         // values start in a buffer, at `k` 0 of the tile.
-        // A tile with vector reads (`MatMulTile::vector_reads`) gives each invocation runs of 4
-        // adjacent columns and rows, both blocks staged `k`-major.
+        // A tile with vector reads (`MatMulTile::vector_reads`) gives each invocation runs of
+        // adjacent columns and rows (`MatMulTile::vector_runs`), both blocks staged `k`-major.
         let vectors = tile.vector_reads();
+        let (row_run, col_run) = tile.vector_runs();
         let (thread_col4, thread_row4) = if vectors {
-            let four = self.uint(4);
-            (self.mul(thread_col, four)?, self.mul(thread_row, four)?)
+            let col_run_c = self.uint(col_run);
+            let row_run_c = self.uint(row_run);
+            (
+                self.mul(thread_col, col_run_c)?,
+                self.mul(thread_row, row_run_c)?,
+            )
         } else {
             (thread_col, thread_row)
         };
@@ -2030,7 +2037,7 @@ impl Shell {
         let mut b_cols = Vec::new();
         for c in 0..per {
             let col = if vectors {
-                let offset = self.uint(c / 4 * lanes * 4 + c % 4);
+                let offset = self.uint(c / col_run * lanes * col_run + c % col_run);
                 self.add(thread_col4, offset)?
             } else {
                 let offset = self.uint(c * lanes);
@@ -2047,7 +2054,7 @@ impl Shell {
         let mut local_rows = Vec::new();
         for q in 0..tile.rows {
             if vectors {
-                let offset = self.uint(q / 4 * thread_rows * 4 + q % 4);
+                let offset = self.uint(q / row_run * thread_rows * row_run + q % row_run);
                 local_rows.push(self.add(thread_row4, offset)?);
             } else {
                 let offset = self.uint(q * thread_rows);
@@ -2069,10 +2076,10 @@ impl Shell {
         let mut a_vectors = Vec::new();
         if vectors {
             let two = self.uint(2);
-            for &at in b_cols.iter().step_by(4) {
+            for &at in b_cols.iter().step_by(4).filter(|_| col_run == 4) {
                 b_vectors.push(self.b.shift_right_logical(u32_ty, None, at, two)?);
             }
-            for &at in a_rows.iter().step_by(4) {
+            for &at in a_rows.iter().step_by(4).filter(|_| row_run == 4) {
                 a_vectors.push(self.b.shift_right_logical(u32_ty, None, at, two)?);
             }
         }
@@ -2100,6 +2107,70 @@ impl Shell {
         let mut slots = Vec::new();
         let zero = self.uint(0);
         for (total, is_a) in [(block_rows * depth, true), (depth * cols, false)] {
+            let staging = Staging::of(
+                &tile,
+                m,
+                k,
+                n,
+                is_a,
+                if is_a { a_transposed } else { b_transposed },
+            );
+            // A long-`k` tile (`MatMulTile::long_k`) stages an operand read with its rows or
+            // columns contiguous by fixed rows or columns: invocation `local` takes row or
+            // column `local % across` at `k` index `local / across` plus `size / across` per
+            // step, its places in the binding and in workgroup memory those of step 0 plus a
+            // constant.
+            if tile.long_k()
+                && !staging.along_first
+                && size.is_multiple_of(staging.across)
+                && total.is_multiple_of(size)
+            {
+                let w_c = self.uint(staging.across);
+                let across = self.b.u_mod(u32_ty, None, local, w_c)?;
+                let along0 = self.b.u_div(u32_ty, None, local, w_c)?;
+                let (origin, limit) = if is_a { (row0, m_c) } else { (col0, n_c) };
+                let line = self.add(origin, across)?;
+                let valid = self.less(line, limit)?;
+                let along_stride_c = self.uint(staging.along_stride);
+                let along_at = self.mul(along0, along_stride_c)?;
+                let line_at = self.add(along_at, line)?;
+                let base = self.pick(u32_ty, valid, line_at, along_at)?;
+                let line_stride = if is_a { a_stride } else { layout.b_stride };
+                let line_stride_c = self.uint(line_stride);
+                let to_along = self.mul(along0, line_stride_c)?;
+                let to_base = self.add(to_along, across)?;
+                let to_base = if is_a {
+                    to_base
+                } else {
+                    self.add(b_offset_c, to_base)?
+                };
+                let step_along = size / staging.across;
+                for step in 0..total / size {
+                    let d = step * step_along;
+                    let (along, at, to) = if step == 0 {
+                        (along0, base, to_base)
+                    } else {
+                        let d_c = self.uint(d);
+                        let at_c = self.uint(d * staging.along_stride);
+                        let to_c = self.uint(d * line_stride);
+                        (
+                            self.add(along0, d_c)?,
+                            self.add(base, at_c)?,
+                            self.add(to_base, to_c)?,
+                        )
+                    };
+                    slots.push(Slot {
+                        is_a,
+                        at,
+                        to,
+                        along,
+                        along_stride: staging.along_stride,
+                        valid,
+                        taken: None,
+                    });
+                }
+                continue;
+            }
             let total_c = self.uint(total);
             for step in 0..total.div_ceil(size) {
                 let offset = self.uint(step * size);
@@ -2264,18 +2335,34 @@ impl Shell {
             for p in 0..len {
                 if vectors {
                     // Per `k`, one vector load per run of 4 columns of `b` and of 4 rows
-                    // of `a`, then the products in the order of the scalar reads.
+                    // of `a`, or one scalar load per column or row where the runs are of 1
+                    // (`MatMulTile::vector_runs`), then the products in the order of the
+                    // scalar reads.
                     let mut bs = Vec::new();
                     for &at in &b_vectors {
                         let offset = s.uint((buffer_value + p * b_line) / 4);
                         let at = s.add(at, offset)?;
                         bs.extend(s.load_shared_vector(at)?);
                     }
+                    if col_run == 1 {
+                        for &at in &b_cols {
+                            let offset = s.uint(buffer_value + p * b_line);
+                            let at = s.add(at, offset)?;
+                            bs.push(s.load_shared(at)?);
+                        }
+                    }
                     let mut a_values = Vec::new();
                     for &at in &a_vectors {
                         let offset = s.uint((buffer_value + p * a_stride) / 4);
                         let at = s.add(at, offset)?;
                         a_values.extend(s.load_shared_vector(at)?);
+                    }
+                    if row_run == 1 {
+                        for &at in &a_rows {
+                            let offset = s.uint(buffer_value + p * a_stride);
+                            let at = s.add(at, offset)?;
+                            a_values.push(s.load_shared(at)?);
+                        }
                     }
                     for (row_sums, &a) in sums.chunks_mut(per as usize).zip(&a_values) {
                         for (sum, &b) in row_sums.iter_mut().zip(&bs) {

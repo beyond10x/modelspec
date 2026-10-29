@@ -198,9 +198,10 @@ pub const MATMUL_TWO_ROWS_FROM_WORKGROUPS: u64 = 256;
 pub const MATMUL_TWO_ROW_TILE: (u32, u32) = (16, 2);
 
 /// A register-blocked [`MatMulTile`] (DESIGN.md § 5.2): its workgroup size, columns, rows and
-/// columns per invocation, its depth before [`MIN_SHARED_MEMORY_BYTES`] lowers it, and the
-/// shapes that take it: `n` of at least `cols`, `k` of at least `from_k`, and at least
-/// `from_workgroups` workgroups of the block over the output.
+/// columns per invocation, its depth before [`MIN_SHARED_MEMORY_BYTES`] lowers it, the tiles it
+/// reads ahead, and the shapes that take it: `n` of at least `cols`, `k` of at least `from_k`,
+/// `m` of at least `from_m` and at least `from_workgroups` workgroups of the block over the
+/// output.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MatMulBlock {
     pub workgroup_size: u32,
@@ -208,8 +209,10 @@ pub struct MatMulBlock {
     pub rows: u32,
     pub cols_per_invocation: u32,
     pub depth: u32,
+    pub ahead: u32,
     pub from_k: u64,
     pub from_workgroups: u64,
+    pub from_m: u64,
 }
 
 /// The block register-blocked tile: 256 invocations of 8 rows by 8 columns, a block of 128 rows
@@ -226,8 +229,10 @@ pub const MATMUL_LARGE_BLOCK: MatMulBlock = MatMulBlock {
     rows: 8,
     cols_per_invocation: 8,
     depth: 8,
+    ahead: 1,
     from_k: 64,
     from_workgroups: 128,
+    from_m: 1,
 };
 
 /// The wide register-blocked tile: 128 invocations of 8 rows by 8 columns, a block of 64 rows by
@@ -242,8 +247,10 @@ pub const MATMUL_WIDE_BLOCK: MatMulBlock = MatMulBlock {
     rows: 8,
     cols_per_invocation: 8,
     depth: 8,
+    ahead: 1,
     from_k: 64,
     from_workgroups: 128,
+    from_m: 1,
 };
 
 /// The square register-blocked tile: 128 invocations of 8 rows by 4 columns, a block of 64 rows
@@ -258,8 +265,55 @@ pub const MATMUL_SQUARE_BLOCK: MatMulBlock = MatMulBlock {
     rows: 8,
     cols_per_invocation: 4,
     depth: 16,
+    ahead: 1,
     from_k: 1,
     from_workgroups: 128,
+    from_m: 1,
+};
+
+/// The long-`k` register-blocked tile: 64 invocations of 8 rows by 4 columns, a block of 64
+/// rows by 32 columns, tiles of 16 values of `k` read 4 tiles ahead, workgroup memory read in
+/// vectors ([`MatMulTile::vector_reads`]). It takes the outputs too small for
+/// [`MATMUL_SQUARE_BLOCK`] whose `k` of at least 16,384 makes each element's sum long: on the
+/// RTX 3090 it takes the weight gradient `[256, 65536]ᵀ x [65536, 1024]` from 7,052 µs on the
+/// two-row tile to 2,792 µs and `[256, 16384]ᵀ x [16384, 1024]` from 1,734 to 732 µs, and at
+/// 32 workgroups (`[256, 16384]ᵀ x [16384, 256]`) is slower than
+/// [`MATMUL_LONG_K_NARROW_BLOCK`] (669 against 368 µs), hence `from_workgroups`. With 16
+/// rows or fewer it is slower than the one-column tile it replaces (`[16, 16384]ᵀ x
+/// [16384, 4096]` 672 against 509 µs, `[1, 16384]ᵀ x [16384, 4096]` 553 against 449 µs) and
+/// with 32 faster (693 against 931 µs), hence `from_m` (finding LK-1; DESIGN.md § 5.2).
+pub const MATMUL_LONG_K_BLOCK: MatMulBlock = MatMulBlock {
+    workgroup_size: 64,
+    cols: 32,
+    rows: 8,
+    cols_per_invocation: 4,
+    depth: 16,
+    ahead: 4,
+    from_k: 16_384,
+    from_workgroups: 128,
+    from_m: 32,
+};
+
+/// The narrow long-`k` register-blocked tile: 128 invocations of 4 rows by 2 columns, a block
+/// of 32 rows by 32 columns, tiles of 16 values of `k` read 4 tiles ahead, workgroup memory
+/// read in vectors ([`MatMulTile::vector_reads`]). It takes the long-`k` outputs with too few
+/// blocks for [`MATMUL_LONG_K_BLOCK`]: on the RTX 3090 it takes `[256, 65536]ᵀ x [65536, 256]`
+/// (64 workgroups) from 2,210 µs on the two-row tile to 1,390 µs and `[256, 16384]ᵀ x
+/// [16384, 256]` from 579 to 368 µs; fewer workgroups were not measured and keep the one- and
+/// two-row tiles, hence `from_workgroups`. With 16 rows it is no faster than the tile it
+/// replaces (`[16, 16384]ᵀ x [16384, 2048]` 329 against 329 µs), with 1 row slower
+/// (`[1, 16384]ᵀ x [16384, 2048]` 342 against 177 µs), and with 32 faster (341 against
+/// 526 µs), hence `from_m` (finding LK-1; DESIGN.md § 5.2).
+pub const MATMUL_LONG_K_NARROW_BLOCK: MatMulBlock = MatMulBlock {
+    workgroup_size: 128,
+    cols: 32,
+    rows: 4,
+    cols_per_invocation: 2,
+    depth: 16,
+    ahead: 4,
+    from_k: 16_384,
+    from_workgroups: 64,
+    from_m: 32,
 };
 
 /// How a matmul kernel `[m, k] x [k, n] -> [m, n]` covers its output (DESIGN.md § 5.2): each
@@ -304,8 +358,9 @@ impl MatMulTile {
 
     /// The tile of a `[m, k] x [k, n]` matmul whose workgroups may hold `max_invocations`
     /// invocations, a function of the shape and the limit: the first of [`MATMUL_LARGE_BLOCK`],
-    /// [`MATMUL_WIDE_BLOCK`] and [`MATMUL_SQUARE_BLOCK`] whose workgroup size is within the limit
-    /// and which the shape takes, read 1 tile ahead with `b` unpadded. Otherwise 128 invocations
+    /// [`MATMUL_WIDE_BLOCK`], [`MATMUL_SQUARE_BLOCK`], [`MATMUL_LONG_K_BLOCK`] and
+    /// [`MATMUL_LONG_K_NARROW_BLOCK`] whose workgroup size is within the limit and which the
+    /// shape takes, read [`MatMulBlock::ahead`] tiles ahead with `b` unpadded. Otherwise 128 invocations
     /// of one column each, 16 columns (fewer, a power of two, when `n` is smaller), one row per
     /// invocation, or two when one row needs at least [`MATMUL_TWO_ROWS_FROM_WORKGROUPS`]
     /// workgroups, tiles of up to 64 values read 6 tiles ahead for one row and of up to 16 values
@@ -315,7 +370,13 @@ impl MatMulTile {
     /// minimum, so every limit up to 255 gives the tiles of [`MatMulTile::of`].
     pub fn of_invocations(m: u64, k: u64, n: u64, max_invocations: u32) -> Self {
         let limit = max_invocations.max(MAX_WORKGROUP_INVOCATIONS);
-        for block in [MATMUL_LARGE_BLOCK, MATMUL_WIDE_BLOCK, MATMUL_SQUARE_BLOCK] {
+        for block in [
+            MATMUL_LARGE_BLOCK,
+            MATMUL_WIDE_BLOCK,
+            MATMUL_SQUARE_BLOCK,
+            MATMUL_LONG_K_BLOCK,
+            MATMUL_LONG_K_NARROW_BLOCK,
+        ] {
             if block.workgroup_size > limit {
                 continue;
             }
@@ -325,12 +386,13 @@ impl MatMulTile {
                 rows: block.rows,
                 cols_per_invocation: block.cols_per_invocation,
                 depth: block.depth,
-                ahead: 1,
+                ahead: block.ahead,
                 buffers: 1,
                 b_pad: 0,
             };
             if n >= u64::from(block.cols)
                 && k >= block.from_k
+                && m >= block.from_m
                 && tile.workgroups(m, n) >= block.from_workgroups
             {
                 return tile.fitted(k);
@@ -443,13 +505,37 @@ impl MatMulTile {
     /// Whether each invocation reads its values of `a` and `b` of one `k` from workgroup memory
     /// as vectors of 4 `f32` ([`MatMulTile::vector_layout`]): the tiles of more than
     /// [`MAX_WORKGROUP_INVOCATIONS`] invocations, [`MATMUL_LARGE_BLOCK`], whose rows and columns
-    /// per invocation are multiples of 4. Invocation `t` then computes 4 adjacent columns from
-    /// `4 · (t % lanes)` in each group of `4 · lanes` columns, and 4 adjacent rows from
-    /// `4 · (t / lanes)` in each group of `4 · workgroup_size / lanes` rows.
+    /// per invocation are multiples of 4, and the long-`k` tiles ([`MatMulTile::long_k`]).
+    /// Invocation `t` then computes runs of [`MatMulTile::vector_runs`] adjacent rows and
+    /// columns: with runs of 4, 4 adjacent columns from `4 · (t % lanes)` in each group of
+    /// `4 · lanes` columns, and 4 adjacent rows from `4 · (t / lanes)` in each group of
+    /// `4 · workgroup_size / lanes` rows; with a run of 1, the columns or rows of a tile without
+    /// vector reads, each read as one `f32`.
     pub fn vector_reads(&self) -> bool {
-        self.workgroup_size > MAX_WORKGROUP_INVOCATIONS
+        (self.workgroup_size > MAX_WORKGROUP_INVOCATIONS
             && self.rows.is_multiple_of(4)
-            && self.cols_per_invocation.is_multiple_of(4)
+            && self.cols_per_invocation.is_multiple_of(4))
+            || self.long_k()
+    }
+
+    /// Whether the tile is [`MATMUL_LONG_K_BLOCK`] or [`MATMUL_LONG_K_NARROW_BLOCK`], the
+    /// register-blocked tiles read more than 1 tile ahead. Besides its vector reads, an operand
+    /// such a tile reads with its rows or columns contiguous (`a` transposed, `b` as is), whose
+    /// block's rows or columns `across` divide the workgroup size, is staged by invocation `t`
+    /// at step `s` from the row or column `t % across` at `k` index
+    /// `t / across + s · workgroup_size / across`: its places in the binding and in workgroup
+    /// memory are those of step 0 plus a constant, where the other tiles compute both per step
+    /// (DESIGN.md § 5.2).
+    pub fn long_k(&self) -> bool {
+        self.cols_per_invocation > 1 && self.ahead > 1
+    }
+
+    /// The adjacent rows and columns of an invocation's runs in a tile with
+    /// [`MatMulTile::vector_reads`]: 4 where its rows or columns per invocation are a multiple
+    /// of 4, else 1.
+    pub fn vector_runs(&self) -> (u32, u32) {
+        let run = |x: u32| if x.is_multiple_of(4) { 4 } else { 1 };
+        (run(self.rows), run(self.cols_per_invocation))
     }
 
     /// The layout of a tile with [`MatMulTile::vector_reads`]: both blocks `k`-major, so the 4
@@ -1849,5 +1935,57 @@ mod tests {
             "{}",
             kernel.signature()
         );
+    }
+
+    /// Whether `tile` is `block` as [`MatMulTile::of_invocations`] builds it, before its depth
+    /// is fitted.
+    fn is_block(tile: &MatMulTile, block: &MatMulBlock) -> bool {
+        (
+            tile.workgroup_size,
+            tile.cols,
+            tile.rows,
+            tile.cols_per_invocation,
+            tile.ahead,
+            tile.b_pad,
+        ) == (
+            block.workgroup_size,
+            block.cols,
+            block.rows,
+            block.cols_per_invocation,
+            block.ahead,
+            0,
+        )
+    }
+
+    /// Finding LK-1: at 16 rows or fewer the long-`k` tiles ran 1.23 to 1.93 times as long as
+    /// the one-column tile they replaced on an RTX 3090; from 32 rows they are faster (64 by
+    /// 32 at `n` 4096: 0.740 of its time at 32 rows; 32 by 32 at `n` 2048: 1.000 at 16 rows,
+    /// 0.643 at 32).
+    #[test]
+    fn a_long_k_tile_needs_at_least_32_rows() {
+        for limit in [128, 256, 1024] {
+            for (n, block) in [
+                (4096, MATMUL_LONG_K_BLOCK),
+                (2048, MATMUL_LONG_K_NARROW_BLOCK),
+            ] {
+                for k in [16_384, 65_536] {
+                    for m in [1, 16, 31] {
+                        let tile = MatMulTile::of_invocations(m, k, n, limit);
+                        assert!(
+                            !tile.long_k() && tile.cols_per_invocation == 1,
+                            "[{m}, {k}] x [{k}, {n}] at {limit}: {tile}"
+                        );
+                        assert_eq!(tile, MatMulTile::of_invocations(m, 16_383, n, limit));
+                    }
+                    for m in [32, 33] {
+                        let tile = MatMulTile::of_invocations(m, k, n, limit);
+                        assert!(
+                            is_block(&tile, &block),
+                            "[{m}, {k}] x [{k}, {n}] at {limit}: {tile}"
+                        );
+                    }
+                }
+            }
+        }
     }
 }
