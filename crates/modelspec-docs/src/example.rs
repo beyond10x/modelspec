@@ -57,6 +57,9 @@ struct Example {
     /// The exit status every run must have, so that a model that stops checking fails generation
     /// instead of quietly turning its page into an error page.
     expected: &'static [u8],
+    /// The key of the program in `crate::diagrams::PROGRAMS` whose model view the page shows
+    /// directly after the model's code; such a page is MDX.
+    diagram: Option<&'static str>,
 }
 
 const EXAMPLES: &[Example] = &[
@@ -76,9 +79,10 @@ const EXAMPLES: &[Example] = &[
             &["train", "{file}", "--backend", "cpu"],
         ],
         expected: &[0, 0, 0, 0],
+        diagram: None,
     },
     Example {
-        page: "two-layer-relu.md",
+        page: "two-layer-relu.mdx",
         title: "Example: two layers with relu",
         label: "Two layers with relu",
         description: "A two-layer model with a relu between the layers, written for this site, checked and trained on the CPU reference.",
@@ -92,6 +96,7 @@ const EXAMPLES: &[Example] = &[
             &["train", "{file}", "--backend", "cpu"],
         ],
         expected: &[0, 0, 0],
+        diagram: Some("two-layer-relu"),
     },
     Example {
         page: "shape-error.md",
@@ -108,6 +113,7 @@ const EXAMPLES: &[Example] = &[
             &["train", "{file}", "--backend", "cpu"],
         ],
         expected: &[1, 1],
+        diagram: None,
     },
     Example {
         page: "beyond-m0.md",
@@ -121,6 +127,7 @@ const EXAMPLES: &[Example] = &[
                 error, so the output says what is missing rather than what is wrong.",
         runs: &[&["check", "{file}"]],
         expected: &[1],
+        diagram: None,
     },
     Example {
         page: "bert-tiny.md",
@@ -146,8 +153,13 @@ const EXAMPLES: &[Example] = &[
                 unigram baseline.",
         runs: &[&["check", "{file}"], &["ir", "{file}", "--stage", "tensor"]],
         expected: &[0, 0],
+        diagram: None,
     },
 ];
+
+/// The element that shows a page's diagram after the model's code: the model view of the program
+/// the page imports as `diagram`, at its root level.
+const DIAGRAM: &str = "<ModelDiagram data={diagram} view=\"model\" />";
 
 /// `source` without its leading `//` comment lines and the blank lines after them.
 fn without_leading_comments(source: &str) -> &str {
@@ -184,6 +196,12 @@ fn run_section(run: &Recorded) -> String {
 
 fn page(example: &Example, position: u32, source: &str, runs: &[Recorded]) -> String {
     let mut out = front_matter(example.title, example.label, example.description, position);
+    if let Some(program) = example.diagram {
+        out.push_str(&format!(
+            "import ModelDiagram from '@site/src/components/ModelDiagram';\n\
+             import diagram from '@site/data/diagrams/{program}.json';\n\n"
+        ));
+    }
     out.push_str(&format!(
         "{}\n\nThe output below was recorded by `modelspec-docs` running the `modelspec` command \
          line on the model; `task docs-check` fails when a run prints anything else.\n\n\
@@ -195,6 +213,9 @@ fn page(example: &Example, position: u32, source: &str, runs: &[Recorded]) -> St
         &format!("modelspec title=\"{}\"", example.file),
         without_leading_comments(source),
     ));
+    if example.diagram.is_some() {
+        out.push_str(&format!("\n{DIAGRAM}\n"));
+    }
     out.push_str("\n## Runs\n");
     for run in runs {
         out.push_str(&run_section(run));
@@ -305,6 +326,35 @@ mod tests {
                 example.file
             )),
             "{out}"
+        );
+    }
+
+    /// Acceptance 3, `gallery.example.two-layer-relu`: in the committed page the first element
+    /// after the ` ```modelspec ` block is the `ModelDiagram` of `two-layer-relu`, model view.
+    #[test]
+    fn gallery_example_two_layer_relu() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../website/docs/examples/two-layer-relu.mdx");
+        let page = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            page.contains("\nimport diagram from '@site/data/diagrams/two-layer-relu.json';\n"),
+            "the page imports the diagram module of two-layer-relu"
+        );
+        let mut lines = page.lines();
+        lines
+            .by_ref()
+            .find(|l| l.starts_with("```modelspec"))
+            .expect("a modelspec block");
+        lines
+            .by_ref()
+            .find(|l| *l == "```")
+            .expect("the block closes");
+        let next = lines.find(|l| !l.trim().is_empty()).unwrap();
+        assert_eq!(next, DIAGRAM);
+        assert!(
+            !std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../website/docs/examples/two-layer-relu.md")
+                .exists()
         );
     }
 

@@ -9,7 +9,7 @@ source: "DESIGN.md § 2; crates/modelspec-docs/models/two_layer_relu.mspec, the 
 # Write a model
 
 This guide builds a model with two weight matrices and a `relu` between them, in the M0 subset of
-the language. The finished file is the example [Two layers with relu](../examples/two-layer-relu.md),
+the language. The finished file is the example [Two layers with relu](../examples/two-layer-relu.mdx),
 whose page shows everything the command line prints for it. You need the `modelspec` binary
 ([Getting started](../getting-started.md)): the release has a prebuilt one for Linux x86_64 only,
 and on other systems you build it from source.

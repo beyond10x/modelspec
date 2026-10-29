@@ -13,6 +13,7 @@ history.
 
 - `TensorProgram.scopes`, a `ScopeTable` recording where every Tensor IR node came from: the train block, each inlined function with its instance and call site, the gradient rule of one forward node and the update of one parameter, stamped by lowering, autodiff and the optimizer attach, kept by dead-code elimination and checked by the verifier (`V-SCOPE-001`, `V-SCOPE-002`); `modelspec ir` prints nothing new (story:diagram-scope-provenance).
 - `examples/jepa_tiny.mspec`, a joint-embedding model at toy size with `stop_gradient` and `sigreg`, checked by `task check-examples`; the architecture diagram's model view draws it from the Tensor IR before autodiff (`CompiledTraining.tensor`), with each `StopGradient`, the branch it reaches and a dashed edge into it (DESIGN.md § 13.4).
+- The documentation site's Gallery section: `docs/gallery/atoms` shows every glyph of `modelspec-diagram` by operator family, with each operator's source name and its gradient op's glyph, and the example page Two layers with relu shows its model-view diagram, inlined as SVG and themed light and dark, directly after its code; `modelspec-docs` generates both, the standalone SVG under `website/static/img/diagrams/` and the site's `website/src/css/diagram.css`, and `task docs-check` holds them (story:ir-gallery-atoms).
 
 ## [0.25.0] - 2026-10-29
 
