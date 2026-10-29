@@ -246,14 +246,11 @@ fn module_for(
         fast_math,
     )?
     .assemble();
-    let mut shapes = Vec::new();
-    for operand in &kernel.operands {
-        if let Operand::Buffer(ty) = operand {
-            shapes.push(static_shape(kernel, ty)?);
-        }
-    }
-    let result = static_shape(kernel, &kernel.result)?;
-    shapes.extend(std::iter::repeat_n(result, kernel.written()));
+    let shapes = kernel
+        .bindings()
+        .into_iter()
+        .map(|ty| static_shape(kernel, ty))
+        .collect::<Result<Vec<_>, _>>()?;
     let mut capabilities = vec!["Shader".to_owned()];
     if float_controls {
         capabilities.extend(
@@ -729,7 +726,8 @@ fn build(
     fast_math: bool,
 ) -> Result<dr::Module, EmitError> {
     let body = body_of(kernel, variant, shared_bytes)?;
-    // One flag per read binding: whether it holds `u32` words, an `i32` operand's bits.
+    // One flag per read binding: whether it holds `u32` words, an `i32` operand's bits. The
+    // softmax statistics a backward attention kernel reads follow its buffer operands.
     let reads: Vec<bool> = kernel
         .operands
         .iter()
@@ -737,6 +735,7 @@ fn build(
             Operand::Buffer(ty) => Some(ty.dtype == DType::I32),
             Operand::Immediate(_) => None,
         })
+        .chain(kernel.reads_softmax_stats().then_some(false))
         .collect();
     let shared = match body {
         Body::Stage1 | Body::Stage2 { .. } => Some((TREE, false)),
@@ -1379,11 +1378,16 @@ impl Shell {
 
     /// Element `at` of the result, the last written binding, as this invocation wrote it.
     fn read_result(&mut self, at: Word) -> Result<Word, EmitError> {
+        self.read_out(self.outs.len() - 1, at)
+    }
+
+    /// Element `at` of written binding `output`, as this invocation or an earlier dispatch
+    /// wrote it.
+    fn read_out(&mut self, output: usize, at: Word) -> Result<Word, EmitError> {
         let zero = self.uint(0);
-        let out = self.outs[self.outs.len() - 1];
         let ptr = self
             .b
-            .access_chain(self.element_ptr, None, out, [zero, at])?;
+            .access_chain(self.element_ptr, None, self.outs[output], [zero, at])?;
         Ok(self.b.load(self.f32_ty, None, ptr, None, [])?)
     }
 

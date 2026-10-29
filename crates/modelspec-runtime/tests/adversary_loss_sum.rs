@@ -68,6 +68,7 @@ fn mse_kernel(shape: &[u64]) -> Kernel {
         reduces: None,
         epilogue: None,
         transposed: [false, false],
+        softmax_stats: None,
         workgroup_size: KernelKind::LossSum.workgroup_size(),
         workgroups: [1, 1, 1],
     };

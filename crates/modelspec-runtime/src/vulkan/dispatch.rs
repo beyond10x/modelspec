@@ -773,11 +773,11 @@ pub fn kernel_bindings(kernel: &Kernel) -> Result<KernelBindings, ExecError> {
             .map(|&(scalar, _)| if scalar { 1 } else { count })
             .chain([count])
             .collect(),
-        _ => operands
-            .iter()
-            .map(|&(_, n)| n)
-            .chain(std::iter::repeat_n(result, kernel.written()))
-            .collect(),
+        _ => kernel
+            .bindings()
+            .into_iter()
+            .map(|ty| elements_of(kernel, ty))
+            .collect::<Result<_, _>>()?,
     };
     let count = u32::try_from(count).map_err(|_| ExecError::KernelShape {
         kernel: kernel.signature(),

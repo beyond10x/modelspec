@@ -31,7 +31,7 @@ use modelspec_core::ir::print::print_kernel;
 use modelspec_core::ir::tensor::{TensorOp, TensorType};
 use modelspec_core::ir::training::{C1_INPUT, C2_INPUT, LR_T_INPUT, dropout_sites, moment_input};
 use modelspec_core::ir::verify::verify_plan;
-use modelspec_core::schedule::{attention_loss_kernel, host_inputs, schedule};
+use modelspec_core::schedule::{ATTENTION_WORKGROUP, attention_loss_kernel, host_inputs, schedule};
 use modelspec_runtime::spirv::emit::{emit, emit_kernels};
 use modelspec_runtime::spirv::validate::validate;
 
@@ -106,9 +106,10 @@ fn every_module_of_the_twin_step_passes_spirv_val() {
     assert_eq!(ops, expected);
 }
 
-/// Each of the eight ops is one dispatch with a kernel record of workgroup size 64 and a module
-/// id derived from it; `ir --stage kernel` prints it with its kind and a FLOP and byte count,
-/// never `uncounted`. Attention and its gradients run per row, cross-entropy as the loss sum,
+/// Each of the eight ops is one dispatch with a kernel record and a module id derived from it,
+/// of workgroup size `ATTENTION_WORKGROUP` for attention and its gradients and 64 for the
+/// others; `ir --stage kernel` prints it with its kind and a FLOP and byte count, never
+/// `uncounted`. Attention and its gradients run per row, cross-entropy as the loss sum,
 /// its gradient per row, `Sqrt` and `Div` per element of the elementwise family.
 #[test]
 fn each_new_op_is_one_counted_dispatch_printed_with_its_kernel() {
@@ -125,7 +126,12 @@ fn each_new_op_is_one_counted_dispatch_printed_with_its_kernel() {
         };
         for kernel in kernels {
             assert_eq!(kernel.kind, kind, "{}", kernel.signature());
-            assert_eq!(kernel.workgroup_size, 64, "{}", kernel.signature());
+            let size = if op.starts_with("Attention") {
+                ATTENTION_WORKGROUP
+            } else {
+                64
+            };
+            assert_eq!(kernel.workgroup_size, size, "{}", kernel.signature());
             assert_eq!(kernel.id, Kernel::module_id(&kernel.signature()));
             let dispatches: Vec<_> = plan
                 .step
@@ -152,7 +158,7 @@ fn each_new_op_is_one_counted_dispatch_printed_with_its_kernel() {
                 line.contains(&format!(" {id} {} {op} ", kernel.kind)),
                 "{line}"
             );
-            assert!(line.contains("workgroup_size 64"), "{line}");
+            assert!(line.contains(&format!("workgroup_size {size}")), "{line}");
         }
     }
     for line in printed.lines().filter(|l| l.contains(": dispatch ")) {

@@ -75,6 +75,7 @@ fn matmul_kernel(
         reduces: None,
         epilogue,
         transposed,
+        softmax_stats: None,
         workgroup_size: tile.workgroup_size,
         workgroups: [
             u32::try_from(tile.workgroups(m, n)).expect("one dimension"),

@@ -849,8 +849,15 @@ fn intern(name: String) -> &'static str {
     leaked
 }
 
-/// One kernel of Kernel IR. Its bindings are its buffer operands in order, each read, then what
-/// it writes: the pre-activation of an [`Epilogue`] that keeps it, then its result.
+/// The values an attention kernel keeps per query head in its softmax statistics
+/// ([`Kernel::softmax_stats`]): the softmax maximum, the softmax sum and the row dot of the
+/// gradient, in that order.
+pub const SOFTMAX_STATS_PER_QUERY: u64 = 3;
+
+/// One kernel of Kernel IR. Its bindings are its buffer operands in order, each read, and the
+/// softmax statistics an `AttentionGradK` or `AttentionGradV` kernel reads, then what it writes:
+/// the pre-activation of an [`Epilogue`] that keeps it or the softmax statistics an `Attention`
+/// or `AttentionGradQ` kernel writes, then its result ([`Kernel::bindings`]).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Kernel {
     /// [`Kernel::module_id`] of the other fields.
@@ -874,20 +881,67 @@ pub struct Kernel {
     /// a folded `transpose` read, and the kernel reads it in place. `[false, false]` on every
     /// other kind.
     pub transposed: [bool; 2],
+    /// The softmax statistics an attention kernel shares with the other kernels of its call
+    /// through a scratch buffer of this type, `[rows · heads, 3]` `f32`: per query head, at
+    /// `(row · heads + head) · 3`, its softmax maximum, its softmax sum and the row dot of its
+    /// gradient ([`SOFTMAX_STATS_PER_QUERY`]; story:vulkan-attention-softmax-stats-reused). An
+    /// `Attention` kernel writes the maximum and sum, an `AttentionGradQ` kernel reads them and
+    /// writes the row dot, and `AttentionGradK` and `AttentionGradV` read them instead of
+    /// recomputing them for every query in every key invocation. `None` on every other kernel
+    /// and on an attention kernel that recomputes them, as every attention kernel did before.
+    pub softmax_stats: Option<TensorType>,
     pub workgroup_size: u32,
     pub workgroups: [u32; 3],
 }
 
 impl Kernel {
-    /// The bindings the kernel writes, after its buffer operands: 2 for an epilogue that keeps
-    /// the pre-activation, else 1. Each has the result's type.
+    /// The bindings the kernel writes, after its buffer operands and the statistics it reads: 2
+    /// for an epilogue that keeps the pre-activation and for an attention kernel that writes
+    /// softmax statistics ([`Kernel::writes_softmax_stats`]), else 1. Each has the result's type
+    /// but the statistics.
     pub fn written(&self) -> usize {
         match self.epilogue {
             Some(Epilogue::Relu {
                 writes_pre_activation: true,
             }) => 2,
+            _ if self.writes_softmax_stats() => 2,
             _ => 1,
         }
+    }
+
+    /// Whether the kernel writes softmax statistics ([`Kernel::softmax_stats`]): an `Attention`
+    /// kernel its maximum and sum, an `AttentionGradQ` kernel the row dot beside the two it reads.
+    /// The statistics are its first written binding, before its result.
+    pub fn writes_softmax_stats(&self) -> bool {
+        self.softmax_stats.is_some() && matches!(self.op, "Attention" | "AttentionGradQ")
+    }
+
+    /// Whether the kernel only reads softmax statistics ([`Kernel::softmax_stats`]): an
+    /// `AttentionGradK` or `AttentionGradV` kernel, whose statistics are the binding after its
+    /// buffer operands.
+    pub fn reads_softmax_stats(&self) -> bool {
+        self.softmax_stats.is_some() && matches!(self.op, "AttentionGradK" | "AttentionGradV")
+    }
+
+    /// The type of each storage-buffer binding of the kernel, in binding order: each buffer
+    /// operand, the statistics it reads ([`Kernel::reads_softmax_stats`]), then each binding it
+    /// writes ([`Kernel::written`]): the statistics it writes, else the pre-activation of an
+    /// epilogue that keeps it, each of the result's type, then the result.
+    pub fn bindings(&self) -> Vec<&TensorType> {
+        let mut bindings: Vec<&TensorType> = self
+            .operands
+            .iter()
+            .filter_map(|operand| match operand {
+                Operand::Buffer(ty) => Some(ty),
+                Operand::Immediate(_) => None,
+            })
+            .collect();
+        let stats = self.softmax_stats.as_ref();
+        bindings.extend(stats.filter(|_| self.reads_softmax_stats()));
+        bindings.extend(stats.filter(|_| self.writes_softmax_stats()));
+        let results = self.written() - usize::from(self.writes_softmax_stats());
+        bindings.extend(std::iter::repeat_n(&self.result, results));
+        bindings
     }
 
     /// The head count of an `Attention`, `AttentionGradQ`, `AttentionGradK` or `AttentionGradV`
@@ -1074,7 +1128,8 @@ impl Kernel {
     /// The text the module id is derived from: every field but the id, and a matmul's
     /// [`MatMulTile`], so that a module the tile changes gets a new id. An operand the kernel
     /// reads transposed is followed by ` transposed`; a kernel that reads none has the text it
-    /// had before the flag existed.
+    /// had before the flag existed, and so has a kernel without [`Kernel::softmax_stats`], which
+    /// adds ` softmax_stats <type>` after its epilogue.
     pub fn signature(&self) -> String {
         self.signature_with(self.matmul_tile())
     }
@@ -1109,6 +1164,9 @@ impl Kernel {
         }
         if let Some(epilogue) = &self.epilogue {
             text.push_str(&format!(" {epilogue}"));
+        }
+        if let Some(stats) = &self.softmax_stats {
+            text.push_str(&format!(" softmax_stats {stats}"));
         }
         let [x, y, z] = self.workgroups;
         text.push_str(&format!(
@@ -1266,6 +1324,7 @@ mod tests {
             reduces: None,
             epilogue: None,
             transposed: [false, false],
+            softmax_stats: None,
             workgroup_size: tile.workgroup_size,
             workgroups: [tile.workgroups(100, 64) as u32, 1, 1],
         };
@@ -1420,6 +1479,7 @@ mod tests {
             reduces,
             epilogue: None,
             transposed: [false, false],
+            softmax_stats: None,
             workgroup_size: kind.workgroup_size(),
             workgroups: [1, 1, 1],
         };

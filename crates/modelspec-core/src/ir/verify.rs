@@ -1266,6 +1266,34 @@ pub enum PlanVerifyError {
         step: usize,
         buffer: Option<u32>,
     },
+    #[error(
+        "{plan} step {step} binds the softmax statistics of {}, which no earlier Allocate of its \
+         recording made",
+        stats_buffer(*.buffer)
+    )]
+    SoftmaxStatsNotAllocated {
+        plan: PlanName,
+        step: usize,
+        buffer: Option<u32>,
+    },
+    #[error(
+        "{plan} step {step} reads the softmax statistics of b{buffer} before an `Attention` \
+         dispatch of its recording writes them"
+    )]
+    SoftmaxStatsNotWritten {
+        plan: PlanName,
+        step: usize,
+        buffer: u32,
+    },
+    #[error(
+        "{plan} step {step} reads the row dots of b{buffer} before an `AttentionGradQ` dispatch \
+         of its recording writes them"
+    )]
+    RowDotNotWritten {
+        plan: PlanName,
+        step: usize,
+        buffer: u32,
+    },
     #[error("{plan} step {step} is a stage 2 with no stage 1 before it")]
     Stage2WithoutStage1 { plan: PlanName, step: usize },
     #[error("{plan} step {step} is a stage 2 that depends on no Barrier after its stage 1")]
@@ -1336,13 +1364,16 @@ pub enum PlanVerifyError {
 /// steps only, a Dispatch names a kernel of the plan and 1 to 65,535 workgroups per dimension,
 /// equal to its kernel's, and no other step names either, an `Allocate` makes a buffer no earlier
 /// step of its recording used; then each stage-2 Dispatch reads a partials buffer an `Allocate` of
-/// its recording made and depends on a `Barrier` after its stage 1; then each SGD update is
-/// ordered after every earlier reader of its parameter; no step reads a parameter after its
-/// update in the same recording; every Dispatch or Copy that reads what an earlier one wrote, or
-/// writes what it read or wrote, is ordered after a `Barrier` that is ordered after that step;
-/// and the plan's one fence is its last step. Then the forward plan writes no parameter view, the
-/// loss view holds one element and the step plan writes it, and both plans write the prediction
-/// view; an empty plan (a `Cpu` artifact's) writes nothing and is exempt.
+/// its recording made and depends on a `Barrier` after its stage 1, and each attention Dispatch
+/// with softmax statistics ([`Kernel::softmax_stats`]) binds a buffer an `Allocate` of its
+/// recording made, which an `Attention` Dispatch of the recording wrote before a gradient reads
+/// it, and an `AttentionGradQ` Dispatch before an `AttentionGradK` reads its row dots; then each
+/// SGD update is ordered after every earlier reader of its parameter; no step reads a parameter
+/// after its update in the same recording; every Dispatch or Copy that reads what an earlier one
+/// wrote, or writes what it read or wrote, is ordered after a `Barrier` that is ordered after
+/// that step; and the plan's one fence is its last step. Then the forward plan writes no
+/// parameter view, the loss view holds one element and the step plan writes it, and both plans
+/// write the prediction view; an empty plan (a `Cpu` artifact's) writes nothing and is exempt.
 ///
 /// A fence is a `Barrier` with no dependencies: it is ordered after every earlier step. A plan is
 /// one recording, so it has exactly one fence, its last step; [`verify_recorded_back_to_back`]
@@ -1666,6 +1697,32 @@ fn first_outside(set: &[u64], outside: &[u64]) -> Option<usize> {
         })
 }
 
+/// The buffer of [`PlanVerifyError::SoftmaxStatsNotAllocated`]: `b<n>`, or a note that the step
+/// binds none.
+fn stats_buffer(buffer: Option<u32>) -> String {
+    buffer.map_or_else(|| "no view".to_owned(), |buffer| format!("b{buffer}"))
+}
+
+/// The softmax statistics a dispatch of `kernel` binds ([`Kernel::softmax_stats`]): `None` when
+/// the kernel has none; else the view after its buffer operands for a kernel that reads them, the
+/// first written view for one that writes them, or `Some(None)` when the step binds too few views
+/// to have it.
+fn softmax_stats_view(kernel: &Kernel, step: &PlanStep) -> Option<Option<BufferView>> {
+    if kernel.reads_softmax_stats() {
+        let operands = kernel.bindings().len() - kernel.written() - 1;
+        Some(step.reads.get(operands).copied())
+    } else if kernel.writes_softmax_stats() {
+        Some(
+            step.writes
+                .first()
+                .copied()
+                .filter(|_| step.writes.len() == kernel.written()),
+        )
+    } else {
+        None
+    }
+}
+
 /// The view of `step` that conflicts with `earlier`: the first read of a buffer `earlier`
 /// writes, or else the first write of a buffer `earlier` reads or writes. The buffers of
 /// `earlier` are collected into sets first, so the work grows with the views of the two steps
@@ -1837,11 +1894,50 @@ fn verify_steps(
 
     // The buffers an `Allocate` of the current recording made, and the last stage 1 that wrote
     // each buffer.
+    // Then the buffers an `Attention` dispatch of the recording wrote softmax statistics into, and
+    // those an `AttentionGradQ` dispatch wrote row dots into.
     let mut allocated = BTreeSet::new();
     let mut last_stage1: BTreeMap<u32, usize> = BTreeMap::new();
+    let mut stats_written = BTreeSet::new();
+    let mut row_dots_written = BTreeSet::new();
     for (i, step) in steps.iter().enumerate() {
         if opens_recording(i) {
             allocated.clear();
+            stats_written.clear();
+            row_dots_written.clear();
+        }
+        if let Some(kernel) = kernel_of(step).filter(|_| step.op == PlanOp::Dispatch)
+            && let Some(view) = softmax_stats_view(kernel, step)
+        {
+            let reads = kernel.reads_softmax_stats();
+            if let Some(view) = view.filter(|v| allocated.contains(&v.buffer)) {
+                let buffer = view.buffer;
+                if kernel.op != "Attention" && !stats_written.contains(&buffer) {
+                    return Err(PlanVerifyError::SoftmaxStatsNotWritten {
+                        plan: name,
+                        step: i,
+                        buffer,
+                    });
+                }
+                if kernel.op == "AttentionGradK" && !row_dots_written.contains(&buffer) {
+                    return Err(PlanVerifyError::RowDotNotWritten {
+                        plan: name,
+                        step: i,
+                        buffer,
+                    });
+                }
+                match kernel.op {
+                    "Attention" => stats_written.insert(buffer),
+                    "AttentionGradQ" => row_dots_written.insert(buffer),
+                    _ => false,
+                };
+            } else if view.is_some() || reads {
+                return Err(PlanVerifyError::SoftmaxStatsNotAllocated {
+                    plan: name,
+                    step: i,
+                    buffer: view.map(|v| v.buffer),
+                });
+            }
         }
         let kind = kind_of(step);
         if kind == Some(KernelKind::ReduceStage2) {
@@ -2120,6 +2216,60 @@ mod tests {
         }
 
         for (i, step) in steps.iter().enumerate() {
+            let kernel = step
+                .kernel_module_id
+                .and_then(|id| plan.kernel(id))
+                .filter(|_| step.op == PlanOp::Dispatch);
+            if let Some(kernel) = kernel
+                && let Some(view) = softmax_stats_view(kernel, step)
+            {
+                let earlier = &steps[recording_start[i]..i];
+                let wrote = |op: &str, buffer: u32| {
+                    earlier.iter().any(|s| {
+                        let k = s
+                            .kernel_module_id
+                            .and_then(|id| plan.kernel(id))
+                            .filter(|_| s.op == PlanOp::Dispatch);
+                        k.is_some_and(|k| {
+                            k.op == op
+                                && softmax_stats_view(k, s)
+                                    .flatten()
+                                    .is_some_and(|v| v.buffer == buffer)
+                        })
+                    })
+                };
+                let allocated = view.filter(|v| {
+                    earlier.iter().any(|s| {
+                        s.op == PlanOp::Allocate && s.writes.iter().any(|w| w.buffer == v.buffer)
+                    })
+                });
+                match allocated {
+                    Some(view) => {
+                        if kernel.op != "Attention" && !wrote("Attention", view.buffer) {
+                            return Err(PlanVerifyError::SoftmaxStatsNotWritten {
+                                plan: name,
+                                step: i,
+                                buffer: view.buffer,
+                            });
+                        }
+                        if kernel.op == "AttentionGradK" && !wrote("AttentionGradQ", view.buffer) {
+                            return Err(PlanVerifyError::RowDotNotWritten {
+                                plan: name,
+                                step: i,
+                                buffer: view.buffer,
+                            });
+                        }
+                    }
+                    None if view.is_some() || kernel.reads_softmax_stats() => {
+                        return Err(PlanVerifyError::SoftmaxStatsNotAllocated {
+                            plan: name,
+                            step: i,
+                            buffer: view.map(|v| v.buffer),
+                        });
+                    }
+                    None => {}
+                }
+            }
             if kind_of(step) != Some(KernelKind::ReduceStage2) {
                 continue;
             }
