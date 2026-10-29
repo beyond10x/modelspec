@@ -1061,8 +1061,8 @@ impl Kernel {
         }
     }
 
-    /// The count of [`Kernel::flop`] for an attention kernel: `q` `[n, h]` its first operand and
-    /// the key mask `[b, s]` its fourth.
+    /// The count of [`Kernel::flop`] for an attention kernel: `q` `[n, h]` its first operand, `k`
+    /// `[m, h]` its second and the key mask `[b, s]` its fourth.
     fn attention_flop(&self) -> Option<u64> {
         let dims = |i: usize| match self.operands.get(i)? {
             Operand::Buffer(ty) => match ty.shape[..] {
@@ -1071,7 +1071,7 @@ impl Kernel {
             },
             Operand::Immediate(_) => None,
         };
-        let ((n, h), (_, s)) = (dims(0)?, dims(3)?);
+        let ((n, h), (m, _), (_, s)) = (dims(0)?, dims(1)?, dims(3)?);
         let a = self.heads()?;
         let d = h.checked_div(a)?;
         let per_key = |per_column: u64, more: u64| per_column.checked_mul(d)?.checked_add(more);
@@ -1083,7 +1083,7 @@ impl Kernel {
                 .checked_add(n.checked_mul(a)?.checked_mul(d)?),
             "AttentionGradK" => keys
                 .checked_mul(per_key(6, 9)?)?
-                .checked_add(n.checked_mul(h)?),
+                .checked_add(m.checked_mul(h)?),
             _ => None,
         }
     }
@@ -1149,8 +1149,8 @@ impl Kernel {
     /// `AttentionGradV` with their fused `2d` per key, `n·A·(S·(6d + 9) + d)` for
     /// `AttentionGradQ` (per key the probability's gradient `2d`, the row dot's fused term, the
     /// score gradient's subtraction and product and its fused `2d`, then the scale of each
-    /// column) and `n·A·S·(6d + 9) + n·h` for `AttentionGradK`. `None` for an op without a rule,
-    /// a shape with a dimension that is not static, or a count past `u64`.
+    /// column) and `n·A·S·(6d + 9) + m·h` for `AttentionGradK`, `m` the rows of `k`. `None` for
+    /// an op without a rule, a shape with a dimension that is not static, or a count past `u64`.
     pub fn flop(&self) -> Option<u64> {
         let elements = |ty: &TensorType| {
             ty.shape.iter().try_fold(1u64, |n, dim| match dim {

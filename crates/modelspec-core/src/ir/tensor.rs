@@ -192,15 +192,17 @@ pub enum TensorOp {
     /// Internal gradient op over operands `y`, `G` of one `[N, K]` shape, `y` the result of
     /// [`Self::Softmax`]: `y * (G - rowsum(G * y))` (DESIGN.md § 4).
     SoftmaxGrad,
-    /// `q`, `k`, `v: f32[N, H]`, `key_mask: f32[B, S]` with `N = B * S` `-> f32[N, H]`:
-    /// bidirectional multi-head attention. Sequence `b` is rows `b * S` to `b * S + S - 1`, head
-    /// `a` columns `a * H/heads` to `(a + 1) * H/heads - 1`; within each, the masked softmax of
-    /// `q k^T / sqrt(H/heads)` over the keys whose mask value is 1, times `v` (DESIGN.md § 4).
+    /// `q: f32[B * L, H]`, `k`, `v: f32[B * S, H]`, `key_mask: f32[B, S]` with `1 <= L <= S`
+    /// `-> f32[B * L, H]`: bidirectional multi-head attention, `L = S` the attention of every row
+    /// (story:attention-fewer-query-rows). Sequence `b` is query rows `b * L` to `b * L + L - 1`
+    /// and key rows `b * S` to `b * S + S - 1`, head `a` columns `a * H/heads` to
+    /// `(a + 1) * H/heads - 1`; within each, the masked softmax of `q k^T / sqrt(H/heads)` over
+    /// the keys whose mask value is 1, times `v` (DESIGN.md § 4).
     Attention {
         heads: u64,
     },
-    /// Internal gradient op over operands `q, k, v, key_mask, G`: the gradient of
-    /// [`Self::Attention`] with respect to `q` (DESIGN.md § 4).
+    /// Internal gradient op over operands `q, k, v, key_mask, G`, `G` of `q`'s shape: the
+    /// gradient of [`Self::Attention`] with respect to `q` (DESIGN.md § 4).
     AttentionGradQ {
         heads: u64,
     },
@@ -609,7 +611,8 @@ impl TensorProgramBuilder {
         self.push(TensorOp::SoftmaxGrad, &[y, g])
     }
 
-    /// Multi-head attention of the `[N, H]` `q`, `k`, `v` under the `[B, S]` `key_mask`.
+    /// Multi-head attention of the `[B * L, H]` `q` over the `[B * S, H]` `k`, `v` under the
+    /// `[B, S]` `key_mask`.
     pub fn attention(
         &mut self,
         q: ValueId,

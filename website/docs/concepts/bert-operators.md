@@ -21,7 +21,7 @@ accepted and refused examples and the gradient formula of each; this page says w
 | `gelu(x)` | the tanh form of GELU, `0.5 x (1 + tanh(sqrt(2/pi) (x + 0.044715 x^3)))`, element by element | 0.10.0 |
 | `layer_norm(x, gamma, beta)` | each row of `x: f32[N, H]` normalized to mean 0 and variance 1, `eps = 1e-12`, then scaled by `gamma` and shifted by `beta` | 0.10.0 |
 | `softmax(x)` | the softmax of each row of a rank-2 `x`, the row maximum subtracted before `exp` | 0.10.0 |
-| `attention(q, k, v, key_mask, heads = A)` | multi-head scaled dot-product attention over sequences of `S` rows: `q`, `k`, `v: f32[N, H]`, `key_mask: f32[B, S]` with `N = B · S`, `A` heads of width `H / A` | 0.10.0 |
+| `attention(q, k, v, key_mask, heads = A)` | multi-head scaled dot-product attention over sequences of `S` rows: `k`, `v: f32[B · S, H]`, `key_mask: f32[B, S]`, `q: f32[B · L, H]` with `1 ≤ L ≤ S` queries per sequence (`L = S` for self-attention), `A` heads of width `H / A` | 0.10.0 |
 | `cross_entropy(logits, labels, weights)` | the weighted masked-language-model loss over `logits: f32[N, V]`, `labels: i32[N]` and `weights: f32[N]`, a scalar | 0.11.0 |
 | `dropout(x, p = 0.1)` | each element zeroed with probability `p` and the rest scaled by `1 / (1 - p)`, in the training step only | 0.11.0 |
 

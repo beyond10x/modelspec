@@ -70,8 +70,10 @@ purpose (DESIGN.md § 2.2):
 - `embedding(table [V, H], ids i32[N])` is `[N, H]`.
 - `add_rows([N, H], [H])` adds the row to every row; `layer_norm([N, H], gamma [H], beta [H])` is
   `[N, H]`; `softmax` takes a rank-2 operand and keeps its shape.
-- `attention(q, k, v, key_mask, heads = A)` takes `q`, `k` and `v` of one shape `[N, H]` and a key
-  mask `[B, S]` with `N = B · S`, and returns `[N, H]`; `A` must divide `H` (`E-TYPE-020`).
+- `attention(q, k, v, key_mask, heads = A)` takes `k` and `v` of one shape `[B · S, H]`, a key
+  mask `[B, S]` and `q` of `[B · L, H]`, and returns `q`'s shape. `L`, the queries per sequence, is
+  the rows of `q` over `B`, from 1 to `S`: `L = S` is self-attention, `L = 1` reads one query per
+  sequence against all its keys. `A` must divide `H` (`E-TYPE-020`).
 - `cross_entropy(logits [N, V], labels i32[N], weights [N])` returns a scalar.
 
 A call that breaks a rule is a compile error with its own code, the source position and both

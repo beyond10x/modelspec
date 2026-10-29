@@ -17,17 +17,18 @@
 //! `modelspec_core::schedule::ATTENTION_WORKGROUP` invocations, computes head `a` of the `T`
 //! rows of tile `t` of sequence `b`, `T` from `modelspec_core::schedule::attention_tile`: query
 //! rows for `Attention` and `AttentionGradQ`, key rows for `AttentionGradK` and
-//! `AttentionGradV` (story:vulkan-attention-workgroup-per-head). Row `r` is token `r % S` of
-//! sequence `r / S`, with `S` at most `modelspec_core::schedule::MAX_ATTENTION_KEYS`, and a key
-//! is masked where its mask entry is 0. The workgroup computes the weights of its rows, scores,
-//! probabilities and their gradients, into workgroup memory between barriers, one invocation
-//! per key or query and holding that row's head, so each weight is computed once; the scores
-//! are computed from the same operands by the same instructions wherever they are used, so they
-//! hold the same value at every use. Then the `ATTENTION_WORKGROUP / T` invocations of each row
-//! each sum their columns of it, every column `lane + u · lanes` in its own variable, so a
-//! weight is loaded once for all of them. `Attention` and `AttentionGradQ` sum without a mask
-//! check, several keys loaded at a time, when the mask keeps every key of the sequence, which
-//! the workgroup finds before it sums. The softmax maximum and sum
+//! `AttentionGradV` (story:vulkan-attention-workgroup-per-head). Key row `r` is key `r % S` of
+//! sequence `r / S`, with `S` at most `modelspec_core::schedule::MAX_ATTENTION_KEYS`, query row
+//! `r` query `r % L` of sequence `r / L`, `1 <= L <= S` (story:attention-fewer-query-rows), and
+//! a key is masked where its mask entry is 0. The workgroup computes the weights of its rows,
+//! scores, probabilities and their gradients, into workgroup memory between barriers, one
+//! invocation per key or query and holding that row's head, so each weight is computed once;
+//! the scores are computed from the same operands by the same instructions wherever they are
+//! used, so they hold the same value at every use. Then the `ATTENTION_WORKGROUP / T`
+//! invocations of each row each sum their columns of it, every column `lane + u · lanes` in its
+//! own variable, so a weight is loaded once for all of them. `Attention` and `AttentionGradQ` sum
+//! without a mask check, several keys loaded at a time, when the mask keeps every key of the
+//! sequence, which the workgroup finds before it sums. The softmax maximum and sum
 //! and the row dot of the gradient are computed once per query head when the kernels share
 //! softmax statistics (`Kernel::softmax_stats`, story:vulkan-attention-softmax-stats-reused):
 //! `Attention` writes the maximum and sum of query head `r · heads + a` to elements `3 (r · heads
@@ -81,12 +82,13 @@ pub(super) enum AttentionOp {
     GradV,
 }
 
-/// The shapes of an attention kernel: `S` keys per sequence, `H` columns per row, `d = H /
-/// heads` per head, and the scale `1 / sqrt(d)` as the CPU computes it.
+/// The shapes of an attention kernel: `S` keys and `L` queries per sequence, `H` columns per
+/// row, `d = H / heads` per head, and the scale `1 / sqrt(d)` as the CPU computes it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct Attend {
     op: AttentionOp,
     s: u32,
+    l: u32,
     h: u32,
     d: u32,
     heads: u32,
@@ -200,24 +202,38 @@ impl AttentionLoss {
                 [n, h] => (*n, *h),
                 _ => return Err(wrong("attention reads [n, h] rows")),
             };
-            let rows_match = [1, 2]
-                .into_iter()
-                .chain((arity == 5).then_some(4))
-                .all(|at| shapes[at] == [n, h]);
+            let m = match shapes[1] {
+                [m, _] => *m,
+                _ => return Err(wrong("attention reads [m, h] keys")),
+            };
+            let rows_match = [1, 2].into_iter().all(|at| shapes[at] == [m, h])
+                && (arity == 4 || shapes[4] == [n, h]);
             let (b, s) = match shapes[3] {
                 [b, s] => (*b, *s),
                 _ => return Err(wrong("attention reads a [b, s] key mask")),
             };
+            let written = match op {
+                AttentionOp::GradK | AttentionOp::GradV => [m, h],
+                AttentionOp::Forward | AttentionOp::GradQ => [n, h],
+            };
             if !rows_match
-                || result != [n, h]
+                || result != written
                 || h % heads != 0
-                || b.checked_mul(s) != Some(n)
+                || b.checked_mul(s) != Some(m)
+                || n % b != 0
+                || !(1..=s).contains(&(n / b))
                 || s > MAX_ATTENTION_KEYS
             {
                 return Err(wrong(
-                    "attention reads [b s, h] rows, h a multiple of the heads, at most 512 keys",
+                    "attention reads [b l, h] queries and [b s, h] keys, 1 <= l <= s, h a \
+                     multiple of the heads, at most 512 keys",
                 ));
             }
+            let l = n / b;
+            let rows = match op {
+                AttentionOp::GradK | AttentionOp::GradV => s,
+                AttentionOp::Forward | AttentionOp::GradQ => l,
+            };
             let stats = match &kernel.softmax_stats {
                 None => false,
                 Some(ty) => {
@@ -232,13 +248,13 @@ impl AttentionLoss {
                     true
                 }
             };
-            let groups = attention_workgroups(b, s, heads)
+            let groups = attention_workgroups(b, rows, s, heads)
                 .and_then(fits)
                 .filter(|&groups| {
                     u64::from(groups) * u64::from(ATTENTION_WORKGROUP) <= u32::MAX.into()
                 })
                 .ok_or_else(|| wrong("more than 2^32 invocations"))?;
-            let tile = attention_tile(s);
+            let tile = attention_tile(rows, s);
             let d = h / heads;
             (
                 KernelKind::PerRow,
@@ -246,13 +262,14 @@ impl AttentionLoss {
                 AttentionLoss::Attention(Attend {
                     op,
                     s: u(s),
+                    l: u(l),
                     h: u(h),
                     d: u(d),
                     heads: u(heads),
                     scale: 1.0f32 / (d as f32).sqrt(),
                     stats,
                     tile: u(tile),
-                    tiles: u(s.div_ceil(tile)),
+                    tiles: u(rows.div_ceil(tile)),
                     lanes: ATTENTION_WORKGROUP / u(tile),
                     groups,
                     stage_columns: u(
@@ -494,14 +511,16 @@ impl<'a> Head<'a> {
     }
 }
 
-/// The words of one attention workgroup and invocation: the first row of its sequence and of
-/// its tile, the rows of the tile in the sequence, the first column of its head, the head, the
-/// invocation's row of the tile and its lane among the row's invocations, whether the row is
-/// one of the sequence, the row, its head's place, and where its weights start in workgroup
-/// memory.
+/// The words of one attention workgroup and invocation: the first key row and the first query
+/// row of its sequence, the first row of its tile (a query row of `Attention` and
+/// `AttentionGradQ`, a key row of the other two), the rows of the tile in the sequence, the first
+/// column of its head, the head, the invocation's row of the tile and its lane among the row's
+/// invocations, whether the row is one of the sequence, the row, its head's place, and where its
+/// weights start in workgroup memory.
 #[derive(Clone, Copy)]
 struct Tile {
     start: Word,
+    queries: Word,
     first: Word,
     rows: Word,
     column: Word,
@@ -522,8 +541,8 @@ type OfRow<'a> = &'a dyn Fn(&mut Shell, Word) -> Result<Word, EmitError>;
 /// The rows of a sequence an output sum takes ([`Shell::row_sums`]).
 #[derive(Clone, Copy)]
 enum Terms<'a> {
-    /// Every row, without a mask check.
-    All,
+    /// The first rows, as many as the constant, every one without a mask check.
+    All(u32),
     /// The first rows, as many as the word holds, without a mask check: the keys of a mask that
     /// keeps a prefix of them.
     First(Word),
@@ -962,9 +981,9 @@ impl Shell {
                     fuse(m, &[term])
                 })?;
             }
-            Terms::All => {
+            Terms::All(count) => {
                 let rows = at.sum_rows();
-                let whole = at.s / rows * rows;
+                let whole = count / rows * rows;
                 if whole > 0 {
                     let (end, step) = (self.uint(whole), self.uint(rows));
                     self.counted(var, zero, end, step, |m, first| {
@@ -978,7 +997,7 @@ impl Shell {
                         fuse(m, &terms)
                     })?;
                 }
-                let terms = (whole..at.s)
+                let terms = (whole..count)
                     .map(|i| {
                         let i = self.uint(i);
                         load(self, i)
@@ -1020,7 +1039,7 @@ impl Shell {
         Ok(())
     }
 
-    /// The dot products of the invocation's own heads with the rows of its sequence below
+    /// The dot products of the invocation's own heads with the rows `origin + i` for `i` below
     /// `count` (story:vulkan-attention-tiled-decider-shapes). The rows are taken in chunks of
     /// [`Attend::lanes`], on the chunk counter `var`, and each `(own, binding)` of `dots` is a dot
     /// product of the own head `own` with the head of row `chunk + lane` of `binding`. The
@@ -1039,6 +1058,7 @@ impl Shell {
         t: &Tile,
         local: Word,
         var: Word,
+        origin: Word,
         count: Word,
         dots: &[(Head<'_>, usize)],
         own_first: bool,
@@ -1073,7 +1093,7 @@ impl Shell {
                         None => below,
                     };
                     let safe = m.b.select(m.u32_ty, None, valid, index, zero)?;
-                    let row = m.add(t.start, safe)?;
+                    let row = m.add(origin, safe)?;
                     let row_at = head_at(m, at, row, t.column)?;
                     let first = m.uint(from);
                     let row_at = m.add(row_at, first)?;
@@ -1170,10 +1190,16 @@ impl Shell {
         let head = self.rem(pair, heads)?;
         let sequence = self.div(pair, heads)?;
         let start = self.mul(sequence, s)?;
+        let l = self.uint(at.l);
+        let queries = self.mul(sequence, l)?;
         let column = self.mul(head, d)?;
         let tile_start = self.mul(tile, rows_per_tile)?;
-        let first = self.add(start, tile_start)?;
-        let left = self.sub(s, tile_start)?;
+        let (origin, count) = match at.op {
+            AttentionOp::Forward | AttentionOp::GradQ => (queries, l),
+            AttentionOp::GradK | AttentionOp::GradV => (start, s),
+        };
+        let first = self.add(origin, tile_start)?;
+        let left = self.sub(count, tile_start)?;
         let rows = self.min(rows_per_tile, left)?;
         let r = self.div(local, lanes)?;
         let lane = self.rem(local, lanes)?;
@@ -1187,6 +1213,7 @@ impl Shell {
         let row_stats = self.add(stats_base, row_stats)?;
         Ok(Tile {
             start,
+            queries,
             first,
             rows,
             column,
@@ -1349,6 +1376,7 @@ impl Shell {
             &t,
             local,
             keys,
+            t.start,
             end,
             &[(Head::of(q.as_deref(), 0, own_at), 1)],
             true,
@@ -1453,6 +1481,7 @@ impl Shell {
                 &t,
                 local,
                 keys,
+                t.start,
                 end,
                 &[(Head::of(g.as_deref(), 4, own_at), 2)],
                 true,
@@ -1556,7 +1585,7 @@ impl Shell {
         var: Word,
     ) -> Result<(), EmitError> {
         let grad_k = at.op == AttentionOp::GradK;
-        let s = self.uint(at.s);
+        let l = self.uint(at.l);
         let own = self.b.select(self.u32_ty, None, t.active, t.own, t.first)?;
         let own_at = head_at(self, at, own, t.column)?;
         let kept = self.unmasked(own)?;
@@ -1565,32 +1594,42 @@ impl Shell {
         if grad_k {
             dots.push((Head::Global(2, own_at), 4));
         }
-        let (start, head, base) = (t.start, t.head, t.base);
-        self.staged_dots(at, t, local, var, s, &dots, false, &|m, i, valid, sums| {
-            let keep = m.and(valid, keep_own)?;
-            m.when(keep, |m| {
-                let row = m.add(start, i)?;
-                let max_at = m.stats_at(at, row, head, 0)?;
-                let sum_at = m.stats_at(at, row, head, 1)?;
-                let max = m.read(STATS_BINDING, max_at)?;
-                let total = m.read(STATS_BINDING, sum_at)?;
-                let scale = m.float(at.scale);
-                let x = m.f_mul(sums[0], scale)?;
-                let d = m.f_sub(x, max)?;
-                let e = m.exp(d)?;
-                let p = m.f_div(e, total)?;
-                let weight = if grad_k {
-                    let rd_at = m.stats_at(at, row, head, 2)?;
-                    let rd = m.read(STATS_BINDING, rd_at)?;
-                    let diff = m.f_sub(sums[1], rd)?;
-                    m.f_mul(p, diff)?
-                } else {
-                    p
-                };
-                let weight_at = m.add(base, i)?;
-                m.store_shared(weight_at, weight)
-            })
-        })
+        let (start, head, base) = (t.queries, t.head, t.base);
+        self.staged_dots(
+            at,
+            t,
+            local,
+            var,
+            start,
+            l,
+            &dots,
+            false,
+            &|m, i, valid, sums| {
+                let keep = m.and(valid, keep_own)?;
+                m.when(keep, |m| {
+                    let row = m.add(start, i)?;
+                    let max_at = m.stats_at(at, row, head, 0)?;
+                    let sum_at = m.stats_at(at, row, head, 1)?;
+                    let max = m.read(STATS_BINDING, max_at)?;
+                    let total = m.read(STATS_BINDING, sum_at)?;
+                    let scale = m.float(at.scale);
+                    let x = m.f_mul(sums[0], scale)?;
+                    let d = m.f_sub(x, max)?;
+                    let e = m.exp(d)?;
+                    let p = m.f_div(e, total)?;
+                    let weight = if grad_k {
+                        let rd_at = m.stats_at(at, row, head, 2)?;
+                        let rd = m.read(STATS_BINDING, rd_at)?;
+                        let diff = m.f_sub(sums[1], rd)?;
+                        m.f_mul(p, diff)?
+                    } else {
+                        p
+                    };
+                    let weight_at = m.add(base, i)?;
+                    m.store_shared(weight_at, weight)
+                })
+            },
+        )
     }
 
     /// The key rows of an `AttentionGradK` or `AttentionGradV` workgroup. One invocation per
@@ -1621,8 +1660,9 @@ impl Shell {
                 m.staged_key_weights(at, &t, local, queries)?;
                 return m.barrier();
             }
-            m.counted(queries, local, s, size, |m, i| {
-                let row = m.add(t.start, i)?;
+            let l = m.uint(at.l);
+            m.counted(queries, local, l, size, |m, i| {
+                let row = m.add(t.queries, i)?;
                 let q_at = head_at(m, at, row, t.column)?;
                 let (softmax, rd) = if at.stats {
                     let max_at = m.stats_at(at, row, t.head, 0)?;
@@ -1700,7 +1740,8 @@ impl Shell {
                     let weight_at = m.add(t.base, i)?;
                     m.load_shared(weight_at)
                 };
-                let sums = m.row_sums(at, t.start, t.column, x, &columns, &weight, Terms::All)?;
+                let all = Terms::All(at.l);
+                let sums = m.row_sums(at, t.queries, t.column, x, &columns, &weight, all)?;
                 m.write_sums(at, t.own_at, &columns, &sums, grad_k)
             })
         })

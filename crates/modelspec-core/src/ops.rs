@@ -495,7 +495,12 @@ pub fn infer(
         | TensorOp::AttentionGradV { heads } => {
             attention_operands(name, *heads, &operands[..4])?;
             same_shape(name, operands[0], operands[4])?;
-            Ok(operands[0].clone())
+            let of = match op {
+                TensorOp::AttentionGradK { .. } => 1,
+                TensorOp::AttentionGradV { .. } => 2,
+                _ => 0,
+            };
+            Ok(operands[of].clone())
         }
         TensorOp::CrossEntropy => {
             cross_entropy_operands(name, operands)?;
@@ -566,11 +571,15 @@ fn cross_entropy_operands(op: &'static str, operands: &[&TensorType]) -> Result<
     Ok(())
 }
 
-/// The operands `q, k, v, key_mask` of `Attention` and its gradient ops: `q` of rank 2, `k` and
-/// `v` of its shape `[N, H]`, `key_mask` of rank 2 and shape `[B, S]` with `B * S = N`, and
-/// `heads` dividing `H`. A `key_mask` whose `B * S` is not `N`, or a dimension of `key_mask` or
-/// `N` that is not static, is a shape mismatch against `q`; `heads` of 0, or a width that is not
-/// static or that `heads` does not divide, is [`OpError::HeadsDivide`].
+/// The operands `q, k, v, key_mask` of `Attention` and its gradient ops: `k` and `v` of one
+/// shape `[B * S, H]`, `key_mask` of rank 2 and shape `[B, S]`, `q` of rank 2 and shape
+/// `[B * L, H]` with `1 <= L <= S` query rows per sequence (`L = S` the self-attention of every
+/// row; story:attention-fewer-query-rows), and `heads` dividing `H`. `B` is the rows of the key
+/// mask, so `L` is the rows of `q` divided by them. A `k` of another width or rank than `q`, or a
+/// `v` of another shape than `k`, is a shape mismatch against `q`; so is a `key_mask` whose
+/// `B * S` is not the rows of `k`, or whose `B` does not divide the rows of `q` into at most `S`,
+/// or a dimension of `key_mask`, `q` or `k` that is not static; `heads` of 0, or a width that is
+/// not static or that `heads` does not divide, is [`OpError::HeadsDivide`].
 fn attention_operands(
     op: &'static str,
     heads: u64,
@@ -578,12 +587,20 @@ fn attention_operands(
 ) -> Result<(), OpError> {
     let (q, k, v, mask) = (operands[0], operands[1], operands[2], operands[3]);
     rank(op, q, 2)?;
-    same_shape(op, q, k)?;
-    same_shape(op, q, v)?;
+    same_dtype(op, q, k)?;
+    if k.rank() != 2 || k.shape[1] != q.shape[1] {
+        return Err(shape_mismatch(op, q, k));
+    }
+    same_dtype(op, q, v)?;
+    if v.shape != k.shape {
+        return Err(shape_mismatch(op, q, v));
+    }
     same_dtype(op, q, mask)?;
     rank(op, mask, 2)?;
-    let rows = match (q.shape[0], mask.shape[0], mask.shape[1]) {
-        (Dim::Static(n), Dim::Static(b), Dim::Static(s)) => b.checked_mul(s) == Some(n),
+    let rows = match (q.shape[0], k.shape[0], mask.shape[0], mask.shape[1]) {
+        (Dim::Static(nq), Dim::Static(nk), Dim::Static(b), Dim::Static(s)) => {
+            b.checked_mul(s) == Some(nk) && b != 0 && nq % b == 0 && (1..=s).contains(&(nq / b))
+        }
         _ => false,
     };
     if !rows {
@@ -1375,6 +1392,74 @@ mod tests {
                 assert_eq!(infer(&grad, &[&x, &x, &x, &mask, &x], None), Ok(x.clone()));
             }
         }
+    }
+
+    /// `q: [B * L, H]` with `1 <= L <= S` under `k, v: [B * S, H]` and `key_mask: [B, S]` is
+    /// `[B * L, H]`, `L` the rows of `q` over the rows of the mask; `AttentionGradQ` with `G` of
+    /// `q`'s shape is `q`'s shape and `AttentionGradK` and `AttentionGradV` `k`'s. `q` whose rows
+    /// the mask's `B` does not divide, or divides into more than `S`, a `v` of other rows than
+    /// `k`, or a `k` of another width than `q`, is a shape mismatch against `q`
+    /// (story:attention-fewer-query-rows).
+    #[test]
+    fn attention_of_fewer_query_rows_than_key_rows() {
+        let (kv, mask) = (f32(&[6, 4]), f32(&[2, 3]));
+        for l in [1, 2, 3] {
+            let q = f32(&[2 * l, 4]);
+            let op = TensorOp::Attention { heads: 2 };
+            assert_eq!(infer(&op, &[&q, &kv, &kv, &mask], None), Ok(q.clone()));
+            for (grad, want) in [
+                (TensorOp::AttentionGradQ { heads: 2 }, &q),
+                (TensorOp::AttentionGradK { heads: 2 }, &kv),
+                (TensorOp::AttentionGradV { heads: 2 }, &kv),
+            ] {
+                assert_eq!(
+                    infer(&grad, &[&q, &kv, &kv, &mask, &q], None),
+                    Ok(want.clone())
+                );
+            }
+        }
+        let op = TensorOp::Attention { heads: 2 };
+        for rows in [3, 5, 8] {
+            let q = f32(&[rows, 4]);
+            assert_eq!(
+                infer(&op, &[&q, &kv, &kv, &mask], None),
+                Err(OpError::ShapeMismatch {
+                    op: "Attention",
+                    lhs: q,
+                    rhs: mask.clone(),
+                }),
+                "{rows} query rows"
+            );
+        }
+        let q = f32(&[2, 4]);
+        assert_eq!(
+            infer(&op, &[&q, &kv, &f32(&[4, 4]), &mask], None),
+            Err(OpError::ShapeMismatch {
+                op: "Attention",
+                lhs: q.clone(),
+                rhs: f32(&[4, 4]),
+            })
+        );
+        assert_eq!(
+            infer(&op, &[&q, &f32(&[6, 2]), &f32(&[6, 2]), &mask], None),
+            Err(OpError::ShapeMismatch {
+                op: "Attention",
+                lhs: q.clone(),
+                rhs: f32(&[6, 2]),
+            })
+        );
+        assert_eq!(
+            infer(
+                &TensorOp::AttentionGradK { heads: 2 },
+                &[&q, &kv, &kv, &mask, &kv],
+                None
+            ),
+            Err(OpError::ShapeMismatch {
+                op: "AttentionGradK",
+                lhs: q,
+                rhs: kv,
+            })
+        );
     }
 
     /// A key mask whose `B * S` is not `N`, or `k` of another shape, is a shape mismatch;
