@@ -103,11 +103,11 @@ Development paused after release 0.20.0 (Timo, 2026-10-26) and resumed on 2026-1
 Entry points are the `Taskfile.yml` tasks (go-task):
 
 - `task build`: `cargo build --workspace`.
-- `task test`: `cargo test --workspace`, then `cargo test -p modelspec-runtime --features vulkan`,
-  whose `spirv_val` test runs `spirv-val --target-env vulkan1.2` (SPIRV-Tools) on every emitted
+- `task test`: `cargo test --workspace`, which builds `modelspec-runtime` with `vulkan` through the CLI's default feature;
+  its `spirv_val` test runs `spirv-val --target-env vulkan1.2` (SPIRV-Tools) on every emitted
   elementwise, broadcast and SGD module and fails, not skips, without it.
-- `task lint`: `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings` and
-  the same clippy run of `modelspec-runtime` with `--features vulkan`.
+- `task lint`: `cargo fmt --check` and `cargo clippy --workspace --all-targets -- -D warnings`,
+  which checks `modelspec-runtime` with `--features vulkan` through the same default.
 - The device tests need a Vulkan device and are ignored by default:
   `MODELSPEC_VK_VALIDATION=1 cargo test -p modelspec-runtime --features vulkan --test vulkan_elementwise -- --ignored`.
   `MODELSPEC_VK_VALIDATION=1` creates the instance with the Khronos validation layer; each
