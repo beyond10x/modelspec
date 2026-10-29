@@ -27,7 +27,7 @@ Both IR levels are verified when they are built, and dead code is removed from t
 `modelspec train --backend cpu` runs the Training IR on the CPU interpreter; `--backend vulkan`
 lowers it to Kernel IR and runs that on one Vulkan device. The operators added for BERT have
 Vulkan kernels; the optimizer `muon` has none, so a file trained with it runs on the CPU interpreter
-only, and the Kernel IR stage refuses it with `E-TARGET-011` ([BERT operators](./bert-operators.md)).
+only, and the Kernel IR stage refuses it with `E-TARGET-011` ([BERT operators](./bert-operators.mdx)).
 
 `modelspec check` runs the first three stages. `modelspec ir --stage tensor` and `--stage
 training` print the two IR levels, and the tests compare both byte for byte with their golden
@@ -39,7 +39,7 @@ and
 ## Tensor IR
 
 Tensor IR is typed SSA: every value has one definition, a type and a shape, and refers to earlier
-values by number. For [the linear regression example](../examples/linear-regression.md),
+values by number. For [the linear regression example](../examples/linear-regression.mdx),
 `modelspec ir examples/linear_regression.mspec --stage tensor` prints:
 
 ```text

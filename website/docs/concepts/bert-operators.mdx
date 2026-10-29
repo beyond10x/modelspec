@@ -6,6 +6,9 @@ lede: "Eight operators added for a small BERT are typed by the operator registry
 source: "DESIGN.md § 2 and the operator registry in crates/modelspec-core/src/ops.rs and resolve.rs; the tests gradients_embedding.rs, gradients_dense.rs, gradients_norm.rs, gradients_attention.rs, gradients_cross_entropy.rs and gradients_dropout.rs of crates/modelspec-runtime, and check_i32.rs and embedding_no_kernel.rs of crates/modelspec-cli; the E-TARGET-011 output from a run of modelspec ir on crates/modelspec-cli/tests/fixtures/linear_regression_muon.mspec; CHANGELOG.md § 0.10.0, § 0.11.0 and Unreleased."
 ---
 
+import ModelDiagram from '@site/src/components/ModelDiagram';
+import mlmBag from '@site/data/diagrams/mlm-bag.json';
+
 # BERT operators
 
 ModelSpec's current milestone is a small BERT, pre-trained from scratch. Eight operators were
@@ -78,6 +81,8 @@ train Fit {
     device = cpu;
 }
 ```
+
+<ModelDiagram data={mlmBag} view="model" />
 
 It trains on a packed directory; [Prepare training data](../guides/prepare-training-data.md)
 builds one and runs it.

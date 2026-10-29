@@ -1,4 +1,5 @@
-import type {CSSProperties, ReactNode} from 'react';
+import {useEffect, useRef, type CSSProperties, type ReactNode} from 'react';
+import Link from '@docusaurus/Link';
 import useBaseUrl from '@docusaurus/useBaseUrl';
 
 type DiagramView = {
@@ -17,9 +18,17 @@ type ModelDiagramProps = {
   view: string;
   scope?: string;
   caption?: ReactNode;
+  pageLink?: boolean;
 };
 
-export default function ModelDiagram({data, view, scope, caption}: ModelDiagramProps): ReactNode {
+export default function ModelDiagram({data, view, scope, caption, pageLink = true}: ModelDiagramProps): ReactNode {
+  const canvas = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const element = canvas.current;
+    if (element !== null && element.scrollWidth > element.clientWidth) {
+      element.scrollLeft = (element.scrollWidth - element.clientWidth) / 2;
+    }
+  }, []);
   const drawn = data.views[view];
   const key = scope ?? drawn?.root;
   const standalone = useBaseUrl(`/img/diagrams/${data.program}/${view}/${key}.svg`);
@@ -31,7 +40,7 @@ export default function ModelDiagram({data, view, scope, caption}: ModelDiagramP
   const style = width === undefined ? undefined : ({'--ms-diagram-width': width} as CSSProperties);
   return (
     <figure className="ms-figure">
-      <div className="ms-figure__canvas" style={style} dangerouslySetInnerHTML={{__html: svg}} />
+      <div ref={canvas} className="ms-figure__canvas" style={style} tabIndex={0} dangerouslySetInnerHTML={{__html: svg}} />
       <figcaption>
         {caption ?? (
           <>
@@ -39,7 +48,14 @@ export default function ModelDiagram({data, view, scope, caption}: ModelDiagramP
             verified Tensor IR.
           </>
         )}{' '}
-        <a href={standalone}>Open the SVG</a>.
+        <a href={standalone}>Open the SVG</a>
+        {pageLink ? (
+          <>
+            {' or '}
+            <Link to={`/docs/diagrams/${data.program}`}>every level of {data.program}</Link>
+          </>
+        ) : null}
+        .
       </figcaption>
     </figure>
   );

@@ -6,6 +6,9 @@ lede: "A .mspec file is declarative, statically typed and pure, and 0.25.0 parse
 source: "DESIGN.md § 2; crates/modelspec-core/src/syntax, resolve.rs, types.rs and ops.rs; the tests syntax.rs of crates/modelspec-core and check.rs, check_i32.rs, check_attention.rs and check_dropout.rs of crates/modelspec-cli; the diagnostic reference generated from crates/modelspec-core/src/diag.rs."
 ---
 
+import ModelDiagram from '@site/src/components/ModelDiagram';
+import twoLayerRelu from '@site/data/diagrams/two-layer-relu.json';
+
 # The language
 
 A `.mspec` file is declarative, statically typed and pure by default. It says what a model
@@ -42,6 +45,8 @@ train FitTwoLayer {
     device = cpu;
 }
 ```
+
+<ModelDiagram data={twoLayerRelu} view="model" />
 
 ### The model
 
@@ -81,7 +86,7 @@ purpose (DESIGN.md § 2.2):
 
 A call that breaks a rule is a compile error with its own code, the source position and both
 operand types ([a shape error](../examples/shape-error.md)). The BERT operators have their own
-page, [BERT operators](./bert-operators.md).
+page, [BERT operators](./bert-operators.mdx).
 
 ### Named operator arguments
 

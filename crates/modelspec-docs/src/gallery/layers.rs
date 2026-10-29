@@ -9,11 +9,13 @@
 
 use std::path::Path;
 
-use crate::diagrams::{self, Level, Program};
-use crate::{Pages, Result, SOURCE, fenced, front_matter};
+use crate::diagrams::{self, Drawn, Program};
+use crate::{Result, SOURCE, fenced, front_matter};
 
 /// The page's file name under [`super::DIR`].
 pub const PAGE: &str = "layers.mdx";
+/// The page's title, which the program pages under `blocks::DIR` link back to.
+pub const TITLE: &str = "Gallery: layers";
 
 /// One layer of the gallery: its program, its heading and what the block computes.
 pub struct Entry {
@@ -69,11 +71,11 @@ pub const ENTRIES: &[Entry] = &[
     },
 ];
 
-/// What the layers page generates: the page and, per entry, its levels and JSON module.
+/// What the layers page generates: the page and, per entry, its drawn program, which `main.rs`
+/// writes as its SVGs and JSON module and gives a page under `blocks::DIR`.
 pub struct Files {
     pub page: String,
-    pub images: Vec<Level>,
-    pub data: Pages,
+    pub drawn: Vec<Drawn>,
 }
 
 /// The layers page and the diagrams of [`ENTRIES`], read under `root`.
@@ -82,8 +84,7 @@ pub fn files(root: &Path) -> Result<Files> {
 }
 
 fn files_of(root: &Path, entries: &[Entry]) -> Result<Files> {
-    let mut images = Vec::new();
-    let mut data = Pages::new();
+    let mut all = Vec::new();
     let mut imports =
         String::from("import ModelDiagram from '@site/src/components/ModelDiagram';\n");
     let mut body = String::new();
@@ -103,11 +104,10 @@ fn files_of(root: &Path, entries: &[Entry]) -> Result<Files> {
             fenced(&format!("modelspec title=\"{}\"", entry.program.file), &source),
             file = entry.program.file,
         ));
-        images.push(drawn.level);
-        data.insert(drawn.module.0, drawn.module.1);
+        all.push(drawn);
     }
     let mut page = front_matter(
-        "Gallery: layers",
+        TITLE,
         "Layers",
         "Composed blocks drawn from their verified Tensor IR: dense layers, a residual with layer norm and self-attention, each a small model whose forward is the block.",
         3,
@@ -126,7 +126,7 @@ fn files_of(root: &Path, entries: &[Entry]) -> Result<Files> {
          (DESIGN.md § 13.3).\n",
     );
     page.push_str(&body);
-    Ok(Files { page, images, data })
+    Ok(Files { page, drawn: all })
 }
 
 /// The JavaScript name of a program's JSON module: `layer-dense-relu` as `layerDenseRelu`.
@@ -196,8 +196,12 @@ mod tests {
                 &["wq", "wk", "wv"],
             ),
         ];
-        assert_eq!(files.images.len(), expected.len());
-        for ((key, block, inputs, params), level) in expected.iter().zip(&files.images) {
+        assert_eq!(files.drawn.len(), expected.len());
+        for ((key, block, inputs, params), drawn) in expected.iter().zip(&files.drawn) {
+            let (levels, (module, _)) = diagrams::written(drawn).unwrap();
+            let [level] = &levels[..] else {
+                panic!("{key}: one view");
+            };
             assert_eq!(
                 level.dir,
                 format!("website/static/img/diagrams/{key}/model")
@@ -235,7 +239,7 @@ mod tests {
             chips.sort_unstable();
             params.sort_unstable();
             assert_eq!(chips, params, "{key}: the parameters as chips");
-            assert!(files.data.contains_key(&format!("{key}.json")), "{key}");
+            assert_eq!(module, format!("{key}.json"), "{key}");
             assert!(
                 files.page.contains(&format!(
                     "import {} from '@site/data/diagrams/{key}.json';",

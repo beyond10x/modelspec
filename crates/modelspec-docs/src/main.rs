@@ -11,6 +11,7 @@
 //! and the status data from [`status::CAPABILITIES`].
 
 mod benchmarks;
+mod blocks;
 mod cli;
 mod crates;
 mod diagnostics;
@@ -207,7 +208,7 @@ struct Output {
 }
 
 /// Every generated file of the site, and any warnings.
-fn outputs(root: &Path) -> Result<(Vec<Output>, Vec<String>)> {
+fn outputs(root: &Path) -> Result<(Vec<Output>, Vec<String>, Vec<diagrams::Drawn>)> {
     let examples = example::pages()?;
     let (benchmarks_page, charts) = benchmarks::files(root)?;
     let (status, warnings) = status::document(root)?;
@@ -217,7 +218,12 @@ fn outputs(root: &Path) -> Result<(Vec<Output>, Vec<String>)> {
         ("operators.md".to_owned(), operators::page(root)?),
         ("crates.md".to_owned(), crates::page(root)?),
     ]);
-    let (mut diagram_outputs, glyphs) = diagram_outputs(root)?;
+    let generated: Pages = examples
+        .pages
+        .iter()
+        .map(|(name, text)| (format!("{EXAMPLES}/{name}"), text.clone()))
+        .collect();
+    let (mut diagram_outputs, glyphs, drawn) = diagram_outputs(root, &generated)?;
     let data = Pages::from([
         (status::FILE.to_owned(), status),
         (example::TERMINAL.to_owned(), examples.terminal),
@@ -252,16 +258,28 @@ fn outputs(root: &Path) -> Result<(Vec<Output>, Vec<String>)> {
         },
     ];
     all.append(&mut diagram_outputs);
-    Ok((all, warnings))
+    Ok((all, warnings, drawn))
 }
 
-/// The gallery pages, the diagrams of every program in `diagrams::PROGRAMS` and of the gallery's
-/// own programs, and their stylesheet; and the glyph sprite module, which lands in the shared [`DATA`] directory.
-fn diagram_outputs(root: &Path) -> Result<(Vec<Output>, String)> {
-    let mut generated = diagrams::files(root)?;
+/// The gallery pages; the diagrams of every program in `diagrams::PROGRAMS` and of the gallery's
+/// own programs, each with its page under `blocks::DIR`; their stylesheet; the glyph sprite
+/// module, which lands in the shared [`DATA`] directory; and every drawn program, which
+/// `generate` checks the documentation's blocks and the diagrams' links against.
+fn diagram_outputs(
+    root: &Path,
+    generated: &Pages,
+) -> Result<(Vec<Output>, String, Vec<diagrams::Drawn>)> {
+    let programs = diagrams::files(root)?;
     let gallery = gallery::files(root)?;
-    generated.data.extend(gallery.data);
-    generated.images.extend(gallery.images);
+    let mut images = programs.images;
+    let mut data = programs.data;
+    for drawn in &gallery.drawn {
+        let (levels, (name, module)) = diagrams::written(drawn)?;
+        images.extend(levels);
+        data.insert(name, module);
+    }
+    let mut drawn = programs.drawn;
+    drawn.extend(gallery.drawn);
     let mut outputs = vec![
         Output {
             dir: gallery::DIR.to_owned(),
@@ -269,22 +287,27 @@ fn diagram_outputs(root: &Path) -> Result<(Vec<Output>, String)> {
             exclusive: true,
         },
         Output {
+            dir: blocks::DIR.to_owned(),
+            files: blocks::pages(root, &drawn, generated, &gallery.shown_on)?,
+            exclusive: true,
+        },
+        Output {
             dir: diagrams::DATA.to_owned(),
-            files: generated.data,
+            files: data,
             exclusive: true,
         },
         Output {
             dir: diagrams::CSS_DIR.to_owned(),
-            files: Pages::from([(diagrams::CSS.to_owned(), generated.css)]),
+            files: Pages::from([(diagrams::CSS.to_owned(), programs.css)]),
             exclusive: false,
         },
     ];
-    outputs.extend(generated.images.into_iter().map(|level| Output {
+    outputs.extend(images.into_iter().map(|level| Output {
         dir: level.dir,
         files: level.files,
         exclusive: true,
     }));
-    Ok((outputs, generated.glyphs))
+    Ok((outputs, programs.glyphs, drawn))
 }
 
 /// Every difference between the expected files and the files in `dir`. Subdirectories are not
@@ -332,7 +355,7 @@ fn write(root: &Path, output: &Output) -> Result<()> {
 fn generate(root: &Path, check: bool) -> Result<()> {
     std::env::set_current_dir(root).map_err(io(root.display()))?;
     let root = Path::new(".");
-    let (outputs, warnings) = outputs(root)?;
+    let (outputs, warnings, drawn) = outputs(root)?;
     for output in &outputs {
         if check {
             let problems = drift(&output.files, &root.join(&output.dir), output.exclusive)?;
@@ -364,6 +387,20 @@ fn generate(root: &Path, check: bool) -> Result<()> {
         ));
     }
     println!("{DOCS}: no raw admonition titles");
+    let mut problems = blocks::problems(root, &drawn)?;
+    if let Some(output) = outputs.iter().find(|o| o.dir == blocks::DIR) {
+        problems.extend(blocks::unresolved_links(&drawn, &output.files));
+    }
+    if !problems.is_empty() {
+        return Err(format!(
+            "```modelspec blocks and their diagrams:\n  {}",
+            problems.join("\n  ")
+        ));
+    }
+    println!(
+        "{} ```modelspec blocks listed, each drawn, fragment or skip holding",
+        blocks::MANIFEST.len()
+    );
     Ok(())
 }
 
@@ -483,10 +520,36 @@ mod tests {
     /// Acceptance 1, `gallery.atoms.drift`: the committed diagram and gallery files are what the
     /// code generates now, and the check that `task docs-check` runs fails when one byte of
     /// `FitTwoLayer.svg` or of `atoms.mdx` changes.
+    /// Every caption of an inlined diagram links to `/docs/diagrams/<program>`, so every drawn
+    /// program, the gallery's layers included, has its page there, and every link of its SVGs
+    /// resolves (`docs.diagrams.links-resolve`).
+    #[test]
+    fn every_drawn_program_has_its_diagram_page() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let (outputs, _, drawn) = diagram_outputs(&root, &Pages::new()).unwrap();
+        let pages = &outputs.iter().find(|o| o.dir == blocks::DIR).unwrap().files;
+        assert_eq!(
+            drawn.len(),
+            diagrams::PROGRAMS.len() + gallery::layers::ENTRIES.len()
+        );
+        for program in &drawn {
+            assert!(
+                pages.contains_key(&blocks::page_name(program.key)),
+                "{}",
+                program.key
+            );
+        }
+        assert!(pages["layer-dense.mdx"].contains("](../gallery/layers.mdx)"));
+        assert_eq!(
+            blocks::unresolved_links(&drawn, pages),
+            Vec::<String>::new()
+        );
+    }
+
     #[test]
     fn gallery_atoms_drift() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let (outputs, glyphs) = diagram_outputs(&root).unwrap();
+        let (outputs, glyphs, _) = diagram_outputs(&root, &Pages::new()).unwrap();
         for output in &outputs {
             let problems = drift(&output.files, &root.join(&output.dir), output.exclusive).unwrap();
             assert!(problems.is_empty(), "{}: {problems:?}", output.dir);

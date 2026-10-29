@@ -34,17 +34,51 @@ pub struct Program {
     pub file: &'static str,
 }
 
-/// Every program the site draws.
-pub const PROGRAMS: &[Program] = &[Program {
-    key: "two-layer-relu",
-    file: "crates/modelspec-docs/models/two_layer_relu.mspec",
-}];
+/// Every program the site draws. The programs of the documentation's ` ```modelspec ` blocks are
+/// named by `crate::blocks::MANIFEST`.
+pub const PROGRAMS: &[Program] = &[
+    Program {
+        key: "linear-reg",
+        file: "examples/linear_regression.mspec",
+    },
+    Program {
+        key: "two-layer-relu",
+        file: "crates/modelspec-docs/models/two_layer_relu.mspec",
+    },
+    Program {
+        key: "mlm-bag",
+        file: "crates/modelspec-cli/tests/fixtures/mlm_bag.mspec",
+    },
+    Program {
+        key: "bert-tiny",
+        file: "examples/bert_tiny.mspec",
+    },
+];
+
+/// The views `modelspec-diagram` draws today. The pipeline views (`train`, `eval`, `infer`) join
+/// when it builds their graphs (story:diagram-pipelines); every writer here iterates this list.
+pub const VIEWS: &[DiagramView] = &[DiagramView::Model];
 
 /// The drawn levels of one program and view: the directory of its SVGs relative to the repository
 /// root, and the files in it.
 pub struct Level {
     pub dir: String,
     pub files: Pages,
+}
+
+/// One view of a drawn program: its root scope key, and the SVG of every level by scope key, the
+/// root first and then in the graph's scope order.
+pub struct DrawnView {
+    pub view: DiagramView,
+    pub root: String,
+    pub levels: Vec<(String, String)>,
+}
+
+/// Every view of one program, as [`draw`] draws it.
+pub struct Drawn {
+    pub key: &'static str,
+    pub file: &'static str,
+    pub views: Vec<DrawnView>,
 }
 
 /// What [`files`] generates.
@@ -57,16 +91,24 @@ pub struct Generated {
     pub glyphs: String,
     /// The stylesheet, [`CSS`].
     pub css: String,
+    /// Every program of [`PROGRAMS`], drawn.
+    pub drawn: Vec<Drawn>,
 }
 
-/// One program drawn by [`draw`]: its levels and its JSON module's file name and text.
-pub struct Drawn {
-    pub level: Level,
-    pub module: (String, String),
+/// The program of [`PROGRAMS`] with the key `key`.
+pub fn program(key: &str) -> Option<&'static Program> {
+    PROGRAMS.iter().find(|p| p.key == key)
 }
 
-/// The model view of `program`, read under `root`. A file that does not compile is an error
-/// naming the file and every diagnostic code, so generation stops instead of writing a page.
+/// The standalone SVG of one level, relative to the repository root.
+pub fn image_path(program: &str, view: DiagramView, scope: &str) -> String {
+    format!("{IMAGES}/{program}/{}/{scope}.svg", view.name())
+}
+
+/// Every level of every view in [`VIEWS`] of `program`, read under `root`: one level per scope
+/// of the view's graph, drawn from that scope at the view's default depth. A file that does not
+/// compile is an error naming the file and every diagnostic code, so generation stops instead of
+/// writing a page. The gallery draws its own programs through it (`gallery::layers`).
 pub fn draw(root: &Path, program: &Program) -> Result<Drawn> {
     let source = std::fs::read_to_string(root.join(program.file)).map_err(io(program.file))?;
     let graph = model_graph(program.file, &source).map_err(|diagnostics| {
@@ -83,45 +125,79 @@ pub fn draw(root: &Path, program: &Program) -> Result<Drawn> {
     let compiled = compile::compile_training(program.file, &source)
         .map_err(|_| format!("{}: does not compile", program.file))?;
     let lines = graph::ir_lines(&compiled);
-    let view = DiagramView::Model;
-    let drawn = render(&graph, &RenderRequest::default());
-    let root_key = drawn.root.0.clone();
-    let text = svg::svg(&graph, &drawn, &lines);
-    let mut levels = Map::new();
-    levels.insert(root_key.clone(), Value::String(text.clone()));
-    let module = json!({
-        "program": program.key,
-        "source": program.file,
-        "views": {
-            view.name(): {
-                "root": root_key,
-                "levels": levels,
-            },
-        },
-    });
+    let mut views = Vec::new();
+    for &view in VIEWS {
+        let top = render(&graph, &RenderRequest::default());
+        let root_key = top.root.0.clone();
+        let mut levels = vec![(root_key.clone(), svg::svg(&graph, &top, &lines))];
+        for scope in graph.scopes.iter().filter(|s| s.key.0 != root_key) {
+            let request = RenderRequest {
+                root: Some(scope.key.clone()),
+                ..RenderRequest::default()
+            };
+            let drawn = render(&graph, &request);
+            levels.push((scope.key.0.clone(), svg::svg(&graph, &drawn, &lines)));
+        }
+        views.push(DrawnView {
+            view,
+            root: root_key,
+            levels,
+        });
+    }
     Ok(Drawn {
-        level: Level {
-            dir: format!("{IMAGES}/{}/{}", program.key, view.name()),
-            files: Pages::from([(format!("{root_key}.svg"), text)]),
-        },
-        module: (format!("{}.json", program.key), pretty(&module)?),
+        key: program.key,
+        file: program.file,
+        views,
     })
+}
+
+/// What `drawn` writes: one directory of standalone SVGs per view, and its JSON module's file
+/// name under [`DATA`] and text, which holds every level's SVG by scope key.
+pub fn written(drawn: &Drawn) -> Result<(Vec<Level>, (String, String))> {
+    let mut images = Vec::new();
+    let mut views = Map::new();
+    for view in &drawn.views {
+        let mut levels = Map::new();
+        let mut files = Pages::new();
+        for (scope, text) in &view.levels {
+            levels.insert(scope.clone(), Value::String(text.clone()));
+            files.insert(format!("{scope}.svg"), text.clone());
+        }
+        images.push(Level {
+            dir: format!("{IMAGES}/{}/{}", drawn.key, view.view.name()),
+            files,
+        });
+        views.insert(
+            view.view.name().to_owned(),
+            json!({ "root": view.root, "levels": levels }),
+        );
+    }
+    let module = json!({
+        "program": drawn.key,
+        "source": drawn.file,
+        "views": views,
+    });
+    Ok((images, (format!("{}.json", drawn.key), pretty(&module)?)))
 }
 
 /// The diagrams of every program in [`PROGRAMS`], read under `root`.
 pub fn files(root: &Path) -> Result<Generated> {
     let mut images = Vec::new();
     let mut data = Pages::new();
+    let mut all = Vec::new();
     for program in PROGRAMS {
         let drawn = draw(root, program)?;
-        images.push(drawn.level);
-        data.insert(drawn.module.0, drawn.module.1);
+        let (levels, (name, module)) = written(&drawn)?;
+        images.extend(levels);
+        data.insert(name, module);
+        all.push(drawn);
     }
     Ok(Generated {
         images,
         data,
         glyphs: pretty(&json!({ "sprite": sprite() }))?,
         css: stylesheet(),
+        drawn: all,
     })
 }
 
@@ -162,7 +238,9 @@ fn stylesheet() -> String {
 /// The layout of a diagram figure and of the gallery's glyph cells. A diagram is drawn at 1.6
 /// times its natural size, `--ms-diagram-width` being the SVG's width in units, which
 /// `ModelDiagram.tsx` sets on the canvas: the smallest label, 10 units, then reads at 16 px, the
-/// body text's size. It never grows past the column, and shrinks with it on a narrow screen.
+/// body text's size. A diagram wider than the column keeps that size and scrolls sideways inside
+/// its figure, a tall one downwards, so the page itself never scrolls sideways; the SVG's own
+/// `max-width:100%`, which a standalone file keeps, is overridden here.
 const FIGURE_CSS: &str = "
 .ms-figure {
   margin: 0 0 var(--ifm-leading) 0;
@@ -173,13 +251,15 @@ const FIGURE_CSS: &str = "
 }
 
 .ms-figure__canvas {
-  overflow-x: auto;
-  text-align: center;
+  max-height: 80vh;
+  overflow: auto;
 }
 
 .ms-figure__canvas svg {
+  display: block;
+  margin: 0 auto;
   width: calc(var(--ms-diagram-width) * 1.6px);
-  max-width: 100%;
+  max-width: none !important;
   height: auto;
 }
 
@@ -219,12 +299,13 @@ mod tests {
     #[test]
     fn two_layer_relu_is_drawn_once_per_level_with_its_json_module() {
         let generated = files(&repository()).unwrap();
-        assert_eq!(generated.images.len(), 1);
-        let level = &generated.images[0];
-        assert_eq!(
-            level.dir,
-            "website/static/img/diagrams/two-layer-relu/model"
-        );
+        assert_eq!(generated.images.len(), PROGRAMS.len() * VIEWS.len());
+        let level = generated
+            .images
+            .iter()
+            .find(|level| level.dir == "website/static/img/diagrams/two-layer-relu/model")
+            .unwrap();
+        assert_eq!(level.files.len(), 1);
         let svg = &level.files["FitTwoLayer.svg"];
         assert!(svg.contains(" role=\"img\"") && svg.contains("data-op=\"MatMul\""));
         let module: Value = serde_json::from_str(&generated.data["two-layer-relu.json"]).unwrap();

@@ -89,7 +89,7 @@ policy together. Its fields, from the run above:
 
 Save the test model
 [`mlm_bag.mspec`](https://github.com/beyond10x/modelspec/blob/main/crates/modelspec-cli/tests/fixtures/mlm_bag.mspec),
-a token table tied as its own decoder ([BERT operators](../concepts/bert-operators.md#a-model-that-uses-them)
+a token table tied as its own decoder ([BERT operators](../concepts/bert-operators.mdx#a-model-that-uses-them)
 shows it). Its `train` block declares `ids` as the input and `labels` and `weights` as targets,
 each a tensor of the masked-language-model batch, 64 tokens or 4 sequences of 16 per step. The
 `init` and `param` lines hold 4,800 numbers each, so this run is cut to 72 columns:

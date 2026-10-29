@@ -5,33 +5,48 @@
 pub mod atoms;
 pub mod layers;
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
-use crate::diagrams::Level;
+use crate::diagrams::Drawn;
 use crate::{Pages, Result, front_matter};
 
 /// Where the gallery's pages land, relative to the repository root.
 pub const DIR: &str = "website/docs/gallery";
 
-/// What the gallery generates: its pages by file name, and the diagrams they show, each level's
-/// directory of SVGs and each program's JSON module by file name.
+/// What the gallery generates: its pages by file name; the programs they draw, each written like
+/// a program of `diagrams::PROGRAMS` and given its own page under `blocks::DIR`; and, by program
+/// key, the gallery pages that show each one beside its code, as `(title, link from that page)`.
 pub struct Gallery {
     pub pages: Pages,
-    pub images: Vec<Level>,
-    pub data: Pages,
+    pub drawn: Vec<Drawn>,
+    pub shown_on: BTreeMap<&'static str, Vec<(String, String)>>,
 }
 
 /// The gallery's pages and diagrams, read under `root`.
 pub fn files(root: &Path) -> Result<Gallery> {
     let layers = layers::files(root)?;
+    let shown_on = layers
+        .drawn
+        .iter()
+        .map(|drawn| {
+            (
+                drawn.key,
+                vec![(
+                    layers::TITLE.to_owned(),
+                    format!("../gallery/{}", layers::PAGE),
+                )],
+            )
+        })
+        .collect();
     Ok(Gallery {
         pages: Pages::from([
             ("index.md".to_owned(), index()),
             (atoms::PAGE.to_owned(), atoms::page()),
             (layers::PAGE.to_owned(), layers.page),
         ]),
-        images: layers.images,
-        data: layers.data,
+        drawn: layers.drawn,
+        shown_on,
     })
 }
 

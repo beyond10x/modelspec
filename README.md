@@ -37,6 +37,8 @@ train Fit {
 }
 ```
 
+[![The model view of train block Fit, drawn by modelspec-diagram from its verified Tensor IR](website/static/img/diagrams/linear-reg/model/Fit.svg)](https://beyond10x.github.io/modelspec/docs/diagrams/linear-reg)
+
 ## Watch a run in the browser
 
 Since 0.7.0, the observatory UI in [ui/](ui/) draws the loss, and every metric a

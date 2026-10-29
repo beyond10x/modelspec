@@ -7,6 +7,9 @@ description: "The repository's example model, checked, lowered and trained on th
 custom_edit_url: null
 ---
 
+import ModelDiagram from '@site/src/components/ModelDiagram';
+import diagram from '@site/data/diagrams/linear-reg.json';
+
 The example of the repository: one `[4, 1]` weight, a batch of 8 rows of 4 features, mean squared error and plain SGD. `task check-examples` checks it on every change, and the tests of `modelspec-cli` hold its IR and its training run.
 
 The output below was recorded by `modelspec-docs` running the `modelspec` command line on the model; `task docs-check` fails when a run prints anything else.
@@ -36,6 +39,8 @@ train Fit {
     device = cpu;
 }
 ```
+
+<ModelDiagram data={diagram} view="model" />
 
 ## Runs
 
