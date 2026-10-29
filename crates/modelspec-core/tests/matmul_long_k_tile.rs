@@ -4,8 +4,8 @@
 //! - The three weight-gradient matmuls of the decider model take [`MATMUL_LONG_K_NARROW_BLOCK`]
 //!   (`[256, 65536]ᵀ x [65536, 256]`) and [`MATMUL_LONG_K_BLOCK`] (`[256, 65536]ᵀ x
 //!   [65536, 1024]`, `[1024, 65536]ᵀ x [65536, 256]`), under every invocation limit.
-//! - A `k` below 16,384, or fewer workgroups than a long-`k` block's bound, keeps the tile it
-//!   had; the shapes of `1..=10_000` are pinned by `matmul_tile_from_profile`.
+//! - A `k` below 16,384, fewer than 32 rows, or fewer workgroups than a long-`k` block's bound,
+//!   keeps the tile it had; the shapes of `1..=10_000` are pinned by `matmul_tile_from_profile`.
 //! - Every long-`k` tile reads vectors, stages within the 16 KiB every Vulkan device provides
 //!   with either operand transposed, every stride and offset a multiple of 4 values, and is the
 //!   tile of its own workgroup size, so a kernel's signature names the tile it runs.
@@ -88,6 +88,10 @@ fn a_shorter_k_or_fewer_workgroups_keep_the_tile_they_had() {
         (224, 65536, 288),
         (32, 65536, 64),
         (4096, 65536, 31),
+        // Fewer than 32 rows (finding LK-1).
+        (31, 65536, 4096),
+        (16, 16384, 2048),
+        (1, 65536, 8192),
     ] {
         let tile = MatMulTile::of(m, k, n);
         assert!(!tile.long_k(), "[{m}, {k}] x [{k}, {n}]: {tile}");
@@ -137,6 +141,7 @@ fn every_long_k_tile_reads_vectors_and_stages_within_the_vulkan_minimum() {
                 );
             }
             assert!(n >= u64::from(tile.cols), "{case}");
+            assert!(m >= MATMUL_LONG_K_BLOCK.from_m, "{case}");
             assert_eq!(
                 MatMulTile::of_invocations(m, k, n, tile.workgroup_size),
                 tile,
