@@ -2440,10 +2440,12 @@ mod tests {
         }
     }
 
-    /// The three runs of verification-report:bert-tiny-vs-pytorch-2026-10-28: ModelSpec Vulkan,
-    /// PyTorch CUDA eager and `torch.compile`, three runs each of the 10,000 steps of
+    /// The entries of verification-report:bert-tiny-vs-pytorch-2026-10-28 and
+    /// verification-report:bert-tiny-vs-pytorch-2026-10-29, one per side and report: ModelSpec
+    /// Vulkan, PyTorch CUDA eager and `torch.compile`, three runs each of the 10,000 steps of
     /// `examples/bert_tiny.mspec`, all counted by one `MatmulOnly` FLOP figure. Each cites the
-    /// three raw records of its side in run order and states their µs per step in that order;
+    /// three raw records of its side in run order, a re-run named `-r` or `-rN` after the run it
+    /// replaces, and states their µs per step in that order;
     /// the median of their µs per step, steps and training seconds to the target, training
     /// seconds and final held-out loss; and their steps, eval cadence, target and commit.
     #[test]
@@ -2453,6 +2455,8 @@ mod tests {
         let bert: Vec<&Run> = runs.iter().filter(|run| run.workload == BERT).collect();
         let mut sides: Vec<&str> = bert.iter().map(|run| run.side.as_str()).collect();
         sides.sort_unstable();
+        assert_eq!(bert.len(), 6, "two reports of three sides");
+        sides.dedup();
         assert_eq!(
             sides,
             ["ModelSpecVulkan", "PyTorchCudaCompile", "PyTorchCudaEager"]
@@ -2479,10 +2483,21 @@ mod tests {
                 other => panic!("{}: no raw side for {other}", run.run_id),
             };
             let names: Vec<&str> = std::iter::once(first).chain(names).collect();
-            let expected: Vec<String> = (1..=3)
-                .map(|n| format!("{prefix}-{n}.{extension}"))
-                .collect();
-            assert_eq!(names, expected, "{}", run.run_id);
+            assert_eq!(names.len(), 3, "{}", run.run_id);
+            for (n, name) in (1..=3).zip(&names) {
+                let rerun = name
+                    .strip_prefix(&format!("{prefix}-{n}"))
+                    .and_then(|rest| rest.strip_suffix(&format!(".{extension}")))
+                    .unwrap_or_else(|| panic!("{}: {name} is not run {n}", run.run_id));
+                assert!(
+                    rerun.is_empty()
+                        || rerun
+                            .strip_prefix("-r")
+                            .is_some_and(|tries| tries.chars().all(|c| c.is_ascii_digit())),
+                    "{}: {name} is neither run {n} nor a re-run of it",
+                    run.run_id
+                );
+            }
             let records: Vec<BertRecord> = names
                 .iter()
                 .map(|name| {
@@ -2560,7 +2575,8 @@ mod tests {
     }
 
     /// The published `bert-tiny-pretrain` section holds the three sides' medians of
-    /// verification-report:bert-tiny-vs-pytorch-2026-10-28, each figure linked to that report.
+    /// verification-report:bert-tiny-vs-pytorch-2026-10-28 and, after each, those of
+    /// verification-report:bert-tiny-vs-pytorch-2026-10-29, each figure linked to its report.
     #[test]
     fn the_published_page_has_the_bert_tiny_pretrain_figures_of_the_report() {
         let (page, _) = files(&root()).unwrap();
@@ -2571,17 +2587,22 @@ mod tests {
             .find("\n## ")
             .map_or(page.len(), |at| start + 1 + at);
         let section = &page[start..end];
-        let url = report_url("verification-report:bert-tiny-vs-pytorch-2026-10-28").unwrap();
         // Date, build, then µs per step, tokens per second, GFLOP/s, target loss, steps to
-        // target, training seconds to target and final held-out loss, each linked; eval every.
-        let row = |build: &str, figures: [&str; 7]| {
+        // target, training seconds to target and final held-out loss, each linked to the report
+        // of that date; eval every.
+        let dated = |date: &str, build: &str, figures: [&str; 7]| {
+            let url =
+                report_url(&format!("verification-report:bert-tiny-vs-pytorch-{date}")).unwrap();
             let figures: Vec<String> = figures
                 .iter()
                 .map(|figure| format!("[{figure}]({url})"))
                 .collect();
-            format!("| 2026-10-28 | {build} | {} | 100 |", figures.join(" | "))
+            format!("| {date} | {build} | {} | 100 |", figures.join(" | "))
         };
+        let row = |build: &str, figures: [&str; 7]| dated("2026-10-28", build, figures);
+        let new_row = |build: &str, figures: [&str; 7]| dated("2026-10-29", build, figures);
         let target = "6.926537926202018";
+        let torch = "torch 2.14.1+cu130, CUDA 13.0";
         let expected = [
             row(
                 "0.21.0 (`3b9869f`)",
@@ -2595,8 +2616,20 @@ mod tests {
                     "6.7675",
                 ],
             ),
+            new_row(
+                "0.22.0 (`3638e82`)",
+                [
+                    "15,245.19",
+                    "268,674.9",
+                    "2,456.3",
+                    target,
+                    "1,100",
+                    "16.569",
+                    "6.7675",
+                ],
+            ),
             row(
-                "torch 2.14.1+cu130, CUDA 13.0",
+                torch,
                 [
                     "9,897.473",
                     "413,843.025",
@@ -2607,8 +2640,20 @@ mod tests {
                     "6.7673",
                 ],
             ),
+            new_row(
+                torch,
+                [
+                    "7,806.549",
+                    "524,687.637",
+                    "4,796.8",
+                    target,
+                    "1,100",
+                    "8.654",
+                    "6.7673",
+                ],
+            ),
             row(
-                "torch 2.14.1+cu130, CUDA 13.0",
+                torch,
                 [
                     "4,887.491",
                     "838,057.772",
@@ -2616,6 +2661,18 @@ mod tests {
                     target,
                     "1,100",
                     "4.881",
+                    "6.7675",
+                ],
+            ),
+            new_row(
+                torch,
+                [
+                    "4,220.582",
+                    "970,482.22",
+                    "8,872.4",
+                    target,
+                    "1,100",
+                    "4.734",
                     "6.7675",
                 ],
             ),

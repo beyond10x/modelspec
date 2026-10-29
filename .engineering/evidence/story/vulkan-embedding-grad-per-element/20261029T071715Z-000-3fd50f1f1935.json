@@ -1,0 +1,13 @@
+{
+  "at": "2026-10-29T07:17:15Z",
+  "actor": "human:timo",
+  "artifact": "story:vulkan-embedding-grad-per-element",
+  "kind": "story",
+  "revision": 3,
+  "change": {
+    "change": "evidence",
+    "kind": "test_result",
+    "source": "task ci on PR 89 at 37983674",
+    "reference": "https://github.com/beyond10x/modelspec/actions/runs/40832426045/job/123309452039"
+  }
+}

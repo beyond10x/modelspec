@@ -17,7 +17,7 @@ A Rust compiler and runtime for `.mspec` tensor-program specifications. Humans s
 ## State
 
 Milestone M0 implemented (DESIGN.md revision 0.6, § 1 and § 11, iteration 1; wave `m0` closed);
-M1 (`epic:m1-vulkan-execution`) is in progress, latest release 0.22.0. The active milestone is
+M1 (`epic:m1-vulkan-execution`) is in progress, latest release 0.23.0. The active milestone is
 `epic:bert-from-scratch`, M3's BERT proof model: the operators `embedding` (with `i32` row ids),
 `add_rows`, `gelu`, `layer_norm`, `softmax` and `attention` (0.10.0), `cross_entropy` and
 `dropout` (0.11.0) run on the CPU interpreter, as do packed `--data` training and
@@ -289,6 +289,17 @@ workspace version and nothing is on a registry.
   before a GPU run; a bench's own warm-up steps outside its timed span stay. A timed run gets the
   GPU alone, and nobody locks its clocks. The operator said so on 2026-10-23
   (approval-record:benchmark-wave-scope D14).
+- A Vulkan timing needs the display awake. With the screen blanked (DPMS or the X screen saver),
+  the NVIDIA driver keeps the GPU in P3 for Vulkan clients (RTX 3090: SM about 780 to 915 MHz,
+  memory 5001 MHz, about 2.2x slower steps) while CUDA clients still boost to P0/P2, so a
+  ModelSpec-against-PyTorch run is unfair. Before a timed run or an A/B run:
+  `DISPLAY=:0 xset dpms force on`, `DISPLAY=:0 xset -dpms` and `DISPLAY=:0 xset s off`, and
+  `xset s reset` before each run (`xset +dpms` and `xset s on` after). Something on the desktop
+  re-enables DPMS, so check `xset q` between runs. Sample
+  `nvidia-smi --query-gpu=pstate,clocks.sm,clocks.mem` during each run; a record whose ModelSpec
+  side ran outside P0/P2 is re-run, not published. Found 2026-10-29 when that day's timings ran at
+  P3 after the screen blanked at about 04:50, and two later runs ran at P3 with DPMS off while the
+  screen saver blanked the screen.
 - Performance work is proved by a small experiment first: a probe that shows the idea moves the
   measured figure, then the accurate implementation. Each change runs only the tests of the crates
   and test targets it touches (and its own device tests when it changes a kernel). Changes collect
