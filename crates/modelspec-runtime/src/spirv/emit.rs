@@ -52,7 +52,10 @@
 //! workgroup of 64: its invocations stage the differences `a - b` in workgroup memory, as many
 //! at a time as the device profile's `max_shared_memory_bytes` holds, and invocation 0 adds
 //! their squares in ascending element order from the first term, each later square fused into
-//! the sum, chunk after chunk, as the CPU interpreter does.
+//! the sum, chunk after chunk, as the CPU interpreter does. The plan's module divides the sum by
+//! the element count, and also adds the squares of the differences scaled by the reciprocal of
+//! the count, the mean, which it writes instead where the sum overflows (DESIGN.md § 5.4);
+//! [`emit_loss_sum_undivided`] writes the sum.
 
 use std::collections::{BTreeMap, VecDeque};
 
@@ -150,7 +153,8 @@ impl KernelModule {
 /// Which module of a loss-sum kernel is built.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Variant {
-    /// The plan's module.
+    /// The plan's module: for a loss sum, the sum of the squared differences divided by the
+    /// element count, or where that sum overflows the sum of the scaled ones.
     Plan,
     /// The loss sum before its division, the value of the bit-for-bit class.
     Undivided,
@@ -350,7 +354,9 @@ enum Body {
         divide_by: Option<u32>,
     },
     /// `terms` is the element count of the shape and `chunk` the number of terms staged in
-    /// workgroup memory at a time.
+    /// workgroup memory at a time; `divide_by`, the element count the sum is divided by, whose
+    /// reciprocal scales the terms of the sum written where it overflows ([`Shell::loss_sum`]),
+    /// is `None` for the undivided sum.
     LossSum {
         divide_by: Option<u32>,
         terms: u32,
@@ -771,6 +777,10 @@ fn build(
         Body::Rowwise(rowwise) => rowwise.f32_vars(),
         Body::AttentionLoss(body) => body.f32_vars(),
         Body::HeldOut(body) => body.f32_vars(),
+        // The scaled sum of the plan's loss sum ([`Shell::loss_sum`]).
+        Body::LossSum {
+            divide_by: Some(_), ..
+        } => 1,
         _ => 0,
     };
     let seeded = matches!(body, Body::Rowwise(rowwise) if rowwise.seeded());
@@ -1785,9 +1795,14 @@ impl Shell {
     /// term of element 0 in the first chunk starting the sum as a product and every later one
     /// fused into it, `fma(d, d, acc)` (DESIGN.md § 12 ADR-009); a second barrier frees the
     /// memory for the next chunk. The order of additions is the one-invocation order: the first
-    /// term, then each next one. `divide_by` divides the sum by the element count. The counts
-    /// are constants of the shape, so the driver sees every trip count; no term is added for an
-    /// empty shape.
+    /// term, then each next one. With `divide_by` the element count `n`, in the plan's module, the
+    /// same invocation also adds the scaled terms `(d * s) * d`, `fma(d * s, d, acc)` after the
+    /// first, with `s = 1/n` rounded to `f32`, into a second accumulator, and writes the sum
+    /// divided by `n` where that sum is finite or NaN and the scaled sum where it is infinite: the
+    /// scaled sum is the mean, which passes `f32::MAX` where the CPU interpreter's `f64` mean does
+    /// up to its rounding, and a finite sum keeps the bits it had (DESIGN.md § 5.4, revision
+    /// 0.75). The counts are constants of the shape, so the driver sees every trip count; no term
+    /// is added for an empty shape.
     fn loss_sum(
         &mut self,
         divide_by: Option<u32>,
@@ -1797,40 +1812,46 @@ impl Shell {
         if terms == 0 {
             return Ok(());
         }
+        let scaled =
+            divide_by.map(|n| (self.float((1.0 / f64::from(n)) as f32), self.matmul_vars[0]));
         let chunk_var = self.u32_vars[0];
         let (full, tail) = (terms / chunk, terms % chunk);
         let zero = self.uint(0);
-        self.loss_chunk(zero, chunk, true, full == 1 && tail == 0)?;
+        self.loss_chunk(zero, chunk, scaled, true, full == 1 && tail == 0)?;
         if full > 1 {
             let (one, end, size) = (self.uint(1), self.uint(full), self.uint(chunk));
             self.counted(chunk_var, one, end, one, |m, c| {
                 let base = m.mul(c, size)?;
-                m.loss_chunk(base, chunk, false, false)
+                m.loss_chunk(base, chunk, scaled, false, false)
             })?;
         }
         if tail > 0 {
             let base = self.uint(full * chunk);
-            self.loss_chunk(base, tail, false, true)?;
+            self.loss_chunk(base, tail, scaled, false, true)?;
         }
         let local = self.local.expect("a module with workgroup memory");
         let first_invocation = self.equal(local, zero)?;
         self.when(first_invocation, |m| {
             let mut sum = m.b.load(m.f32_ty, None, m.f32_var, None, [])?;
-            if let Some(n) = divide_by {
+            if let (Some(n), Some((_, var))) = (divide_by, scaled) {
                 let n = m.float(n as f32);
-                sum = m.b.f_div(m.f32_ty, None, sum, n)?;
+                let divided = m.b.f_div(m.f32_ty, None, sum, n)?;
+                let mean = m.b.load(m.f32_ty, None, var, None, [])?;
+                let overflowed = m.b.is_inf(m.bool_ty, None, sum)?;
+                sum = m.pick(m.f32_ty, overflowed, mean, divided)?;
             }
             m.write(zero, sum)
         })
     }
 
-    /// One chunk of [`Shell::loss_sum`]: the `len` terms from element `base`. The `opening` chunk
-    /// starts the sum with the square of its first difference; the `closing` one needs no barrier
-    /// after it.
+    /// One chunk of [`Shell::loss_sum`]: the `len` terms from element `base`, and with `scaled`,
+    /// the constant `s` and the second accumulator, their scaled terms too. The `opening` chunk
+    /// starts each sum with its first term; the `closing` one needs no barrier after it.
     fn loss_chunk(
         &mut self,
         base: Word,
         len: u32,
+        scaled: Option<(Word, Word)>,
         opening: bool,
         closing: bool,
     ) -> Result<(), EmitError> {
@@ -1869,12 +1890,24 @@ impl Shell {
                 let d = m.load_shared(zero)?;
                 let first = m.f_mul(d, d)?;
                 m.b.store(m.f32_var, first, None, [])?;
+                if let Some((s, var)) = scaled {
+                    let e = m.f_mul(d, s)?;
+                    let first = m.f_mul(e, d)?;
+                    m.b.store(var, first, None, [])?;
+                }
             }
             let start = m.uint(start);
             m.repeat(term_var, len - u32::from(opening), UNROLL, |m, t| {
                 let j = m.add(t, start)?;
                 let d = m.load_shared(j)?;
-                m.accumulate_square(d)
+                m.accumulate_square(d)?;
+                if let Some((s, var)) = scaled {
+                    let e = m.f_mul(d, s)?;
+                    let acc = m.b.load(m.f32_ty, None, var, None, [])?;
+                    let sum = m.f_fma(e, d, acc)?;
+                    m.b.store(var, sum, None, [])?;
+                }
+                Ok(())
             })
         })?;
         if !closing {

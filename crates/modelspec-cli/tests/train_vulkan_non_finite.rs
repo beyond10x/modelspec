@@ -79,6 +79,53 @@ fn a_divergent_loss_on_vulkan_prints_what_the_cpu_prints() {
     );
 }
 
+/// story:vulkan-loss-sum-overflow-parity: the example's 8 rows at `lr = 0.6` overflow the loss
+/// at step 382 on the CPU, whose `f64` mean of the squared differences passes `f32::MAX` there
+/// (DESIGN.md § 2.2), and the device names the same step (DESIGN.md § 5.4, § 8.1): status and
+/// stderr equal, and stdout line for line, each finite loss of a `step` line within the run
+/// tolerance of DESIGN.md § 9 gate 5 and the rest of it byte for byte. Before the fix the
+/// device's `f32` sum of the 8 squared differences overflowed at step 372, ten steps early.
+#[test]
+#[ignore = "needs a Vulkan device"]
+fn an_eight_row_loss_overflows_at_the_cpu_step_on_vulkan() {
+    let path = with_lr("lr0.6.mspec", "0.6");
+    let cpu = train(&path, "cpu", &[]);
+    let gpu = train(&path, "vulkan", &[]);
+    let (cpu_err, gpu_err) = (text(&cpu.stderr), text(&gpu.stderr));
+    assert_eq!(cpu.status.code(), Some(1), "{cpu_err}");
+    assert!(
+        cpu_err.starts_with("E-TRAIN-001: the loss of step 382 is not finite"),
+        "{cpu_err}"
+    );
+    assert_eq!(
+        (gpu.status.code(), gpu_err.as_str()),
+        (cpu.status.code(), cpu_err.as_str()),
+        "status and stderr of --backend vulkan against --backend cpu"
+    );
+    let (cpu_out, gpu_out) = (text(&cpu.stdout), text(&gpu.stdout));
+    let (c, g): (Vec<&str>, Vec<&str>) = (cpu_out.lines().collect(), gpu_out.lines().collect());
+    assert_eq!(g.len(), c.len(), "stdout lines\n{gpu_out}\n---\n{cpu_out}");
+    assert_eq!(c.last(), Some(&"step 382 loss inf"), "{cpu_out}");
+    for (g, c) in g.iter().zip(&c) {
+        let same = match (g.rsplit_once(" loss "), c.rsplit_once(" loss ")) {
+            (Some((g_head, g_loss)), Some((c_head, c_loss))) if c_head.starts_with("step ") => {
+                let (g_loss, c_loss): (f32, f32) = (
+                    g_loss.parse().expect("a loss"),
+                    c_loss.parse().expect("a loss"),
+                );
+                g_head == c_head
+                    && if c_loss.is_finite() {
+                        within(g_loss, c_loss, c_loss.abs(), GPU_RUN_ATOL, GPU_RUN_RTOL)
+                    } else {
+                        g_loss.to_bits() == c_loss.to_bits()
+                    }
+            }
+            _ => g == c,
+        };
+        assert!(same, "vulkan `{g}` against the CPU's `{c}`");
+    }
+}
+
 /// Acceptance 1, `lr = 1e38`, as the device can check it without reading the parameters back
 /// after every step: exit 1, one E-TRAIN-001 line naming the loss of step 1, which the infinite
 /// `LinearReg.w` makes non-finite, and the CPU run's stdout up to step 0 followed by that step's

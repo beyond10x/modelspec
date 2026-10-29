@@ -504,7 +504,7 @@ fn design_and_spec_state_the_reduction_rule_the_orders_and_the_bit_class() {
     for phrase in [
         "In M1 the bit-for-bit class holds the `mse` loss sum before its division and every matmul output",
         "`RoundingModeRTE`, `DenormPreserve` and `SignedZeroInfNanPreserve`",
-        "Two-stage reductions, the `mse` value after its division and every other M1 kernel",
+        "Two-stage reductions, the `mse` value the plan computes and every other M1 kernel",
     ] {
         assert!(classes.contains(phrase), "§ 5.4 states {phrase:?}");
     }
