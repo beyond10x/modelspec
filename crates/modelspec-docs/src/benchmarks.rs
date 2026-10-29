@@ -1878,14 +1878,24 @@ fn target_section(workload: &str, runs: &[&Run]) -> String {
         [&count] => format!("{count} runs"),
         _ => "its runs".to_owned(),
     };
+    // The clocks as each report's "training clock" row states them: 2026-10-28 excludes the
+    // held-out evaluations on every side, 2026-10-29 includes them on the ModelSpec side.
+    let report = |date: &str| {
+        report_url(&format!("verification-report:bert-tiny-vs-pytorch-{date}")).unwrap_or_default()
+    };
+    let (excluded, included) = (report("2026-10-28"), report("2026-10-29"));
     let mut out = format!(
         "## {title}, time to the held-out baseline\n\n`{workload}`: `examples/bert_tiny.mspec` \
          pre-trained by each side from the same initial weights on the same batches of the same \
          packed corpus, with the same optimizer and schedule, until its held-out loss, evaluated \
          every `Eval every` steps, is at most the target loss. Steps to target is the first \
          evaluated step at or below the target, training seconds to target the training time up \
-         to that step without the held-out evaluations, checkpoint writes or events. µs per step \
-         is a run's training seconds over its steps, the mean of its steps, and the figure is the \
+         to that step without checkpoint writes or events. The held-out evaluations are outside \
+         that time on every side in [the report of 2026-10-28]({excluded}) and on the PyTorch \
+         sides in [the report of 2026-10-29]({included}); the ModelSpec runs of 2026-10-29 \
+         reduce each evaluation on the device inside the evaluated step's command buffer, so \
+         their training seconds, and with them their µs per step, include the evaluations. \
+         µs per step is a run's training seconds over its steps, the mean of its steps, and the figure is the \
          median of {repeats}, the median of the run's repeats as for every workload; tokens per \
          second is its tokens per step · 10⁶ / µs per step, GFLOP/s its FLOP per step / µs per \
          step / 1000. Each figure links to the report that states it."
@@ -3836,6 +3846,47 @@ mod tests {
         }
         assert!(
             not_measured(&page).is_none_or(|rest| !rest.contains("**BERT-tiny pre-training**"))
+        );
+    }
+
+    /// The method text of the `bert-tiny-pretrain` section says which report's clock holds the
+    /// held-out evaluations: verification-report:bert-tiny-vs-pytorch-2026-10-28 excludes them on
+    /// every side (its "training clock" row), verification-report:bert-tiny-vs-pytorch-2026-10-29
+    /// on the PyTorch sides only, its ModelSpec clock "the 101 held-out evaluations included",
+    /// each report linked.
+    #[test]
+    fn the_bert_tiny_pretrain_method_says_which_report_clocks_the_evaluations() {
+        let text = format!(
+            "{}{}",
+            flop_fixture(),
+            bert_entry(
+                "bert-ms",
+                "ModelSpecVulkan",
+                8192.0,
+                (3400, 28.5),
+                84.25,
+                6.8012345
+            )
+        );
+        let runs = read(&text, &schema()).unwrap();
+        let (page, _) = render(&runs);
+        let report = |date: &str| {
+            report_url(&format!("verification-report:bert-tiny-vs-pytorch-{date}")).unwrap()
+        };
+        let expected = format!(
+            "training seconds to target the training time up to that step without checkpoint \
+             writes or events. The held-out evaluations are outside that time on every side in \
+             [the report of 2026-10-28]({}) and on the PyTorch sides in [the report of \
+             2026-10-29]({}); the ModelSpec runs of 2026-10-29 reduce each evaluation on the \
+             device inside the evaluated step's command buffer, so their training seconds, and \
+             with them their µs per step, include the evaluations. µs per step",
+            report("2026-10-28"),
+            report("2026-10-29")
+        );
+        assert!(page.contains(&expected), "{expected}\n{page}");
+        assert!(
+            !page.contains("without the held-out evaluations, checkpoint writes or events"),
+            "{page}"
         );
     }
 
