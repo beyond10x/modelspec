@@ -46,6 +46,8 @@ fn stats() -> RunStats {
         elapsed: Duration::from_micros(30),
         training: Duration::from_micros(30),
         evaluation: Duration::ZERO,
+        pipelines: 6,
+        pipeline_creation: Duration::from_micros(1500),
     }
 }
 

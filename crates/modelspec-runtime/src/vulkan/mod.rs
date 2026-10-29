@@ -26,6 +26,7 @@ mod enabled;
 pub mod memory;
 pub mod negotiate;
 pub mod pipeline;
+pub mod pipeline_cache;
 mod pool;
 mod probe;
 pub mod profile;
