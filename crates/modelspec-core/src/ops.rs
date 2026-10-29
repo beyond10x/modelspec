@@ -312,9 +312,12 @@ pub fn operand_dtype(op: &TensorOp, index: usize) -> DType {
 
 /// Whether `operand` is the `i32` spans form of an attention op's fourth operand
 /// (story:attention-event-spans), which [`operand_dtype`] does not name: it stays the key mask's
-/// `f32`, the form the reference documents.
+/// `f32`, the form the reference documents. Only an `i32` operand of rank 2 and width 2 is spans;
+/// any other `i32` operand is a key mask of the wrong dtype, [`OpError::OperandDType`].
 pub fn attention_spans(op: &TensorOp, operand: &TensorType) -> bool {
     operand.dtype == DType::I32
+        && operand.rank() == 2
+        && operand.shape[1] == Dim::Static(2)
         && matches!(
             op,
             TensorOp::Attention { .. }
@@ -598,8 +601,10 @@ fn cross_entropy_operands(op: &'static str, operands: &[&TensorType]) -> Result<
 /// In place of the key mask the fourth operand may be `i32 [U, 2]` spans, `U >= 1`
 /// (story:attention-event-spans): row `u` is `(start, length)`, keys `start .. start + length`
 /// of `k` and `v`. `q` then has the rows of `k`, row `i` the query of the span holding it, or `U`
-/// rows, row `u` the query of span `u`; the rows of `k` win where `U` is the rows of `k`. Spans
-/// of another rank or width, `U = 0`, or `q` of other rows is a shape mismatch against `q`. That
+/// rows, row `u` the query of span `u`; the rows of `k` win where `U` is the rows of `k`. `U = 0`,
+/// a `U` that is not static, or `q` of other rows is a shape mismatch against `q`; an `i32`
+/// operand of another rank or width is no spans form and [`infer`] refuses it as
+/// [`OpError::OperandDType`], the key mask of the wrong dtype. That
 /// the spans lie in the rows and in ascending order apart is a property of their values, which
 /// the CPU interpreter checks (`RuntimeError::SpanOverlap` and its siblings).
 fn attention_operands(
@@ -1495,8 +1500,9 @@ mod tests {
     }
 
     /// An `i32 [U, 2]` fourth operand is spans (story:attention-event-spans): `q` of the rows of
-    /// `k` or of `U` rows gives `q`'s shape, the gradients `q`'s or `k`'s; spans of another
-    /// shape or rank, `U = 0`, or `q` of other rows is a shape mismatch against `q`.
+    /// `k` or of `U` rows gives `q`'s shape, the gradients `q`'s or `k`'s; `U = 0` or `q` of
+    /// other rows is a shape mismatch against `q`. An `i32` operand not of rank 2 and width 2 is
+    /// no spans form, so it is the key mask of the wrong dtype, as it was before spans.
     #[test]
     fn attention_over_spans_takes_an_i32_u_by_2_operand() {
         let (kv, spans) = (f32(&[7, 4]), i32(&[3, 2]));
@@ -1517,7 +1523,6 @@ mod tests {
         let op = TensorOp::Attention { heads: 2 };
         for (q, spans) in [
             (f32(&[4, 4]), i32(&[3, 2])),
-            (f32(&[7, 4]), i32(&[3, 3])),
             (f32(&[7, 4]), i32(&[0, 2])),
             (f32(&[0, 4]), i32(&[0, 2])),
         ] {
@@ -1530,10 +1535,24 @@ mod tests {
                 })
             );
         }
-        assert!(matches!(
-            infer(&op, &[&kv, &kv, &kv, &i32(&[6])], None),
-            Err(OpError::Rank { .. })
-        ));
+        for mask in [i32(&[3, 3]), i32(&[6]), i32(&[1, 3, 2])] {
+            for grad in [
+                TensorOp::Attention { heads: 2 },
+                TensorOp::AttentionGradQ { heads: 2 },
+            ] {
+                let q = f32(&[7, 4]);
+                let operands: Vec<&TensorType> = [&q, &kv, &kv, &mask, &q][..arity(&grad)].to_vec();
+                assert_eq!(
+                    infer(&grad, &operands, None),
+                    Err(OpError::OperandDType {
+                        op: grad.name(),
+                        index: 3,
+                        expected: DType::F32,
+                        got: mask.clone(),
+                    })
+                );
+            }
+        }
     }
 
     /// A key mask whose `B * S` is not `N`, or `k` of another shape, is a shape mismatch;
