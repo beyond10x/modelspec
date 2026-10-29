@@ -240,7 +240,7 @@ fn adversary_the_bert_page_e_target_011_output_equals_a_run() {
     let fixture = repository().join("crates/modelspec-cli/tests/fixtures");
     let model = fixture.join("linear_regression_muon.mspec");
     let model = model.to_str().unwrap();
-    let bert = page("concepts/bert-operators.md");
+    let bert = page("concepts/bert-operators.mdx");
     let pasted = output_after(
         &bert,
         "modelspec ir linear_regression_muon.mspec --stage kernel",
@@ -391,7 +391,7 @@ fn every_concept_and_guide_page_carries_the_skill_front_matter() {
 /// it, and the paragraph does not deny them.
 #[test]
 fn the_overview_mnist_claim_agrees_with_the_benchmark_history() {
-    let index = page("index.md")
+    let index = page("index.mdx")
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ");

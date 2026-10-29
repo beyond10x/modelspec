@@ -59,7 +59,7 @@ step 500 loss 0.00000000005571943
 param @LinearReg.w: Tensor<f32, [4, 1]> = [-0.9486646, -0.25639862, 0.42304444, 1.0599351]
 ```
 
-The same seed prints the same bytes on every run. [Linear regression](./examples/linear-regression.md)
+The same seed prints the same bytes on every run. [Linear regression](./examples/linear-regression.mdx)
 shows the full output, and the IR between the two commands.
 
 ## Train on a GPU
@@ -113,6 +113,6 @@ tests the workspace and checks that this site's generated pages match the code.
 
 ## Next
 
-- [Write a model](./guides/write-a-model.md): a model of your own in the M0 subset.
+- [Write a model](./guides/write-a-model.mdx): a model of your own in the M0 subset.
 - [Read a diagnostic](./guides/read-a-diagnostic.md): what a refusal tells you.
 - [CLI reference](./reference/cli.md): every command and option.

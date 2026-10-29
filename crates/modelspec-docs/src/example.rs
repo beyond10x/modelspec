@@ -64,7 +64,7 @@ struct Example {
 
 const EXAMPLES: &[Example] = &[
     Example {
-        page: "linear-regression.md",
+        page: "linear-regression.mdx",
         title: "Example: linear regression",
         label: "Linear regression",
         description: "The repository's example model, checked, lowered and trained on the CPU reference, with the output each command prints.",
@@ -79,7 +79,7 @@ const EXAMPLES: &[Example] = &[
             &["train", "{file}", "--backend", "cpu"],
         ],
         expected: &[0, 0, 0, 0],
-        diagram: None,
+        diagram: Some("linear-reg"),
     },
     Example {
         page: "two-layer-relu.mdx",
@@ -89,7 +89,7 @@ const EXAMPLES: &[Example] = &[
         file: "crates/modelspec-docs/models/two_layer_relu.mspec",
         intro: "Two weights and a `relu` between them, written in the M0 subset: a `let` binding, \
                 nested operator calls and two parameters with one canonical path each. \
-                [Write a model](../guides/write-a-model.md) builds it step by step.",
+                [Write a model](../guides/write-a-model.mdx) builds it step by step.",
         runs: &[
             &["check", "{file}"],
             &["ir", "{file}", "--stage", "tensor"],
@@ -130,7 +130,7 @@ const EXAMPLES: &[Example] = &[
         diagram: None,
     },
     Example {
-        page: "bert-tiny.md",
+        page: "bert-tiny.mdx",
         title: "Example: BERT-tiny",
         label: "BERT-tiny",
         description: "BERT-tiny, two encoder layers of hidden size 128 over the 8,192-token corpus vocabulary and an MLM head tied to the token table, 1,486,720 parameters, checked and lowered.",
@@ -153,7 +153,7 @@ const EXAMPLES: &[Example] = &[
                 unigram baseline.",
         runs: &[&["check", "{file}"], &["ir", "{file}", "--stage", "tensor"]],
         expected: &[0, 0],
-        diagram: None,
+        diagram: Some("bert-tiny"),
     },
 ];
 
@@ -275,7 +275,7 @@ pub fn pages() -> Result<Generated> {
             }
             runs.push(run);
         }
-        if example.page == "linear-regression.md" {
+        if example.page == "linear-regression.mdx" {
             for keep in ["check", "train"] {
                 landing.extend(
                     runs.iter()

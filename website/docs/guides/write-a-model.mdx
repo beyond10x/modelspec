@@ -6,6 +6,9 @@ lede: "A two-layer model with a relu is written in the M0 subset in three steps,
 source: "DESIGN.md § 2; crates/modelspec-docs/models/two_layer_relu.mspec, the finished file; the tests check.rs and ir_tensor.rs of crates/modelspec-cli; every output pasted from a run of the commands it shows."
 ---
 
+import ModelDiagram from '@site/src/components/ModelDiagram';
+import twoLayerRelu from '@site/data/diagrams/two-layer-relu.json';
+
 # Write a model
 
 This guide builds a model with two weight matrices and a `relu` between them, in the M0 subset of
@@ -64,8 +67,10 @@ train FitTwoLayer {
 }
 ```
 
+<ModelDiagram data={twoLayerRelu} view="model" />
+
 The `input` has the type of `forward`'s argument and the `target` the type of its result. The loss
-calls `model.forward` once and compares its result with the target. [The language](../concepts/language.md#the-train-block)
+calls `model.forward` once and compares its result with the target. [The language](../concepts/language.mdx#the-train-block)
 lists every setting and its rule.
 
 ## 4. Check it

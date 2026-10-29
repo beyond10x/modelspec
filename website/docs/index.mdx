@@ -5,6 +5,9 @@ sidebar_label: Overview
 description: ModelSpec is for training models faster than a general-purpose framework, by compiling one declared training program into a runtime built for one target (planned). It is a typed language and a Rust compiler that trains today on a CPU reference and on one Vulkan GPU.
 ---
 
+import ModelDiagram from '@site/src/components/ModelDiagram';
+import linearReg from '@site/data/diagrams/linear-reg.json';
+
 # What ModelSpec is
 
 ModelSpec is for training models faster than a general-purpose framework can. The whole training
@@ -49,6 +52,8 @@ train Fit {
     device = cpu;
 }
 ```
+
+<ModelDiagram data={linearReg} view="model" />
 
 ## What works today
 
@@ -112,8 +117,8 @@ capability with the test that holds it, and [Roadmap](./roadmap.md) says what M1
 - [Why ModelSpec](./concepts/north-star.md): the north star, the BERT-tiny ladder against PyTorch,
   and what is shipped and what is planned.
 - [Getting started](./getting-started.md): download the 0.25.0 binary and train the examples on the CPU or a GPU.
-- [The language](./concepts/language.md): what a file may contain.
-- [Write a model](./guides/write-a-model.md): build a two-layer model step by step.
+- [The language](./concepts/language.mdx): what a file may contain.
+- [Write a model](./guides/write-a-model.mdx): build a two-layer model step by step.
 - [Pitch deck](pathname:///modelspec/pitch/): the case for ModelSpec in slides.
 - [DESIGN.md](https://github.com/beyond10x/modelspec/blob/main/DESIGN.md): the design
   specification, the authority for everything on this site.

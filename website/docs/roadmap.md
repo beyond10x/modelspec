@@ -115,12 +115,12 @@ and multi-head `attention` with a key mask, with `zeros()` and `ones()` initiali
 three commands that prepare a corpus, `modelspec data prepare`, `data tokenizer` and `data pack`.
 Released in 0.11.0: `cross_entropy`, `dropout`, `train --data` on a packed directory, and
 held-out evaluation during training with `--eval-every`. Each operator's gradient is checked
-against central finite differences ([BERT operators](./concepts/bert-operators.md)).
+against central finite differences ([BERT operators](./concepts/bert-operators.mdx)).
 Released in 0.12.0: `optimizer = adamw(...)`, AdamW with decoupled weight decay and a learning
 rate that warms up linearly from 0 and decays linearly to 0 at the last step.
 Released in 0.15.0: `optimizer = muon(...)`, Nesterov momentum orthogonalized by Newton–Schulz
 steps for each rank-2 parameter that no `embedding` reads as its table, and AdamW for the rest.
-Released in 0.16.0: [BERT-tiny](./examples/bert-tiny.md), `examples/bert_tiny.mspec` with
+Released in 0.16.0: [BERT-tiny](./examples/bert-tiny.mdx), `examples/bert_tiny.mspec` with
 1,486,720 parameters at the 8,192-token vocabulary of the corpus tokenizer (Turc et al.'s BERT-tiny
 has 4.4M at 30,522 tokens), passes `modelspec check`, and its hidden-32 twin passes a gradient
 check of every parameter and trains to the same output twice from one seed.

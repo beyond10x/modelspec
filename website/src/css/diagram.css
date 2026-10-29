@@ -51,12 +51,15 @@
 }
 
 .ms-figure__canvas {
-  overflow-x: auto;
-  text-align: center;
+  max-height: 80vh;
+  overflow: auto;
 }
 
 .ms-figure__canvas svg {
-  max-width: 100%;
+  display: block;
+  margin: 0 auto;
+  width: calc(var(--ms-diagram-width) * 1.6px);
+  max-width: none !important;
   height: auto;
 }
 

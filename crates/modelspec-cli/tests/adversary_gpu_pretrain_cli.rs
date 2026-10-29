@@ -413,7 +413,7 @@ fn run_record_figures_agree_across_the_repository() {
         "README.md",
         "AGENTS.md",
         "CHANGELOG.md",
-        "website/docs/index.md",
+        "website/docs/index.mdx",
         "website/docs/roadmap.md",
     ] {
         let text = read(file).split_whitespace().collect::<Vec<_>>().join(" ");
