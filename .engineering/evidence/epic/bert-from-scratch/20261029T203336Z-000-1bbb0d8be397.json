@@ -1,0 +1,13 @@
+{
+  "at": "2026-10-29T20:33:36Z",
+  "actor": "human:timo",
+  "artifact": "epic:bert-from-scratch",
+  "kind": "epic",
+  "revision": 5,
+  "change": {
+    "change": "evidence",
+    "kind": "test_result",
+    "source": "modelspec / task ci on 6ed04f91 (release 0.25.0 PR, success): gradients_bert_cpu (f64 central differences on every parameter of the hidden-32 twin), bert_cpu_train reproducible (two CPU runs, one seed, identical losses), bert_tiny and check-examples (modelspec check on examples/bert_tiny.mspec)",
+    "reference": "https://github.com/beyond10x/modelspec/actions/runs/40944702453/job/123696892346"
+  }
+}

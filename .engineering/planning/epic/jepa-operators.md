@@ -2,15 +2,16 @@
 format: aep.planning-md/3
 id: epic:jepa-operators
 kind: epic
-status: active
+status: implemented
 title: 'JEPA pretraining operators: stop_gradient and SIGReg on CPU and Vulkan'
 summary: The operators a JEPA-style pretraining program needs, for the decider repository as first consumer.
 relations:
 - serves: vision:modelspec
-revision: 3
+revision: 5
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-28T10:45:43Z", actor: "human:timo", revision: 2}
 - {from: "proposed", to: "active", at: "2026-10-28T10:45:43Z", actor: "human:timo", revision: 3}
+- {from: "active", to: "implemented", at: "2026-10-29T20:34:02Z", actor: "human:timo", revision: 5, decided_on: {"recorded":{"test_result":1}}}
 ---
 ## Outcome
 
@@ -46,3 +47,12 @@ form), on the CPU interpreter and on Vulkan, held to the CPU within the DESIGN.m
 ## Out of scope
 
 - The decider's own `.mspec` program and its training run (decider U3).
+
+## Priority
+
+- Modelspec work that blocks the decider goes before all other modelspec work (operator decision
+  D88, 2026-10-28). This D88 is the operator's; the D88 in `.engineering/waves/bert-1.md` is a
+  different decision, a coordinator's.
+- The decider references the local modelspec project. It does not wait for a modelspec release.
+- Stories of this epic, all `implemented`, all shipped in release 0.22.0 (CHANGELOG.md § 0.22.0):
+  `story:jepa-stop-gradient`, `story:jepa-sigreg-cpu` and `story:jepa-sigreg-vulkan`.
