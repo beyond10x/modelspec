@@ -197,7 +197,10 @@ pub enum TensorOp {
     /// (story:attention-fewer-query-rows). Sequence `b` is query rows `b * L` to `b * L + L - 1`
     /// and key rows `b * S` to `b * S + S - 1`, head `a` columns `a * H/heads` to
     /// `(a + 1) * H/heads - 1`; within each, the masked softmax of `q k^T / sqrt(H/heads)` over
-    /// the keys whose mask value is 1, times `v` (DESIGN.md § 4).
+    /// the keys whose mask value is 1, times `v` (DESIGN.md § 4). An `i32 [U, 2]` fourth operand in
+    /// place of the mask holds (start, length) spans of key rows, ascending and disjoint, `q` of
+    /// the rows of `k` (a query attends to the span that holds it) or of `U` rows (query `u` to
+    /// span `u`); a row outside every span is `+0` (story:attention-event-spans).
     Attention {
         heads: u64,
     },

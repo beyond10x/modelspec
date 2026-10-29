@@ -26,7 +26,10 @@
 //! workgroups of [`ATTENTION_WORKGROUP`], one per sequence, head and tile of [`attention_tile`]
 //! rows ([`attention_workgroups`], story:vulkan-attention-workgroup-per-head): query rows for
 //! `Attention` and `AttentionGradQ` and key rows for the other two, which differ where `q` has
-//! fewer rows per sequence than `k` (story:attention-fewer-query-rows); the head count a
+//! fewer rows per sequence than `k` (story:attention-fewer-query-rows). Over an `i32 [U, 2]` spans
+//! operand (story:attention-event-spans) a sequence is a span of at most [`MAX_SPAN_KEYS`] keys,
+//! [`span_rows`] its rows, and a workgroup whose tile holds no row of its span writes only the
+//! `+0` of the rows between spans; the head count a
 //! last immediate operand; `CrossEntropy` is two Dispatches, one invocation per row that writes
 //! the row's loss into a partials buffer, then a loss sum of one workgroup that adds the weighted
 //! losses in row order ([`cross_entropy_kernels`]), and `CrossEntropyGrad` is two Dispatches, one
@@ -1621,6 +1624,24 @@ pub fn attention_rows(op: &TensorOp, n: u64, b: u64, s: u64) -> u64 {
     }
 }
 
+/// The most keys of one span an attention kernel over spans reads
+/// (story:attention-event-spans): its workgroups stage the weights of their rows over this many
+/// keys, whatever the lengths the spans hold when it runs. A longer span is read as its first
+/// `MAX_SPAN_KEYS` keys and its other rows are `+0`; the CPU interpreter reads it whole.
+pub const MAX_SPAN_KEYS: u64 = MAX_ATTENTION_KEYS;
+
+/// The rows per span an attention kernel of `op` over spans computes, `q` of `n` rows and `k`
+/// of `m` (story:attention-event-spans): [`MAX_SPAN_KEYS`] key rows for `AttentionGradK` and
+/// `AttentionGradV`; as many query rows for `Attention` and `AttentionGradQ` with `q` of the
+/// rows of `k`, else 1, the one query of the span.
+pub fn span_rows(op: &TensorOp, n: u64, m: u64) -> u64 {
+    match op {
+        TensorOp::AttentionGradK { .. } | TensorOp::AttentionGradV { .. } => MAX_SPAN_KEYS,
+        _ if n == m => MAX_SPAN_KEYS,
+        _ => 1,
+    }
+}
+
 /// The kernel kind of `Attention`, its three gradients, `CrossEntropy`, `CrossEntropyGrad`,
 /// `Sqrt` or `Div` over `operands` into `result`, and the invocations its dispatch runs: one per
 /// row and head of an attention kernel ([`KernelKind::PerRow`]), one per row for the
@@ -1684,20 +1705,25 @@ fn attention_loss_shape(
             if kh != h || f32s(2)? != keys || (arity == 5 && f32s(4)? != rows) {
                 return None;
             }
-            let [b, s] = f32s(3)?[..] else {
-                return None;
+            let sequences = if let Some(spans) = buffer(3, DType::I32) {
+                let [u, 2] = spans[..] else {
+                    return None;
+                };
+                n == m || n == u
+            } else {
+                let [b, s] = f32s(3)?[..] else {
+                    return None;
+                };
+                b.checked_mul(s) == Some(m)
+                    && n % b == 0
+                    && (1..=s).contains(&(n / b))
+                    && s <= MAX_ATTENTION_KEYS
             };
             let written = match op {
                 TensorOp::AttentionGradK { .. } | TensorOp::AttentionGradV { .. } => &keys,
                 _ => &rows,
             };
-            let fits = out == *written
-                && h % heads == 0
-                && b.checked_mul(s) == Some(m)
-                && n % b == 0
-                && (1..=s).contains(&(n / b))
-                && s <= MAX_ATTENTION_KEYS
-                && *heads <= 1 << 24;
+            let fits = out == *written && h % heads == 0 && sequences && *heads <= 1 << 24;
             fits.then_some((KernelKind::PerRow, written[0].checked_mul(*heads)?))
         }
         TensorOp::CrossEntropy => {
@@ -1813,10 +1839,18 @@ fn attention_loss_groups(
                 return None;
             };
             let n = *static_dims(q)?.first()?;
-            let rows = attention_rows(op, n, b, s);
+            let (keys, rows) = if mask.dtype == DType::I32 {
+                let Some(Operand::Buffer(k)) = operands.get(1) else {
+                    return None;
+                };
+                let m = *static_dims(k)?.first()?;
+                (MAX_SPAN_KEYS, span_rows(op, n, m))
+            } else {
+                (s, attention_rows(op, n, b, s))
+            };
             Some((
                 kind,
-                attention_workgroups(b, rows, s, heads)?,
+                attention_workgroups(b, rows, keys, heads)?,
                 ATTENTION_WORKGROUP,
             ))
         }

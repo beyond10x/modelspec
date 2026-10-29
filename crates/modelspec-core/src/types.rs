@@ -114,7 +114,8 @@ pub mod codes {
         /// `layer_norm(x, gamma, beta)` whose `gamma` or `beta` is not as long as a row of `x`,
         /// an `attention(q, k, v, key_mask, heads = A)` whose `k` differs from `q` in width, whose
         /// `v` differs from `k` in shape, or whose `key_mask` of shape `[B, S]` has `B * S` other
-        /// than the rows of `k` or a `B` that does not divide the rows of `q` into at most `S`, or a
+        /// than the rows of `k` or a `B` that does not divide the rows of `q` into at most `S`, or whose
+        /// `i32` spans operand is not `[U, 2]` with `q` of the rows of `k` or of `U` rows, or a
         /// `cross_entropy(logits, labels, weights)` whose `labels` or `weights` is not as long as
         /// the rows of `logits`.
         SHAPE_MISMATCH = "E-TYPE-003";
@@ -1705,7 +1706,8 @@ fn op_diagnostic(
             } else if name == "attention" {
                 "`attention(q, k, v, key_mask, heads = A)` needs `k` and `v` of one shape \
                  [B * S, H], `key_mask` of shape [B, S] and `q` of shape [B * L, H] with \
-                 1 <= L <= S"
+                 1 <= L <= S, or an `i32` spans operand of shape [U, 2] with `q` of the rows of `k` \
+                 or of U rows"
                     .to_owned()
             } else if name == "cross_entropy" {
                 let rule = "`cross_entropy(logits, labels, weights)` needs `labels` and `weights` \
