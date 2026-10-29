@@ -11,7 +11,7 @@
 //! is its [`MatMulTile`]'s: a function of its shape and of the invocation limit of the device
 //! profile its plan is scheduled for, 128 without one (DESIGN.md § 3.1, § 5.2).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use crate::artifact::{DataSpec, ParameterSpec};
@@ -1178,6 +1178,65 @@ impl fmt::Display for DispatchCount {
 }
 
 impl ExecutionPlan {
+    /// The positions, in plan order, of the step plan's steps a training step records: every
+    /// Dispatch and Copy except those whose written buffers only feed nothing the step keeps,
+    /// and each Barrier with a kept step since the previous kept Barrier and one after it, as
+    /// [`Self::loss_steps`] keeps them. A step is kept when it writes the loss's buffer, a
+    /// parameter's buffer, a buffer that a step at or before it reads (state carried to the next
+    /// step), or a buffer a later kept step reads. What only the prediction reads, such as the
+    /// full head beside a masked-row gather, is not recorded; a plan whose prediction the loss
+    /// reads keeps every step. No `Allocate` is chosen (DESIGN.md § 3.1).
+    pub fn training_steps(&self) -> Vec<usize> {
+        let mut roots: BTreeSet<u32> = self
+            .parameters
+            .iter()
+            .flat_map(|p| p.views.iter().map(|view| view.buffer))
+            .collect();
+        roots.insert(self.loss_view.buffer);
+        let mut first_read: BTreeMap<u32, usize> = BTreeMap::new();
+        for (at, step) in self.step.iter().enumerate() {
+            for view in &step.reads {
+                first_read.entry(view.buffer).or_insert(at);
+            }
+        }
+        let mut chosen = vec![false; self.step.len()];
+        let mut needed: BTreeSet<u32> = BTreeSet::new();
+        for (at, step) in self.step.iter().enumerate().rev() {
+            if !matches!(step.op, PlanOp::Dispatch | PlanOp::Copy) {
+                continue;
+            }
+            let kept = step.writes.iter().any(|view| {
+                roots.contains(&view.buffer)
+                    || needed.contains(&view.buffer)
+                    || first_read.get(&view.buffer).is_some_and(|&read| read <= at)
+            });
+            if kept {
+                chosen[at] = true;
+                needed.extend(step.reads.iter().map(|v| v.buffer));
+            }
+        }
+        self.with_barriers(&chosen)
+    }
+
+    /// The chosen positions in plan order, each Barrier with a chosen step since the previous
+    /// kept Barrier and one after it included.
+    fn with_barriers(&self, chosen: &[bool]) -> Vec<usize> {
+        let mut steps = Vec::new();
+        let mut since_barrier = false;
+        for (at, &is_chosen) in chosen.iter().enumerate() {
+            if self.step[at].op == PlanOp::Barrier {
+                if since_barrier && chosen[at..].contains(&true) {
+                    steps.push(at);
+                    since_barrier = false;
+                }
+            } else if is_chosen {
+                steps.push(at);
+                since_barrier = true;
+            }
+        }
+        steps
+    }
+
     /// The positions, in plan order, of the step plan's steps a loss evaluation records (the
     /// final loss of a run, `infer`): the last step that writes the loss view, every earlier
     /// Dispatch or Copy that writes the prediction's buffer or a buffer a chosen step reads, and
@@ -1205,20 +1264,7 @@ impl ExecutionPlan {
                 needed.extend(step.reads.iter().map(|v| v.buffer));
             }
         }
-        let mut steps = Vec::new();
-        let mut since_barrier = false;
-        for (at, &is_chosen) in chosen.iter().enumerate() {
-            if self.step[at].op == PlanOp::Barrier {
-                if since_barrier && chosen[at..].contains(&true) {
-                    steps.push(at);
-                    since_barrier = false;
-                }
-            } else if is_chosen {
-                steps.push(at);
-                since_barrier = true;
-            }
-        }
-        steps
+        self.with_barriers(&chosen)
     }
 
     /// The kernel with module id `id`.

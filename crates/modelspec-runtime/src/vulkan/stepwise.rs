@@ -20,6 +20,11 @@
 //!   step `k` ([`crate::train::init::sigreg_projection`]) is uploaded before step `k`, the
 //!   final loss and every dense eval batch reading the projections of the last step and a
 //!   held-out batch those of the step it is evaluated at, as the CPU run draws them;
+//! - a step that gathers the rows of non-zero weight (DESIGN.md § 3.3, `--masked-rows`): the
+//!   gathered row ids, labels and weights of step `k` ([`crate::train::masked::gather`]) are
+//!   uploaded before it, and the step records only the plan steps the training step keeps
+//!   ([`modelspec_core::ir::kernel::ExecutionPlan::training_steps`]), not the full head that
+//!   only the prediction reads;
 //! - dense or packed `--data` ([`Data`]): the batch of step `k` is uploaded before it, as the CPU
 //!   run feeds it ([`crate::train::runner::run_checked`]);
 //! - held-out evaluation ([`Evaluation`], `--eval-every`): at every multiple of `every` and the last
@@ -68,6 +73,7 @@ use modelspec_core::ir::training::{
     AdamW, C1_INPUT, C2_INPUT, LR_T_INPUT, Moment, OptimizerRule, dropout_sites, moment_input,
     sigreg_sites,
 };
+use modelspec_core::passes::masked_rows;
 use modelspec_core::schedule::host_inputs;
 
 use super::Device;
@@ -85,6 +91,7 @@ use crate::spirv::emit::{emit_kernels, emit_module_with};
 use crate::train::data::{DenseBatch, DenseData, PackedBatch, synthetic};
 use crate::train::eval::{HeldOut, HeldOutMetrics};
 use crate::train::init::{Stream, dropout_token, initialize, sigreg_projection};
+use crate::train::masked;
 use crate::train::runner::{Data, Diverged, Eval, Feed, Run, RunError, correct_rows, non_finite};
 
 /// The held-out evaluation of a stepwise run: `held_out` at every multiple of `every` among the
@@ -146,11 +153,13 @@ pub type Observe<'f> = dyn FnMut(&StepSeen<'_>) -> Result<(), Box<RunError>> + '
 
 /// Whether `artifact`'s step plan needs the stepwise run: it has a dropout kernel, the step
 /// reads optimizer inputs (AdamW's rate, bias corrections and moments), or it has a `sigreg`
-/// site, whose projection is drawn anew for every step.
+/// site, whose projection is drawn anew for every step, or it gathers the rows of non-zero
+/// weight, which the host selects from every batch.
 pub fn needed(compiled: &CompiledTraining, artifact: &CompiledArtifact) -> bool {
     artifact.execution.kernels.iter().any(reads_seed)
         || !compiled.training.optimizer.host_inputs().is_empty()
         || !sigreg_sites(&compiled.training.training.program).is_empty()
+        || masked_rows::site(&compiled.training.training.program).is_some()
 }
 
 /// Loads Vulkan, selects device `device` (0 when `None`), negotiates and opens it, and runs
@@ -170,7 +179,8 @@ pub fn train_stepwise_on_device(
 }
 
 /// What one host input of the step is: the token of a dropout site, the projection of a
-/// `sigreg` site of this type, a scalar of an AdamW step, or a moment of a parameter.
+/// `sigreg` site of this type, a scalar of an AdamW step, a moment of a parameter, or an input of
+/// the masked-row gather.
 #[derive(Clone, Debug)]
 enum Hosted {
     Token(String),
@@ -179,6 +189,16 @@ enum Hosted {
     C1,
     C2,
     Moment(ParamId, Moment),
+    /// One of the three inputs of the masked-row gather.
+    Masked(MaskedInput),
+}
+
+/// Which input of the masked-row gather a host input is.
+#[derive(Clone, Copy, Debug)]
+enum MaskedInput {
+    Rows,
+    Labels,
+    Weights,
 }
 
 /// What one word range of the per-step upload holds.
@@ -268,6 +288,7 @@ pub fn train_stepwise(
     // The host inputs of the step, each with the view the plan reads it from.
     let sites = dropout_sites(&compiled.training.training.program);
     let projected = sigreg_sites(&compiled.training.training.program);
+    let masked_site = masked_rows::site(&compiled.training.training.program);
     let mut moment_of = BTreeMap::new();
     for parameter in &plan.parameters {
         for moment in [Moment::First, Moment::Second] {
@@ -312,6 +333,16 @@ pub fn train_stepwise(
             Hosted::C2
         } else if let Some(&(param, moment)) = moment_of.get(&input.name) {
             Hosted::Moment(param, moment)
+        } else if masked_site.is_some() && input.name == masked_rows::ROWS_INPUT {
+            Hosted::Masked(MaskedInput::Rows)
+        } else if let Some(site) = &masked_site
+            && input.name == site.labels_input()
+        {
+            Hosted::Masked(MaskedInput::Labels)
+        } else if let Some(site) = &masked_site
+            && input.name == site.weights_input()
+        {
+            Hosted::Masked(MaskedInput::Weights)
         } else {
             return Err(VulkanRunError::Plan(format!(
                 "host input {} has no Vulkan run",
@@ -493,6 +524,22 @@ pub fn train_stepwise(
         .iter()
         .map(|&at| &kept_actions.as_ref().unwrap_or(&step_actions)[at])
         .collect();
+    // The actions of a training step: those of the plan steps it keeps, without the full head
+    // only the prediction reads; every action of a plan whose loss reads the prediction. The
+    // actions are the plan's steps without its `Allocate` steps, in plan order.
+    let mut action_at = Vec::with_capacity(plan.step.len());
+    let mut counted = 0;
+    for step in &plan.step {
+        action_at.push(counted);
+        if step.op != PlanOp::Allocate {
+            counted += 1;
+        }
+    }
+    let train_actions: Vec<&Action<'_>> = plan
+        .training_steps()
+        .into_iter()
+        .map(|at| &step_actions[action_at[at]])
+        .collect();
     let loss = buffer(&buffers, &plan.loss_view)?;
 
     let class = numerics_class(negotiated, artifact);
@@ -559,6 +606,12 @@ pub fn train_stepwise(
         if let Some(upload) = &mut step_upload {
             let (inputs, ids) = feed.inputs(k).map_err(|error| refused(error.into()))?;
             let scalars = adamw.map(|adamw| adamw.scalars(lr, k + 1, end));
+            let gathered = match &masked_site {
+                Some(site) => Some(
+                    masked::gather(site, inputs, ids, k).map_err(|error| refused(error.into()))?,
+                ),
+                None => None,
+            };
             words.clear();
             for (view, what) in &fed {
                 match what {
@@ -575,6 +628,21 @@ pub fn train_stepwise(
                             .map_err(|error| refused(error.into()))?;
                         check_count(view, projection.len())?;
                         words.extend_from_slice(projection.data());
+                    }
+                    Fed::Hosted(Hosted::Masked(input)) => {
+                        let gathered = gathered.as_ref().ok_or_else(|| {
+                            VulkanRunError::Plan("a masked-row input without its site".into())
+                        })?;
+                        let as_bits = |values: &[i32]| -> Vec<f32> {
+                            values.iter().map(|&v| f32::from_bits(v as u32)).collect()
+                        };
+                        let values = match input {
+                            MaskedInput::Rows => as_bits(&gathered.rows),
+                            MaskedInput::Labels => as_bits(&gathered.labels),
+                            MaskedInput::Weights => gathered.weights.clone(),
+                        };
+                        check_count(view, values.len())?;
+                        words.extend_from_slice(&values);
                     }
                     Fed::Hosted(scalar) => {
                         let scalars = scalars.ok_or_else(|| {
@@ -777,7 +845,12 @@ pub fn train_stepwise(
             if last {
                 record(&mut recording, loss_actions.iter().copied(), &buffers, None)?;
             } else {
-                record(&mut recording, &step_actions, &buffers, None)?;
+                record(
+                    &mut recording,
+                    train_actions.iter().copied(),
+                    &buffers,
+                    None,
+                )?;
                 dispatches_per_step = recording.dispatches() - before;
             }
             recording.barrier(Barrier::ComputeToTransfer);

@@ -640,6 +640,7 @@ fn schedule_with(
         .filter_map(|n| ops::token_operand(&n.op).and_then(|i| n.operands.get(i).copied()))
         .chain(step.optimizer.host_inputs())
         .chain(sigreg_projection_inputs(program))
+        .chain(crate::passes::masked_rows::site_inputs(program))
         .collect();
     let mut host_inputs = Vec::new();
     let mut places: BTreeMap<ValueId, Place> = BTreeMap::new();
@@ -692,9 +693,9 @@ fn schedule_with(
         }
         match &node.op {
             TensorOp::Input { name } if tokens.contains(&node.id) => {
-                // The RNG token of a dropout site, the projection of a sigreg site and the AdamW
-                // scalars and moments, supplied by the host each step, are no data of the train
-                // block: each takes its own buffer.
+                // The RNG token of a dropout site, the projection of a sigreg site, the AdamW
+                // scalars and moments and the inputs of the masked-row gather, supplied by the host
+                // each step, are no data of the train block: each takes its own buffer.
                 let view = allocate(&mut buffers, &node.ty).ok_or_else(shape_error)?;
                 places.insert(node.id, Place::View(view));
                 host_inputs.push(HostInput {

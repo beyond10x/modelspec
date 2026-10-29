@@ -125,6 +125,11 @@ pub const E_DATA_010: Code = Code::new("E-DATA-010");
 /// once the files are read and before the first step or block, on either backend, naming the
 /// file, the element position and the bound.
 pub const E_DATA_011: Code = Code::new("E-DATA-011");
+/// A batch of a run whose step gathers the rows of non-zero weight (`train --masked-rows`,
+/// DESIGN.md § 3.3) has more such rows than the gather holds; refused before the step that
+/// would read it, on either backend, naming the step, the weights' declaration, the count and
+/// the capacity. No row is dropped.
+pub const E_DATA_012: Code = Code::new("E-DATA-012");
 
 /// The data of a synthetic run.
 #[derive(Clone, Debug, PartialEq)]
