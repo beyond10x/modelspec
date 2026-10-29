@@ -90,6 +90,7 @@ fn modelspec(args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_modelspec"))
         .args(args)
         .env("MODELSPEC_VULKAN_LIBRARY", fake_loader())
+        .env_remove("MODELSPEC_VK_VALIDATION")
         .output()
         .expect("modelspec runs")
 }

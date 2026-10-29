@@ -204,7 +204,8 @@ pub struct Vulkan {
 
 impl Vulkan {
     /// Opens the loader [`LIBRARY_ENV`] names, or the system's, and creates an instance that
-    /// targets [`REQUIRED_API_VERSION`].
+    /// targets [`REQUIRED_API_VERSION`]. Under [`VALIDATION_ENV`], an instance without the
+    /// validation layer or `VK_EXT_debug_utils` is refused with E-TARGET-003.
     pub fn load() -> Result<Self, Diagnostic> {
         let library = std::env::var_os(LIBRARY_ENV);
         let loaded = match &library {
@@ -257,8 +258,29 @@ impl Vulkan {
         Ok(vulkan)
     }
 
-    /// A debug messenger on the instance that keeps every warning and error.
+    /// A debug messenger on the instance that keeps every warning and error, or E-TARGET-003
+    /// when the instance has no `VK_EXT_debug_utils` entry point to create or destroy it: `ash`
+    /// fills a missing one with a function that panics where it cannot unwind, which aborts.
     fn messenger(&self) -> Result<Validation, Diagnostic> {
+        for name in [
+            c"vkCreateDebugUtilsMessengerEXT",
+            c"vkDestroyDebugUtilsMessengerEXT",
+        ] {
+            // SAFETY: the instance is alive and `name` is a NUL-terminated string.
+            let found = unsafe {
+                self.entry
+                    .get_instance_proc_addr(self.instance.handle(), name.as_ptr())
+            };
+            if found.is_none() {
+                return Err(Diagnostic::new(
+                    E_TARGET_003,
+                    "the Vulkan instance has no VK_EXT_debug_utils, which validation needs",
+                )
+                .with("layer", VALIDATION_LAYER.to_string_lossy())
+                .with("extension", ash::ext::debug_utils::NAME.to_string_lossy())
+                .with("missing", name.to_string_lossy()));
+            }
+        }
         let loader = ash::ext::debug_utils::Instance::new(&self.entry, &self.instance);
         let messages: Box<Messages> = Box::default();
         let info = vk::DebugUtilsMessengerCreateInfoEXT::default()

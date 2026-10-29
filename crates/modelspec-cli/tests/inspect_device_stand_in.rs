@@ -37,6 +37,7 @@ fn inspect(args: &[&str]) -> Output {
         .args(["inspect-device", "--backend", "vulkan"])
         .args(args)
         .env("MODELSPEC_VULKAN_LIBRARY", stand_in_loader())
+        .env_remove("MODELSPEC_VK_VALIDATION")
         .output()
         .expect("modelspec runs")
 }
@@ -84,4 +85,27 @@ fn a_vulkan_1_1_profile_carries_its_1_1_values_and_leaves_the_1_2_ones_unstated(
     assert!(profile.f16_storage.is_some());
     assert_eq!(profile.f16_compute, None);
     assert_eq!(profile.shader_denorm_preserve_f32, None);
+}
+
+/// Under `MODELSPEC_VK_VALIDATION=1` the stand-in, which lists neither the validation layer nor
+/// `VK_EXT_debug_utils`, gets an E-TARGET-003 refusal naming the extension, not a process abort
+/// (story:vulkan-validation-without-debug-utils).
+#[test]
+fn validation_on_a_loader_without_debug_utils_is_e_target_003_not_an_abort() {
+    let output = Command::new(env!("CARGO_BIN_EXE_modelspec"))
+        .args(["inspect-device", "--backend", "vulkan"])
+        .env("MODELSPEC_VULKAN_LIBRARY", stand_in_loader())
+        .env("MODELSPEC_VK_VALIDATION", "1")
+        .output()
+        .expect("modelspec runs");
+    let stderr = text(&output.stderr);
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "{:?}\n{stderr}",
+        output.status
+    );
+    assert!(stderr.starts_with("E-TARGET-003: "), "{stderr}");
+    assert!(stderr.contains("VK_EXT_debug_utils"), "{stderr}");
+    assert!(stderr.contains("VK_LAYER_KHRONOS_validation"), "{stderr}");
 }
