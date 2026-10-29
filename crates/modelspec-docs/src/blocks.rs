@@ -12,7 +12,7 @@
 //! heading, whose anchor [`anchor`] makes from the view and the scope key; a composite of a
 //! diagram links there through [`level_href`], and [`unresolved_links`] checks every such link.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
 
@@ -736,14 +736,25 @@ fn index_page(drawn: &[Drawn]) -> String {
 }
 
 /// The section's pages, by file name: the index and one page per drawn program, in the order of
-/// [`crate::diagrams::PROGRAMS`].
-pub fn pages(root: &Path, drawn: &[Drawn], generated: &Pages) -> Result<Pages> {
+/// `drawn`, the programs of [`crate::diagrams::PROGRAMS`] and then the gallery's. A page links to
+/// the pages that show its program beside its code: those the manifest names, then `also_shown_on`
+/// by program key, the gallery's.
+pub fn pages(
+    root: &Path,
+    drawn: &[Drawn],
+    generated: &Pages,
+    also_shown_on: &BTreeMap<&str, Vec<(String, String)>>,
+) -> Result<Pages> {
     let mut pages = Pages::from([("index.md".to_owned(), index_page(drawn))]);
     for (n, program) in drawn.iter().enumerate() {
         let position = u32::try_from(n + 2).map_err(|e| e.to_string())?;
+        let mut shown = shown_on(root, program.key, generated)?;
+        if let Some(more) = also_shown_on.get(program.key) {
+            shown.extend(more.iter().cloned());
+        }
         pages.insert(
             page_name(program.key),
-            diagram_page(program, position, &shown_on(root, program.key, generated)?),
+            diagram_page(program, position, &shown),
         );
     }
     Ok(pages)
@@ -976,7 +987,7 @@ mod tests {
     fn docs_diagrams_links_resolve() {
         let root = repository();
         let drawn = drawn();
-        let pages = pages(&root, &drawn, &Pages::new()).unwrap();
+        let pages = pages(&root, &drawn, &Pages::new(), &BTreeMap::new()).unwrap();
         assert_eq!(unresolved_links(&drawn, &pages), Vec::<String>::new());
         for program in &drawn {
             let page = &pages[&page_name(program.key)];
@@ -1014,7 +1025,7 @@ mod tests {
     #[test]
     fn every_program_of_the_manifest_is_drawn_and_has_a_page() {
         let root = repository();
-        let pages = pages(&root, &drawn(), &Pages::new()).unwrap();
+        let pages = pages(&root, &drawn(), &Pages::new(), &BTreeMap::new()).unwrap();
         for entry in MANIFEST {
             if let Kind::Whole { program } | Kind::Fragment { program } = entry.kind {
                 assert!(diagrams::program(program).is_some(), "{program}");

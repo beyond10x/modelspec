@@ -261,42 +261,53 @@ fn outputs(root: &Path) -> Result<(Vec<Output>, Vec<String>, Vec<diagrams::Drawn
     Ok((all, warnings, drawn))
 }
 
-/// The gallery pages, the diagrams of every program in `diagrams::PROGRAMS`, their pages and
-/// their stylesheet; the glyph sprite module, which lands in the shared [`DATA`] directory; and
-/// the drawn programs, which `generate` checks the documentation's blocks against.
+/// The gallery pages; the diagrams of every program in `diagrams::PROGRAMS` and of the gallery's
+/// own programs, each with its page under `blocks::DIR`; their stylesheet; the glyph sprite
+/// module, which lands in the shared [`DATA`] directory; and every drawn program, which
+/// `generate` checks the documentation's blocks and the diagrams' links against.
 fn diagram_outputs(
     root: &Path,
     generated: &Pages,
 ) -> Result<(Vec<Output>, String, Vec<diagrams::Drawn>)> {
-    let drawn = diagrams::files(root)?;
+    let programs = diagrams::files(root)?;
+    let gallery = gallery::files(root)?;
+    let mut images = programs.images;
+    let mut data = programs.data;
+    for drawn in &gallery.drawn {
+        let (levels, (name, module)) = diagrams::written(drawn)?;
+        images.extend(levels);
+        data.insert(name, module);
+    }
+    let mut drawn = programs.drawn;
+    drawn.extend(gallery.drawn);
     let mut outputs = vec![
         Output {
             dir: gallery::DIR.to_owned(),
-            files: gallery::pages(),
+            files: gallery.pages,
             exclusive: true,
         },
         Output {
             dir: blocks::DIR.to_owned(),
-            files: blocks::pages(root, &drawn.drawn, generated)?,
+            files: blocks::pages(root, &drawn, generated, &gallery.shown_on)?,
             exclusive: true,
         },
         Output {
             dir: diagrams::DATA.to_owned(),
-            files: drawn.data,
+            files: data,
             exclusive: true,
         },
         Output {
             dir: diagrams::CSS_DIR.to_owned(),
-            files: Pages::from([(diagrams::CSS.to_owned(), drawn.css)]),
+            files: Pages::from([(diagrams::CSS.to_owned(), programs.css)]),
             exclusive: false,
         },
     ];
-    outputs.extend(drawn.images.into_iter().map(|level| Output {
+    outputs.extend(images.into_iter().map(|level| Output {
         dir: level.dir,
         files: level.files,
         exclusive: true,
     }));
-    Ok((outputs, drawn.glyphs, drawn.drawn))
+    Ok((outputs, programs.glyphs, drawn))
 }
 
 /// Every difference between the expected files and the files in `dir`. Subdirectories are not
@@ -509,6 +520,32 @@ mod tests {
     /// Acceptance 1, `gallery.atoms.drift`: the committed diagram and gallery files are what the
     /// code generates now, and the check that `task docs-check` runs fails when one byte of
     /// `FitTwoLayer.svg` or of `atoms.mdx` changes.
+    /// Every caption of an inlined diagram links to `/docs/diagrams/<program>`, so every drawn
+    /// program, the gallery's layers included, has its page there, and every link of its SVGs
+    /// resolves (`docs.diagrams.links-resolve`).
+    #[test]
+    fn every_drawn_program_has_its_diagram_page() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let (outputs, _, drawn) = diagram_outputs(&root, &Pages::new()).unwrap();
+        let pages = &outputs.iter().find(|o| o.dir == blocks::DIR).unwrap().files;
+        assert_eq!(
+            drawn.len(),
+            diagrams::PROGRAMS.len() + gallery::layers::ENTRIES.len()
+        );
+        for program in &drawn {
+            assert!(
+                pages.contains_key(&blocks::page_name(program.key)),
+                "{}",
+                program.key
+            );
+        }
+        assert!(pages["layer-dense.mdx"].contains("](../gallery/layers.mdx)"));
+        assert_eq!(
+            blocks::unresolved_links(&drawn, pages),
+            Vec::<String>::new()
+        );
+    }
+
     #[test]
     fn gallery_atoms_drift() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");

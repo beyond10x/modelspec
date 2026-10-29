@@ -993,6 +993,7 @@ dependencies = [
  "headless_chrome",
  "jsonschema",
  "modelspec-core",
+ "modelspec-diagram",
  "modelspec-observatory",
  "modelspec-runtime",
  "nix",

@@ -2,7 +2,7 @@
 format: aep.planning-md/3
 id: story:diagram-zoom
 kind: story
-status: draft
+status: active
 title: 'Zoom: composite nodes with ports, depth and expansion, one SVG per level linked by navigation'
 summary: 'DiagramRender for a root, depth and expanded scopes: collapsed scopes as composite nodes with boundary ports, edges re-attached, one SVG per level whose composites link to their own level.'
 relations:
@@ -23,7 +23,10 @@ scope:
   path: crates/modelspec-diagram/tests/fixtures/two_functions.mspec
 - confidence: inferred
   path: crates/modelspec-diagram/tests/zoom.rs
-revision: 4
+revision: 6
+transitions:
+- {from: "draft", to: "proposed", at: "2026-10-29T22:02:03Z", actor: "human:timo", revision: 5}
+- {from: "proposed", to: "active", at: "2026-10-29T22:02:03Z", actor: "human:timo", revision: 6}
 ---
 # Zoom: composite nodes with ports, depth and expansion, one SVG per level linked by navigation
 

@@ -106,8 +106,10 @@ pub fn image_path(program: &str, view: DiagramView, scope: &str) -> String {
 }
 
 /// Every level of every view in [`VIEWS`] of `program`, read under `root`: one level per scope
-/// of the view's graph, drawn from that scope at the view's default depth.
-pub fn draw(root: &Path, program: &'static Program) -> Result<Drawn> {
+/// of the view's graph, drawn from that scope at the view's default depth. A file that does not
+/// compile is an error naming the file and every diagnostic code, so generation stops instead of
+/// writing a page. The gallery draws its own programs through it (`gallery::layers`).
+pub fn draw(root: &Path, program: &Program) -> Result<Drawn> {
     let source = std::fs::read_to_string(root.join(program.file)).map_err(io(program.file))?;
     let graph = model_graph(program.file, &source).map_err(|diagnostics| {
         format!(
@@ -149,6 +151,35 @@ pub fn draw(root: &Path, program: &'static Program) -> Result<Drawn> {
     })
 }
 
+/// What `drawn` writes: one directory of standalone SVGs per view, and its JSON module's file
+/// name under [`DATA`] and text, which holds every level's SVG by scope key.
+pub fn written(drawn: &Drawn) -> Result<(Vec<Level>, (String, String))> {
+    let mut images = Vec::new();
+    let mut views = Map::new();
+    for view in &drawn.views {
+        let mut levels = Map::new();
+        let mut files = Pages::new();
+        for (scope, text) in &view.levels {
+            levels.insert(scope.clone(), Value::String(text.clone()));
+            files.insert(format!("{scope}.svg"), text.clone());
+        }
+        images.push(Level {
+            dir: format!("{IMAGES}/{}/{}", drawn.key, view.view.name()),
+            files,
+        });
+        views.insert(
+            view.view.name().to_owned(),
+            json!({ "root": view.root, "levels": levels }),
+        );
+    }
+    let module = json!({
+        "program": drawn.key,
+        "source": drawn.file,
+        "views": views,
+    });
+    Ok((images, (format!("{}.json", drawn.key), pretty(&module)?)))
+}
+
 /// The diagrams of every program in [`PROGRAMS`], read under `root`.
 pub fn files(root: &Path) -> Result<Generated> {
     let mut images = Vec::new();
@@ -156,29 +187,9 @@ pub fn files(root: &Path) -> Result<Generated> {
     let mut all = Vec::new();
     for program in PROGRAMS {
         let drawn = draw(root, program)?;
-        let mut views = Map::new();
-        for view in &drawn.views {
-            let mut levels = Map::new();
-            let mut files = Pages::new();
-            for (scope, text) in &view.levels {
-                levels.insert(scope.clone(), Value::String(text.clone()));
-                files.insert(format!("{scope}.svg"), text.clone());
-            }
-            images.push(Level {
-                dir: format!("{IMAGES}/{}/{}", program.key, view.view.name()),
-                files,
-            });
-            views.insert(
-                view.view.name().to_owned(),
-                json!({ "root": view.root, "levels": levels }),
-            );
-        }
-        let module = json!({
-            "program": program.key,
-            "source": program.file,
-            "views": views,
-        });
-        data.insert(format!("{}.json", program.key), pretty(&module)?);
+        let (levels, (name, module)) = written(&drawn)?;
+        images.extend(levels);
+        data.insert(name, module);
         all.push(drawn);
     }
     Ok(Generated {
