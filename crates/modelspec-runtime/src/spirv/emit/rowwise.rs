@@ -1,13 +1,16 @@
 //! The modules of the fifteen row-wise kernels (DESIGN.md § 5.2): `EmbeddingSort` one invocation
 //! per id; `Embedding`, `EmbeddingGrad`, `AddRows`, `Gelu`, `GeluGrad`, `Dropout` and `DropoutGrad`
 //! one invocation per output element;
-//! `LayerNorm`, `LayerNormGradX`, `Softmax`, `SoftmaxGrad` and the row moments of
-//! `LayerNormGradGamma` one per output row; `SumRows` and the column sum of
-//! `LayerNormGradGamma` one workgroup per few columns ([`ColumnTile`]). The two `sigreg` kernels
-//! (story:jepa-sigreg-vulkan) are per column too: `SigregColumns` writes its column's statistic
-//! and `SigregColumnsGrad` every row of its column, each recomputing the column's means in one
-//! pass over the rows and computing `sin` and `cos` by the CPU's written-out routine
-//! ([`crate::cpu::tensor::sin_cos`]), never `GLSL.std.450 Sin` or `Cos`.
+//! `Softmax` and `SoftmaxGrad` one per output row; `LayerNorm`, `LayerNormGradX` and the row
+//! moments of `LayerNormGradGamma` one workgroup per [`layer_norm_rows`] rows staged whole in
+//! workgroup memory, each added by one invocation ([`Shell::layer_norm_rows`];
+//! story:vulkan-layer-norm-coalesced-rows), or one per output row where fewer than
+//! `modelspec_core::schedule::LAYER_NORM_MIN_ROWS` rows fit; `SumRows` and the column sum of
+//! `LayerNormGradGamma` one workgroup per few columns ([`ColumnTile`]). The
+//! two `sigreg` kernels (story:jepa-sigreg-vulkan) are per column too: `SigregColumns` writes its
+//! column's statistic and `SigregColumnsGrad` every row of its column, each recomputing the
+//! column's means in one pass over the rows and computing `sin` and `cos` by the CPU's
+//! written-out routine ([`crate::cpu::tensor::sin_cos`]), never `GLSL.std.450 Sin` or `Cos`.
 //!
 //! Each computes its op as the CPU interpreter does, operation for operation: every sum in
 //! ascending index order from its first term, each sum of products from its first product,
@@ -46,7 +49,9 @@ use super::{EmitError, Kernel, KernelKind, Operand, Shell, Word, operands_error,
 use crate::cpu::interpreter::{SIGREG_KNOTS, sigreg_knot};
 use crate::cpu::tensor::{COS_P, FRAC_2_PI, PI_2_P1, PI_2_P2, PI_2_P3, SIN_P};
 use modelspec_core::ir::tensor::{DType, TensorOp};
-use modelspec_core::schedule::column_sum_columns;
+use modelspec_core::schedule::{
+    column_sum_columns, layer_norm_invocations, layer_norm_row_stride, layer_norm_rows,
+};
 use rspirv::spirv::GlslStd450Op;
 
 /// `sqrt(2 / pi)`, the scale of the tanh form of GELU, as the CPU interpreter holds it.
@@ -62,6 +67,10 @@ const PHILOX_W: [u32; 2] = [0x9E37_79B9, 0xBB67_AE85];
 const DROPOUT_STREAM: u32 = 4;
 /// The workgroup size of every row-wise kernel.
 const GROUP: u32 = 64;
+/// The elements of the rows of a whole-row `LayerNorm` kernel each invocation loads per binding
+/// before it stores them to workgroup memory, and writes out, per pass of the staging loop
+/// ([`Shell::stage_block`], story:vulkan-layer-norm-coalesced-rows).
+const STAGE_BATCH: u32 = 8;
 
 /// The tile of a column sum (story:vulkan-column-sums-coalesced): the columns one workgroup
 /// adds ([`column_sum_columns`]), the invocations that stage each of them, a power of two, and
@@ -181,15 +190,21 @@ pub(super) enum Rowwise {
         threshold: u32,
         scale: f32,
     },
+    /// `LayerNorm` over rows of `width`, `group_rows` of them staged whole per workgroup
+    /// (`modelspec_core::schedule::layer_norm_rows`), or one row per invocation read from the
+    /// binding where it is 0; so the two gradients.
     LayerNorm {
         width: u32,
+        group_rows: u32,
     },
     LayerNormGradX {
         width: u32,
+        group_rows: u32,
     },
     /// The row moments of `LayerNormGradGamma`: `[rows, width]` into `[rows, 2]`.
     LayerNormMoments {
         width: u32,
+        group_rows: u32,
     },
     /// The column sum of `LayerNormGradGamma` over the moments, `x` and `g`.
     LayerNormGradGamma {
@@ -251,6 +266,14 @@ impl Rowwise {
         let types: Vec<DType> = buffers.iter().map(|(dtype, _)| *dtype).collect();
         let shapes: Vec<&[u64]> = buffers.iter().map(|(_, shape)| shape.as_slice()).collect();
         let u = |n: u64| n as u32;
+        // The invocations and staged rows per workgroup of a row kernel of `LayerNorm`.
+        let norm = |op: &TensorOp, n: u64, h: u64| -> Result<(u32, u32), EmitError> {
+            let group_rows = layer_norm_rows(op, h).expect("a layer-norm op") as u32;
+            let invocations = layer_norm_invocations(op, n, h)
+                .and_then(|i| u32::try_from(i).ok())
+                .ok_or_else(|| wrong("too many rows"))?;
+            Ok((invocations, group_rows))
+        };
         use DType::{F32, I32};
         use KernelKind::{PerColumn, PerElement, PerRow};
         let (kind, invocations, body) = match (
@@ -309,15 +332,39 @@ impl Rowwise {
             ("LayerNorm", [F32, F32, F32], [[n, h], [gh], [bh]], [rn, rh], [])
                 if h == gh && h == bh && (n, h) == (rn, rh) =>
             {
-                (PerRow, u(*n), Rowwise::LayerNorm { width: u(*h) })
+                let (invocations, group_rows) = norm(&TensorOp::LayerNorm, *n, *h)?;
+                (
+                    PerRow,
+                    invocations,
+                    Rowwise::LayerNorm {
+                        width: u(*h),
+                        group_rows,
+                    },
+                )
             }
             ("LayerNormGradX", [F32, F32, F32], [[n, h], [gh], g], [rn, rh], [])
                 if h == gh && *g == [*n, *h] && (n, h) == (rn, rh) =>
             {
-                (PerRow, u(*n), Rowwise::LayerNormGradX { width: u(*h) })
+                let (invocations, group_rows) = norm(&TensorOp::LayerNormGradX, *n, *h)?;
+                (
+                    PerRow,
+                    invocations,
+                    Rowwise::LayerNormGradX {
+                        width: u(*h),
+                        group_rows,
+                    },
+                )
             }
             ("LayerNormGradGamma", [F32], [[n, h]], [rn, 2], []) if n == rn && *n > 0 && *h > 0 => {
-                (PerRow, u(*n), Rowwise::LayerNormMoments { width: u(*h) })
+                let (invocations, group_rows) = norm(&TensorOp::LayerNormGradGamma, *n, *h)?;
+                (
+                    PerRow,
+                    invocations,
+                    Rowwise::LayerNormMoments {
+                        width: u(*h),
+                        group_rows,
+                    },
+                )
             }
             ("LayerNormGradGamma", [F32, F32, F32], [[mn, 2], [n, h], g], [rh], [])
                 if mn == n && h == rh && *g == [*n, *h] && *n > 0 && *h > 0 =>
@@ -397,6 +444,16 @@ impl Rowwise {
             }
             Rowwise::EmbeddingSort { .. } => Some(GROUP),
             Rowwise::SumRows { width, .. } => Some(ColumnTile::sum_rows(width).values()),
+            Rowwise::LayerNorm { group_rows: 0, .. }
+            | Rowwise::LayerNormMoments { group_rows: 0, .. }
+            | Rowwise::LayerNormGradX { group_rows: 0, .. } => None,
+            Rowwise::LayerNorm { width, group_rows }
+            | Rowwise::LayerNormMoments { width, group_rows } => {
+                Some(group_rows * row_stride(width))
+            }
+            Rowwise::LayerNormGradX { width, group_rows } => {
+                Some(2 * group_rows * row_stride(width))
+            }
             _ => None,
         }
     }
@@ -425,6 +482,7 @@ impl Rowwise {
             Rowwise::LayerNormGradGamma { width, .. } => {
                 4 * ColumnTile::layer_norm_grad_gamma(width).per_invocation() as usize
             }
+            Rowwise::LayerNormGradX { group_rows, .. } if group_rows > 0 => 1,
             Rowwise::SigregColumns { .. } | Rowwise::SigregColumnsGrad { .. } => {
                 2 * SIGREG_KNOTS - 1
             }
@@ -707,6 +765,18 @@ impl Shell {
         if let Rowwise::SumRows { rows, width } = rowwise {
             return self.sum_rows(rows, width);
         }
+        match rowwise {
+            Rowwise::LayerNorm { width, group_rows } if group_rows > 0 => {
+                return self.layer_norm_rows(width, group_rows);
+            }
+            Rowwise::LayerNormGradX { width, group_rows } if group_rows > 0 => {
+                return self.layer_norm_grad_x_rows(width, group_rows);
+            }
+            Rowwise::LayerNormMoments { width, group_rows } if group_rows > 0 => {
+                return self.layer_norm_moments_rows(width, group_rows);
+            }
+            _ => {}
+        }
         let (index, count) = (self.index, self.count);
         let inside = self.less(index, count)?;
         self.when(inside, |m| match rowwise {
@@ -736,9 +806,9 @@ impl Shell {
                 threshold,
                 scale,
             } => m.dropout(values, token, threshold, scale),
-            Rowwise::LayerNorm { width } => m.layer_norm(width),
-            Rowwise::LayerNormMoments { width } => m.layer_norm_moments(width),
-            Rowwise::LayerNormGradX { width } => m.layer_norm_grad_x(width),
+            Rowwise::LayerNorm { width, .. } => m.layer_norm(width),
+            Rowwise::LayerNormMoments { width, .. } => m.layer_norm_moments(width),
+            Rowwise::LayerNormGradX { width, .. } => m.layer_norm_grad_x(width),
             Rowwise::Softmax { width } => m.softmax(width),
             Rowwise::SoftmaxGrad { width } => m.softmax_grad(width),
             Rowwise::SigregColumns { rows, width } => m.sigreg_columns(rows, width),
@@ -1205,6 +1275,311 @@ impl Shell {
         })
     }
 
+    /// Where an invocation of a whole-row kernel of `rows` rows per workgroup stands
+    /// ([`BlockLanes`]).
+    fn block_lanes(&mut self, rows: u32) -> Result<BlockLanes, EmitError> {
+        let local = self.local.expect("a module with workgroup memory");
+        let start = self.sub(self.index, local)?;
+        let group = self.uint(GROUP);
+        let workgroup = self.div(start, group)?;
+        let r = self.uint(rows);
+        let base = self.mul(workgroup, r)?;
+        let owner = self.less(local, r)?;
+        let row = self.add(base, local)?;
+        let one = self.uint(1);
+        let last_row = self.sub(self.count, one)?;
+        Ok(BlockLanes {
+            local,
+            base,
+            owner,
+            row,
+            last_row,
+        })
+    }
+
+    /// Where element `c` of the workgroup's row `r` lies in workgroup memory, in the region of
+    /// `region` staged rows of `rows` rows of `width`: `r * stride + c` past the region's start,
+    /// the stride [`layer_norm_row_stride`], the width where it is odd and one more where it is
+    /// even. The invocations that add rows `0, 1, …` at one column read values an odd number of
+    /// banks apart, 32 distinct banks at every width, and the loads of consecutive elements
+    /// store to consecutive banks. (A row rotated by its place, `r * width + (c + r) % width`,
+    /// spread the banks at a multiple of 32 but put every adding invocation on one bank at a
+    /// width one under it, and its remainder made the staging of an even width about 1.7 times
+    /// as slow as that of the odd width beside it; ADV-LNROWS-1.)
+    fn block_at(
+        &mut self,
+        region: u32,
+        rows: u32,
+        width: u32,
+        r: Word,
+        c: Word,
+    ) -> Result<Word, EmitError> {
+        let stride = row_stride(width);
+        let s = self.uint(stride);
+        let start = self.mul(r, s)?;
+        let at = self.add(start, c)?;
+        if region == 0 {
+            return Ok(at);
+        }
+        let offset = self.uint(region * rows * stride);
+        self.add(offset, at)
+    }
+
+    /// Stages the workgroup's `rows` rows of `width` of each read binding of `bindings`, one
+    /// region each, then a barrier: invocation `l` loads elements `l + 64 k` of the rows, which
+    /// are consecutive in the binding, [`STAGE_BATCH`] of them per binding before it stores
+    /// them, in a loop whose body does not depend on the width. A row past the last reads the
+    /// last; an element past the rows is read but not stored. Uses the shell's first `u32`
+    /// variable.
+    fn stage_block(
+        &mut self,
+        lanes: BlockLanes,
+        rows: u32,
+        width: u32,
+        bindings: &[usize],
+    ) -> Result<(), EmitError> {
+        let (w, end) = (self.uint(width), self.uint(rows * width));
+        let (zero, group) = (self.uint(0), self.uint(GROUP));
+        let step = self.uint(GROUP * STAGE_BATCH);
+        let var = self.u32_vars[0];
+        self.counted(var, zero, end, step, |m, origin| {
+            let mut e = m.add(origin, lanes.local)?;
+            let mut loaded = Vec::with_capacity(STAGE_BATCH as usize * bindings.len());
+            for k in 0..STAGE_BATCH {
+                if k > 0 {
+                    e = m.add(e, group)?;
+                }
+                let r = m.div(e, w)?;
+                let c = m.rem(e, w)?;
+                let row = m.add(lanes.base, r)?;
+                let row = m.min(row, lanes.last_row)?;
+                let start = m.mul(row, w)?;
+                let at = m.add(start, c)?;
+                for (i, &binding) in bindings.iter().enumerate() {
+                    let value = m.read(binding, at)?;
+                    loaded.push((i as u32, e, r, c, value));
+                }
+            }
+            for (i, e, r, c, value) in loaded {
+                let inside = m.less(e, end)?;
+                m.when(inside, |m| {
+                    let at = m.block_at(i, rows, width, r, c)?;
+                    m.store_shared(at, value)
+                })?;
+            }
+            Ok(())
+        })?;
+        self.barrier()
+    }
+
+    /// Writes the workgroup's rows of region 0 of workgroup memory to the result: invocation `l`
+    /// writes elements `l + 64 k` of the rows inside the dispatch's rows, so consecutive
+    /// invocations write consecutive elements, [`STAGE_BATCH`] of them per pass of a loop whose
+    /// body does not depend on the width. Uses the shell's first `u32` variable.
+    fn block_writes(&mut self, lanes: BlockLanes, rows: u32, width: u32) -> Result<(), EmitError> {
+        let (w, end) = (self.uint(width), self.uint(rows * width));
+        let (zero, group) = (self.uint(0), self.uint(GROUP));
+        let step = self.uint(GROUP * STAGE_BATCH);
+        let (var, count) = (self.u32_vars[0], self.count);
+        self.counted(var, zero, end, step, |m, origin| {
+            let mut e = m.add(origin, lanes.local)?;
+            for k in 0..STAGE_BATCH {
+                if k > 0 {
+                    e = m.add(e, group)?;
+                }
+                let r = m.div(e, w)?;
+                let c = m.rem(e, w)?;
+                let row = m.add(lanes.base, r)?;
+                let staged = m.less(e, end)?;
+                let row_inside = m.less(row, count)?;
+                let inside = m.and(staged, row_inside)?;
+                m.when(inside, |m| {
+                    let from = m.block_at(0, rows, width, r, c)?;
+                    let value = m.load_shared(from)?;
+                    let start = m.mul(row, w)?;
+                    let at = m.add(start, c)?;
+                    m.write(at, value)
+                })?;
+            }
+            Ok(())
+        })
+    }
+
+    /// Value `c` of the invocation's own row (row `local` of the workgroup) in region `region`.
+    fn own_value(
+        &mut self,
+        lanes: BlockLanes,
+        region: u32,
+        rows: u32,
+        width: u32,
+        c: Word,
+    ) -> Result<Word, EmitError> {
+        let at = self.block_at(region, rows, width, lanes.local, c)?;
+        self.load_shared(at)
+    }
+
+    /// The mean and `1 / sqrt(variance + epsilon)` of the invocation's own staged row of region
+    /// 0, as the CPU's `row_moments`: the sum from the first value in ascending order, divided by
+    /// the width; the squares of the differences from the mean, the first rounded and each later
+    /// one fused into the sum, divided by the width. Uses the shell's `f32` variable and its
+    /// first `u32` variable.
+    fn block_moments(
+        &mut self,
+        lanes: BlockLanes,
+        rows: u32,
+        width: u32,
+    ) -> Result<(Word, Word), EmitError> {
+        let (var, acc) = (self.u32_vars[0], self.f32_var);
+        let (zero, one, w) = (self.uint(0), self.uint(1), self.uint(width));
+        let first = self.own_value(lanes, 0, rows, width, zero)?;
+        self.b.store(acc, first, None, [])?;
+        self.counted(var, one, w, one, |m, j| {
+            let x = m.own_value(lanes, 0, rows, width, j)?;
+            m.accumulate(x)
+        })?;
+        let total = self.b.load(self.f32_ty, None, acc, None, [])?;
+        let mean = self.over_width(total, width)?;
+        let d = self.f_sub(first, mean)?;
+        let square = self.f_mul(d, d)?;
+        self.b.store(acc, square, None, [])?;
+        self.counted(var, one, w, one, |m, j| {
+            let x = m.own_value(lanes, 0, rows, width, j)?;
+            let d = m.f_sub(x, mean)?;
+            m.accumulate_square(d)
+        })?;
+        let squares = self.b.load(self.f32_ty, None, acc, None, [])?;
+        let variance = self.over_width(squares, width)?;
+        let eps = self.float(LAYER_NORM_EPS);
+        let shifted = self.f_add(variance, eps)?;
+        let rstd = self.reciprocal_sqrt(shifted)?;
+        Ok((mean, rstd))
+    }
+
+    /// `LayerNorm` over workgroups of `rows` whole rows (story:vulkan-layer-norm-coalesced-rows):
+    /// the rows staged ([`Shell::stage_block`]); invocation `r < rows` takes the moments of row
+    /// `r` ([`Shell::block_moments`]) and replaces each of its values `x` by
+    /// `((x - mean) * rstd) * gamma + beta`; after a barrier the rows are written out
+    /// ([`Shell::block_writes`]).
+    fn layer_norm_rows(&mut self, width: u32, rows: u32) -> Result<(), EmitError> {
+        let lanes = self.block_lanes(rows)?;
+        self.stage_block(lanes, rows, width, &[0])?;
+        self.when(lanes.owner, |m| {
+            let (mean, rstd) = m.block_moments(lanes, rows, width)?;
+            let (var, zero, one, w) = (m.u32_vars[0], m.uint(0), m.uint(1), m.uint(width));
+            m.counted(var, zero, w, one, |m, j| {
+                let at = m.block_at(0, rows, width, lanes.local, j)?;
+                let x = m.load_shared(at)?;
+                let gamma = m.read(1, j)?;
+                let beta = m.read(2, j)?;
+                let d = m.f_sub(x, mean)?;
+                let xhat = m.f_mul(d, rstd)?;
+                let scaled = m.f_mul(xhat, gamma)?;
+                let y = m.f_add(scaled, beta)?;
+                m.store_shared(at, y)
+            })
+        })?;
+        self.barrier()?;
+        self.block_writes(lanes, rows, width)
+    }
+
+    /// The row moments of `LayerNormGradGamma` over workgroups of `rows` whole rows: the rows
+    /// staged, and invocation `r < rows` of a row inside the dispatch writes the mean and
+    /// `rstd` of row `r` ([`Shell::block_moments`]) to elements `2 * row` and `2 * row + 1`.
+    fn layer_norm_moments_rows(&mut self, width: u32, rows: u32) -> Result<(), EmitError> {
+        let lanes = self.block_lanes(rows)?;
+        self.stage_block(lanes, rows, width, &[0])?;
+        let inside = self.less(lanes.row, self.count)?;
+        let writes = self.and(lanes.owner, inside)?;
+        self.when(writes, |m| {
+            let (mean, rstd) = m.block_moments(lanes, rows, width)?;
+            let (one, two) = (m.uint(1), m.uint(2));
+            let at = m.mul(lanes.row, two)?;
+            m.write(at, mean)?;
+            let next = m.add(at, one)?;
+            m.write(next, rstd)
+        })
+    }
+
+    /// `LayerNormGradX` over workgroups of `rows` whole rows of `x` and `g`, staged in two
+    /// regions: invocation `r < rows` computes, with `gx = g * gamma` and
+    /// `xhat = (x - mean) * rstd`, the sum of `x` and the sum of `gx` from their first terms in
+    /// one pass, the squares in a second and the sum of products of `gx` and `xhat` in a third,
+    /// then replaces each `x` of row `r` by `rstd * ((gx - mean(gx)) - xhat * mean(gx * xhat))`;
+    /// after a barrier the rows are written out ([`Shell::block_writes`]).
+    fn layer_norm_grad_x_rows(&mut self, width: u32, rows: u32) -> Result<(), EmitError> {
+        let lanes = self.block_lanes(rows)?;
+        self.stage_block(lanes, rows, width, &[0, 2])?;
+        self.when(lanes.owner, |m| {
+            let (var, acc, acc_gx) = (m.u32_vars[0], m.f32_var, m.matmul_vars[0]);
+            let (zero, one, w) = (m.uint(0), m.uint(1), m.uint(width));
+            let gx = |m: &mut Shell, j: Word| -> Result<Word, EmitError> {
+                let g = m.own_value(lanes, 1, rows, width, j)?;
+                let gamma = m.read(1, j)?;
+                m.f_mul(g, gamma)
+            };
+            let first = m.own_value(lanes, 0, rows, width, zero)?;
+            m.b.store(acc, first, None, [])?;
+            let first_gx = gx(m, zero)?;
+            m.b.store(acc_gx, first_gx, None, [])?;
+            m.counted(var, one, w, one, |m, j| {
+                let x = m.own_value(lanes, 0, rows, width, j)?;
+                m.accumulate(x)?;
+                let term = gx(m, j)?;
+                let sum = m.b.load(m.f32_ty, None, acc_gx, None, [])?;
+                let sum = m.f_add(sum, term)?;
+                m.b.store(acc_gx, sum, None, [])?;
+                Ok(())
+            })?;
+            let total = m.b.load(m.f32_ty, None, acc, None, [])?;
+            let mean = m.over_width(total, width)?;
+            let total_gx = m.b.load(m.f32_ty, None, acc_gx, None, [])?;
+            let mean_gx = m.over_width(total_gx, width)?;
+            let d = m.f_sub(first, mean)?;
+            let square = m.f_mul(d, d)?;
+            m.b.store(acc, square, None, [])?;
+            m.counted(var, one, w, one, |m, j| {
+                let x = m.own_value(lanes, 0, rows, width, j)?;
+                let d = m.f_sub(x, mean)?;
+                m.accumulate_square(d)
+            })?;
+            let squares = m.b.load(m.f32_ty, None, acc, None, [])?;
+            let variance = m.over_width(squares, width)?;
+            let eps = m.float(LAYER_NORM_EPS);
+            let shifted = m.f_add(variance, eps)?;
+            let rstd = m.reciprocal_sqrt(shifted)?;
+            let xhat = |m: &mut Shell, j: Word| -> Result<Word, EmitError> {
+                let x = m.own_value(lanes, 0, rows, width, j)?;
+                let d = m.f_sub(x, mean)?;
+                m.f_mul(d, rstd)
+            };
+            let first_xhat = xhat(m, zero)?;
+            let product = m.f_mul(first_gx, first_xhat)?;
+            m.b.store(acc, product, None, [])?;
+            m.counted(var, one, w, one, |m, j| {
+                let a = gx(m, j)?;
+                let b = xhat(m, j)?;
+                let sum = m.b.load(m.f32_ty, None, acc, None, [])?;
+                let fused = m.f_fma(a, b, sum)?;
+                m.b.store(acc, fused, None, [])?;
+                Ok(())
+            })?;
+            let products = m.b.load(m.f32_ty, None, acc, None, [])?;
+            let mean_gx_xhat = m.over_width(products, width)?;
+            m.counted(var, zero, w, one, |m, j| {
+                let a = gx(m, j)?;
+                let b = xhat(m, j)?;
+                let centered = m.f_sub(a, mean_gx)?;
+                let along = m.f_mul(b, mean_gx_xhat)?;
+                let d = m.f_sub(centered, along)?;
+                let y = m.f_mul(rstd, d)?;
+                let at = m.block_at(0, rows, width, lanes.local, j)?;
+                m.store_shared(at, y)
+            })
+        })?;
+        self.barrier()?;
+        self.block_writes(lanes, rows, width)
+    }
+
     /// Row `index`: the maximum from the first value, a value replacing it only when greater;
     /// `exp(x - max)` written per element; their sum from the first term; each divided by it.
     fn softmax(&mut self, width: u32) -> Result<(), EmitError> {
@@ -1521,6 +1896,18 @@ impl Shell {
     }
 }
 
+/// Where an invocation of a whole-row kernel stands ([`Shell::block_lanes`]): its index in the
+/// workgroup, the workgroup's first row, whether it adds a row (its index is below the
+/// workgroup's rows), the row it adds, and the last row of the dispatch.
+#[derive(Clone, Copy)]
+struct BlockLanes {
+    local: Word,
+    base: Word,
+    owner: Word,
+    row: Word,
+    last_row: Word,
+}
+
 /// [`Shell::column_lanes`].
 #[derive(Clone, Copy)]
 struct ColumnLanes {
@@ -1529,6 +1916,11 @@ struct ColumnLanes {
     column: Word,
     read_column: Word,
     adder: Word,
+}
+
+/// [`layer_norm_row_stride`] of a width that fits a `u32`, as the staged row kernels use it.
+fn row_stride(width: u32) -> u32 {
+    layer_norm_row_stride(u64::from(width)) as u32
 }
 
 #[cfg(test)]

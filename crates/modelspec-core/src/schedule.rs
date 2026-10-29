@@ -1320,13 +1320,116 @@ fn column_groups(op: &TensorOp, h: u64) -> Option<u64> {
         .checked_mul(ROWWISE_WORKGROUP)
 }
 
+/// The fewest rows a workgroup of the staged row kernel of `LayerNorm`, `LayerNormGradX` or the
+/// row moments of `LayerNormGradGamma` stages ([`layer_norm_rows`]). Under it the 64 - `rows`
+/// invocations that own no row idle while the others add theirs, and the kernel of one
+/// invocation per row is faster: on the RTX 3090 over 16384 rows (medians of 3 alternating
+/// pairs, each a command buffer of at least 400 ms) the staged kernel takes up to 1.35 times
+/// the time of the per-row kernel at the same width with 1 row per workgroup (`LayerNormGradX`
+/// of 2047 columns), and the moments with 2 take 0.51 to 0.59 times in some runs and 1.43 to 1.61
+/// times in others (2046 and 2047 columns); with 3 to 16 at most 0.61 times at every width
+/// measured.
+pub const LAYER_NORM_MIN_ROWS: u64 = 3;
+
+/// The values one staged row of `h` columns takes in workgroup memory
+/// ([`layer_norm_rows`]): `h` for an odd width, `h + 1` for an even one. The invocations that
+/// add rows `0, 1, …` at one column then read values an odd number of banks apart, 32 distinct
+/// banks, and the place of element `c` of row `r` is `r * stride + c`, which the staging loop
+/// computes without a remainder.
+pub fn layer_norm_row_stride(h: u64) -> u64 {
+    h + 1 - h % 2
+}
+
+/// The rows one workgroup of 64 of the `per_row` kernel of `LayerNorm`, `LayerNormGradX` or
+/// the row moments of `LayerNormGradGamma` over rows of `h` columns stages whole in workgroup
+/// memory (story:vulkan-layer-norm-coalesced-rows, DESIGN.md § 5.2): as many as the 16 KiB
+/// every device has ([`MIN_SHARED_MEMORY_BYTES`]) holds of the rows it stages, `x` or, for
+/// `LayerNormGradX`, `x` and `g`, each [`layer_norm_row_stride`] values, at most 64, and for the
+/// moments at most [`LAYER_NORM_MOMENTS_MAX_ROWS`]. 15 rows for a `LayerNorm` of width 256, 7
+/// for its gradient. Its 64 invocations load the rows as
+/// consecutive values and invocation `r` adds row `r` in ascending order. `Some(0)` when 16 KiB
+/// holds fewer than [`LAYER_NORM_MIN_ROWS`] rows, at a width past 1365 for `LayerNorm` and the
+/// moments and past 681 for `LayerNormGradX`: the kernel then keeps one invocation per row,
+/// which reads its row from the binding, as it does on this thread inside
+/// [`layer_norm_per_row::with`]. `None` for another op.
+pub fn layer_norm_rows(op: &TensorOp, h: u64) -> Option<u64> {
+    let staged = match op {
+        TensorOp::LayerNorm | TensorOp::LayerNormGradGamma => 1,
+        TensorOp::LayerNormGradX => 2,
+        _ => return None,
+    };
+    if layer_norm_per_row::forced() {
+        return Some(0);
+    }
+    let most = match op {
+        TensorOp::LayerNormGradGamma => LAYER_NORM_MOMENTS_MAX_ROWS,
+        _ => ROWWISE_WORKGROUP,
+    };
+    let values = u64::from(MIN_SHARED_MEMORY_BYTES) / 4;
+    let rows = (values / (staged * layer_norm_row_stride(h.max(1)))).min(most);
+    Some(if rows < LAYER_NORM_MIN_ROWS { 0 } else { rows })
+}
+
+/// The most rows a workgroup of the row moments of `LayerNormGradGamma` stages
+/// ([`layer_norm_rows`]). Each row's two passes are short at a narrow width, and more rows only
+/// add idle invocations' waits on the barriers: on the RTX 3090 over 16384 rows (medians of 3
+/// alternating triples, each a command buffer of at least 400 ms, timestamps in steps of about
+/// 1 µs) the moments of widths 120 to 130 take 15.4 µs with 31 to 33 rows, 14.3 with 24 and
+/// 13.3 with 16, against 12.3 µs for one invocation per row at widths 120 to 127, 19.5 at 128
+/// and 13.3 at 130: 16 rows is 1.08 to 1.17 times the per-row kernel (one timestamp step) and
+/// 0.65 to 0.68 times it at 128, where 31 to 33 rows were up to 1.25 times it, and 1.33 in an
+/// earlier run.
+pub const LAYER_NORM_MOMENTS_MAX_ROWS: u64 = 16;
+
+/// A per-thread switch that makes [`layer_norm_rows`] stage no rows, so a timing test can build
+/// and emit the per-row kernel at a width that stages rows and compare the two
+/// (story:vulkan-layer-norm-coalesced-rows, ADV-LNROWS-1).
+#[doc(hidden)]
+pub mod layer_norm_per_row {
+    use std::cell::Cell;
+
+    thread_local! {
+        static FORCED: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// Whether [`with`] is running on this thread.
+    pub fn forced() -> bool {
+        FORCED.get()
+    }
+
+    /// Runs `body` with [`super::layer_norm_rows`] staging no rows on this thread; the switch is
+    /// off again after `body`, also when it panics.
+    pub fn with<T>(body: impl FnOnce() -> T) -> T {
+        struct Reset(bool);
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                FORCED.set(self.0);
+            }
+        }
+        let _reset = Reset(FORCED.replace(true));
+        body()
+    }
+}
+
+/// The invocations of the row kernel of `op` over `n` rows of `h` columns: a workgroup of 64 per
+/// [`layer_norm_rows`] rows, or one invocation per row where it stages none (fewer than
+/// [`LAYER_NORM_MIN_ROWS`] fit).
+pub fn layer_norm_invocations(op: &TensorOp, n: u64, h: u64) -> Option<u64> {
+    match layer_norm_rows(op, h)? {
+        0 => Some(n),
+        rows => n.div_ceil(rows).checked_mul(ROWWISE_WORKGROUP),
+    }
+}
+
 /// The kernel kind of the row-wise op `op` over `operands` into `result`, and the invocations
 /// its dispatch runs: one per output element of a [`KernelKind::PerElement`] kernel, one per
-/// output row of a [`KernelKind::PerRow`] kernel, one per output column of a `sigreg`
-/// [`KernelKind::PerColumn`] kernel and a workgroup of 64 per [`column_sum_columns`] columns of
-/// the column sums `SumRows` and `LayerNormGradGamma`. `None` for another op, an immediate
-/// operand, a shape that is not static or a zero dimension, or operands that are not the op's:
-/// an `i32` buffer of ids or an `i32[2]` RNG token where the op reads one, `f32` elsewhere.
+/// output row of a [`KernelKind::PerRow`] kernel but a workgroup of 64 per [`layer_norm_rows`]
+/// rows of `LayerNorm` and `LayerNormGradX` ([`layer_norm_invocations`]), one per output column
+/// of a `sigreg` [`KernelKind::PerColumn`] kernel and a workgroup of 64 per
+/// [`column_sum_columns`] columns of the column sums `SumRows` and `LayerNormGradGamma`. `None`
+/// for another op, an immediate operand, a shape that is not static or a zero dimension, or
+/// operands that are not the op's: an `i32` buffer of ids or an `i32[2]` RNG token where the op
+/// reads one, `f32` elsewhere.
 fn rowwise_shape(
     op: &TensorOp,
     operands: &[Operand],
@@ -1380,12 +1483,12 @@ fn rowwise_shape(
         (TensorOp::LayerNorm, [[n, h], [gh], [bh]], [rn, rh])
             if h == gh && h == bh && (n, h) == (rn, rh) =>
         {
-            f32s(&[0, 1, 2]).then_some((KernelKind::PerRow, *n))?
+            f32s(&[0, 1, 2]).then_some((KernelKind::PerRow, layer_norm_invocations(op, *n, *h)?))?
         }
         (TensorOp::LayerNormGradX, [[n, h], [gh], g], [rn, rh])
             if h == gh && *g == [*n, *h] && (n, h) == (rn, rh) =>
         {
-            f32s(&[0, 1, 2]).then_some((KernelKind::PerRow, *n))?
+            f32s(&[0, 1, 2]).then_some((KernelKind::PerRow, layer_norm_invocations(op, *n, *h)?))?
         }
         (TensorOp::LayerNormGradGamma, [[n, h], g], [rh]) if h == rh && *g == [*n, *h] => {
             f32s(&[0, 1]).then_some((KernelKind::PerColumn, column_groups(op, *h)?))?
@@ -1482,11 +1585,11 @@ pub fn embedding_grad_kernels(operands: Vec<Operand>, result: TensorType) -> Opt
 /// The two kernels of `LayerNormGradGamma` over its operands `x: f32[N, H]` and `g: f32[N, H]`
 /// into its `result: f32[H]`, as [`schedule`] builds them
 /// (story:vulkan-layer-norm-grad-gamma-row-moments): the moments, [`KernelKind::PerRow`] over
-/// `(x)` into `f32[N, 2]`, invocation `n` writing the mean and `rstd` of row `n` as `LayerNorm`
-/// computes them; and the column sum, [`KernelKind::PerColumn`] over `(moments, x, g)` into
-/// `result`, a workgroup of 64 per [`column_sum_columns`] columns, which adds `g · x̂` of each
-/// column over the rows in ascending order. `None` for operands or a result that are not the
-/// op's.
+/// `(x)` into `f32[N, 2]`, the mean and `rstd` of each row as `LayerNorm` computes them, over
+/// [`layer_norm_invocations`]; and the column sum, [`KernelKind::PerColumn`] over
+/// `(moments, x, g)` into `result`, a workgroup of 64 per [`column_sum_columns`] columns, which
+/// adds `g · x̂` of each column over the rows in ascending order. `None` for operands or a
+/// result that are not the op's.
 pub fn layer_norm_grad_gamma_kernels(
     operands: Vec<Operand>,
     result: TensorType,
@@ -1494,9 +1597,9 @@ pub fn layer_norm_grad_gamma_kernels(
     let op = TensorOp::LayerNormGradGamma;
     let (kind, invocations) = rowwise_shape(&op, &operands, &result)?;
     let [x, g] = <[Operand; 2]>::try_from(operands).ok()?;
-    let rows = match &x {
+    let (rows, h) = match &x {
         Operand::Buffer(ty) => match ty.shape[..] {
-            [Dim::Static(rows), _] => rows,
+            [Dim::Static(rows), Dim::Static(h)] => (rows, h),
             _ => return None,
         },
         Operand::Immediate(_) => return None,
@@ -1507,7 +1610,7 @@ pub fn layer_norm_grad_gamma_kernels(
         &op,
         vec![x.clone()],
         moments_ty.clone(),
-        rows,
+        layer_norm_invocations(&op, rows, h)?,
     )?;
     let column = rowwise_record(
         kind,
