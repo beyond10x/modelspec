@@ -2,7 +2,7 @@
 format: aep.planning-md/3
 id: story:vulkan-stepwise-multi-step-submit
 kind: story
-status: active
+status: implemented
 title: Stepwise Vulkan training records several steps per submission
 summary: A stepwise run waits once per K steps with the bits of the one-step run.
 relations:
@@ -13,10 +13,11 @@ scope:
   path: crates/modelspec-cli/src/train.rs
 - confidence: inferred
   path: crates/modelspec-runtime/src/vulkan/stepwise.rs
-revision: 5
+revision: 6
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-29T03:20:13Z", actor: "human:timo", revision: 2}
 - {from: "proposed", to: "active", at: "2026-10-29T03:20:13Z", actor: "human:timo", revision: 3}
+- {from: "active", to: "implemented", at: "2026-10-29T10:15:14Z", actor: "human:timo", revision: 6, decided_on: {"recorded":{"test_result":1}}}
 ---
 # Stepwise Vulkan training records several steps per submission
 

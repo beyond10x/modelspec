@@ -1,0 +1,13 @@
+{
+  "at": "2026-10-29T10:14:28Z",
+  "actor": "human:timo",
+  "artifact": "story:vulkan-embedding-grad-sorted-ids",
+  "kind": "story",
+  "revision": 6,
+  "change": {
+    "change": "evidence",
+    "kind": "test_result",
+    "source": "task ci (modelspec / task ci on 95fe5fa1)",
+    "reference": "https://github.com/beyond10x/modelspec/actions/runs/40852223105/job/123374269686"
+  }
+}

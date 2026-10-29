@@ -2,16 +2,17 @@
 format: aep.planning-md/3
 id: story:vulkan-eval-loss-drift-since-unit-20
 kind: story
-status: active
+status: implemented
 title: The short device runs reproduce the recorded eval losses again
 summary: Find the commit that moved the device eval loss from the unit-20 record and either restore it or move the expectation with a reason.
 relations:
 - decomposes: epic:m1-vulkan-execution
 - serves: vision:modelspec
-revision: 3
+revision: 4
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-29T08:47:22Z", actor: "human:timo", revision: 2}
 - {from: "proposed", to: "active", at: "2026-10-29T08:47:22Z", actor: "human:timo", revision: 3}
+- {from: "active", to: "implemented", at: "2026-10-29T10:15:12Z", actor: "human:timo", revision: 4, decided_on: {"recorded":{"test_result":1}}}
 ---
 # The short device runs reproduce the recorded eval losses again
 

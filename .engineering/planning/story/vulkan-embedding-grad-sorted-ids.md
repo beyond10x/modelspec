@@ -2,7 +2,7 @@
 format: aep.planning-md/3
 id: story:vulkan-embedding-grad-sorted-ids
 kind: story
-status: active
+status: implemented
 title: EmbeddingGrad over ids sorted once per batch
 summary: The word-table gradient adds each occurring row from ids sorted once per batch, with the bits it has.
 relations:
@@ -15,10 +15,11 @@ scope:
   path: crates/modelspec-core/src/schedule.rs
 - confidence: inferred
   path: crates/modelspec-runtime/src/spirv/emit/rowwise.rs
-revision: 6
+revision: 7
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-29T03:20:13Z", actor: "human:timo", revision: 2}
 - {from: "proposed", to: "active", at: "2026-10-29T03:20:13Z", actor: "human:timo", revision: 3}
+- {from: "active", to: "implemented", at: "2026-10-29T10:15:12Z", actor: "human:timo", revision: 7, decided_on: {"recorded":{"test_result":1}}}
 ---
 # EmbeddingGrad over ids sorted once per batch
 

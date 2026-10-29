@@ -2,16 +2,17 @@
 format: aep.planning-md/3
 id: story:vulkan-validation-without-debug-utils
 kind: story
-status: active
+status: implemented
 title: Validation mode refuses a loader without debug utils instead of aborting
 summary: Under MODELSPEC_VK_VALIDATION=1 a loader without VK_EXT_debug_utils gets a refusal, not a process abort.
 relations:
 - decomposes: epic:m1-vulkan-execution
 - serves: vision:modelspec
-revision: 3
+revision: 4
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-29T08:47:23Z", actor: "human:timo", revision: 2}
 - {from: "proposed", to: "active", at: "2026-10-29T08:47:23Z", actor: "human:timo", revision: 3}
+- {from: "active", to: "implemented", at: "2026-10-29T10:15:14Z", actor: "human:timo", revision: 4, decided_on: {"recorded":{"test_result":1}}}
 ---
 # Validation mode refuses a loader without debug utils instead of aborting
 

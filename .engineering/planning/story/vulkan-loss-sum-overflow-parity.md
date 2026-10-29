@@ -2,16 +2,17 @@
 format: aep.planning-md/3
 id: story:vulkan-loss-sum-overflow-parity
 kind: story
-status: active
+status: implemented
 title: The device loss sum overflows no earlier than the CPU loss
 summary: The Vulkan loss sum turns non-finite at the step the CPU's f64 mean does, restoring the DESIGN.md § 8.1 promise broken since 0.21.0.
 relations:
 - decomposes: epic:m1-vulkan-execution
 - serves: vision:modelspec
-revision: 3
+revision: 4
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-29T08:47:22Z", actor: "human:timo", revision: 2}
 - {from: "proposed", to: "active", at: "2026-10-29T08:47:23Z", actor: "human:timo", revision: 3}
+- {from: "active", to: "implemented", at: "2026-10-29T10:15:13Z", actor: "human:timo", revision: 4, decided_on: {"recorded":{"test_result":1}}}
 ---
 # The device loss sum overflows no earlier than the CPU loss
 
