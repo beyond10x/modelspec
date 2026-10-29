@@ -15,7 +15,9 @@
 //! `+0.0`), every row outside the spans `+0` in bits though `q`, `k`, `v` and `G` hold values
 //! there and the result buffer starts as NaN. The four kernels sharing softmax statistics give the
 //! bits of each alone, and where the CPU's work is small the results are within `GPU_ATOL +
-//! GPU_RTOL * |c|` of the CPU interpreter's `c`. No case raises a validation message.
+//! GPU_RTOL * |c|` of the CPU interpreter's `c`. No case raises a validation message. Over
+//! spans whose scores are `-0.0` then `+0.0`, the shared statistics hold the CPU's softmax
+//! maximum in bits, the first key's `-0.0`.
 //!
 //! Ignored by default: it creates a Vulkan instance, which `task ci` never does. Run it with
 //! `MODELSPEC_VK_VALIDATION=1 cargo test -p modelspec-runtime --features vulkan --test vulkan_attention_spans -- --ignored`.
@@ -473,5 +475,94 @@ fn spans_compute_the_bits_of_the_padded_prefix_mask() {
         assert!(messages.is_empty(), "{label}: {messages:?}");
     }
     assert!(compared_to_cpu >= 16, "{compared_to_cpu} CPU comparisons");
+    assert!(wrong.is_empty(), "{wrong:#?}");
+}
+
+/// The softmax maximum the CPU interpreter takes over the scores of a span's keys, in
+/// ascending key order: the first, replaced by each later greater one
+/// (`cpu::interpreter`, `Attend::softmax`), so scores `-0.0` then `+0.0` keep `-0.0`.
+fn cpu_maximum(scores: impl Iterator<Item = f32>) -> f32 {
+    scores
+        .reduce(|m, x| if x > m { x } else { m })
+        .expect("a span has a key")
+}
+
+/// The F1 case of `adversary_attention_tiled.rs`
+/// (`softmax_maximum_of_zero_scores_is_the_first_keys_negative_zero`) over spans: every query
+/// `-0.0`, the keys alternately `0.5` and `-0.5`, so a span's scores alternate `-0.0` and
+/// `+0.0` from its first key. The statistics buffer of the four kernels sharing softmax
+/// statistics holds the CPU interpreter's maximum in bits for every query of every span, at
+/// every row and at one query per span: `-0.0` for the spans from an even row, `+0.0` for the
+/// span from an odd row.
+#[test]
+#[ignore = "needs a Vulkan device"]
+fn spans_softmax_maximum_of_zero_scores_is_the_first_keys_negative_zero() {
+    let vulkan = Vulkan::load().expect("the Vulkan loader opens");
+    let candidates = vulkan.candidates().expect("the devices are probed");
+    let negotiated = negotiate(&candidates[0].profile).expect("device 0 negotiates");
+    let device = vulkan
+        .create_device(0, &negotiated)
+        .expect("device 0 opens");
+    let (rows, h, heads) = (16u64, 1u64, 1u64);
+    let spans: [(u64, u64); 3] = [(0, 5), (6, 3), (9, 7)];
+    let k: Vec<f32> = (0..rows)
+        .map(|j| if j % 2 == 0 { 0.5 } else { -0.5 })
+        .collect();
+    let v: Vec<f32> = (0..rows).map(|j| j as f32).collect();
+    let span_words: Vec<f32> = spans
+        .iter()
+        .flat_map(|&(start, length)| [start as u32, length as u32])
+        .map(f32::from_bits)
+        .collect();
+    let u = spans.len() as u64;
+    let ops = [
+        TensorOp::Attention { heads },
+        TensorOp::AttentionGradQ { heads },
+        TensorOp::AttentionGradK { heads },
+        TensorOp::AttentionGradV { heads },
+    ];
+    let mut wrong = Vec::new();
+    for every_row in [true, false] {
+        let q_rows = if every_row { rows } else { u };
+        let q = vec![-0.0f32; q_rows as usize];
+        let g = vec![1.0f32; q_rows as usize];
+        let inputs = vec![q.clone(), k.clone(), v.clone(), span_words.clone(), g];
+        let queries = TensorType::f32(&[q_rows, h]);
+        let keys = TensorType::f32(&[rows, h]);
+        let span_ty = TensorType::i32(&[u, 2]);
+        let shared: Vec<Kernel> = ops
+            .iter()
+            .map(|op| with_softmax_stats(kernel_of(op, &queries, &keys, &span_ty)).expect("shares"))
+            .collect();
+        let out = run(
+            &device,
+            &ops,
+            &shared,
+            &inputs,
+            (q_rows * heads * 3) as usize,
+        );
+        for (at, &(start, length)) in spans.iter().enumerate() {
+            let query_rows: Vec<u64> = if every_row {
+                (start..start + length).collect()
+            } else {
+                vec![at as u64]
+            };
+            for i in query_rows {
+                let want = cpu_maximum(
+                    (start..start + length).map(|j| q[i as usize] * k[j as usize] * 1.0),
+                );
+                let got = out[0][(i * heads * 3) as usize];
+                if got.to_bits() != want.to_bits() {
+                    wrong.push(format!(
+                        "every row {every_row} span {at} query {i}: {:08x} against the CPU's {:08x}",
+                        got.to_bits(),
+                        want.to_bits()
+                    ));
+                }
+            }
+        }
+        let messages = vulkan.take_validation_messages();
+        assert!(messages.is_empty(), "every row {every_row}: {messages:?}");
+    }
     assert!(wrong.is_empty(), "{wrong:#?}");
 }

@@ -735,6 +735,22 @@ impl Shell {
         Ok(self.b.select(self.f32_ty, None, greater, x, max)?)
     }
 
+    /// `x > max` that the driver cannot take for a maximum's comparison: the float comparison,
+    /// and not both zeros by their bits. A loop of `x > max` alone was compiled as a maximum
+    /// that orders `-0.0` below `+0.0` on an RTX 3090: scores `-0.0` then `+0.0` gave `+0.0`,
+    /// where the CPU keeps the first `-0.0`.
+    fn greater_keeping_zeros(&mut self, x: Word, max: Word) -> Result<Word, EmitError> {
+        let greater = self.b.f_ord_greater_than(self.bool_ty, None, x, max)?;
+        let x_bits = self.b.bitcast(self.u32_ty, None, x)?;
+        let max_bits = self.b.bitcast(self.u32_ty, None, max)?;
+        let either = self.b.bitwise_or(self.u32_ty, None, x_bits, max_bits)?;
+        let magnitude = self.uint(0x7fff_ffff);
+        let magnitude = self.b.bitwise_and(self.u32_ty, None, either, magnitude)?;
+        let zero = self.uint(0);
+        let not_zeros = self.b.i_not_equal(self.bool_ty, None, magnitude, zero)?;
+        Ok(self.b.logical_and(self.bool_ty, None, greater, not_zeros)?)
+    }
+
     /// `then` under `cond`, or unconditionally without one.
     fn when_some(
         &mut self,
@@ -944,7 +960,9 @@ impl Shell {
 
     /// The softmax maximum of the scores `score(j, k_at)` of the key rows of
     /// [`Shell::each_key`]: the first one, replaced by each later greater one; `0.0` without
-    /// one.
+    /// one. Without `checked` (over spans) a later score replaces it only where
+    /// [`Shell::greater_keeping_zeros`], so scores `-0.0` then `+0.0` keep the first key's
+    /// `-0.0` as the CPU does.
     fn softmax_max(
         &mut self,
         at: &Attend,
@@ -963,7 +981,12 @@ impl Shell {
         self.each_key(at, start, keys, column, checked, |m, j, k_at| {
             let x = score(m, j, k_at)?;
             let max = m.b.load(m.f32_ty, None, max_var, None, [])?;
-            let kept = m.greater_of(x, max)?;
+            let kept = if checked {
+                m.greater_of(x, max)?
+            } else {
+                let greater = m.greater_keeping_zeros(x, max)?;
+                m.b.select(m.f32_ty, None, greater, x, max)?
+            };
             let found = m.b.load(m.u32_ty, None, flag, None, [])?;
             let found = m.b.i_not_equal(m.bool_ty, None, found, zero)?;
             let next = m.b.select(m.f32_ty, None, found, kept, x)?;
@@ -1708,7 +1731,8 @@ impl Shell {
             };
             // The maximum reads the mask even under a prefix mask: unchecked, scores -0.0 then
             // +0.0 gave a maximum of +0.0 on an RTX 3090, where the CPU keeps the first -0.0.
-            // Over spans there is no mask to read.
+            // Over spans there is no mask to read: a later score replaces the maximum only where
+            // the two are not both zeros (`Shell::greater_keeping_zeros`).
             let max_checked = at.spans.is_none();
             self.when(serial, |m| {
                 let max = m.softmax_max(at, start, end, t.column, max_checked, &weight)?;
