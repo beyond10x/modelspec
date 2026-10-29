@@ -604,23 +604,81 @@ impl Shell {
         self.where_residual(residual, corrected, q)
     }
 
-    /// `1 / sqrt(v)` within 1 ulp of the CPU's, which rounds the square root first: the device's
-    /// `s = sqrt(v)` and `q = 1 / s` (neither correctly rounded on Vulkan), the root corrected
-    /// to `s' = s + fma(0 - s, s, v) * (q * 0.5)`, then the reciprocal to
-    /// `q + q * fma(0 - q, s', 1)`, one Newton step from `q`. `q` stands where that last
-    /// residual is 0 or NaN: an exact reciprocal, an infinite `v` (`q = 0`) or a NaN.
+    /// `1 / sqrt(v)` with the CPU's bits, which rounds the square root to `f32` and then its
+    /// reciprocal: [`Shell::rounded_root`] of `v`, then [`Shell::rounded_reciprocal`] of that
+    /// root, for every `v` from `2^-64` up, so for every `variance + 1e-12`, an infinite `v`
+    /// giving `0` and a NaN a NaN.
     fn reciprocal_sqrt(&mut self, v: Word) -> Result<Word, EmitError> {
-        let (zero, half, one) = (self.float(0.0), self.float(0.5), self.float(1.0));
-        let s = self.sqrt(v)?;
-        let q = self.f_div(one, s)?;
+        let root = self.rounded_root(v)?;
+        self.rounded_reciprocal(root)
+    }
+
+    /// The `f32` values just below and just above a positive finite `x`: its bits minus one and
+    /// plus one.
+    fn neighbours(&mut self, x: Word) -> Result<(Word, Word), EmitError> {
+        let one = self.uint(1);
+        let bits = self.b.bitcast(self.u32_ty, None, x)?;
+        let below = self.sub(bits, one)?;
+        let above = self.add(bits, one)?;
+        let below = self.b.bitcast(self.f32_ty, None, below)?;
+        let above = self.b.bitcast(self.f32_ty, None, above)?;
+        Ok((below, above))
+    }
+
+    /// `sqrt(v)` correctly rounded, the CPU's root, for every `v` from `2^-64` up: the
+    /// corrected device root `s` ([`Shell::root`], within 1 ulp of `sqrt(v)`), then whichever of
+    /// `s` and its neighbours `d` below and `u` above is nearest to `sqrt(v)`: `u` where
+    /// `fma(0 - s, u, v) > 0`, `d` where `fma(0 - d, s, v) <= 0`, else `s`. The midpoint of `s`
+    /// and `u` squared is `s u + ulp^2 / 4`, and `v - s u` is a multiple of `ulp^2`, so `v` lies
+    /// above that square exactly when `v - s u > 0`; below, `v - d s <= 0` likewise, with the ulp
+    /// of `d`. Each `Fma` keeps the sign of its exact difference, which is 0 or at least `2^-112`
+    /// in magnitude, a normal value no device flushes. An infinite `v` gives its infinity and a
+    /// NaN a NaN: every comparison with the NaN their differences make is false.
+    fn rounded_root(&mut self, v: Word) -> Result<Word, EmitError> {
+        let zero = self.float(0.0);
+        let s = self.root(v)?;
+        let (below, above) = self.neighbours(s)?;
         let neg_s = self.f_sub(zero, s)?;
-        let root_residual = self.f_fma(neg_s, s, v)?;
-        let half_q = self.f_mul(q, half)?;
-        let root = self.f_fma(root_residual, half_q, s)?;
-        let neg_q = self.f_sub(zero, q)?;
-        let residual = self.f_fma(neg_q, root, one)?;
-        let corrected = self.f_fma(residual, q, q)?;
-        self.where_residual(residual, corrected, q)
+        let over = self.f_fma(neg_s, above, v)?;
+        let neg_below = self.f_sub(zero, below)?;
+        let under = self.f_fma(neg_below, s, v)?;
+        let up = self.b.f_ord_greater_than(self.bool_ty, None, over, zero)?;
+        let down = self
+            .b
+            .f_ord_less_than_equal(self.bool_ty, None, under, zero)?;
+        let lower = self.b.select(self.f32_ty, None, down, below, s)?;
+        Ok(self.b.select(self.f32_ty, None, up, above, lower)?)
+    }
+
+    /// `1 / s` correctly rounded, the CPU's quotient, for every `s` from `2^-32` to `2^64`: the
+    /// device's `p = 1 / s` corrected by one Newton step to `p + p * fma(0 - p, s, 1)` (`p` where
+    /// that residual is 0 or NaN), within 1 ulp of `1 / s`, so its residual
+    /// `r = fma(0 - p, s, 1) = 1 - p s` is exact; then `u`, the neighbour above, where
+    /// `r > s * ((u - p) * 0.5)`, `d`, the neighbour below, where `r < 0 - s * ((p - d) * 0.5)`,
+    /// else `p`. `1 / s - p = r / s`, the midpoints lie half a gap from `p`, and `1 / s` is never
+    /// a midpoint; the gaps, halves and products by `s` are exact. An infinite `s` gives `0` and a
+    /// NaN a NaN: their residuals are NaN, and every comparison with it is false.
+    fn rounded_reciprocal(&mut self, s: Word) -> Result<Word, EmitError> {
+        let (zero, half, one) = (self.float(0.0), self.float(0.5), self.float(1.0));
+        let p = self.f_div(one, s)?;
+        let neg_p = self.f_sub(zero, p)?;
+        let residual = self.f_fma(neg_p, s, one)?;
+        let stepped = self.f_fma(residual, p, p)?;
+        let p = self.where_residual(residual, stepped, p)?;
+        let neg_p = self.f_sub(zero, p)?;
+        let r = self.f_fma(neg_p, s, one)?;
+        let (below, above) = self.neighbours(p)?;
+        let gap = self.f_sub(above, p)?;
+        let gap = self.f_mul(gap, half)?;
+        let up_bound = self.f_mul(s, gap)?;
+        let gap = self.f_sub(p, below)?;
+        let gap = self.f_mul(gap, half)?;
+        let down_bound = self.f_mul(s, gap)?;
+        let down_bound = self.f_sub(zero, down_bound)?;
+        let up = self.b.f_ord_greater_than(self.bool_ty, None, r, up_bound)?;
+        let down = self.b.f_ord_less_than(self.bool_ty, None, r, down_bound)?;
+        let lower = self.b.select(self.f32_ty, None, down, below, p)?;
+        Ok(self.b.select(self.f32_ty, None, up, above, lower)?)
     }
 
     /// `corrected` where `residual` is ordered and not zero, else `raw`.
