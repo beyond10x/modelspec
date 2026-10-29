@@ -9,6 +9,10 @@ history.
 
 ## [Unreleased]
 
+## [0.25.0] - 2026-10-29
+
+This release makes the decider's JEPA pre-training step fast enough for a full run: the decider's first complete pre-training, 20,000 steps on one RTX 3090, ran at 175.47 ms of training wall time per step and 66.3 minutes of wall time in all on a build of this release's key spans (8eac87ea), where the run aborted earlier the same day had run at 1,098.9 ms per step; the two runs also differ in the model's layout, so no single ratio between them is this release's. Five changes to the Vulkan backend got there, each measured on the decider model against its own base, the median of 3 interleaved pairs on an RTX 3090: the attention kernels stage rows in workgroup memory and skip masked keys, 52.3 ms per step instead of 207.9; the three long-`k` weight-gradient matmuls take tiles of their own, 43.16 ms instead of 87.73; `LayerNorm` and `LayerNormGradX` stage whole rows coalesced, 10.73 ms instead of 40.38, and `LayerNormGradGamma` 4.61 instead of 8.05, measured before the fix pass that set the staging limits; `attention` with fewer query rows than key rows takes the device step from 279.8 to 222.4 ms; and `attention` over `i32` key spans in place of a padded key mask takes it from 219.2 to 135.3 ms. Each change keeps the bits of the programs that ran before it, and over spans the softmax maximum on Vulkan keeps the CPU interpreter's `-0.0`. No run against PyTorch CUDA was timed with this build; the Benchmarks page's comparison is still that of 2026-10-29, made with the 0.22.0 build.
+
 ### Added
 
 - `attention(q, k, v, key_mask, heads = A)` takes `q` of `B * L` rows for `k` and `v` of `B * S`, `1 <= L <= S`, `L` inferred from the rows of `q` and of the key mask, on the CPU interpreter, in autodiff and on Vulkan, forward and the three gradients; `L = S` keeps its bits. The decider gathering its one read row per sequence before its last encoder layer takes a device step of 222.4 ms instead of 279.8 on an RTX 3090, the median of 3 interleaved pairs, and BERT-tiny's step is unchanged (DESIGN.md revision 0.79) (story:attention-fewer-query-rows).
@@ -407,7 +411,8 @@ with `E-TARGET-001`.
 - `examples/linear_regression.mspec` checks and trains; `task check-examples` runs `modelspec check` on it
 - ESS contracts for the compiled artifact, checkpoint, device profile and training run in `spec/`
 
-[Unreleased]: https://github.com/beyond10x/modelspec/compare/0.24.0...HEAD
+[Unreleased]: https://github.com/beyond10x/modelspec/compare/0.25.0...HEAD
+[0.25.0]: https://github.com/beyond10x/modelspec/compare/0.24.0...0.25.0
 [0.24.0]: https://github.com/beyond10x/modelspec/compare/0.23.0...0.24.0
 [0.23.0]: https://github.com/beyond10x/modelspec/compare/0.22.0...0.23.0
 [0.22.0]: https://github.com/beyond10x/modelspec/compare/0.21.0...0.22.0
