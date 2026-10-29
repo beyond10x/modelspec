@@ -1,27 +1,45 @@
-//! The gallery section of the site (DESIGN.md § 13.6, `epic:ir-svg-gallery`): its index page and
-//! the atoms page, every glyph of `modelspec_diagram::glyph`. Layers, modules and pipelines join
-//! the section as their stories land.
+//! The gallery section of the site (DESIGN.md § 13.6, `epic:ir-svg-gallery`): its index page,
+//! the atoms page, every glyph of `modelspec_diagram::glyph`, and the layers page, composed blocks
+//! drawn from small models. Modules and pipelines join the section as their stories land.
 
 pub mod atoms;
+pub mod layers;
 
-use crate::{Pages, front_matter};
+use std::path::Path;
+
+use crate::diagrams::Level;
+use crate::{Pages, Result, front_matter};
 
 /// Where the gallery's pages land, relative to the repository root.
 pub const DIR: &str = "website/docs/gallery";
 
-/// The gallery's pages, by file name.
-pub fn pages() -> Pages {
-    Pages::from([
-        ("index.md".to_owned(), index()),
-        (atoms::PAGE.to_owned(), atoms::page()),
-    ])
+/// What the gallery generates: its pages by file name, and the diagrams they show, each level's
+/// directory of SVGs and each program's JSON module by file name.
+pub struct Gallery {
+    pub pages: Pages,
+    pub images: Vec<Level>,
+    pub data: Pages,
+}
+
+/// The gallery's pages and diagrams, read under `root`.
+pub fn files(root: &Path) -> Result<Gallery> {
+    let layers = layers::files(root)?;
+    Ok(Gallery {
+        pages: Pages::from([
+            ("index.md".to_owned(), index()),
+            (atoms::PAGE.to_owned(), atoms::page()),
+            (layers::PAGE.to_owned(), layers.page),
+        ]),
+        images: layers.images,
+        data: layers.data,
+    })
 }
 
 fn index() -> String {
     let mut out = front_matter(
         "Gallery",
         "Overview",
-        "The architecture diagrams of ModelSpec programs, drawn from their verified Tensor IR: every glyph, and later layers, modules and pipelines.",
+        "The architecture diagrams of ModelSpec programs, drawn from their verified Tensor IR: every glyph, composed layers, and later modules and pipelines.",
         1,
     );
     out.push_str(
@@ -32,9 +50,11 @@ fn index() -> String {
          - [Atoms](./atoms.mdx): every glyph, one per Tensor IR operation and one per composite, \
          stage and endpoint, grouped by operator family, with the source name of each operator \
          and the glyph of its gradient op.\n\
+         - [Layers](./layers.mdx): composed blocks, from a dense layer to self-attention, each a \
+         small model whose forward is the block, with its source and its diagram.\n\
          - [Two layers with relu](../examples/two-layer-relu.mdx): the first example shown with \
          its diagram beside its code.\n\n\
-         Layers, modules and pipelines join this section as they land.\n",
+         Modules and pipelines join this section as they land.\n",
     );
     out
 }

@@ -1,4 +1,4 @@
-import type {ReactNode} from 'react';
+import type {CSSProperties, ReactNode} from 'react';
 import useBaseUrl from '@docusaurus/useBaseUrl';
 
 type DiagramView = {
@@ -27,9 +27,11 @@ export default function ModelDiagram({data, view, scope, caption}: ModelDiagramP
   if (svg === undefined) {
     throw new Error(`${data.program} has no level ${key ?? '(root)'} in its ${view} view`);
   }
+  const width = /^<svg[^>]* width="(\d+)"/.exec(svg)?.[1];
+  const style = width === undefined ? undefined : ({'--ms-diagram-width': width} as CSSProperties);
   return (
     <figure className="ms-figure">
-      <div className="ms-figure__canvas" dangerouslySetInnerHTML={{__html: svg}} />
+      <div className="ms-figure__canvas" style={style} dangerouslySetInnerHTML={{__html: svg}} />
       <figcaption>
         {caption ?? (
           <>
