@@ -132,6 +132,7 @@ fn kernel(
         reduces: None,
         epilogue: None,
         transposed: [false, false],
+        softmax_stats: None,
         workgroup_size: GROUP,
         workgroups,
     };

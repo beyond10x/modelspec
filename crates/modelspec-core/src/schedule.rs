@@ -14,10 +14,16 @@
 //! and the column reductions `SumRows`, `LayerNormGradGamma`, `SigregColumns` and
 //! `SigregColumnsGrad` one per output column.
 //! `Attention`, `AttentionGradQ`, `AttentionGradK` and `AttentionGradV` are one Dispatch each of
-//! workgroups of 64, one invocation per row and head, the head count a last immediate operand;
-//! `CrossEntropy` is a loss sum of one workgroup, `CrossEntropyGrad` one invocation per row, and
-//! `Sqrt` and `Div` elementwise kernels of one invocation per output element that no elementwise
-//! chain extends ([`attention_loss_kernel`], coordinator decision D73).
+//! workgroups of [`ATTENTION_WORKGROUP`], one per sequence, head and tile of [`attention_tile`]
+//! rows ([`attention_workgroups`], story:vulkan-attention-workgroup-per-head), the head count a
+//! last immediate operand; `CrossEntropy` is a loss sum of one workgroup, `CrossEntropyGrad` one
+//! invocation per row, and `Sqrt` and `Div` elementwise kernels of one invocation per output
+//! element that no elementwise chain extends ([`attention_loss_kernel`], coordinator decision
+//! D73). The kernels of an attention call share its softmax statistics ([`softmax_stats_sites`],
+//! story:vulkan-attention-softmax-stats-reused): an `Allocate` of a `[rows · heads, 3]` buffer,
+//! numbered after every other buffer, right before the `Attention` Dispatch, which writes it
+//! before its result, as `AttentionGradQ` does, and `AttentionGradK` and `AttentionGradV` read it
+//! after their operands.
 //! `Input`, `ParamRead` and `Scalar` dispatch nothing: inputs and parameters are bound views, and a scalar
 //! is compiled into the kernels that read it.
 //!
@@ -85,7 +91,8 @@ use thiserror::Error;
 use crate::artifact::{DataRole, DataSpec, ParameterSpec, canonical_parameter_id};
 use crate::ir::kernel::{
     BufferView, ChainLink, ElementwiseChain, Epilogue, ExecutionPlan, Kernel, KernelKind,
-    MatMulLimits, MatMulTile, Operand, PlanOp, PlanStep,
+    MIN_SHARED_MEMORY_BYTES, MatMulLimits, MatMulTile, Operand, PlanOp, PlanStep,
+    SOFTMAX_STATS_PER_QUERY,
 };
 use crate::ir::tensor::{DType, Dim, ParamId, TensorNode, TensorOp, TensorType, ValueId};
 use crate::ir::training::{TrainConfig, TrainingStep, sigreg_projection_inputs};
@@ -162,10 +169,14 @@ struct Work {
     /// One kernel, or stage 1 and stage 2 of a reduce.
     kernels: Vec<Kernel>,
     reads: Vec<BufferView>,
-    /// In binding order; one view but for an epilogue that keeps its pre-activation.
+    /// In binding order; one view but for an epilogue that keeps its pre-activation and an
+    /// attention kernel that writes softmax statistics before its result.
     writes: Vec<BufferView>,
     /// The partials buffer of a two-stage reduce.
     partials: Option<BufferView>,
+    /// The softmax statistics buffer an `Attention` work allocates before its dispatch and
+    /// writes first ([`Kernel::softmax_stats`]).
+    allocates: Option<BufferView>,
 }
 
 /// The fusions and folded constants of a step (the module documentation).
@@ -679,6 +690,7 @@ fn schedule_with(
                         reads: Vec::new(),
                         writes: vec![own],
                         partials: None,
+                        allocates: None,
                     }
                 }
                 _ => Work {
@@ -688,6 +700,7 @@ fn schedule_with(
                     reads: vec![bound_view(&data, &parameters, node)?],
                     writes: vec![own],
                     partials: None,
+                    allocates: None,
                 },
             });
         }
@@ -957,9 +970,9 @@ fn schedule_with(
                         value: node.id,
                         op: node.op.name(),
                     };
-                    let (_, invocations) = attention_loss_shape(&node.op, &operands, &node.ty)
+                    let (_, groups, _) = attention_loss_groups(&node.op, &operands, &node.ty)
                         .ok_or_else(no_kernel)?;
-                    spread(node, invocations.div_ceil(ROWWISE_WORKGROUP))?;
+                    spread(node, groups)?;
                     let built = attention_loss_kernel(&node.op, operands, node.ty.clone())
                         .ok_or_else(no_kernel)?;
                     (vec![built], None)
@@ -989,7 +1002,54 @@ fn schedule_with(
             reads,
             writes,
             partials,
+            allocates: None,
         });
+    }
+
+    // The softmax statistics of each attention call that shares them: one buffer each, numbered
+    // after every other, which the `Attention` work allocates and writes before its result,
+    // `AttentionGradQ` writes before its result and the other gradients read after their
+    // operands (story:vulkan-attention-softmax-stats-reused).
+    if built == Kernels::Vulkan {
+        let sites: Vec<[Option<usize>; 4]> = softmax_stats_sites(&program.nodes)
+            .into_iter()
+            .map(|site| {
+                site.map(|value| {
+                    value.and_then(|value| works.iter().position(|w| w.value == value))
+                })
+            })
+            .collect();
+        for [forward, grad_q, grad_k, grad_v] in sites {
+            let (Some(forward), Some(grad_q), Some(grad_k)) = (forward, grad_q, grad_k) else {
+                continue;
+            };
+            let Some(ty) = works[forward].kernels.first().and_then(softmax_stats_type) else {
+                continue;
+            };
+            let Some(view) = allocate(&mut buffers, &ty) else {
+                return Err(ScheduleError::Shape {
+                    value: works[forward].value,
+                    ty,
+                });
+            };
+            for at in [Some(forward), Some(grad_q), Some(grad_k), grad_v]
+                .into_iter()
+                .flatten()
+            {
+                let work = &mut works[at];
+                let Some(kernel) = work.kernels.first().cloned().and_then(with_softmax_stats)
+                else {
+                    continue;
+                };
+                if kernel.writes_softmax_stats() {
+                    work.writes.insert(0, view);
+                } else {
+                    work.reads.push(view);
+                }
+                work.kernels = vec![kernel];
+            }
+            works[forward].allocates = Some(view);
+        }
     }
 
     let view_of = |value: ValueId| match places.get(&value) {
@@ -1256,6 +1316,7 @@ pub fn rowwise_kernel(
         reduces: None,
         epilogue: None,
         transposed: [false, false],
+        softmax_stats: None,
         workgroup_size: kind.workgroup_size(),
         workgroups,
     };
@@ -1263,10 +1324,47 @@ pub fn rowwise_kernel(
     Some(kernel)
 }
 
-/// The most keys of one sequence an attention kernel reads: each invocation recomputes the
-/// softmax of a query row over them, and a gradient of `k` or `v` does so for every query of
-/// its sequence (coordinator decision D73).
+/// The most keys of one sequence an attention kernel reads: a workgroup stages the weights of
+/// its rows over them in workgroup memory ([`attention_tile`]), and a gradient of `k` or `v`
+/// computes them for every query of its sequence (coordinator decision D73).
 pub const MAX_ATTENTION_KEYS: u64 = 512;
+
+/// The workgroup size of an attention kernel (story:vulkan-attention-workgroup-per-head).
+pub const ATTENTION_WORKGROUP: u32 = 128;
+
+/// The most rows of one sequence's head an attention workgroup computes.
+pub const MAX_ATTENTION_TILE: u64 = 32;
+
+/// The `f32` values of workgroup memory an attention workgroup of `tile` rows over `keys` keys
+/// may stage: two `[tile, keys]` arrays of scores and three statistics per row, or one array
+/// and three statistics per key, each with one value per key to spare.
+pub fn attention_workgroup_values(tile: u64, keys: u64) -> u64 {
+    let rows = 2 * tile * keys + 3 * tile + keys;
+    let columns = tile * keys + 4 * keys;
+    rows.max(columns)
+}
+
+/// The rows of one sequence's head each workgroup of an attention kernel over `keys` keys per
+/// sequence computes: the largest power of two of at most [`MAX_ATTENTION_TILE`] and `keys` whose
+/// [`attention_workgroup_values`] fit the workgroup memory of every device
+/// ([`MIN_SHARED_MEMORY_BYTES`]); 1 past [`MAX_ATTENTION_KEYS`].
+pub fn attention_tile(keys: u64) -> u64 {
+    let budget = u64::from(MIN_SHARED_MEMORY_BYTES) / 4;
+    let mut tile = MAX_ATTENTION_TILE;
+    while tile > 1 && (tile > keys || attention_workgroup_values(tile, keys) > budget) {
+        tile /= 2;
+    }
+    tile
+}
+
+/// The workgroups of an attention kernel over `sequences` sequences of `keys` keys and `heads`
+/// heads: one per sequence, head and tile of [`attention_tile`] rows, the tiles of a head
+/// consecutive, the heads of a sequence consecutive.
+pub fn attention_workgroups(sequences: u64, keys: u64, heads: u64) -> Option<u64> {
+    sequences
+        .checked_mul(heads)?
+        .checked_mul(keys.div_ceil(attention_tile(keys)))
+}
 
 /// The kernel kind of `Attention`, its three gradients, `CrossEntropy`, `CrossEntropyGrad`,
 /// `Sqrt` or `Div` over `operands` into `result`, and the invocations its dispatch runs: one per
@@ -1373,20 +1471,16 @@ fn attention_loss_shape(
 /// The kernel record of `Attention`, `AttentionGradQ`, `AttentionGradK`, `AttentionGradV`,
 /// `CrossEntropy`, `CrossEntropyGrad`, `Sqrt` or `Div` over `operands`, in the op's operand
 /// order, into `result`, as [`schedule`] builds it (DESIGN.md § 5.2, coordinator decision D73):
-/// its kind and invocations by [`attention_loss_shape`], workgroups of 64 over the invocations
-/// (one workgroup for the cross-entropy loss), and its module id. An attention kernel carries
-/// its head count as a last, immediate operand ([`Kernel::heads`]), so it is in the module id.
-/// `None` for another op or for operands that are not the op's.
+/// its kind, workgroups and workgroup size by [`attention_loss_groups`], and its module id. An
+/// attention kernel carries its head count as a last, immediate operand ([`Kernel::heads`]), so
+/// it is in the module id. `None` for another op or for operands that are not the op's.
 pub fn attention_loss_kernel(
     op: &TensorOp,
     mut operands: Vec<Operand>,
     result: TensorType,
 ) -> Option<Kernel> {
-    let (kind, invocations) = attention_loss_shape(op, &operands, &result)?;
-    let workgroups = match kind {
-        KernelKind::LossSum => [1, 1, 1],
-        _ => spread_groups(invocations.div_ceil(ROWWISE_WORKGROUP))?,
-    };
+    let (kind, groups, workgroup_size) = attention_loss_groups(op, &operands, &result)?;
+    let workgroups = spread_groups(groups)?;
     if let Some(heads) = op.attention_heads() {
         operands.push(Operand::Immediate(heads as f32));
     }
@@ -1400,11 +1494,120 @@ pub fn attention_loss_kernel(
         reduces: None,
         epilogue: None,
         transposed: [false, false],
-        workgroup_size: kind.workgroup_size(),
+        softmax_stats: None,
+        workgroup_size,
         workgroups,
     };
     kernel.id = Kernel::module_id(&kernel.signature());
     Some(kernel)
+}
+
+/// The kind of the kernel of [`attention_loss_shape`], its workgroups and their size: for an
+/// attention kernel [`attention_workgroups`] of [`ATTENTION_WORKGROUP`], for the cross-entropy
+/// loss one of 64, for any other workgroups of 64 over its invocations.
+fn attention_loss_groups(
+    op: &TensorOp,
+    operands: &[Operand],
+    result: &TensorType,
+) -> Option<(KernelKind, u64, u32)> {
+    let (kind, invocations) = attention_loss_shape(op, operands, result)?;
+    let size = kind.workgroup_size();
+    match (kind, op.attention_heads()) {
+        (_, Some(heads)) => {
+            let Some(Operand::Buffer(mask)) = operands.get(3) else {
+                return None;
+            };
+            let [b, s] = static_dims(mask)?[..] else {
+                return None;
+            };
+            Some((
+                kind,
+                attention_workgroups(b, s, heads)?,
+                ATTENTION_WORKGROUP,
+            ))
+        }
+        (KernelKind::LossSum, None) => Some((kind, 1, size)),
+        _ => Some((kind, invocations.div_ceil(u64::from(size)), size)),
+    }
+}
+
+/// The type of the softmax statistics an attention kernel of [`attention_loss_kernel`] shares
+/// with the other kernels of its call ([`Kernel::softmax_stats`]): `[rows · heads, 3]` `f32`,
+/// one maximum, sum and row dot per query head. `None` for another kernel or a shape that is not
+/// static.
+pub fn softmax_stats_type(kernel: &Kernel) -> Option<TensorType> {
+    let heads = kernel.heads()?;
+    let Some(Operand::Buffer(q)) = kernel.operands.first() else {
+        return None;
+    };
+    let [Dim::Static(rows), _] = q.shape[..] else {
+        return None;
+    };
+    Some(TensorType::f32(&[
+        rows.checked_mul(heads)?,
+        SOFTMAX_STATS_PER_QUERY,
+    ]))
+}
+
+/// `kernel`, an attention kernel of [`attention_loss_kernel`], made to share its softmax
+/// statistics ([`Kernel::softmax_stats`] of [`softmax_stats_type`]) with its new module id:
+/// an `Attention` kernel writes them, `AttentionGradQ` reads them and writes the row dots, and
+/// `AttentionGradK` and `AttentionGradV` read them. `None` for another kernel.
+pub fn with_softmax_stats(mut kernel: Kernel) -> Option<Kernel> {
+    kernel.softmax_stats = Some(softmax_stats_type(&kernel)?);
+    kernel.id = Kernel::module_id(&kernel.signature());
+    Some(kernel)
+}
+
+/// The attention calls of `nodes` whose kernels share softmax statistics
+/// (story:vulkan-attention-softmax-stats-reused): by the value of each call's `Attention`, its
+/// `AttentionGradQ`, `AttentionGradK` and, when there is one, `AttentionGradV`. A call shares
+/// them when its `q`, `k`, `v`, key mask and head count are those of exactly one `Attention`, one
+/// `AttentionGradQ`, one `AttentionGradK` and at most one `AttentionGradV`, the gradients read
+/// one `G`, and the forward comes before `AttentionGradQ` and that before every other gradient;
+/// the kernels of any other call recompute the statistics where they use them.
+fn softmax_stats_sites(nodes: &[TensorNode]) -> Vec<[Option<ValueId>; 4]> {
+    type Call = (Vec<ValueId>, u64);
+    let mut calls: BTreeMap<Call, [Vec<(usize, &TensorNode)>; 4]> = BTreeMap::new();
+    for (at, node) in nodes.iter().enumerate() {
+        let role = match node.op {
+            TensorOp::Attention { .. } => 0,
+            TensorOp::AttentionGradQ { .. } => 1,
+            TensorOp::AttentionGradK { .. } => 2,
+            TensorOp::AttentionGradV { .. } => 3,
+            _ => continue,
+        };
+        let (Some(heads), Some(operands)) = (node.op.attention_heads(), node.operands.get(..4))
+        else {
+            continue;
+        };
+        calls.entry((operands.to_vec(), heads)).or_default()[role].push((at, node));
+    }
+    calls
+        .into_values()
+        .filter_map(|[forward, q, k, v]| {
+            let ([forward], [q], [k]) = (&forward[..], &q[..], &k[..]) else {
+                return None;
+            };
+            let v = match &v[..] {
+                [] => None,
+                [v] => Some(*v),
+                _ => return None,
+            };
+            let grads = [Some(*q), Some(*k), v];
+            let gradient = |(_, node): &(usize, &TensorNode)| node.operands.get(4).copied();
+            let one_g = grads.iter().flatten().all(|g| gradient(g) == gradient(q));
+            let ordered = forward.0 < q.0 && k.0 > q.0 && v.is_none_or(|v| v.0 > q.0);
+            (one_g && gradient(q).is_some() && ordered).then(|| {
+                [
+                    Some(forward.1.id),
+                    Some(q.1.id),
+                    Some(k.1.id),
+                    v.map(|(_, node)| node.id),
+                ]
+            })
+        })
+        .collect()
 }
 
 /// The tile of a matmul over `operands` `[m, k]` and `[k, n]`, reading the operands marked in
@@ -1441,6 +1644,7 @@ fn kernel(
         reduces,
         epilogue: None,
         transposed: [false, false],
+        softmax_stats: None,
         workgroup_size: kind.workgroup_size(),
         workgroups,
     };
@@ -1508,12 +1712,24 @@ fn record<'a>(works: impl Iterator<Item = &'a Work>) -> Vec<PlanStep> {
         match (&work.kernels[..], work.partials) {
             ([], None) => recorder.copy(work.value, work.reads.clone(), work.writes.clone()),
             ([single], None) => {
+                let allocate = work.allocates.map(|stats| {
+                    recorder.sync_for(&work.reads, &work.writes);
+                    recorder.push(PlanStep {
+                        op: PlanOp::Allocate,
+                        kernel_module_id: None,
+                        workgroups: None,
+                        reads: Vec::new(),
+                        writes: vec![stats],
+                        depends_on: Vec::new(),
+                        value: Some(work.value),
+                    })
+                });
                 recorder.dispatch(
                     single,
                     work.value,
                     work.reads.clone(),
                     work.writes.clone(),
-                    None,
+                    allocate,
                 );
             }
             ([stage1, stage2], Some(partials)) => {

@@ -270,17 +270,19 @@ pub fn declared_sets(words: &[u32]) -> Option<Vec<u32>> {
 }
 
 /// The storage-buffer bindings of a Kernel IR kernel, in binding order: each buffer operand,
-/// then each written binding ([`Kernel::written`]). `true` marks a rank-0 operand, which every
-/// invocation reads at index 0.
+/// the softmax statistics it reads, then each written binding ([`Kernel::bindings`]). `true`
+/// marks a rank-0 operand, which every invocation reads at index 0.
 pub fn kernel_broadcast(kernel: &Kernel) -> Vec<bool> {
-    kernel
+    let operands = kernel
         .operands
         .iter()
-        .filter_map(|operand| match operand {
-            Operand::Buffer(ty) => Some(ty.rank() == 0),
-            Operand::Immediate(_) => None,
-        })
-        .chain(std::iter::repeat_n(false, kernel.written()))
+        .filter(|operand| matches!(operand, Operand::Buffer(_)))
+        .count();
+    kernel
+        .bindings()
+        .into_iter()
+        .enumerate()
+        .map(|(binding, ty)| binding < operands && ty.rank() == 0)
         .collect()
 }
 
@@ -602,6 +604,7 @@ mod tests {
             reduces: None,
             epilogue: None,
             transposed: [false, false],
+            softmax_stats: None,
             workgroup_size: 64,
             workgroups: [1, 1, 1],
         };
