@@ -1,0 +1,13 @@
+{
+  "at": "2026-10-29T20:33:36Z",
+  "actor": "human:timo",
+  "artifact": "epic:bert-from-scratch",
+  "kind": "epic",
+  "revision": 5,
+  "change": {
+    "change": "evidence",
+    "kind": "metric_observation",
+    "source": "story:bert-tiny-gpu-pretraining metric_observation: examples/bert_tiny.mspec on Vulkan, 10,000 steps at 7e371a1, held-out MLM loss 6.7674994 below the unigram baseline 6.926537926 (the target that story set), recorded and watched in the observatory",
+    "reference": "website/docs/runs/bert-tiny-gpu-pretraining.md"
+  }
+}

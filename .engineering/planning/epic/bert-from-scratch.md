@@ -2,7 +2,7 @@
 format: aep.planning-md/3
 id: epic:bert-from-scratch
 kind: epic
-status: active
+status: implemented
 title: 'Milestone: pre-train a small BERT from scratch in ModelSpec'
 summary: A BERT-tiny class encoder written in .mspec, pre-trained with masked-language modelling on the GPU backend to a stated loss target.
 relations:
@@ -10,10 +10,11 @@ relations:
 - depends_on: epic:m1-vulkan-execution
 - informed_by: epic:training-observatory
 - informed_by: executable-system-specification:modelspec-contracts
-revision: 5
+revision: 6
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-24T18:51:35Z", actor: "human:timo", revision: 4}
 - {from: "proposed", to: "active", at: "2026-10-24T18:51:35Z", actor: "human:timo", revision: 5}
+- {from: "active", to: "implemented", at: "2026-10-29T20:34:02Z", actor: "human:timo", revision: 6, decided_on: {"recorded":{"test_result":1,"metric_observation":1}}}
 ---
 # Milestone: train a small BERT from scratch, written in ModelSpec
 

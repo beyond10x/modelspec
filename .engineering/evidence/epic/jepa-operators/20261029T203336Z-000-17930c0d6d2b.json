@@ -1,0 +1,13 @@
+{
+  "at": "2026-10-29T20:33:36Z",
+  "actor": "human:timo",
+  "artifact": "epic:jepa-operators",
+  "kind": "epic",
+  "revision": 4,
+  "change": {
+    "change": "evidence",
+    "kind": "test_result",
+    "source": "modelspec / task ci on 6ed04f91 (release 0.25.0 PR, success); the three stories' test_result: cargo test --workspace --features vulkan 2087 passed and the device tests at 278e129e, an ancestor of main; shipped in 0.22.0",
+    "reference": "https://github.com/beyond10x/modelspec/actions/runs/40944702453/job/123696892346"
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "at": "2026-10-29T20:33:37Z",
+  "actor": "human:timo",
+  "artifact": "epic:transformer-vs-pytorch-cuda",
+  "kind": "epic",
+  "revision": 3,
+  "change": {
+    "change": "evidence",
+    "kind": "verification",
+    "source": "plan housekeeping read of 6ed04f91: verification reports mlp-size-sweep-2026-10-23/24/25, transformer-block-benchmark-2026-10-27, bert-tiny-vs-pytorch-2026-10-28 and -29 name host, driver, PyTorch version, commands, median of 3 runs and GPU clocks; every runs.yaml row cites its report; the pitch deck notes cite runs.yaml run ids, and the transformer-block figure CHANGELOG.md 0.21.0",
+    "reference": "benchmarks/runs.yaml"
+  }
+}
