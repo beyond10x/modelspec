@@ -17,7 +17,7 @@ use std::time::Instant;
 use common::{GPU_ATOL, GPU_RTOL, GUARD_WORDS, flush_subnormals, guard, guarded, within};
 use modelspec_core::ir::kernel::{Kernel, Operand};
 use modelspec_core::ir::tensor::{Dim, TensorOp, TensorProgramBuilder, TensorType, ValueId};
-use modelspec_core::schedule::rowwise_kernel;
+use modelspec_core::schedule::{embedding_grad_kernels, rowwise_kernel};
 use modelspec_runtime::cpu::interpreter::evaluate_seeded;
 use modelspec_runtime::cpu::tensor::HostTensor;
 use modelspec_runtime::spirv::emit::emit;
@@ -240,33 +240,54 @@ fn cpu(case: &Case) -> Vec<f32> {
         .to_vec()
 }
 
-fn kernel_of(case: &Case) -> Kernel {
+/// The kernels of `case`, as the schedule builds them: one for every op but `EmbeddingGrad`,
+/// which is a sort and a gradient.
+fn kernels_of(case: &Case) -> Vec<Kernel> {
     let operands = case
         .operands
         .iter()
         .map(|(_, ty, _)| Operand::Buffer(ty.clone()))
         .collect();
-    rowwise_kernel(&case.op, operands, case.result.clone())
-        .unwrap_or_else(|| panic!("{} has a row-wise kernel", case.op.name()))
+    if matches!(case.op, TensorOp::EmbeddingGrad { .. }) {
+        let kernels = embedding_grad_kernels(operands, case.result.clone());
+        return Vec::from(kernels.expect("EmbeddingGrad has its two kernels"));
+    }
+    vec![
+        rowwise_kernel(&case.op, operands, case.result.clone())
+            .unwrap_or_else(|| panic!("{} has a row-wise kernel", case.op.name())),
+    ]
 }
 
 fn bytes_of(words: usize) -> u64 {
     (words * 4) as u64
 }
 
-/// One dispatch of `case`'s kernel; the output and its guard words.
+/// Runs the kernels of `case` once on `device` ([`run`]).
 fn gpu(device: &Device<'_>, case: &Case) -> Vec<f32> {
-    let kernel = kernel_of(case);
-    let words = emit(&kernel).expect("the kernel emits");
-    let pipeline = if matches!(
-        case.op,
-        TensorOp::Dropout { .. } | TensorOp::DropoutGrad { .. }
-    ) {
-        device.kernel_pipeline_seeded(&kernel, &words, case.seed)
-    } else {
-        device.kernel_pipeline(&kernel, &words)
-    }
-    .expect("the pipeline is created");
+    run(device, case, &kernels_of(case))
+}
+
+/// Runs `kernels` over the operands of `case` once on `device`: uploads its operands and the
+/// guarded output, dispatches, reads back, in one command buffer with one host wait. Returns the
+/// output with its guard words. Two kernels run as the step plan runs a two-stage work: stage 1
+/// reads the first operands and writes an intermediate buffer, and after a barrier stage 2 reads
+/// it, then the last operands its kernel names.
+fn run(device: &Device<'_>, case: &Case, kernels: &[Kernel]) -> Vec<f32> {
+    let pipelines: Vec<_> = kernels
+        .iter()
+        .map(|kernel| {
+            let words = emit(kernel).expect("the kernel emits");
+            if matches!(
+                case.op,
+                TensorOp::Dropout { .. } | TensorOp::DropoutGrad { .. }
+            ) {
+                device.kernel_pipeline_seeded(kernel, &words, case.seed)
+            } else {
+                device.kernel_pipeline(kernel, &words)
+            }
+            .expect("the pipeline is created")
+        })
+        .collect();
     let result: u64 = shape_of(&case.result).iter().product();
     let mut uploads: Vec<Data> = case.operands.iter().map(|(_, _, d)| d.clone()).collect();
     uploads.push(Data::F32(guarded(&vec![
@@ -288,29 +309,71 @@ fn gpu(device: &Device<'_>, case: &Case) -> Vec<f32> {
         .iter()
         .zip(&lengths)
         .map(|(data, &n)| {
-            let mut buffer = device.staging_buffer(bytes_of(n)).expect("staging");
+            let mut buffer = device
+                .staging_buffer(bytes_of(n))
+                .expect("a staging buffer");
             match data {
                 Data::F32(v) => buffer.write_f32(v),
                 Data::I32(v) => buffer.write_i32(v),
             }
-            .expect("written");
+            .expect("the staging buffer is written");
             buffer
         })
         .collect();
     let output = buffers.len() - 1;
-    let bound: Vec<&Buffer<'_>> = buffers.iter().collect();
+    let buffer_operands = |kernel: &Kernel| {
+        kernel
+            .operands
+            .iter()
+            .filter(|o| matches!(o, Operand::Buffer(_)))
+            .count()
+    };
+    let between = match kernels {
+        [_] => None,
+        [first, _] => {
+            let n: u64 = shape_of(&first.result).iter().product();
+            Some(
+                device
+                    .device_local_buffer(bytes_of(n as usize))
+                    .expect("a buffer"),
+            )
+        }
+        _ => panic!("one kernel or two stages"),
+    };
     let mut recording = device.record().expect("a recording starts");
     for (from, to) in staging.iter().zip(&buffers) {
-        recording.copy(from, to).expect("upload");
+        recording.copy(from, to).expect("the upload is recorded");
     }
     recording.barrier(Barrier::TransferToCompute);
-    recording
-        .dispatch_kernel(&pipeline, &kernel, &bound)
-        .expect("dispatch");
+    match (kernels, &between) {
+        ([kernel], None) => {
+            let bound: Vec<&Buffer<'_>> = buffers.iter().collect();
+            recording
+                .dispatch_kernel(&pipelines[0], kernel, &bound)
+                .expect("the dispatch is recorded");
+        }
+        ([first, second], Some(between)) => {
+            let reads = buffer_operands(first);
+            let bound: Vec<&Buffer<'_>> = buffers[..reads].iter().chain([between]).collect();
+            recording
+                .dispatch_kernel(&pipelines[0], first, &bound)
+                .expect("stage 1 is recorded");
+            recording.barrier(Barrier::ComputeToCompute);
+            let rest = buffer_operands(second) - 1;
+            let bound: Vec<&Buffer<'_>> = [between]
+                .into_iter()
+                .chain(&buffers[output - rest..])
+                .collect();
+            recording
+                .dispatch_kernel(&pipelines[1], second, &bound)
+                .expect("stage 2 is recorded");
+        }
+        _ => unreachable!("an intermediate buffer exactly for two stages"),
+    }
     recording.barrier(Barrier::ComputeToTransfer);
     recording
         .copy(&buffers[output], &staging[output])
-        .expect("download");
+        .expect("the download is recorded");
     recording.barrier(Barrier::TransferToHost);
     let recorded = recording.finish().expect("the recording ends");
     device

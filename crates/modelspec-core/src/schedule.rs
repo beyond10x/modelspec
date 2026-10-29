@@ -12,7 +12,11 @@
 //! `EmbeddingGrad`, `AddRows`, `Gelu`, `GeluGrad`, `Dropout` and `DropoutGrad` one invocation per
 //! output element, `LayerNorm`, `LayerNormGradX`, `Softmax` and `SoftmaxGrad` one per output row,
 //! and the column reductions `SumRows`, `LayerNormGradGamma`, `SigregColumns` and
-//! `SigregColumnsGrad` one per output column.
+//! `SigregColumnsGrad` one per output column. `EmbeddingGrad` alone is two Dispatches
+//! ([`embedding_grad_kernels`], story:vulkan-embedding-grad-sorted-ids): an `Allocate` of an
+//! `i32[n, 2]` buffer, numbered after every other buffer, a sort of the `n` ids by id and
+//! position that writes it, one invocation per id, a `Barrier`, and the gradient over the sorted
+//! ids, one invocation per element of the table gradient.
 //! `Attention`, `AttentionGradQ`, `AttentionGradK` and `AttentionGradV` are one Dispatch each of
 //! workgroups of [`ATTENTION_WORKGROUP`], one per sequence, head and tile of [`attention_tile`]
 //! rows ([`attention_workgroups`], story:vulkan-attention-workgroup-per-head), the head count a
@@ -660,6 +664,8 @@ fn schedule_with(
     let mut host_inputs = Vec::new();
     let mut places: BTreeMap<ValueId, Place> = BTreeMap::new();
     let mut works: Vec<Work> = Vec::new();
+    // The works of each `EmbeddingGrad`, whose sorted ids get a buffer after every other.
+    let mut sorted_ids: Vec<usize> = Vec::new();
     let mut prediction_view = None;
     for node in &program.nodes {
         let shape_error = || ScheduleError::Shape {
@@ -930,8 +936,23 @@ fn schedule_with(
                 );
                 (vec![stage1, stage2], Some(partials))
             }
+            TensorOp::EmbeddingGrad { .. } => match built {
+                Kernels::None => continue,
+                Kernels::Vulkan => {
+                    let no_kernel = || ScheduleError::NoKernel {
+                        value: node.id,
+                        op: node.op.name(),
+                    };
+                    let (_, invocations) =
+                        rowwise_shape(&node.op, &operands, &node.ty).ok_or_else(no_kernel)?;
+                    spread(node, invocations.div_ceil(ROWWISE_WORKGROUP))?;
+                    let [sort, gather] =
+                        embedding_grad_kernels(operands, node.ty.clone()).ok_or_else(no_kernel)?;
+                    sorted_ids.push(works.len());
+                    (vec![sort, gather], None)
+                }
+            },
             TensorOp::Embedding
-            | TensorOp::EmbeddingGrad { .. }
             | TensorOp::AddRows
             | TensorOp::SumRows
             | TensorOp::Gelu
@@ -1097,6 +1118,18 @@ fn schedule_with(
             }
             works[forward].allocates = Some(view);
         }
+    }
+
+    // The sorted ids of each `EmbeddingGrad`: one buffer each, numbered after every other, which
+    // its work allocates before its sort writes it (story:vulkan-embedding-grad-sorted-ids).
+    for at in sorted_ids {
+        let work = &mut works[at];
+        let ty = work.kernels[0].result.clone();
+        let view = allocate(&mut buffers, &ty).ok_or_else(|| ScheduleError::Shape {
+            value: work.value,
+            ty: ty.clone(),
+        })?;
+        work.partials = Some(view);
     }
 
     let view_of = |value: ValueId| match places.get(&value) {
@@ -1342,17 +1375,66 @@ fn static_dims(ty: &TensorType) -> Option<Vec<u64>> {
 /// workgroups of 64 over its invocations, and its module id. A `Dropout` or `DropoutGrad`
 /// carries its drop probability `p` as a last, immediate operand, so it is in the module id;
 /// the run key is not, the pipeline supplies it. `None` where [`rowwise_shape`] is: another
-/// op, or operands that are not the op's.
+/// op, or operands that are not the op's; and for `EmbeddingGrad`, which is two kernels
+/// ([`embedding_grad_kernels`]).
 pub fn rowwise_kernel(
     op: &TensorOp,
     mut operands: Vec<Operand>,
     result: TensorType,
 ) -> Option<Kernel> {
+    if matches!(op, TensorOp::EmbeddingGrad { .. }) {
+        return None;
+    }
     let (kind, invocations) = rowwise_shape(op, &operands, &result)?;
-    let workgroups = spread_groups(invocations.div_ceil(ROWWISE_WORKGROUP))?;
     if let Some(p) = op.dropout_rate() {
         operands.push(Operand::Immediate(p));
     }
+    rowwise_record(kind, op, operands, result, invocations)
+}
+
+/// The two kernels of `EmbeddingGrad` over its operands `ids: i32[N]` and `g: f32[N, H]` into
+/// its `result: f32[V, H]`, as [`schedule`] builds them (story:vulkan-embedding-grad-sorted-ids):
+/// the sort, [`KernelKind::PerRow`] over `(ids)` into `i32[N, 2]`, invocation `n` writing the id
+/// and position `n` to the row of its rank by id, then position, so the rows hold the ids in
+/// ascending order and each id's positions in ascending order; and the gradient,
+/// [`KernelKind::PerElement`] over `(sorted, g)` into `result`, one invocation per element, which
+/// adds the gradient rows of its table row's positions in ascending order. `None` for operands
+/// or a result that are not the op's.
+pub fn embedding_grad_kernels(operands: Vec<Operand>, result: TensorType) -> Option<[Kernel; 2]> {
+    let op = TensorOp::EmbeddingGrad {
+        rows: *result.shape.first()?,
+    };
+    let (kind, invocations) = rowwise_shape(&op, &operands, &result)?;
+    let [ids, g] = <[Operand; 2]>::try_from(operands).ok()?;
+    let rows = match &ids {
+        Operand::Buffer(ty) => match ty.shape[..] {
+            [Dim::Static(rows)] => rows,
+            _ => return None,
+        },
+        Operand::Immediate(_) => return None,
+    };
+    let sorted = TensorType::i32(&[rows, 2]);
+    let sort = rowwise_record(KernelKind::PerRow, &op, vec![ids], sorted.clone(), rows)?;
+    let gather = rowwise_record(
+        kind,
+        &op,
+        vec![Operand::Buffer(sorted), g],
+        result,
+        invocations,
+    )?;
+    Some([sort, gather])
+}
+
+/// The record of a row-wise kernel of `op`: `kind`, workgroups of 64 over `invocations`, and its
+/// module id.
+fn rowwise_record(
+    kind: KernelKind,
+    op: &TensorOp,
+    operands: Vec<Operand>,
+    result: TensorType,
+    invocations: u64,
+) -> Option<Kernel> {
+    let workgroups = spread_groups(invocations.div_ceil(ROWWISE_WORKGROUP))?;
     let mut kernel = Kernel {
         id: crate::ir::kernel::KernelModuleId([0; 16]),
         kind,

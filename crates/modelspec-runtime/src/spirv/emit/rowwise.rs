@@ -20,11 +20,17 @@
 //! CPU's values.
 //!
 //! `Embedding` reads an id outside the table as row 0 and writes `0.0` for it, so no invocation
-//! reads past the table; the CPU refuses such an id before it runs. `EmbeddingGrad` element
-//! `(r, j)` starts at `0.0` and adds column `j` of the gradient row of every id equal to `r` in
-//! ascending id position, then writes once, without atomics; for each block of 64 ids,
-//! invocation `i` of the workgroup copies id `i` of the block into workgroup memory, and after a
-//! barrier each invocation compares its row with the block's ids in ascending order.
+//! reads past the table; the CPU refuses such an id before it runs. `EmbeddingGrad` is two
+//! kernels (story:vulkan-embedding-grad-sorted-ids). Its sort, `per_row` and `i32`, gives
+//! position `k` of the `n` ids its rank, the number of ids below it, compared as `u32`, plus the
+//! number of equal ids at earlier positions, and writes the id and `k` into row `rank` of an
+//! `i32[n, 2]`: the ids sorted by id, then by position, with no float operation. For each block
+//! of 64 ids, invocation `i` of the workgroup copies id `i` of the block into workgroup memory,
+//! and after a barrier each invocation compares its id with the block's ids. Its gradient,
+//! `per_element`, finds the sorted rows of its table row `r` by two binary searches of a fixed
+//! number of steps, so element `(r, j)` starts at `0.0` and adds column `j` of the gradient row
+//! of every id equal to `r` in ascending id position, as the CPU does, then writes once, without
+//! atomics; a row no id names writes `0.0`.
 //! `LayerNormGradGamma` runs workgroups of 64 columns; for each block of 64 rows, invocation `i`
 //! of the workgroup computes the mean and reciprocal standard deviation of row `i` of the block
 //! into workgroup memory, and after a barrier each invocation adds its column's terms of the
@@ -87,6 +93,11 @@ pub(super) enum Rowwise {
         table: u32,
         width: u32,
     },
+    /// The sort of `EmbeddingGrad`: `ids` ids into `[ids, 2]` rows of id and position.
+    EmbeddingSort {
+        ids: u32,
+    },
+    /// The gradient of `EmbeddingGrad` over the `[ids, 2]` sorted rows.
     EmbeddingGrad {
         ids: u32,
         width: u32,
@@ -158,8 +169,16 @@ impl Rowwise {
             fits(elements(shape)).ok_or_else(|| wrong("an operand of 0 or 2^32 elements"))?;
         }
         let out = fits(elements(&result)).ok_or_else(|| wrong("a result of 0 or 2^32 elements"))?;
-        if kernel.dtype != DType::F32 || kernel.result.dtype != DType::F32 {
-            return Err(wrong("a row-wise kernel writes f32"));
+        // The sort of `EmbeddingGrad` writes ids and positions; every other kernel writes f32.
+        let writes = match (kernel.op, kernel.kind) {
+            ("EmbeddingGrad", KernelKind::PerRow) => DType::I32,
+            _ => DType::F32,
+        };
+        if kernel.dtype != writes || kernel.result.dtype != writes {
+            return Err(wrong(match writes {
+                DType::I32 => "the sort of EmbeddingGrad writes i32",
+                _ => "a row-wise kernel writes f32",
+            }));
         }
         let types: Vec<DType> = buffers.iter().map(|(dtype, _)| *dtype).collect();
         let shapes: Vec<&[u64]> = buffers.iter().map(|(_, shape)| shape.as_slice()).collect();
@@ -181,14 +200,19 @@ impl Rowwise {
                     width: u(*h),
                 },
             ),
-            ("EmbeddingGrad", [I32, F32], [[n], [gn, h]], [v, rh], []) if n == gn && h == rh => (
-                PerElement,
-                out,
-                Rowwise::EmbeddingGrad {
-                    ids: u(*n),
-                    width: u(*h),
-                },
-            ),
+            ("EmbeddingGrad", [I32], [[n]], [rn, 2], []) if n == rn => {
+                (PerRow, u(*n), Rowwise::EmbeddingSort { ids: u(*n) })
+            }
+            ("EmbeddingGrad", [I32, F32], [[n, 2], [gn, h]], [_, rh], []) if n == gn && h == rh => {
+                (
+                    PerElement,
+                    out,
+                    Rowwise::EmbeddingGrad {
+                        ids: u(*n),
+                        width: u(*h),
+                    },
+                )
+            }
             ("AddRows", [F32, F32], [[n, h], [bh]], [rn, rh], [])
                 if h == bh && (n, h) == (rn, rh) =>
             {
@@ -294,8 +318,17 @@ impl Rowwise {
     pub(super) fn shared(self) -> Option<u32> {
         match self {
             Rowwise::LayerNormGradGamma { .. } => Some(2 * GROUP),
-            Rowwise::EmbeddingGrad { .. } => Some(GROUP),
+            Rowwise::EmbeddingSort { .. } => Some(GROUP),
             _ => None,
+        }
+    }
+
+    /// The `u32` function variables the module keeps beside the shell's two.
+    pub(super) fn u32_vars(self) -> usize {
+        match self {
+            Rowwise::EmbeddingSort { .. } => 1,
+            Rowwise::EmbeddingGrad { .. } => 2,
+            _ => 0,
         }
     }
 
@@ -521,6 +554,9 @@ impl Shell {
         if let Rowwise::EmbeddingGrad { ids, width } = rowwise {
             return self.embedding_grad(ids, width);
         }
+        if let Rowwise::EmbeddingSort { ids } = rowwise {
+            return self.embedding_sort(ids);
+        }
         let (index, count) = (self.index, self.count);
         let inside = self.less(index, count)?;
         self.when(inside, |m| match rowwise {
@@ -570,7 +606,9 @@ impl Shell {
             Rowwise::SoftmaxGrad { width } => m.softmax_grad(width),
             Rowwise::SigregColumns { rows, width } => m.sigreg_columns(rows, width),
             Rowwise::SigregColumnsGrad { rows, width } => m.sigreg_columns_grad(rows, width),
-            Rowwise::LayerNormGradGamma { .. } | Rowwise::EmbeddingGrad { .. } => {
+            Rowwise::LayerNormGradGamma { .. }
+            | Rowwise::EmbeddingSort { .. }
+            | Rowwise::EmbeddingGrad { .. } => {
                 unreachable!("handled above")
             }
         })
@@ -787,23 +825,24 @@ impl Shell {
         self.write(index, out)
     }
 
-    /// Element `index` of the table gradient, column `j = index % width` of table row
-    /// `r = index / width`: `0.0`, then plus element `j` of gradient row `n` for every `n` in
-    /// ascending order whose id is `r`, in the shell's `f32` variable, written once. Each block
-    /// of 64 ids is staged in workgroup memory, id `i` of the block read by invocation `i` and
-    /// kept as the bits of an `f32`, between two barriers that every invocation of the workgroup
-    /// reaches.
-    fn embedding_grad(&mut self, ids: u32, width: u32) -> Result<(), EmitError> {
-        let (index, count, acc) = (self.index, self.count, self.f32_var);
+    /// The sort of `EmbeddingGrad`, invocation `index` for id `index`: its rank, the number of ids
+    /// below it and of equal ids at earlier positions, counted over every id in ascending
+    /// position, then its id and position written, as their bits, to row `rank` of the
+    /// `[ids, 2]` result. Each block of 64 ids is staged in workgroup memory, id `i` of the
+    /// block read by invocation `i` and kept as the bits of an `f32`, between two barriers that
+    /// every invocation of the workgroup reaches. Integer compares only, so the rows are the
+    /// stable sort by id on every device.
+    fn embedding_sort(&mut self, ids: u32) -> Result<(), EmitError> {
+        let (index, count) = (self.index, self.count);
         let local = self.local.expect("a module with workgroup memory");
         let [block_var, t_var] = self.u32_vars;
-        let (zero, one) = (self.uint(0), self.uint(1));
-        let (w, n_ids, group) = (self.uint(width), self.uint(ids), self.uint(GROUP));
-        let row = self.div(index, w)?;
-        let j = self.rem(index, w)?;
-        let f_zero = self.float(0.0);
-        self.b.store(acc, f_zero, None, [])?;
+        let rank_var = self.extra_u32_vars[0];
+        let (zero, one, two) = (self.uint(0), self.uint(1), self.uint(2));
+        let (n_ids, group) = (self.uint(ids), self.uint(GROUP));
         let inside = self.less(index, count)?;
+        let at = self.b.select(self.u32_ty, None, inside, index, zero)?;
+        let own = self.read_u32(0, at)?;
+        self.b.store(rank_var, zero, None, [])?;
         self.counted(block_var, zero, n_ids, group, |m, block| {
             let n = m.add(block, local)?;
             let staged = m.less(n, n_ids)?;
@@ -819,22 +858,91 @@ impl Shell {
                 m.counted(t_var, zero, end, one, |m, t| {
                     let bits = m.load_shared(t)?;
                     let id = m.b.bitcast(m.u32_ty, None, bits)?;
-                    let hit = m.equal(id, row)?;
-                    m.when(hit, |m| {
-                        let n = m.add(block, t)?;
-                        let g_base = m.mul(n, w)?;
-                        let g_at = m.add(g_base, j)?;
-                        let g = m.read(1, g_at)?;
-                        let current = m.b.load(m.f32_ty, None, acc, None, [])?;
-                        let sum = m.f_add(current, g)?;
-                        m.b.store(acc, sum, None, [])?;
-                        Ok(())
-                    })
+                    let position = m.add(block, t)?;
+                    let below = m.less(id, own)?;
+                    let equal = m.equal(id, own)?;
+                    let earlier = m.less(position, index)?;
+                    let tie = m.and(equal, earlier)?;
+                    let before = m.b.logical_or(m.bool_ty, None, below, tie)?;
+                    let step = m.b.select(m.u32_ty, None, before, one, zero)?;
+                    let rank = m.b.load(m.u32_ty, None, rank_var, None, [])?;
+                    let rank = m.add(rank, step)?;
+                    m.b.store(rank_var, rank, None, [])?;
+                    Ok(())
                 })
             })?;
             m.barrier()
         })?;
         self.when(inside, |m| {
+            let rank = m.b.load(m.u32_ty, None, rank_var, None, [])?;
+            let row = m.mul(rank, two)?;
+            let id = m.b.bitcast(m.f32_ty, None, own)?;
+            m.write(row, id)?;
+            let next = m.add(row, one)?;
+            let position = m.b.bitcast(m.f32_ty, None, index)?;
+            m.write(next, position)
+        })
+    }
+
+    /// The first row of the `[ids, 2]` sorted ids at binding 0 whose id is not below `key`, or
+    /// `ids`: a binary search of fixed length, the bit length of `ids`, in the module's two extra
+    /// `u32` variables and the shell's first.
+    fn lower_bound(&mut self, ids: u32, key: Word) -> Result<Word, EmitError> {
+        let [low_var, length_var] = [self.extra_u32_vars[0], self.extra_u32_vars[1]];
+        let (zero, one, two) = (self.uint(0), self.uint(1), self.uint(2));
+        let (n_ids, steps) = (self.uint(ids), self.uint(u32::BITS - ids.leading_zeros()));
+        self.b.store(low_var, zero, None, [])?;
+        self.b.store(length_var, n_ids, None, [])?;
+        self.counted(self.u32_vars[0], zero, steps, one, |m, _| {
+            let low = m.b.load(m.u32_ty, None, low_var, None, [])?;
+            let length = m.b.load(m.u32_ty, None, length_var, None, [])?;
+            let half = m.b.shift_right_logical(m.u32_ty, None, length, one)?;
+            let middle = m.add(low, half)?;
+            let open = m.less(zero, length)?;
+            let probe = m.b.select(m.u32_ty, None, open, middle, zero)?;
+            let row = m.mul(probe, two)?;
+            let id = m.read_u32(0, row)?;
+            let below = m.less(id, key)?;
+            let right = m.and(open, below)?;
+            let past = m.add(middle, one)?;
+            let low = m.b.select(m.u32_ty, None, right, past, low)?;
+            let rest = m.sub(length, half)?;
+            let rest = m.sub(rest, one)?;
+            let length = m.b.select(m.u32_ty, None, right, rest, half)?;
+            m.b.store(low_var, low, None, [])?;
+            m.b.store(length_var, length, None, [])?;
+            Ok(())
+        })?;
+        Ok(self.b.load(self.u32_ty, None, low_var, None, [])?)
+    }
+
+    /// Element `index` of the table gradient, column `j = index % width` of table row
+    /// `r = index / width`: `0.0`, then plus element `j` of gradient row `n` for each row
+    /// `(r, n)` of the sorted ids at binding 0 in order, so for every position `n` whose id is
+    /// `r` in ascending order, in the shell's `f32` variable, written once. The rows of `r` are
+    /// those from the first whose id is not below `r` to the first whose id is not below
+    /// `r + 1` ([`Shell::lower_bound`]).
+    fn embedding_grad(&mut self, ids: u32, width: u32) -> Result<(), EmitError> {
+        let (index, count, acc) = (self.index, self.count, self.f32_var);
+        let inside = self.less(index, count)?;
+        self.when(inside, |m| {
+            let (one, two, w) = (m.uint(1), m.uint(2), m.uint(width));
+            let row = m.div(index, w)?;
+            let j = m.rem(index, w)?;
+            let start = m.lower_bound(ids, row)?;
+            let next = m.add(row, one)?;
+            let end = m.lower_bound(ids, next)?;
+            let f_zero = m.float(0.0);
+            m.b.store(acc, f_zero, None, [])?;
+            m.counted(m.u32_vars[1], start, end, one, |m, k| {
+                let at = m.mul(k, two)?;
+                let at = m.add(at, one)?;
+                let n = m.read_u32(0, at)?;
+                let g_base = m.mul(n, w)?;
+                let g_at = m.add(g_base, j)?;
+                let g = m.read(1, g_at)?;
+                m.accumulate(g)
+            })?;
             let sum = m.b.load(m.f32_ty, None, acc, None, [])?;
             m.write(index, sum)
         })
