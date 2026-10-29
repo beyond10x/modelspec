@@ -36,6 +36,8 @@ fn stats() -> RunStats {
         peak_device_bytes: 1024,
         class: NumericsClass::Tolerance,
         elapsed: Duration::from_micros(90),
+        pipelines: 6,
+        pipeline_creation: Duration::from_micros(1500),
     }
 }
 

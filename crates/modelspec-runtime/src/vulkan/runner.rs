@@ -65,7 +65,8 @@ use thiserror::Error;
 use super::dispatch::{Bound, DescriptorArena, Recording, TimestampPool};
 use super::memory::{Buffer, MemorySpan};
 use super::negotiate::{Negotiated, NumericsClass, negotiate};
-use super::pipeline::{Pipeline, PipelineStatistics, reads_seed};
+use super::pipeline::{Pipeline, PipelineRequest, PipelineStatistics, reads_seed};
+use super::pipeline_cache::make_pipelines;
 use super::profile::{PlanName, Profile, Site, timings};
 use super::select::select_device;
 use super::sync::{Barrier, recorded_barriers};
@@ -109,6 +110,12 @@ pub struct RunStats {
     /// From the first submit to the end of the last wait, the checkpoints written on the way
     /// included.
     pub elapsed: Duration,
+    /// The compute pipelines the run made: one per distinct SPIR-V module
+    /// (story:vulkan-pipeline-startup).
+    pub pipelines: u64,
+    /// The time to make them, the pipeline cache read from and written to disk included
+    /// ([`super::pipeline_cache::make_pipelines`]).
+    pub pipeline_creation: Duration,
 }
 
 impl RunStats {
@@ -134,7 +141,13 @@ impl fmt::Display for RunStats {
         writeln!(f, "device allocations: {}", self.device_allocations)?;
         writeln!(f, "peak device bytes: {}", self.peak_device_bytes)?;
         writeln!(f, "numerics class: {}", self.class)?;
-        writeln!(f, "us per step: {:.3}", self.us_per_step())
+        writeln!(f, "us per step: {:.3}", self.us_per_step())?;
+        writeln!(f, "pipelines: {}", self.pipelines)?;
+        writeln!(
+            f,
+            "pipeline creation us: {:.3}",
+            self.pipeline_creation.as_secs_f64() * 1e6
+        )
     }
 }
 
@@ -696,12 +709,20 @@ fn execute_runs(
     let emitting = Instant::now();
     let modules = emit_kernels(artifact, profile)?;
     let emitted = emitting.elapsed();
-    let creating = Instant::now();
-    let mut pipelines = Vec::with_capacity(plan.kernels.len());
-    for (kernel, module) in plan.kernels.iter().zip(&modules) {
-        pipelines.push(device.kernel_pipeline(kernel, &module.spirv)?);
-    }
-    let pipeline_creation = creating.elapsed();
+    // One pipeline per distinct module, through the cache on disk (story:vulkan-pipeline-startup).
+    let requests: Vec<PipelineRequest<'_>> = plan
+        .kernels
+        .iter()
+        .zip(&modules)
+        .map(|(kernel, module)| PipelineRequest {
+            kernel,
+            words: &module.spirv,
+            seed: None,
+        })
+        .collect();
+    let (made, pipeline_creation) = make_pipelines(device, profile, &requests)?;
+    let pipelines_made = made.distinct() as u64;
+    let pipelines = made.each();
     // The statistics of every kernel's pipeline, read once when profiled on a device opened with
     // the pipeline executable extension; a failing query leaves the reason and the run goes on.
     let pipeline_statistics = if profiled && device.pipeline_statistics_enabled() {
@@ -769,12 +790,7 @@ fn execute_runs(
         .count();
     let arena =
         device.descriptor_arena(count_u32(dispatch_steps)?, count_u32(descriptors(plan))?)?;
-    let (actions, loss_actions) = actions(
-        plan,
-        &arena,
-        &pipelines.iter().collect::<Vec<_>>(),
-        &buffers,
-    )?;
+    let (actions, loss_actions) = actions(plan, &arena, &pipelines, &buffers)?;
 
     // The dispatch sites a profile times, and one timestamp pool per chunk of `CHUNK_STEPS`
     // steps: two queries per dispatch it records.
@@ -879,6 +895,8 @@ fn execute_runs(
             elapsed: first_submit
                 .expect("a run submits at least one command buffer")
                 .elapsed(),
+            pipelines: pipelines_made,
+            pipeline_creation,
         };
         // The profile of the first `ran` steps, when `profiled`. `stopped` is `None` for the whole
         // run, every pool written and the final loss evaluation last; for a run stopped at a

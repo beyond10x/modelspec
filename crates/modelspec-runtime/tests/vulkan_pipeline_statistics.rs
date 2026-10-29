@@ -44,6 +44,8 @@ fn stats() -> RunStats {
         peak_device_bytes: 1024,
         class: modelspec_runtime::vulkan::negotiate::NumericsClass::Tolerance,
         elapsed: Duration::from_micros(30),
+        pipelines: 6,
+        pipeline_creation: Duration::from_micros(1500),
     }
 }
 

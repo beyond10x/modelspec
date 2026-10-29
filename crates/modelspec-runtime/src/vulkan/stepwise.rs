@@ -74,7 +74,8 @@ use super::Device;
 use super::dispatch::Recording;
 use super::memory::{Buffer, MemorySpan};
 use super::negotiate::Negotiated;
-use super::pipeline::{Pipeline, reads_seed};
+use super::pipeline::{Pipeline, PipelineRequest, reads_seed};
+use super::pipeline_cache::make_pipelines;
 use super::runner::{
     Action, Checkpoints, DeviceRunError, DivergedOnDevice, RunStats, VulkanRunError, actions,
     buffer, count_u32, descriptors, numerics_class, on_device, parameters, record, state_of,
@@ -327,26 +328,48 @@ pub fn train_stepwise(
     // The device memory of the run: every buffer it makes is made after this.
     let memory = MemorySpan::start();
     let modules = emit_kernels(artifact, profile)?;
-    let mut pipelines = Vec::with_capacity(plan.kernels.len());
-    for (kernel, module) in plan.kernels.iter().zip(&modules) {
-        pipelines.push(if reads_seed(kernel) {
-            device.kernel_pipeline_seeded(kernel, &module.spirv, config.seed)?
-        } else {
-            device.kernel_pipeline(kernel, &module.spirv)?
-        });
-    }
     // Each `Dropout` at `p = 0`: the pipelines the loss steps run with dropout off.
-    let mut identities: BTreeMap<usize, Pipeline<'_>> = BTreeMap::new();
+    let mut kept_kernels: Vec<(usize, Kernel)> = Vec::new();
     for (at, kernel) in plan.kernels.iter().enumerate() {
         if kernel.op == "Dropout" {
-            let kept = without_dropout(kernel)?;
-            let module = emit_module_with(&kept, profile, artifact.fast_math)?;
-            identities.insert(
-                at,
-                device.kernel_pipeline_seeded(&kept, &module.spirv, config.seed)?,
-            );
+            kept_kernels.push((at, without_dropout(kernel)?));
         }
     }
+    let kept_modules = kept_kernels
+        .iter()
+        .map(|(_, kept)| emit_module_with(kept, profile, artifact.fast_math))
+        .collect::<Result<Vec<_>, _>>()?;
+    // Every kernel's pipeline, then the identities, one per distinct module, the dropout ones
+    // under the run key (story:vulkan-pipeline-startup).
+    let requests: Vec<PipelineRequest<'_>> = plan
+        .kernels
+        .iter()
+        .zip(&modules)
+        .map(|(kernel, module)| PipelineRequest {
+            kernel,
+            words: &module.spirv,
+            seed: reads_seed(kernel).then_some(config.seed),
+        })
+        .chain(
+            kept_kernels
+                .iter()
+                .zip(&kept_modules)
+                .map(|((_, kept), module)| PipelineRequest {
+                    kernel: kept,
+                    words: &module.spirv,
+                    seed: Some(config.seed),
+                }),
+        )
+        .collect();
+    let (made, pipeline_creation) = make_pipelines(device, profile, &requests)?;
+    let each = made.each();
+    let (pipelines, kept_pipelines) = each.split_at(plan.kernels.len());
+    let pipelines: Vec<&Pipeline<'_>> = pipelines.to_vec();
+    let identities: BTreeMap<usize, &Pipeline<'_>> = kept_kernels
+        .iter()
+        .map(|(at, _)| *at)
+        .zip(kept_pipelines.iter().copied())
+        .collect();
 
     let scratch: BTreeMap<u32, BufferView> = plan
         .step
@@ -477,12 +500,12 @@ pub fn train_stepwise(
         count_u32(binds * dispatch_steps)?,
         count_u32(binds * descriptors(plan))?,
     )?;
-    let stepping: Vec<&Pipeline<'_>> = pipelines.iter().collect();
+    let stepping: Vec<&Pipeline<'_>> = pipelines.clone();
     let (step_actions, loss_at) = actions(plan, &arena, &stepping, &buffers)?;
     let kept: Vec<&Pipeline<'_>> = pipelines
         .iter()
         .enumerate()
-        .map(|(at, pipeline)| identities.get(&at).unwrap_or(pipeline))
+        .map(|(at, pipeline)| identities.get(&at).copied().unwrap_or(*pipeline))
         .collect();
     let kept_actions = if identities.is_empty() {
         None
@@ -520,6 +543,8 @@ pub fn train_stepwise(
         peak_device_bytes: memory.peak_bytes(),
         class,
         elapsed: first_submit.map_or_else(Default::default, |at| at.elapsed()),
+        pipelines: made.distinct() as u64,
+        pipeline_creation,
     };
     // The parameters, then the moments, as the state download holds them.
     let state_views: Vec<BufferView> = plan

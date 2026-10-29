@@ -39,7 +39,10 @@
 //! first runs each batch of the eval directory the same way (story:decider-dense-named-data), and
 //! `--profile` refuses a stepwise run on one line (exit 1). `--stats` prints the run's counters on stderr after it
 //! (host waits, submits, dispatches, dispatches and barriers per step, bytes up and down, device
-//! allocations, peak device bytes, the numerics class, microseconds per step). `--profile` times
+//! allocations, peak device bytes, the numerics class, microseconds per step, the pipelines made and
+//! the microseconds spent making them, through the pipeline cache on disk that
+//! `MODELSPEC_PIPELINE_CACHE` names or the user cache directory holds, story:vulkan-pipeline-startup).
+//! `--profile` times
 //! every dispatch with GPU timestamp queries, read back after the one host wait, and prints on
 //! stderr after it one `profile dispatch <plan> <position> <kernel_module_id> <entry> calls <n>
 //! total_us <t> mean_us <m> flop <f> bytes <b> gflop_per_s <g> gb_per_s <h>` line per dispatch
@@ -287,7 +290,8 @@ pub struct Args {
     pub device: Option<usize>,
     /// With --backend vulkan, print the run's host waits, submits, dispatches, dispatches and
     /// barriers per step, bytes copied up and down, device allocations, peak device bytes,
-    /// numerics class and microseconds per step on stderr after it.
+    /// numerics class, microseconds per step, pipelines made and microseconds spent making them on
+    /// stderr after it.
     #[arg(long)]
     pub stats: bool,
     /// With --backend vulkan, time every dispatch with GPU timestamp queries and print one
