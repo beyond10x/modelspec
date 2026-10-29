@@ -2,7 +2,7 @@
 format: aep.planning-md/3
 id: story:diagram-pipelines
 kind: story
-status: draft
+status: active
 title: 'Pipeline views: train, eval and infer, each stage a composite that zooms into the model'
 summary: Train, eval and infer graphs whose root children are pipeline stages placed from IR tags and scopes, with endpoints, adjoint and update composites, readable at BERT-tiny size.
 relations:
@@ -18,7 +18,10 @@ scope:
   path: crates/modelspec-diagram/src/pipeline.rs
 - confidence: inferred
   path: crates/modelspec-diagram/tests/pipelines.rs
-revision: 2
+revision: 4
+transitions:
+- {from: "draft", to: "proposed", at: "2026-10-29T22:02:04Z", actor: "human:timo", revision: 3}
+- {from: "proposed", to: "active", at: "2026-10-29T22:02:04Z", actor: "human:timo", revision: 4}
 ---
 # Pipeline views: train, eval and infer, each stage a composite that zooms into the model
 
