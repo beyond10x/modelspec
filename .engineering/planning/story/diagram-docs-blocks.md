@@ -2,7 +2,7 @@
 format: aep.planning-md/3
 id: story:diagram-docs-blocks
 kind: story
-status: draft
+status: active
 title: A diagram beside every modelspec program of the documentation, and one diagram page per program
 summary: A manifest of all 12 modelspec blocks (whole, fragment of a fixture, or skipped with its code), a diagram beside each whole program, and one zoomable diagram page per program.
 relations:
@@ -41,7 +41,10 @@ scope:
   path: website/sidebars.ts
 - confidence: inferred
   path: website/static/img/diagrams
-revision: 7
+revision: 9
+transitions:
+- {from: "draft", to: "proposed", at: "2026-10-29T21:04:22Z", actor: "human:timo", revision: 8, decided_on: {"recorded":{"review_outcome":1}}}
+- {from: "proposed", to: "active", at: "2026-10-29T21:04:23Z", actor: "human:timo", revision: 9, decided_on: {"recorded":{"review_outcome":1}}}
 ---
 # A diagram beside every modelspec program of the documentation, and one diagram page per program
 

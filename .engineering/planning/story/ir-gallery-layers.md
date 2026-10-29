@@ -2,7 +2,7 @@
 format: aep.planning-md/3
 id: story:ir-gallery-layers
 kind: story
-status: draft
+status: active
 title: 'IR gallery layers: composed blocks as zoomable function scopes'
 summary: Small models whose block is a function scope, drawn collapsed as one composite and expanded to its operators, including the transformer blocks now in the registry.
 relations:
@@ -25,7 +25,10 @@ scope:
   path: website/docs/gallery/layers.mdx
 - confidence: inferred
   path: website/static/img/diagrams
-revision: 5
+revision: 7
+transitions:
+- {from: "draft", to: "proposed", at: "2026-10-29T21:04:23Z", actor: "human:timo", revision: 6}
+- {from: "proposed", to: "active", at: "2026-10-29T21:04:23Z", actor: "human:timo", revision: 7}
 ---
 # IR gallery layers: composed blocks as zoomable function scopes
 

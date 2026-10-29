@@ -2,7 +2,7 @@
 format: aep.planning-md/3
 id: story:diagram-cli
 kind: story
-status: draft
+status: active
 title: 'modelspec diagram: any level of any view as SVG or JSON'
 summary: modelspec diagram FILE with --view, --scope, --depth, --expand, --format svg|json|graph and --out DIR, diagnostics and exit codes as modelspec ir.
 relations:
@@ -27,7 +27,10 @@ scope:
   path: crates/modelspec-cli/tests/diagram_cli.rs
 - confidence: cited
   path: website/docs/reference/cli.md
-revision: 5
+revision: 7
+transitions:
+- {from: "draft", to: "proposed", at: "2026-10-29T21:04:24Z", actor: "human:timo", revision: 6, decided_on: {"recorded":{"review_outcome":1}}}
+- {from: "proposed", to: "active", at: "2026-10-29T21:04:24Z", actor: "human:timo", revision: 7, decided_on: {"recorded":{"review_outcome":1}}}
 ---
 # `modelspec diagram`: any level of any view as SVG or JSON
 

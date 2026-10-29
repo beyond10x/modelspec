@@ -9,7 +9,7 @@ relations:
 - serves: vision:modelspec
 - depends_on: epic:m0-semantic-core
 - informed_by: executable-system-specification:modelspec-contracts
-revision: 4
+revision: 5
 ---
 # Training observatory: a live training UI over SSE
 
@@ -61,7 +61,7 @@ The nouns are modelled in `spec/domains/observatory.yaml` (RunEvent, Insight; a 
 RunEvents in `sequence` order) and `spec/domains/training.yaml` (TrainingRun owns many RunEvent).
 The architecture graph is `spec/domains/diagram.yaml` (`modelspec.diagram.DiagramGraph` and
 `DiagramRender`), shared with `epic:ir-svg-gallery`; it replaced the observatory's `ModelGraph`,
-`GraphNode`, `GraphEdge`, `IrStage` and `ModelGraphId` on 2026-10-28 (DESIGN.md § 13, revision 0.61),
+`GraphNode`, `GraphEdge`, `IrStage` and `ModelGraphId` on 2026-10-28 (DESIGN.md § 13, revision 0.81),
 together with the `UNMAPPED:` marker on `ModelGraph.artifact_id`. `ess specify validate --path .` in
 `spec/`: `modelspec v1 — 9 file(s), valid`. The open questions are the remaining `UNMAPPED:` markers
 in `observatory.yaml`; each has one owning story, which settles it first.

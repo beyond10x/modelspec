@@ -7,7 +7,7 @@ title: 'Architecture diagrams: operator glyphs, any model, pipelines, zoom'
 summary: A glyph per operator, any model drawn from its verified IR, training/eval/inference pipelines, zoom through composites; beside every modelspec program in the docs, in a gallery, on the CLI and in the observatory UI.
 relations:
 - serves: vision:modelspec
-revision: 6
+revision: 7
 ---
 # Architecture diagrams: operator glyphs, any model, pipelines, zoom
 
@@ -48,7 +48,7 @@ and widened it on 2026-10-28, verbatim:
 
 ## Design
 
-DESIGN.md § 13 (revision 0.61) holds every decision: glyphs (§ 13.1), the graph model and scope
+DESIGN.md § 13 (revision 0.81) holds every decision: glyphs (§ 13.1), the graph model and scope
 provenance (§ 13.2), zoom (§ 13.3), pipelines (§ 13.4), layout (§ 13.5), documentation (§ 13.6),
 the command line (§ 13.7) and where the code lives (§ 13.8).
 

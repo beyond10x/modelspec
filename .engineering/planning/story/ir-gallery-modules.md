@@ -2,7 +2,7 @@
 format: aep.planning-md/3
 id: story:ir-gallery-modules
 kind: story
-status: draft
+status: active
 title: 'IR gallery modules and pipelines: every example in model, train, eval and infer views'
 summary: Each example of task check-examples in all four views, collapsed and zoomable, plus a pipelines page; bert_tiny stays within 80 visible nodes per level.
 relations:
@@ -30,7 +30,10 @@ scope:
   path: website/docs/gallery/pipelines.mdx
 - confidence: inferred
   path: website/static/img/diagrams
-revision: 6
+revision: 8
+transitions:
+- {from: "draft", to: "proposed", at: "2026-10-29T21:04:23Z", actor: "human:timo", revision: 7, decided_on: {"recorded":{"review_outcome":2}}}
+- {from: "proposed", to: "active", at: "2026-10-29T21:04:23Z", actor: "human:timo", revision: 8, decided_on: {"recorded":{"review_outcome":2}}}
 ---
 # IR gallery modules and pipelines: every example, model view and train, eval and infer views
 

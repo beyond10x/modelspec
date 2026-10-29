@@ -2,7 +2,7 @@
 format: aep.planning-md/3
 id: story:ir-gallery-atoms
 kind: story
-status: draft
+status: active
 title: 'Gallery atoms and the first diagram on the site: every glyph, and two-layer-relu beside its code'
 summary: 'First visible result: the gallery section with one entry per glyph, and the two-layer-relu example page showing its diagram inline beside its code, themed light and dark.'
 relations:
@@ -40,7 +40,10 @@ scope:
   path: website/src/css/diagram.css
 - confidence: inferred
   path: website/static/img/diagrams
-revision: 7
+revision: 9
+transitions:
+- {from: "draft", to: "proposed", at: "2026-10-29T21:04:22Z", actor: "human:timo", revision: 8}
+- {from: "proposed", to: "active", at: "2026-10-29T21:04:22Z", actor: "human:timo", revision: 9}
 ---
 # Gallery atoms and the first diagram on the site: every glyph, and two-layer-relu beside its code
 
