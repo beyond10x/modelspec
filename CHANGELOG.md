@@ -9,6 +9,10 @@ history.
 
 ## [Unreleased]
 
+## [0.23.0] - 2026-10-29
+
+This release makes a BERT-tiny training step on Vulkan 14.6 times faster than on 2026-10-28: on an RTX 3090, `examples/bert_tiny.mspec` trained for 10,000 steps over the packed corpus takes a median of 15,245.2 µs per step, its held-out evaluations included, against 222,576.0 µs without them, and reaches the unigram baseline after 16.6 training seconds instead of 246.0; a whole run takes a median of 156 s of wall time, start-up and evaluation included, against 4,416 s. Every change keeps the training step's bits, and the held-out losses are those of 2026-10-28 within 1e-6. ModelSpec is still slower than PyTorch CUDA: its step is 1.95 times eager's and 3.61 times `torch.compile`'s (`benchmarks/runs.yaml`). The step got there through held-out evaluation reduced on the device in the evaluated step's command buffer; `cross_entropy`, its gradient and the `embedding` gradient as per-row and per-element kernels; attention kernels that share their softmax statistics and run one workgroup per sequence, head and tile; and `train --masked-rows`, which runs the MLM head and loss on the masked rows only. A Vulkan run creates one pipeline per SPIR-V module, in parallel, through a pipeline cache on disk. `train --clock` and a stepwise `train --profile` measure the run, and the Benchmarks page gains a section that times BERT-tiny pre-training to the held-out baseline against PyTorch CUDA eager and `torch.compile`, with the first runs of 2026-10-28 and those of this build.
+
 ### Added
 
 - `modelspec train --profile` times a stepwise Vulkan run, where it refused one: each step's command buffer resets one timestamp query pool and the host reads it back after that step's wait, adding no host wait, and the held-out batches are not timed. `train examples/bert_tiny.mspec --backend vulkan --data <data> --profile --steps 10` prints `profile step_total flop 39400695809 bytes 2193576512 … uncounted_sites 0`: every dispatch kind of its step plan, the embedding lookups, dropout, cross-entropy and the AdamW update among them, already has its counting row, so no row was added (DESIGN.md revision 0.61) (story:bert-tiny-vs-pytorch-cuda).
@@ -370,7 +374,8 @@ with `E-TARGET-001`.
 - `examples/linear_regression.mspec` checks and trains; `task check-examples` runs `modelspec check` on it
 - ESS contracts for the compiled artifact, checkpoint, device profile and training run in `spec/`
 
-[Unreleased]: https://github.com/beyond10x/modelspec/compare/0.22.0...HEAD
+[Unreleased]: https://github.com/beyond10x/modelspec/compare/0.23.0...HEAD
+[0.23.0]: https://github.com/beyond10x/modelspec/compare/0.22.0...0.23.0
 [0.22.0]: https://github.com/beyond10x/modelspec/compare/0.21.0...0.22.0
 [0.21.0]: https://github.com/beyond10x/modelspec/compare/0.20.0...0.21.0
 [0.20.0]: https://github.com/beyond10x/modelspec/compare/0.19.0...0.20.0

@@ -16,7 +16,7 @@ use serde_json::{Value, json};
 pub const FILE: &str = "status.json";
 
 /// The date [`CAPABILITIES`] was last checked against `main` and the planning store.
-pub const AS_OF: &str = "2026-10-28";
+pub const AS_OF: &str = "2026-10-29";
 
 /// What holds a shipped capability.
 #[derive(Clone, Copy)]
@@ -584,7 +584,7 @@ pub const CAPABILITIES: &[Capability] = &[
     shipped(
         "Training",
         "The hidden-32 BERT twin trained on the GPU",
-        "Since 0.17.0: modelspec train --backend vulkan --data <dir> --eval-every <n> trains the twin with dropout and AdamW, one command buffer and one host wait per step, and since 0.18.0 each held-out batch of an evaluated step in a command buffer of its own with one host wait; every step and eval line and every final parameter lies within the GPU tolerance of the CPU run, and --serve and --record stream them from the device.",
+        "Since 0.17.0: modelspec train --backend vulkan --data <dir> --eval-every <n> trains the twin with dropout and AdamW, one command buffer and one host wait per step, and since 0.23.0 reduces each held-out evaluation on the device in the evaluated step's command buffer, one host wait per evaluated step; every step and eval line and every final parameter lies within the GPU tolerance of the CPU run, and --serve and --record stream them from the device.",
         Evidence::Test("crates/modelspec-cli/tests/vulkan_bert_cpu_steps.rs::steps"),
         "/docs/reference/cli",
     ),

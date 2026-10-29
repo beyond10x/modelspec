@@ -216,7 +216,7 @@ body.all .hud, body.all .narrow { display: none; }
 <!-- 1 -->
 <section class="slide" data-n="1">
   <div class="title-wrap">
-    <div class="kicker">Vision · 2026-10-28 · release 0.22.0</div>
+    <div class="kicker">Vision · 2026-10-29 · release 0.23.0</div>
     <h1>ModelSpec</h1>
     <p class="promise">Train faster, because the compiler builds<br>a runtime for <b>one</b> target.</p>
     <p class="sub">The whole training step is one declared <code>.mspec</code> program, so the compiler knows everything before it runs, and every optimization is held to a CPU reference. The speed is the goal, not shipped yet.</p>
@@ -227,7 +227,7 @@ body.all .hud, body.all .narrow { display: none; }
       <span class="chip">no Python · PyTorch · CUDA</span>
     </div>
   </div>
-  <aside class="notes">Vision, "North star" (2026-10-28); DESIGN.md section 0. Date and version: the 0.22.0 release, 2026-10-28 (CHANGELOG.md § 0.22.0).</aside>
+  <aside class="notes">Vision, "North star" (2026-10-28); DESIGN.md section 0. Date and version: the 0.23.0 release, 2026-10-29 (CHANGELOG.md § 0.23.0).</aside>
 </section>
 
 <!-- 2 -->
@@ -239,9 +239,9 @@ body.all .hud, body.all .narrow { display: none; }
     <div class="card"><span class="num">01</span><h3>The compiler sees the whole step</h3><p>Model, loss, gradients, optimizer and data are one typed program, known before it runs.</p></div>
     <div class="card"><span class="num">02</span><h3>One runtime per target</h3><p>One use case, one OS, one GPU chipset. Today: Vulkan on one RTX 3090; more planned.</p></div>
     <div class="card"><span class="num">03</span><h3>Faster, never different</h3><p>Every kernel and pass is checked against the CPU reference. A change that alters a result is refused.</p></div>
-    <div class="card"><span class="num">04</span><h3>Today: slower on a transformer</h3><p>BERT-tiny block, batch 8: 93.9 ms per step; PyTorch eager 3.9 ms, torch.compile 2.0 ms. Planned: 3×, parity, then faster.</p></div>
+    <div class="card"><span class="num">04</span><h3>Today: slower on a transformer</h3><p>BERT-tiny pre-training, batch 32: 15.2 ms per step, 14.6× faster than on 2026-10-28; PyTorch eager 7.8 ms, torch.compile 4.2 ms. Planned: parity, then faster.</p></div>
   </div>
-  <aside class="notes">Vision, "North star" (2026-10-28): points 1 to 3 and the BERT-tiny ladder. One target today: DESIGN.md section 0 and website/docs/status.mdx. Figures: website/docs/benchmarks.md, Transformer block, the runs transformer-block-b8-modelspec-vulkan-0.20.0, transformer-block-b8-pytorch-cuda-eager-0.20.0 and transformer-block-b8-pytorch-cuda-compile-0.20.0 of benchmarks/runs.yaml (2026-10-27, medians 93,868.4, 3,937.2 and 1,971.9 µs per step), published in CHANGELOG.md § 0.21.0. The ladder (within 3× of eager, parity with eager, faster than torch.compile) is planned, not built. The problem this answers (what ran is scattered, errors arrive late, reproducing means rebuilding) is on slides 6 and 7.</aside>
+  <aside class="notes">Vision, "North star" (2026-10-28): points 1 to 3 and the BERT-tiny ladder. One target today: DESIGN.md section 0 and website/docs/status.mdx. Figures: website/docs/benchmarks.md, BERT-tiny pre-training, the runs bert-tiny-pretrain-modelspec-vulkan-0.22.0, bert-tiny-pretrain-pytorch-cuda-eager-0.22.0 and bert-tiny-pretrain-pytorch-cuda-compile-0.22.0 of benchmarks/runs.yaml (2026-10-29, medians 15,245.2, 7,806.5 and 4,220.6 µs per step, 3 runs each, ModelSpec's held-out evaluations inside its clock and PyTorch's outside), against bert-tiny-pretrain-modelspec-vulkan-0.21.0 (2026-10-28, median 222,576.0 µs per step, 14.6×), published in CHANGELOG.md § 0.23.0. The transformer block at batch 8 (93,868.4 µs against 3,937.2 and 1,971.9 µs, 2026-10-27) is in CHANGELOG.md § 0.21.0 and was not re-measured. The ladder (within 3× of eager, parity with eager, faster than torch.compile) is planned, not built. The problem this answers (what ran is scattered, errors arrive late, reproducing means rebuilding) is on slides 6 and 7.</aside>
 </section>
 
 <!-- 3 -->
@@ -550,13 +550,13 @@ body.all .hud, body.all .narrow { display: none; }
 
 <!-- 13 -->
 <section class="slide" data-n="13">
-  <div class="kicker">Status · 2026-10-28</div>
-  <h2>0.22.0 trains on the RTX 3090 through Vulkan</h2>
+  <div class="kicker">Status · 2026-10-29</div>
+  <h2>0.23.0 trains on the RTX 3090 through Vulkan</h2>
   <div class="stats">
-    <div class="stat"><div class="v">0.22.0</div><div class="l">latest of 24 releases, 2026-10-28, with a Linux x86_64 binary</div></div>
+    <div class="stat"><div class="v">0.23.0</div><div class="l">latest of 25 releases, 2026-10-29, with a Linux x86_64 binary</div></div>
     <div class="stat"><div class="v">60</div><div class="l">capabilities shipped, each held by a named test or task</div></div>
-    <div class="stat"><div class="v">81</div><div class="l">stories implemented</div></div>
-    <div class="stat"><div class="v">2926</div><div class="l">tests passed in <code>task ci</code>, 0 failed, 361 ignored</div></div>
+    <div class="stat"><div class="v">87</div><div class="l">stories implemented</div></div>
+    <div class="stat"><div class="v">2995</div><div class="l">tests passed in <code>task ci</code>, 0 failed, 384 ignored</div></div>
   </div>
   <div class="grid3" style="gap:24px">
     <div class="card" style="padding:22px 26px">
@@ -564,15 +564,15 @@ body.all .hud, body.all .narrow { display: none; }
       <p style="font-size:21px"><code>train --backend vulkan</code> with one host wait · checkpoints, resume and <code>infer</code> on CPU and Vulkan · <code>compile</code> to a sealed artifact · <code>--serve</code>, <code>--record</code>, <code>observe</code> and the observatory UI · <code>--profile</code> · tiled GPU matmul</p>
     </div>
     <div class="card" style="padding:22px 26px">
-      <h3 style="font-size:26px">Released, 0.8.0 to 0.22.0</h3>
-      <p style="font-size:21px">Register-blocked matmul · elementwise chain fusion · deterministic fused multiply-adds · <code>--fast-math</code> · <code>embedding</code>, <code>layer_norm</code>, <code>softmax</code>, <code>attention</code>, <code>cross_entropy</code>, <code>dropout</code> on the CPU · <code>data prepare</code>, <code>tokenizer</code>, <code>pack</code> · <code>train --data</code> with <code>--eval-every</code> · <code>adamw</code> with a warm-up schedule · <code>relu_grad</code> as a matmul epilogue · Vulkan kernels for the row-wise BERT operators · <code>muon</code> on the CPU · BERT-tiny as a checked example, its twin trained on the CPU · Vulkan kernels for <code>attention</code>, <code>cross_entropy</code> and AdamW, the twin trained on the GPU · held-out evaluation on the GPU at corpus scale · BERT-tiny pre-trained on the GPU below the unigram baseline · the benchmarks page in its FLOP view · the transformer-block benchmark against PyTorch CUDA · named <code>i32</code> data, <code>stop_gradient</code>, <code>sigreg</code> and <code>infer</code> over a dataset</p>
+      <h3 style="font-size:26px">Released, 0.8.0 to 0.23.0</h3>
+      <p style="font-size:21px">Register-blocked matmul · elementwise chain fusion · deterministic fused multiply-adds · <code>--fast-math</code> · <code>embedding</code>, <code>layer_norm</code>, <code>softmax</code>, <code>attention</code>, <code>cross_entropy</code>, <code>dropout</code> on the CPU · <code>data prepare</code>, <code>tokenizer</code>, <code>pack</code> · <code>train --data</code> with <code>--eval-every</code> · <code>adamw</code> with a warm-up schedule · <code>relu_grad</code> as a matmul epilogue · Vulkan kernels for the row-wise BERT operators · <code>muon</code> on the CPU · BERT-tiny as a checked example, its twin trained on the CPU · Vulkan kernels for <code>attention</code>, <code>cross_entropy</code> and AdamW, the twin trained on the GPU · held-out evaluation on the GPU at corpus scale · BERT-tiny pre-trained on the GPU below the unigram baseline · the benchmarks page in its FLOP view · the transformer-block benchmark against PyTorch CUDA · named <code>i32</code> data, <code>stop_gradient</code>, <code>sigreg</code> and <code>infer</code> over a dataset · the BERT-tiny step 14.6× faster, timed against PyTorch CUDA</p>
     </div>
     <div class="card" style="padding:22px 26px">
       <h3 style="font-size:26px">Not built</h3>
       <p style="font-size:21px">M4: the Tensor Core path</p>
     </div>
   </div>
-  <aside class="notes">Releases: 24 tags, 0.1.0 to 0.22.0; 0.22.0 dated 2026-10-28 (CHANGELOG.md § 0.22.0); the Linux x86_64 binary: the opening paragraph of CHANGELOG.md and .github/workflows/release.yml. 60 shipped, 1 planned: website/data/status.json (asOf 2026-10-28). 81 implemented, 1 active: the stories of the repository's planning store, 2026-10-28. 2926 / 0 / 361: the sum of the cargo "test result" lines of the 440 suites of task ci on d69577b, 2026-10-28; the ignored tests include the device tests and the browser tests that task ui-browser then runs (AGENTS.md "Commands"); the node --test cases of pnpm test are not counted. Released, 0.2.0 to 0.7.1: --serve in CHANGELOG.md § 0.2.0; train --backend vulkan with one host wait and --profile in CHANGELOG.md § 0.4.0; the tiled GPU matmul in CHANGELOG.md § 0.5.0; checkpoints, resume, infer, compile, --record and observe in CHANGELOG.md § 0.6.0; the observatory UI in CHANGELOG.md § 0.7.0. Released, 0.8.0 to 0.22.0: CHANGELOG.md § 0.9.0, § 0.10.0, § 0.11.0, § 0.12.0, § 0.13.0, § 0.14.0, § 0.15.0, § 0.16.0, § 0.17.0, § 0.18.0, § 0.19.0, § 0.20.0, § 0.21.0 and § 0.22.0; data prepare, tokenizer and pack are in the 0.10.0 tag without a CHANGELOG.md entry (website/docs/guides/prepare-training-data.md). Not built: DESIGN.md section 1 M4 row; BERT-tiny pre-training on the GPU left this card with the run of 2026-10-26 (website/docs/runs/bert-tiny-gpu-pretraining.md).</aside>
+  <aside class="notes">Releases: 25 tags, 0.1.0 to 0.23.0; 0.23.0 dated 2026-10-29 (CHANGELOG.md § 0.23.0); the Linux x86_64 binary: the opening paragraph of CHANGELOG.md and .github/workflows/release.yml. 60 shipped, 1 planned: website/data/status.json (asOf 2026-10-29). 87 implemented, 2 active: the stories of the repository's planning store, 2026-10-29. 2995 / 0 / 384: the sum of the cargo "test result" lines of the 459 suites of task ci on f39c183, 2026-10-29 (CI run 40834629192); the ignored tests include the device tests and the browser tests that task ui-browser then runs (AGENTS.md "Commands"); the node --test cases of pnpm test are not counted. Released, 0.2.0 to 0.7.1: --serve in CHANGELOG.md § 0.2.0; train --backend vulkan with one host wait and --profile in CHANGELOG.md § 0.4.0; the tiled GPU matmul in CHANGELOG.md § 0.5.0; checkpoints, resume, infer, compile, --record and observe in CHANGELOG.md § 0.6.0; the observatory UI in CHANGELOG.md § 0.7.0. Released, 0.8.0 to 0.23.0: CHANGELOG.md § 0.9.0, § 0.10.0, § 0.11.0, § 0.12.0, § 0.13.0, § 0.14.0, § 0.15.0, § 0.16.0, § 0.17.0, § 0.18.0, § 0.19.0, § 0.20.0, § 0.21.0, § 0.22.0 and § 0.23.0; data prepare, tokenizer and pack are in the 0.10.0 tag without a CHANGELOG.md entry (website/docs/guides/prepare-training-data.md). Not built: DESIGN.md section 1 M4 row; BERT-tiny pre-training on the GPU left this card with the run of 2026-10-26 (website/docs/runs/bert-tiny-gpu-pretraining.md).</aside>
 </section>
 
 <!-- 14 -->
@@ -705,7 +705,7 @@ body.all .hud, body.all .narrow { display: none; }
       </ul>
     </div>
     <div>
-      <div class="kicker" style="color:var(--m1)">2 · Released, 0.7.0 to 0.22.0</div>
+      <div class="kicker" style="color:var(--m1)">2 · Released, 0.7.0 to 0.23.0</div>
       <ul class="bul" style="font-size:0">
         <li style="font-size:24px;margin-bottom:12px">0.7.0: the observatory UI; Vulkan refuses a NaN or ±inf run</li>
         <li style="font-size:24px;margin-bottom:12px">0.8.0: a CPU run prepares its step once; per-step device counters</li>
@@ -723,6 +723,7 @@ body.all .hud, body.all .narrow { display: none; }
         <li style="font-size:24px;margin-bottom:12px">0.20.0: the benchmarks page in its FLOP view, the "Not measured" section and the sweep slide</li>
         <li style="font-size:24px;margin-bottom:12px">0.21.0: the transformer-block benchmark against PyTorch CUDA (batch 8: 93.9 ms/step against eager 3.9 ms and compile 2.0 ms), the opponent's one-step comparison, f64 whole-tensor sums on the CPU</li>
         <li style="font-size:24px;margin-bottom:12px">0.22.0: what the decider needs: named <code>i32</code> data refused out of range (E-DATA-011), <code>stop_gradient</code>, <code>sigreg</code> on the CPU and the GPU, <code>infer</code> of any function over a dataset</li>
+        <li style="font-size:24px;margin-bottom:12px">0.23.0: the BERT-tiny step 14.6× faster with the same bits (15.2 ms against 222.6 ms on 2026-10-28), timed to the held-out baseline against PyTorch CUDA: 1.95× eager's step, 3.61× torch.compile's</li>
       </ul>
     </div>
     <div>
@@ -734,7 +735,7 @@ body.all .hud, body.all .narrow { display: none; }
       </ul>
     </div>
   </div>
-  <aside class="notes">Done: CHANGELOG.md § 0.1.0 (2026-10-21), CHANGELOG.md § 0.4.0 (2026-10-22, train --backend vulkan), CHANGELOG.md § 0.5.0 (2026-10-23, 27.282 µs from 40.225 µs), CHANGELOG.md § 0.6.0 (2026-10-23, Vulkan checkpoints, infer --backend vulkan, compile). Released: CHANGELOG.md § 0.7.0, § 0.8.0, § 0.9.0, § 0.10.0, § 0.11.0, § 0.12.0, § 0.13.0, § 0.14.0, § 0.15.0, § 0.16.0, § 0.17.0, § 0.18.0, § 0.19.0, § 0.20.0, § 0.21.0 and § 0.22.0; 0.13.0 at b8192 h4096, 6,858.9 µs against 6,568.5 µs for PyTorch eager (1.044): benchmarks/raw/2026-10-25-step-sites/verdict.md. Open: DESIGN.md:551-559 nine unticked boxes; CHANGELOG.md § 0.6.0 "ADR-007's accuracy and final-weight conditions were not measured for this release". BERT-tiny: website/docs/runs/bert-tiny-gpu-pretraining.md, eval 10000 loss 6.7674994 against the baseline 6.926537926202018 of packed.json, 2026-10-26. 0.21.0 transformer block at batch 8: the runs transformer-block-b8-modelspec-vulkan-0.20.0, transformer-block-b8-pytorch-cuda-eager-0.20.0 and transformer-block-b8-pytorch-cuda-compile-0.20.0 of benchmarks/runs.yaml (2026-10-27, medians 93,868.4, 3,937.2 and 1,971.9 µs per step), raw records in benchmarks/raw/2026-10-27-transformer-block/.</aside>
+  <aside class="notes">Done: CHANGELOG.md § 0.1.0 (2026-10-21), CHANGELOG.md § 0.4.0 (2026-10-22, train --backend vulkan), CHANGELOG.md § 0.5.0 (2026-10-23, 27.282 µs from 40.225 µs), CHANGELOG.md § 0.6.0 (2026-10-23, Vulkan checkpoints, infer --backend vulkan, compile). Released: CHANGELOG.md § 0.7.0, § 0.8.0, § 0.9.0, § 0.10.0, § 0.11.0, § 0.12.0, § 0.13.0, § 0.14.0, § 0.15.0, § 0.16.0, § 0.17.0, § 0.18.0, § 0.19.0, § 0.20.0, § 0.21.0, § 0.22.0 and § 0.23.0; 0.13.0 at b8192 h4096, 6,858.9 µs against 6,568.5 µs for PyTorch eager (1.044): benchmarks/raw/2026-10-25-step-sites/verdict.md. Open: DESIGN.md:551-559 nine unticked boxes; CHANGELOG.md § 0.6.0 "ADR-007's accuracy and final-weight conditions were not measured for this release". BERT-tiny: website/docs/runs/bert-tiny-gpu-pretraining.md, eval 10000 loss 6.7674994 against the baseline 6.926537926202018 of packed.json, 2026-10-26. 0.21.0 transformer block at batch 8: the runs transformer-block-b8-modelspec-vulkan-0.20.0, transformer-block-b8-pytorch-cuda-eager-0.20.0 and transformer-block-b8-pytorch-cuda-compile-0.20.0 of benchmarks/runs.yaml (2026-10-27, medians 93,868.4, 3,937.2 and 1,971.9 µs per step), raw records in benchmarks/raw/2026-10-27-transformer-block/. 0.23.0 BERT-tiny pre-training at batch 32: the runs bert-tiny-pretrain-modelspec-vulkan-0.21.0 (2026-10-28, median 222,576.0 µs per step) and bert-tiny-pretrain-modelspec-vulkan-0.22.0, bert-tiny-pretrain-pytorch-cuda-eager-0.22.0 and bert-tiny-pretrain-pytorch-cuda-compile-0.22.0 (2026-10-29, medians 15,245.2, 7,806.5 and 4,220.6 µs per step) of benchmarks/runs.yaml, raw records in benchmarks/raw/2026-10-28-bert-tiny-pretrain/ and benchmarks/raw/2026-10-29-bert-tiny-pretrain/; the same bits: CHANGELOG.md § 0.23.0.</aside>
 </section>
 
 <div class="narrow">The slides are 16:9: turn the device sideways to read them. Tap the right or left half, or swipe, to change slides.</div>
