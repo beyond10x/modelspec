@@ -8,7 +8,12 @@ summary: A stepwise run waits once per K steps with the bits of the one-step run
 relations:
 - decomposes: epic:bert-tiny-parity-with-eager
 - serves: vision:modelspec
-revision: 3
+scope:
+- confidence: inferred
+  path: crates/modelspec-cli/src/train.rs
+- confidence: inferred
+  path: crates/modelspec-runtime/src/vulkan/stepwise.rs
+revision: 5
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-29T03:20:13Z", actor: "human:timo", revision: 2}
 - {from: "proposed", to: "active", at: "2026-10-29T03:20:13Z", actor: "human:timo", revision: 3}

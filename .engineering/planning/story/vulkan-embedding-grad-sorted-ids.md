@@ -8,7 +8,14 @@ summary: The word-table gradient adds each occurring row from ids sorted once pe
 relations:
 - decomposes: epic:bert-tiny-parity-with-eager
 - serves: vision:modelspec
-revision: 3
+scope:
+- confidence: inferred
+  path: crates/modelspec-core/src/ir/kernel.rs
+- confidence: inferred
+  path: crates/modelspec-core/src/schedule.rs
+- confidence: inferred
+  path: crates/modelspec-runtime/src/spirv/emit/rowwise.rs
+revision: 6
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-29T03:20:13Z", actor: "human:timo", revision: 2}
 - {from: "proposed", to: "active", at: "2026-10-29T03:20:13Z", actor: "human:timo", revision: 3}
