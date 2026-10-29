@@ -1,7 +1,7 @@
-//! The modules of the thirteen row-wise kernels (DESIGN.md § 5.2): `Embedding`, `AddRows`,
-//! `Gelu`, `GeluGrad`, `Dropout` and `DropoutGrad` one invocation per output element;
-//! `EmbeddingGrad`, `LayerNorm`, `LayerNormGradX`, `Softmax` and `SoftmaxGrad` one per output
-//! row; `SumRows` and `LayerNormGradGamma` one per output column. The two `sigreg` kernels
+//! The modules of the thirteen row-wise kernels (DESIGN.md § 5.2): `Embedding`, `EmbeddingGrad`,
+//! `AddRows`, `Gelu`, `GeluGrad`, `Dropout` and `DropoutGrad` one invocation per output element;
+//! `LayerNorm`, `LayerNormGradX`, `Softmax` and `SoftmaxGrad` one per output row; `SumRows` and
+//! `LayerNormGradGamma` one per output column. The two `sigreg` kernels
 //! (story:jepa-sigreg-vulkan) are per column too: `SigregColumns` writes its column's statistic
 //! and `SigregColumnsGrad` every row of its column, each recomputing the column's means in one
 //! pass over the rows and computing `sin` and `cos` by the CPU's written-out routine
@@ -20,12 +20,15 @@
 //! CPU's values.
 //!
 //! `Embedding` reads an id outside the table as row 0 and writes `0.0` for it, so no invocation
-//! reads past the table; the CPU refuses such an id before it runs. `EmbeddingGrad` zeroes its
-//! table row, then adds the gradient row of every id equal to it in ascending id position,
-//! without atomics. `LayerNormGradGamma` runs workgroups of 64 columns; for each block of 64
-//! rows, invocation `i` of the workgroup computes the mean and reciprocal standard deviation of
-//! row `i` of the block into workgroup memory, and after a barrier each invocation adds its
-//! column's terms of the block's rows in ascending order. `Dropout` and `DropoutGrad` compute
+//! reads past the table; the CPU refuses such an id before it runs. `EmbeddingGrad` element
+//! `(r, j)` starts at `0.0` and adds column `j` of the gradient row of every id equal to `r` in
+//! ascending id position, then writes once, without atomics; for each block of 64 ids,
+//! invocation `i` of the workgroup copies id `i` of the block into workgroup memory, and after a
+//! barrier each invocation compares its row with the block's ids in ascending order.
+//! `LayerNormGradGamma` runs workgroups of 64 columns; for each block of 64 rows, invocation `i`
+//! of the workgroup computes the mean and reciprocal standard deviation of row `i` of the block
+//! into workgroup memory, and after a barrier each invocation adds its column's terms of the
+//! block's rows in ascending order. `Dropout` and `DropoutGrad` compute
 //! the Philox4x32-10 block of each element from the site's RNG token and the run key, the
 //! specialization constants `crate::vulkan::pipeline::SEED_SPEC_IDS`, and keep the element when
 //! word 0 is at least [`keep_threshold`] of `p`.
@@ -179,8 +182,8 @@ impl Rowwise {
                 },
             ),
             ("EmbeddingGrad", [I32, F32], [[n], [gn, h]], [v, rh], []) if n == gn && h == rh => (
-                PerRow,
-                u(*v),
+                PerElement,
+                out,
                 Rowwise::EmbeddingGrad {
                     ids: u(*n),
                     width: u(*h),
@@ -291,6 +294,7 @@ impl Rowwise {
     pub(super) fn shared(self) -> Option<u32> {
         match self {
             Rowwise::LayerNormGradGamma { .. } => Some(2 * GROUP),
+            Rowwise::EmbeddingGrad { .. } => Some(GROUP),
             _ => None,
         }
     }
@@ -514,11 +518,13 @@ impl Shell {
         if let Rowwise::LayerNormGradGamma { rows, width } = rowwise {
             return self.layer_norm_grad_gamma(rows, width);
         }
+        if let Rowwise::EmbeddingGrad { ids, width } = rowwise {
+            return self.embedding_grad(ids, width);
+        }
         let (index, count) = (self.index, self.count);
         let inside = self.less(index, count)?;
         self.when(inside, |m| match rowwise {
             Rowwise::Embedding { table, width } => m.embedding(table, width),
-            Rowwise::EmbeddingGrad { ids, width } => m.embedding_grad(ids, width),
             Rowwise::AddRows { width } => {
                 let w = m.uint(width);
                 let j = m.rem(index, w)?;
@@ -564,7 +570,9 @@ impl Shell {
             Rowwise::SoftmaxGrad { width } => m.softmax_grad(width),
             Rowwise::SigregColumns { rows, width } => m.sigreg_columns(rows, width),
             Rowwise::SigregColumnsGrad { rows, width } => m.sigreg_columns_grad(rows, width),
-            Rowwise::LayerNormGradGamma { .. } => unreachable!("handled above"),
+            Rowwise::LayerNormGradGamma { .. } | Rowwise::EmbeddingGrad { .. } => {
+                unreachable!("handled above")
+            }
         })
     }
 
@@ -779,33 +787,56 @@ impl Shell {
         self.write(index, out)
     }
 
-    /// Table row `index` of the gradient: `0.0`, then plus gradient row `n` for every `n` in
-    /// ascending order whose id is `index`.
+    /// Element `index` of the table gradient, column `j = index % width` of table row
+    /// `r = index / width`: `0.0`, then plus element `j` of gradient row `n` for every `n` in
+    /// ascending order whose id is `r`, in the shell's `f32` variable, written once. Each block
+    /// of 64 ids is staged in workgroup memory, id `i` of the block read by invocation `i` and
+    /// kept as the bits of an `f32`, between two barriers that every invocation of the workgroup
+    /// reaches.
     fn embedding_grad(&mut self, ids: u32, width: u32) -> Result<(), EmitError> {
-        let index = self.index;
-        let [n_var, j_var] = self.u32_vars;
+        let (index, count, acc) = (self.index, self.count, self.f32_var);
+        let local = self.local.expect("a module with workgroup memory");
+        let [block_var, t_var] = self.u32_vars;
         let (zero, one) = (self.uint(0), self.uint(1));
-        let (w, end) = (self.uint(width), self.uint(ids));
-        let base = self.mul(index, w)?;
+        let (w, n_ids, group) = (self.uint(width), self.uint(ids), self.uint(GROUP));
+        let row = self.div(index, w)?;
+        let j = self.rem(index, w)?;
         let f_zero = self.float(0.0);
-        self.counted(j_var, zero, w, one, |m, j| {
-            let at = m.add(base, j)?;
-            m.write(at, f_zero)
-        })?;
-        self.counted(n_var, zero, end, one, |m, n| {
-            let id = m.read_u32(0, n)?;
-            let hit = m.equal(id, index)?;
-            m.when(hit, |m| {
-                let g_base = m.mul(n, w)?;
-                m.counted(j_var, zero, w, one, |m, j| {
-                    let at = m.add(base, j)?;
-                    let current = m.read_result(at)?;
-                    let g_at = m.add(g_base, j)?;
-                    let g = m.read(1, g_at)?;
-                    let sum = m.f_add(current, g)?;
-                    m.write(at, sum)
+        self.b.store(acc, f_zero, None, [])?;
+        let inside = self.less(index, count)?;
+        self.counted(block_var, zero, n_ids, group, |m, block| {
+            let n = m.add(block, local)?;
+            let staged = m.less(n, n_ids)?;
+            m.when(staged, |m| {
+                let id = m.read_u32(0, n)?;
+                let bits = m.b.bitcast(m.f32_ty, None, id)?;
+                m.store_shared(local, bits)
+            })?;
+            m.barrier()?;
+            m.when(inside, |m| {
+                let left = m.sub(n_ids, block)?;
+                let end = m.min(left, group)?;
+                m.counted(t_var, zero, end, one, |m, t| {
+                    let bits = m.load_shared(t)?;
+                    let id = m.b.bitcast(m.u32_ty, None, bits)?;
+                    let hit = m.equal(id, row)?;
+                    m.when(hit, |m| {
+                        let n = m.add(block, t)?;
+                        let g_base = m.mul(n, w)?;
+                        let g_at = m.add(g_base, j)?;
+                        let g = m.read(1, g_at)?;
+                        let current = m.b.load(m.f32_ty, None, acc, None, [])?;
+                        let sum = m.f_add(current, g)?;
+                        m.b.store(acc, sum, None, [])?;
+                        Ok(())
+                    })
                 })
-            })
+            })?;
+            m.barrier()
+        })?;
+        self.when(inside, |m| {
+            let sum = m.b.load(m.f32_ty, None, acc, None, [])?;
+            m.write(index, sum)
         })
     }
 

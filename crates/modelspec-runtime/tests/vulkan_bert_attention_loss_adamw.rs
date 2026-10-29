@@ -22,7 +22,9 @@ use modelspec_core::artifact::{Backend, CompiledArtifact};
 use modelspec_core::compile::compile_training;
 use modelspec_core::ir::kernel::{Kernel, Operand};
 use modelspec_core::ir::tensor::{Dim, TensorOp, TensorProgramBuilder, TensorType, ValueId};
-use modelspec_core::schedule::{attention_loss_kernel, schedule};
+use modelspec_core::schedule::{
+    attention_loss_kernel, cross_entropy_grad_kernels, cross_entropy_kernels, schedule,
+};
 use modelspec_runtime::cpu::interpreter::evaluate_seeded;
 use modelspec_runtime::cpu::tensor::HostTensor;
 use modelspec_runtime::spirv::emit::emit;
@@ -252,9 +254,10 @@ fn cpu(case: &Case) -> Vec<f32> {
         .to_vec()
 }
 
-/// The kernel of `case`, as the schedule builds it.
-fn kernel_of(case: &Case) -> Kernel {
-    let operands = case
+/// The kernels of `case`, as the schedule builds them: one, or for `CrossEntropy` the row
+/// losses and their sum (story:vulkan-cross-entropy-sum-per-row).
+fn kernels_of(case: &Case) -> Vec<Kernel> {
+    let operands: Vec<Operand> = case
         .operands
         .iter()
         .map(|(_, ty, data)| match data {
@@ -262,23 +265,37 @@ fn kernel_of(case: &Case) -> Kernel {
             _ => Operand::Buffer(ty.clone()),
         })
         .collect();
-    attention_loss_kernel(&case.op, operands, case.result.clone())
-        .unwrap_or_else(|| panic!("{} {} has a kernel", case.op.name(), case.label))
+    let missing = format!("{} {} has a kernel", case.op.name(), case.label);
+    if case.op == TensorOp::CrossEntropy {
+        return Vec::from(cross_entropy_kernels(operands, case.result.clone()).expect(&missing));
+    }
+    if case.op == TensorOp::CrossEntropyGrad {
+        let kernels = cross_entropy_grad_kernels(operands, case.result.clone());
+        return Vec::from(kernels.expect(&missing));
+    }
+    vec![attention_loss_kernel(&case.op, operands, case.result.clone()).expect(&missing)]
 }
 
 fn bytes_of(words: usize) -> u64 {
     (words * 4) as u64
 }
 
-/// Runs the kernel of `case` once on `device`: uploads its buffer operands and the guarded
-/// output, dispatches, reads back, in one command buffer with one host wait. Returns the output
-/// with its guard words.
+/// Runs the kernels of `case` once on `device`: uploads its buffer operands and the guarded
+/// output, dispatches, reads back, in one command buffer with one host wait. Two kernels run as
+/// the step plan runs a two-stage work: stage 1 reads the first operands and writes an
+/// intermediate buffer, and after a barrier stage 2 reads it, then the last operands its kernel
+/// names. Returns the output with its guard words.
 fn gpu(device: &Device<'_>, case: &Case) -> Vec<f32> {
-    let kernel = kernel_of(case);
-    let words = emit(&kernel).expect("the kernel emits");
-    let pipeline = device
-        .kernel_pipeline(&kernel, &words)
-        .expect("the pipeline is created");
+    let kernels = kernels_of(case);
+    let pipelines: Vec<_> = kernels
+        .iter()
+        .map(|kernel| {
+            let words = emit(kernel).expect("the kernel emits");
+            device
+                .kernel_pipeline(kernel, &words)
+                .expect("the pipeline is created")
+        })
+        .collect();
     let result: u64 = shape_of(&case.result).iter().product();
     let mut uploads: Vec<Data> = case
         .operands
@@ -319,15 +336,57 @@ fn gpu(device: &Device<'_>, case: &Case) -> Vec<f32> {
         })
         .collect();
     let output = buffers.len() - 1;
-    let bound: Vec<&Buffer<'_>> = buffers.iter().collect();
+    let intermediate = match &kernels[..] {
+        [_] => None,
+        [first, _] => {
+            let n: u64 = shape_of(&first.result).iter().product();
+            Some(
+                device
+                    .device_local_buffer(bytes_of(n as usize))
+                    .expect("a buffer"),
+            )
+        }
+        _ => panic!("one kernel or two stages"),
+    };
     let mut recording = device.record().expect("a recording starts");
     for (from, to) in staging.iter().zip(&buffers) {
         recording.copy(from, to).expect("the upload is recorded");
     }
     recording.barrier(Barrier::TransferToCompute);
-    recording
-        .dispatch_kernel(&pipeline, &kernel, &bound)
-        .expect("the dispatch is recorded");
+    match (&kernels[..], &intermediate) {
+        ([kernel], None) => {
+            let bound: Vec<&Buffer<'_>> = buffers.iter().collect();
+            recording
+                .dispatch_kernel(&pipelines[0], kernel, &bound)
+                .expect("the dispatch is recorded");
+        }
+        ([first, second], Some(between)) => {
+            let reads = first
+                .operands
+                .iter()
+                .filter(|o| matches!(o, Operand::Buffer(_)))
+                .count();
+            let bound: Vec<&Buffer<'_>> = buffers[..reads].iter().chain([between]).collect();
+            recording
+                .dispatch_kernel(&pipelines[0], first, &bound)
+                .expect("stage 1 is recorded");
+            recording.barrier(Barrier::ComputeToCompute);
+            let rest = second
+                .operands
+                .iter()
+                .filter(|o| matches!(o, Operand::Buffer(_)))
+                .count()
+                - 1;
+            let bound: Vec<&Buffer<'_>> = [between]
+                .into_iter()
+                .chain(&buffers[output - rest..])
+                .collect();
+            recording
+                .dispatch_kernel(&pipelines[1], second, &bound)
+                .expect("stage 2 is recorded");
+        }
+        _ => unreachable!("an intermediate buffer exactly for two stages"),
+    }
     recording.barrier(Barrier::ComputeToTransfer);
     recording
         .copy(&buffers[output], &staging[output])
@@ -405,7 +464,8 @@ fn vulkan_attention_loss_and_optimizer_kernels_match_the_cpu_interpreter_within_
     let mut messages = Vec::new();
     for case in &cases {
         let name = case.op.name().to_owned();
-        let kernel = kernel_of(case);
+        let kernels = kernels_of(case);
+        let kernel = kernels.last().expect("a kernel");
         let expected = cpu(case);
         let got = gpu(&device, case);
         let at = match observed.iter().position(|(op, _)| *op == name) {
@@ -414,7 +474,11 @@ fn vulkan_attention_loss_and_optimizer_kernels_match_the_cpu_interpreter_within_
                 observed.push((
                     name.clone(),
                     Observed {
-                        kind: kernel.kind.to_string(),
+                        kind: kernels
+                            .iter()
+                            .map(|k| k.kind.to_string())
+                            .collect::<Vec<_>>()
+                            .join(" then "),
                         workgroup_size: kernel.workgroup_size,
                         bits_equal: true,
                         ..Observed::default()

@@ -1,14 +1,16 @@
 //! `ExecutionPlan::prediction_steps`, the steps a held-out evaluation records
 //! (story:bert-tiny-vs-pytorch-cuda, diagnosis of the step bottleneck): the loss steps without
 //! the loss and without any step only the loss needs, so a held-out batch runs no loss sum. On
-//! `examples/bert_tiny.mspec` the loss sum is the `CrossEntropy` kernel, one workgroup that took
-//! 36 ms of each held-out batch on the RTX 3090.
+//! `examples/bert_tiny.mspec` the loss is two `CrossEntropy` kernels, the row losses and their
+//! sum of one workgroup (story:vulkan-cross-entropy-sum-per-row), and a held-out batch runs
+//! neither; before that split the loss was one workgroup that took 36 ms of each held-out batch
+//! on the RTX 3090.
 
 use std::collections::BTreeSet;
 
 use modelspec_core::artifact::Backend;
 use modelspec_core::compile;
-use modelspec_core::ir::kernel::{ExecutionPlan, PlanOp};
+use modelspec_core::ir::kernel::{ExecutionPlan, KernelKind, PlanOp};
 use modelspec_core::ir::verify::verify_plan;
 
 fn plan(name: &str, source: &str) -> ExecutionPlan {
@@ -104,11 +106,11 @@ fn the_prediction_steps_are_the_loss_steps_without_the_loss() {
 }
 
 #[test]
-fn bert_tiny_drops_exactly_the_cross_entropy_loss_sum() {
+fn bert_tiny_drops_exactly_the_cross_entropy_row_losses_and_loss_sum() {
     let (name, source) = examples()[0];
     let plan = plan(name, source);
     let chosen: BTreeSet<usize> = plan.prediction_steps().into_iter().collect();
-    let dropped: Vec<&str> = plan
+    let dropped: Vec<(&str, KernelKind)> = plan
         .loss_steps()
         .into_iter()
         .filter(|at| !chosen.contains(at) && plan.step[*at].op == PlanOp::Dispatch)
@@ -116,8 +118,15 @@ fn bert_tiny_drops_exactly_the_cross_entropy_loss_sum() {
             let id = plan.step[at]
                 .kernel_module_id
                 .expect("a dispatch names its kernel");
-            plan.kernel(id).expect("the plan has the kernel").op
+            let kernel = plan.kernel(id).expect("the plan has the kernel");
+            (kernel.op, kernel.kind)
         })
         .collect();
-    assert_eq!(dropped, ["CrossEntropy"]);
+    assert_eq!(
+        dropped,
+        [
+            ("CrossEntropy", KernelKind::PerRow),
+            ("CrossEntropy", KernelKind::LossSum)
+        ]
+    );
 }

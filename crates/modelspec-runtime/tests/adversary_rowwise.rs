@@ -362,9 +362,9 @@ const CROSS_ENTROPY: &str = include_str!(concat!(
 ));
 
 /// Hypothesis 7: `cross_entropy` after an `embedding` schedules for Vulkan: the loss as one
-/// `loss_sum` kernel and its gradient as one `per_row` kernel
-/// (story:bert-vulkan-kernels-attention-loss-adamw), so the E-TARGET-011 site this case guarded
-/// is gone.
+/// `loss_sum` kernel and its gradient as a `per_row` kernel of row statistics then a
+/// `per_element` one (story:bert-vulkan-kernels-attention-loss-adamw), so the E-TARGET-011 site
+/// this case guarded is gone.
 #[test]
 fn adv_rowwise_cross_entropy_schedules_its_kernels() {
     let artifact = compile_artifact("cross_entropy_train.mspec", CROSS_ENTROPY, Backend::Vulkan)
@@ -381,6 +381,10 @@ fn adv_rowwise_cross_entropy_schedules_its_kernels() {
     );
     assert!(
         kinds.contains(&("per_row".to_owned(), "CrossEntropyGrad")),
+        "{kinds:?}"
+    );
+    assert!(
+        kinds.contains(&("per_element".to_owned(), "CrossEntropyGrad")),
         "{kinds:?}"
     );
 }

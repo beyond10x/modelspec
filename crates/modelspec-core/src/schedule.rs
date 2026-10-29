@@ -9,17 +9,21 @@
 //! an `Allocate` of its partials buffer, a stage-1 Dispatch that writes one partial per workgroup
 //! into it, a `Barrier`, and a stage-2 Dispatch of one workgroup that reads the partials.
 //! Each row-wise op is one Dispatch of workgroups of 64 ([`rowwise_kernel`]): `Embedding`,
-//! `AddRows`, `Gelu`, `GeluGrad`, `Dropout` and `DropoutGrad` one invocation per output element,
-//! `EmbeddingGrad`, `LayerNorm`, `LayerNormGradX`, `Softmax` and `SoftmaxGrad` one per output row,
+//! `EmbeddingGrad`, `AddRows`, `Gelu`, `GeluGrad`, `Dropout` and `DropoutGrad` one invocation per
+//! output element, `LayerNorm`, `LayerNormGradX`, `Softmax` and `SoftmaxGrad` one per output row,
 //! and the column reductions `SumRows`, `LayerNormGradGamma`, `SigregColumns` and
 //! `SigregColumnsGrad` one per output column.
 //! `Attention`, `AttentionGradQ`, `AttentionGradK` and `AttentionGradV` are one Dispatch each of
 //! workgroups of [`ATTENTION_WORKGROUP`], one per sequence, head and tile of [`attention_tile`]
 //! rows ([`attention_workgroups`], story:vulkan-attention-workgroup-per-head), the head count a
-//! last immediate operand; `CrossEntropy` is a loss sum of one workgroup, `CrossEntropyGrad` one
-//! invocation per row, and `Sqrt` and `Div` elementwise kernels of one invocation per output
-//! element that no elementwise chain extends ([`attention_loss_kernel`], coordinator decision
-//! D73). The kernels of an attention call share its softmax statistics ([`softmax_stats_sites`],
+//! last immediate operand; `CrossEntropy` is two Dispatches, one invocation per row that writes
+//! the row's loss into a partials buffer, then a loss sum of one workgroup that adds the weighted
+//! losses in row order ([`cross_entropy_kernels`]), and `CrossEntropyGrad` is two Dispatches, one
+//! invocation per row and one more that write the row maxima and exponential sums and the weight
+//! sum, then one invocation per gradient element ([`cross_entropy_grad_kernels`]), and `Sqrt` and
+//! `Div` elementwise kernels of one invocation per output element that no elementwise chain
+//! extends ([`attention_loss_kernel`], coordinator decision D73). The kernels of an attention
+//! call share its softmax statistics ([`softmax_stats_sites`],
 //! story:vulkan-attention-softmax-stats-reused): an `Allocate` of a `[rows · heads, 3]` buffer,
 //! numbered after every other buffer, right before the `Attention` Dispatch, which writes it
 //! before its result, as `AttentionGradQ` does, and `AttentionGradK` and `AttentionGradV` read it
@@ -166,13 +170,13 @@ struct Work {
     value: ValueId,
     /// Every value the work computes, `value` first.
     values: Vec<ValueId>,
-    /// One kernel, or stage 1 and stage 2 of a reduce.
+    /// One kernel, or stage 1 and stage 2 of a reduce or of the `CrossEntropy` loss.
     kernels: Vec<Kernel>,
     reads: Vec<BufferView>,
     /// In binding order; one view but for an epilogue that keeps its pre-activation and an
     /// attention kernel that writes softmax statistics before its result.
     writes: Vec<BufferView>,
-    /// The partials buffer of a two-stage reduce.
+    /// The partials buffer of a two-stage reduce, or the row losses of `CrossEntropy`.
     partials: Option<BufferView>,
     /// The softmax statistics buffer an `Attention` work allocates before its dispatch and
     /// writes first ([`Kernel::softmax_stats`]).
@@ -956,12 +960,55 @@ fn schedule_with(
                     (vec![built], None)
                 }
             },
+            TensorOp::CrossEntropy | TensorOp::CrossEntropyGrad => {
+                let no_kernel = || ScheduleError::NoKernel {
+                    value: node.id,
+                    op: node.op.name(),
+                };
+                let grad = node.op == TensorOp::CrossEntropyGrad;
+                // The buffer between the two stages, the row losses or the row statistics, is
+                // allocated with or without kernels, so the views of the host inputs after it
+                // are the same in both schedules.
+                let shape = match operands.first() {
+                    Some(Operand::Buffer(logits)) => match logits.shape[..] {
+                        [Dim::Static(rows), Dim::Static(classes)] => Some((rows, classes)),
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                let partials = match shape {
+                    Some((rows, _)) => {
+                        let between = if grad {
+                            TensorType::f32(&[rows.checked_add(1).ok_or_else(shape_error)?, 2])
+                        } else {
+                            TensorType::f32(&[rows])
+                        };
+                        Some(allocate(&mut buffers, &between).ok_or_else(shape_error)?)
+                    }
+                    None => None,
+                };
+                match (built, shape, partials) {
+                    (Kernels::None, _, _) => continue,
+                    (Kernels::Vulkan, Some((rows, classes)), Some(partials)) => {
+                        let (invocations, kernels) = if grad {
+                            (
+                                rows.checked_mul(classes).ok_or_else(no_kernel)?,
+                                cross_entropy_grad_kernels(operands, node.ty.clone()),
+                            )
+                        } else {
+                            (rows, cross_entropy_kernels(operands, node.ty.clone()))
+                        };
+                        spread(node, invocations.div_ceil(ROWWISE_WORKGROUP))?;
+                        let [first, second] = kernels.ok_or_else(no_kernel)?;
+                        (vec![first, second], Some(partials))
+                    }
+                    (Kernels::Vulkan, _, _) => return Err(no_kernel()),
+                }
+            }
             TensorOp::Attention { .. }
             | TensorOp::AttentionGradQ { .. }
             | TensorOp::AttentionGradK { .. }
             | TensorOp::AttentionGradV { .. }
-            | TensorOp::CrossEntropy
-            | TensorOp::CrossEntropyGrad
             | TensorOp::Sqrt
             | TensorOp::Div => match built {
                 Kernels::None => continue,
@@ -1226,7 +1273,7 @@ fn rowwise_shape(
         (TensorOp::EmbeddingGrad { rows }, [[n], [gn, h]], [v, rh])
             if n == gn && h == rh && *rows == Dim::Static(*v) =>
         {
-            f32s(&[1]).then_some((KernelKind::PerRow, *v))?
+            f32s(&[1]).then_some((KernelKind::PerElement, out_elements))?
         }
         (TensorOp::AddRows, [[n, h], [bh]], [rn, rh]) if h == bh && (n, h) == (rn, rh) => {
             f32s(&[0, 1]).then_some((KernelKind::PerElement, out_elements))?
@@ -1368,18 +1415,22 @@ pub fn attention_workgroups(sequences: u64, keys: u64, heads: u64) -> Option<u64
 
 /// The kernel kind of `Attention`, its three gradients, `CrossEntropy`, `CrossEntropyGrad`,
 /// `Sqrt` or `Div` over `operands` into `result`, and the invocations its dispatch runs: one per
-/// row and head of an attention kernel ([`KernelKind::PerRow`]), one workgroup for the
-/// cross-entropy loss ([`KernelKind::LossSum`], 1), one per row of its gradient
-/// ([`KernelKind::PerRow`]), one per output element of `Sqrt` and `Div`
-/// ([`KernelKind::Elementwise`]). `None` for another op, a shape that is not static or has a
-/// zero dimension, or operands that are not the op's:
+/// row and head of an attention kernel ([`KernelKind::PerRow`]), one per row for the
+/// cross-entropy row losses ([`KernelKind::PerRow`]) and one workgroup for their sum
+/// ([`KernelKind::LossSum`], 1), the two stages of [`cross_entropy_kernels`], one per row and
+/// one more for the gradient's row statistics ([`KernelKind::PerRow`]) and one per element of
+/// the gradient ([`KernelKind::PerElement`]), the two stages of [`cross_entropy_grad_kernels`],
+/// one per output element of `Sqrt` and `Div` ([`KernelKind::Elementwise`]). `None` for another
+/// op, a shape that is not static or has a zero dimension, or operands that are not the op's:
 ///
 /// - attention: `q`, `k`, `v` (and the gradient `g` of a gradient op) `f32` buffers `[N, H]`, a
 ///   key mask `f32` `[B, S]` with `B·S = N` and `S` at most [`MAX_ATTENTION_KEYS`], and `heads`
 ///   dividing `H`;
-/// - cross-entropy: logits `f32` `[N, V]`, labels `i32` `[N]`, weights `f32` `[N]`, a rank-0
-///   result, and for the gradient a seed that is an immediate or a rank-0 `f32` buffer, into
-///   `[N, V]`;
+/// - cross-entropy row losses: logits `f32` `[N, V]` and labels `i32` `[N]` into `f32` `[N]`;
+///   their sum: the row losses and the weights, `f32` `[N]` each, into a rank-0 result;
+/// - cross-entropy gradient: its row statistics, logits `f32` `[N, V]`, labels `i32` `[N]` and
+///   weights `f32` `[N]` into `f32` `[N + 1, 2]`; its elements: the row statistics, the same
+///   three and a seed that is an immediate or a rank-0 `f32` buffer, into `[N, V]`;
 /// - `Sqrt` of one operand and `Div` of two, each an immediate, a rank-0 `f32` buffer or an `f32`
 ///   buffer of the result's shape.
 fn attention_loss_shape(
@@ -1432,22 +1483,41 @@ fn attention_loss_shape(
                 && *heads <= 1 << 24;
             fits.then_some((KernelKind::PerRow, n.checked_mul(*heads)?))
         }
-        TensorOp::CrossEntropy | TensorOp::CrossEntropyGrad => {
-            let logits = f32s(0)?;
+        TensorOp::CrossEntropy => {
+            if operands.len() != 2 {
+                return None;
+            }
+            match f32s(0)?[..] {
+                [n, _] => {
+                    (buffer(1, DType::I32)? == [n] && out == [n]).then_some((KernelKind::PerRow, n))
+                }
+                [n] => (f32s(1)? == [n] && out.is_empty()).then_some((KernelKind::LossSum, 1)),
+                _ => None,
+            }
+        }
+        TensorOp::CrossEntropyGrad => {
+            // Stage 2 reads the row statistics first, then the op's operands.
+            let at = match operands.len() {
+                3 => 0,
+                5 => 1,
+                _ => return None,
+            };
+            let logits = f32s(at)?;
             let [n, v] = logits[..] else {
                 return None;
             };
-            if buffer(1, DType::I32)? != [n] || f32s(2)? != [n] {
+            if buffer(at + 1, DType::I32)? != [n] || f32s(at + 2)? != [n] {
                 return None;
             }
-            if *op == TensorOp::CrossEntropy {
-                return (operands.len() == 3 && out.is_empty()).then_some((KernelKind::LossSum, 1));
+            if at == 0 {
+                return (out == [n.checked_add(1)?, 2]).then_some((KernelKind::PerRow, n + 1));
             }
-            let seed = match operands.get(3)? {
+            let seed = match operands.get(4)? {
                 Operand::Immediate(_) => true,
                 Operand::Buffer(ty) => ty.dtype == DType::F32 && ty.rank() == 0,
             };
-            (operands.len() == 4 && seed && out == [n, v]).then_some((KernelKind::PerRow, n))
+            (f32s(0)? == [n.checked_add(1)?, 2] && seed && out == [n, v])
+                .then_some((KernelKind::PerElement, n.checked_mul(v)?))
         }
         TensorOp::Sqrt | TensorOp::Div => {
             let arity = if *op == TensorOp::Sqrt { 1 } else { 2 };
@@ -1469,9 +1539,11 @@ fn attention_loss_shape(
 }
 
 /// The kernel record of `Attention`, `AttentionGradQ`, `AttentionGradK`, `AttentionGradV`,
-/// `CrossEntropy`, `CrossEntropyGrad`, `Sqrt` or `Div` over `operands`, in the op's operand
-/// order, into `result`, as [`schedule`] builds it (DESIGN.md § 5.2, coordinator decision D73):
-/// its kind, workgroups and workgroup size by [`attention_loss_groups`], and its module id. An
+/// `Sqrt` or `Div` over `operands`, in the op's operand order, or of one stage of
+/// `CrossEntropy` or `CrossEntropyGrad` over its stage's operands ([`cross_entropy_kernels`],
+/// [`cross_entropy_grad_kernels`]), into `result`, as [`schedule`] builds it (DESIGN.md § 5.2,
+/// coordinator decision D73): its kind, workgroups and workgroup size by
+/// [`attention_loss_groups`], and its module id. An
 /// attention kernel carries its head count as a last, immediate operand ([`Kernel::heads`]), so
 /// it is in the module id. `None` for another op or for operands that are not the op's.
 pub fn attention_loss_kernel(
@@ -1504,7 +1576,7 @@ pub fn attention_loss_kernel(
 
 /// The kind of the kernel of [`attention_loss_shape`], its workgroups and their size: for an
 /// attention kernel [`attention_workgroups`] of [`ATTENTION_WORKGROUP`], for the cross-entropy
-/// loss one of 64, for any other workgroups of 64 over its invocations.
+/// loss sum one of 64, for any other workgroups of 64 over its invocations.
 fn attention_loss_groups(
     op: &TensorOp,
     operands: &[Operand],
@@ -1608,6 +1680,58 @@ fn softmax_stats_sites(nodes: &[TensorNode]) -> Vec<[Option<ValueId>; 4]> {
             })
         })
         .collect()
+}
+
+/// The two kernels of `CrossEntropy` over its operands `logits: f32[N, V]`, `labels: i32[N]`
+/// and `weights: f32[N]` into its rank-0 `result`, as [`schedule`] builds them
+/// (story:vulkan-cross-entropy-sum-per-row): the row losses, [`KernelKind::PerRow`] over
+/// `(logits, labels)` into `f32[N]`, one invocation per row; and their sum,
+/// [`KernelKind::LossSum`] over `(row losses, weights)` into `result`, one workgroup that adds
+/// the weighted row losses and the weights in ascending row order. `None` for operands or a
+/// result that are not the op's.
+pub fn cross_entropy_kernels(operands: Vec<Operand>, result: TensorType) -> Option<[Kernel; 2]> {
+    let [logits, labels, weights] = <[Operand; 3]>::try_from(operands).ok()?;
+    let rows = match &logits {
+        Operand::Buffer(ty) => match ty.shape[..] {
+            [Dim::Static(rows), _] => rows,
+            _ => return None,
+        },
+        Operand::Immediate(_) => return None,
+    };
+    let losses = TensorType::f32(&[rows]);
+    let op = TensorOp::CrossEntropy;
+    let per_row = attention_loss_kernel(&op, vec![logits, labels], losses.clone())?;
+    let sum = attention_loss_kernel(&op, vec![Operand::Buffer(losses), weights], result)?;
+    Some([per_row, sum])
+}
+
+/// The two kernels of `CrossEntropyGrad` over its operands `logits: f32[N, V]`,
+/// `labels: i32[N]`, `weights: f32[N]` and a seed, an immediate or a rank-0 `f32` buffer, into
+/// its `result: f32[N, V]`, as [`schedule`] builds them: the row statistics,
+/// [`KernelKind::PerRow`] over `(logits, labels, weights)` into `f32[N + 1, 2]`, invocation `n`
+/// of the first `N` writing the maximum and the sum of `exp(x - max)` of row `n` and invocation
+/// `N` the sum of the weights; and the gradient, [`KernelKind::PerElement`] over `(statistics,
+/// logits, labels, weights, seed)` into `result`, one invocation per element. `None` for
+/// operands or a result that are not the op's.
+pub fn cross_entropy_grad_kernels(
+    operands: Vec<Operand>,
+    result: TensorType,
+) -> Option<[Kernel; 2]> {
+    let [logits, labels, weights, seed] = <[Operand; 4]>::try_from(operands).ok()?;
+    let rows = match &logits {
+        Operand::Buffer(ty) => match ty.shape[..] {
+            [Dim::Static(rows), _] => rows,
+            _ => return None,
+        },
+        Operand::Immediate(_) => return None,
+    };
+    let stats = TensorType::f32(&[rows.checked_add(1)?, 2]);
+    let op = TensorOp::CrossEntropyGrad;
+    let first = vec![logits.clone(), labels.clone(), weights.clone()];
+    let per_row = attention_loss_kernel(&op, first, stats.clone())?;
+    let second = vec![Operand::Buffer(stats), logits, labels, weights, seed];
+    let per_element = attention_loss_kernel(&op, second, result)?;
+    Some([per_row, per_element])
 }
 
 /// The tile of a matmul over `operands` `[m, k]` and `[k, n]`, reading the operands marked in
@@ -1733,6 +1857,22 @@ fn record<'a>(works: impl Iterator<Item = &'a Work>) -> Vec<PlanStep> {
                 );
             }
             ([stage1, stage2], Some(partials)) => {
+                // Stage 1 reads the work's first views, one per buffer operand of its kernel;
+                // stage 2 reads the partials, then the work's last views, one per further buffer
+                // operand of its kernel: none for a reduce, the weights for the cross-entropy
+                // loss sum, every view for the cross-entropy gradient.
+                let buffers = |kernel: &Kernel| {
+                    kernel
+                        .operands
+                        .iter()
+                        .filter(|operand| matches!(operand, Operand::Buffer(_)))
+                        .count()
+                };
+                let reads = work.reads.len();
+                let head = &work.reads[..buffers(stage1).min(reads)];
+                let tail = &work.reads[reads - buffers(stage2).saturating_sub(1).min(reads)..];
+                let mut second = vec![partials];
+                second.extend_from_slice(tail);
                 recorder.sync_for(&work.reads, &[partials]);
                 let allocate = recorder.push(PlanStep {
                     op: PlanOp::Allocate,
@@ -1746,17 +1886,11 @@ fn record<'a>(works: impl Iterator<Item = &'a Work>) -> Vec<PlanStep> {
                 recorder.dispatch(
                     stage1,
                     work.value,
-                    work.reads.clone(),
+                    head.to_vec(),
                     vec![partials],
                     Some(allocate),
                 );
-                recorder.dispatch(
-                    stage2,
-                    work.value,
-                    vec![partials],
-                    work.writes.clone(),
-                    None,
-                );
+                recorder.dispatch(stage2, work.value, second, work.writes.clone(), None);
             }
             _ => unreachable!("a work item is a copy, one kernel, or two stages with partials"),
         }

@@ -284,6 +284,7 @@ fn adv_gpu_step_bert_tiny_schedules_the_eight_kernels() {
         " per_row AttentionGradV ",
         " loss_sum CrossEntropy ",
         " per_row CrossEntropyGrad ",
+        " per_element CrossEntropyGrad ",
         " elementwise Sqrt ",
         " elementwise Div ",
     ] {

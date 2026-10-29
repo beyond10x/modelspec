@@ -133,9 +133,9 @@ pub enum KernelKind {
     /// The second stage: one workgroup reads every partial and writes the result.
     ReduceStage2,
     /// The `mse` loss: one workgroup stages its terms in workgroup memory and invocation 0 sums
-    /// them in row-major order (DESIGN.md § 5.2, § 5.4); the `cross_entropy` loss: one workgroup
-    /// computes 64 row losses at a time into workgroup memory and invocation 0 adds their
-    /// weighted sum and the weight sum in ascending row order.
+    /// them in row-major order (DESIGN.md § 5.2, § 5.4); the sum of the `cross_entropy` loss: one
+    /// workgroup stages 64 row losses and their weights at a time in workgroup memory and
+    /// invocation 0 adds their weighted sum and the weight sum in ascending row order.
     LossSum,
     Transpose,
     /// One invocation per output element in the blocks of its [`MatMulTile`], with an optional
@@ -145,14 +145,19 @@ pub enum KernelKind {
     /// (or `(p, g, lr)`) it is `p - (lr * g)`, the product rounded before the subtraction and
     /// neither contracted; with operands `(p, d)` it is `p - d`.
     SgdUpdate,
-    /// A row-wise op computed one output element per invocation: `Embedding`, `AddRows`,
-    /// `Gelu`, `GeluGrad`, `Dropout` and `DropoutGrad` (DESIGN.md § 5.2).
+    /// A row-wise op computed one output element per invocation: `Embedding`, `EmbeddingGrad`
+    /// (each element of the table gradient adds its column of the gradient rows of every id equal
+    /// to its row, in ascending id position), `AddRows`, `Gelu`, `GeluGrad`, `Dropout`,
+    /// `DropoutGrad` and `CrossEntropyGrad` (each gradient element from the row statistics the
+    /// per-row stage wrote) (DESIGN.md § 5.2).
     PerElement,
     /// A row-wise op computed one output row per invocation, its reductions over the row in
-    /// ascending column order: `EmbeddingGrad` (each table row, its ids scanned in ascending
-    /// order), `LayerNorm`, `LayerNormGradX`, `Softmax`, `SoftmaxGrad` and `CrossEntropyGrad`;
-    /// and one invocation per row and head of `Attention` and its three gradients, the head
-    /// count a last, immediate operand ([`Kernel::heads`]).
+    /// ascending column order: `LayerNorm`, `LayerNormGradX`, `Softmax`, `SoftmaxGrad`,
+    /// `CrossEntropy` (the unweighted loss of each row, which the loss sum then adds) and
+    /// `CrossEntropyGrad` (the maximum and exponential sum of each row, and from one more
+    /// invocation the weight sum, which the per-element stage then reads); and one invocation per
+    /// row and head of `Attention` and its three gradients, the head count a last, immediate
+    /// operand ([`Kernel::heads`]).
     PerRow,
     /// A column reduction over the rows of its operands in ascending row order, one output
     /// column per invocation: `SumRows`, `LayerNormGradGamma`, `SigregColumns` and
@@ -1031,12 +1036,15 @@ impl Kernel {
     /// `0 - d`, the product `2 g`, then per element and knot the argument's product,
     /// `sin`/`cos`, `S·cos` and the fused term, the eight weighted terms and the product by
     /// `2 g`. One per output element for `Sqrt`
-    /// and `Div`. For `cross_entropy` over `[n, v]` logits, `n·(4v + 6) + 1`: per element a
-    /// compare, a subtraction, an `exp` and an add of the row softmax, per row a logarithm, an
-    /// add, a subtraction, the fused weighted term and the weight sum's add, and the one
-    /// division; `n·(9v + 3)` for its gradient, which recomputes the row softmax and takes per
-    /// element a subtraction, an `exp`, a division, the subtraction of the one-hot target and
-    /// the product with the row's scale. Each key the attention ops visit counts as unmasked:
+    /// and `Div`. For `cross_entropy` over `[n, v]` logits, `n·(4v + 3)` for its per-row kernel,
+    /// per element a compare, a subtraction, an `exp` and an add of the row softmax and per row a
+    /// logarithm, an add and a subtraction, and `3n + 1` for its loss sum, per row the fused
+    /// weighted term and the weight sum's add and the one division, `n·(4v + 6) + 1` in all;
+    /// for its gradient, `n·(4v + 1)` for the per-row kernel, the row softmax's compare,
+    /// subtraction, `exp` and add per element and per row an add of the weight sum, and `7·n·v`
+    /// for the per-element kernel, a subtraction, an `exp`, a division, the subtraction of the
+    /// one-hot target and the product with the row's scale, and the scale's product and
+    /// division, which each element computes again, `n·(11v + 1)` in all. Each key the attention ops visit counts as unmasked:
     /// with `A` heads of width `d` over `q` of `[n, h]` and `S` keys per sequence, a key costs a
     /// score of `2d` (its dot product and the scale), the softmax's compare, subtraction, `exp`
     /// and add, and the division of its probability, so `n·A·S·(4d + 5)` for `Attention` and
@@ -1087,7 +1095,9 @@ impl Kernel {
                 ("Sub", 2) => per_output(1),
                 _ => None,
             },
-            KernelKind::LossSum if self.op == "CrossEntropy" => rows(4, 6)?.checked_add(1),
+            KernelKind::LossSum if self.op == "CrossEntropy" => {
+                elements(operand(0)?)?.checked_mul(3)?.checked_add(1)
+            }
             KernelKind::ReduceStage1 | KernelKind::ReduceStage2 | KernelKind::LossSum => self
                 .operands
                 .iter()
@@ -1098,18 +1108,20 @@ impl Kernel {
             KernelKind::Transpose | KernelKind::Broadcast => Some(0),
             KernelKind::PerElement => match self.op {
                 "Embedding" => Some(0),
+                "EmbeddingGrad" => elements(operand(1)?),
+                "CrossEntropyGrad" => per_output(7),
                 "AddRows" | "Dropout" | "DropoutGrad" => per_output(1),
                 "Gelu" => per_output(10),
                 "GeluGrad" => per_output(24),
                 _ => None,
             },
             KernelKind::PerRow => match self.op {
-                "EmbeddingGrad" => elements(operand(1)?),
                 "LayerNorm" => rows(8, 3),
                 "LayerNormGradX" => rows(14, 3),
                 "Softmax" => per_output(5),
                 "SoftmaxGrad" => per_output(4),
-                "CrossEntropyGrad" => rows(9, 3),
+                "CrossEntropy" => rows(4, 3),
+                "CrossEntropyGrad" => rows(4, 1),
                 "Attention" | "AttentionGradQ" | "AttentionGradK" | "AttentionGradV" => {
                     self.attention_flop()
                 }
