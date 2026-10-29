@@ -325,8 +325,10 @@ fn adv_gpu_step_f3_help_names_the_stepwise_profile() {
 /// Hypothesis 9: on a stepwise run `--profile` prints the profile of every step's command buffer
 /// on stderr, exit 0, the unprofiled run's stdout (story:bert-tiny-vs-pytorch-cuda,
 /// which replaced the one-line refusal): each `step` site called once per step, each `final` site
-/// once, one host wait per step plus one, and `step_total` with no uncounted site; and `--stats`
-/// prints its twelve counters, `host waits` one per step plus one.
+/// once, one host wait per segment of at most `SUBMIT_STEPS` steps and one for the final loss
+/// (story:vulkan-stepwise-multi-step-submit: 30 steps are 4 segments, 5 waits, where one per
+/// step and one more were 31), and `step_total` with no uncounted site; and `--stats` prints its
+/// twelve counters, `host waits` as many.
 #[test]
 #[ignore = "needs a Vulkan device"]
 fn adv_gpu_step_device_profile_and_stats_on_a_stepwise_run() {
@@ -354,7 +356,7 @@ fn adv_gpu_step_device_profile_and_stats_on_a_stepwise_run() {
         };
         assert!(line.contains(calls), "{line}");
     }
-    assert!(stderr.contains("profile host_waits 31\n"), "{stderr}");
+    assert!(stderr.contains("profile host_waits 5\n"), "{stderr}");
     assert!(
         stderr.contains("profile steady_us_per_step ")
             && !stderr.contains("profile steady_us_per_step unavailable"),
@@ -391,7 +393,7 @@ fn adv_gpu_step_device_profile_and_stats_on_a_stepwise_run() {
         );
     }
     assert!(stderr.contains("steps: 30\n"), "{stderr}");
-    assert!(stderr.contains("host waits: 31\n"), "{stderr}");
+    assert!(stderr.contains("host waits: 5\n"), "{stderr}");
 }
 
 /// A `step <k> loss <v> …` or `eval <k> loss <v> …` line split at its loss: the text before it,

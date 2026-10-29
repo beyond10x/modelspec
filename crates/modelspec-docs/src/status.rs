@@ -584,8 +584,17 @@ pub const CAPABILITIES: &[Capability] = &[
     shipped(
         "Training",
         "The hidden-32 BERT twin trained on the GPU",
-        "Since 0.17.0: modelspec train --backend vulkan --data <dir> --eval-every <n> trains the twin with dropout and AdamW, one command buffer and one host wait per step, and since 0.18.0 each held-out batch of an evaluated step in a command buffer of its own with one host wait; every step and eval line and every final parameter lies within the GPU tolerance of the CPU run, and --serve and --record stream them from the device.",
+        "Since 0.17.0: modelspec train --backend vulkan --data <dir> --eval-every <n> trains the twin with dropout and AdamW, through 0.22.0 one command buffer and one host wait per step, and since 0.18.0 each held-out batch of an evaluated step in a command buffer of its own with one host wait; every step and eval line and every final parameter lies within the GPU tolerance of the CPU run, and --serve and --record stream them from the device.",
         Evidence::Test("crates/modelspec-cli/tests/vulkan_bert_cpu_steps.rs::steps"),
+        "/docs/reference/cli",
+    ),
+    shipped(
+        "Training",
+        "Stepwise GPU runs submit up to eight steps per command buffer",
+        "After 0.22.0: a stepwise modelspec train --backend vulkan run records up to eight steps into one command buffer, one host wait each, and records the next while the device runs it, with the step and eval lines, events and checkpoints of one step per command buffer; each held-out evaluation the device reduces is a command buffer and host wait of its own, and --clock times it into eval_seconds.",
+        Evidence::Test(
+            "crates/modelspec-cli/tests/train_vulkan_submit_steps.rs::device_adamw_dropout_and_held_out_print_the_lines_of_one_step_per_submit",
+        ),
         "/docs/reference/cli",
     ),
     shipped(

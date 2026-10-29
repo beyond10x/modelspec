@@ -277,8 +277,8 @@ pub fn train_on_device_with(
 
 /// [`train_on_device_with`], from the start and with the checkpoints of `options`
 /// ([`train_with`]). A step with a dropout, a `sigreg` or an AdamW update runs stepwise instead,
-/// one command buffer and one host wait per step ([`super::stepwise`]), on the synthetic data
-/// the run makes itself, and profiled per step's command buffer when `profiled`.
+/// one command buffer and one host wait per segment of steps ([`super::stepwise`]), on the
+/// synthetic data the run makes itself, and profiled per segment's command buffer when `profiled`.
 pub fn train_on_device_from(
     device: Option<usize>,
     compiled: &CompiledTraining,
@@ -302,6 +302,7 @@ pub fn train_on_device_from(
             dense_eval: None,
             dense_predictions: None,
             checkpoints,
+            submit_steps: None,
         };
         return super::stepwise::train_stepwise_on_device(
             device,

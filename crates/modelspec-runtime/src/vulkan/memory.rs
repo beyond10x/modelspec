@@ -153,7 +153,29 @@ impl Buffer<'_> {
         self.write_words(values)
     }
 
+    /// [`Buffer::write_f32`] through a shared reference, for a staging buffer that a recording
+    /// still borrows while the host fills it for the next submission (a stepwise run's per-step
+    /// uploads, written while the segment before them runs).
+    ///
+    /// # Safety
+    ///
+    /// No submission that reads or writes the buffer is pending, and no slice
+    /// [`Buffer::mapped_f32`] returned for it is alive.
+    pub unsafe fn write_f32_shared(&self, values: &[f32]) -> Result<(), ExecError> {
+        // SAFETY: the caller's contract is this one's.
+        unsafe { self.write_words_shared(values) }
+    }
+
     fn write_words<T: Copy>(&mut self, values: &[T]) -> Result<(), ExecError> {
+        // SAFETY: `self` is borrowed mutably, so no recording that could be pending borrows the
+        // buffer and no slice of its mapping is alive.
+        unsafe { self.write_words_shared(values) }
+    }
+
+    /// # Safety
+    ///
+    /// As [`Buffer::write_f32_shared`]'s.
+    unsafe fn write_words_shared<T: Copy>(&self, values: &[T]) -> Result<(), ExecError> {
         let needed = std::mem::size_of_val(values) as u64;
         let at = self.mapped.ok_or(ExecError::NotHostVisible)?;
         if needed > self.bytes {
@@ -162,8 +184,8 @@ impl Buffer<'_> {
                 size: self.bytes,
             });
         }
-        // SAFETY: the mapping covers `bytes` bytes, at least `needed`, and nothing else
-        // references it while `self` is borrowed mutably.
+        // SAFETY: the mapping covers `bytes` bytes, at least `needed`, and by the caller's
+        // contract neither the device nor a slice of the mapping reads it meanwhile.
         unsafe { std::ptr::copy_nonoverlapping(values.as_ptr().cast::<u8>(), at, needed as usize) };
         Ok(())
     }

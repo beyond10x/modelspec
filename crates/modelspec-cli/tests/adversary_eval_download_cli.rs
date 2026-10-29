@@ -4,9 +4,10 @@
 //! sequences for one batch, a resumed run, the recorded `StepCompleted` metrics, a run that
 //! diverges at an evaluated step, three runs of the twin over 123 batches, and the device memory
 //! the evaluation adds. Since story:vulkan-eval-metrics-on-device the CLI reduces each
-//! evaluation on the device in its step's command buffer, so the counts here are the steps'
-//! host waits and the reduction's state; the per-batch reduction is held by the runtime crate's
-//! `tests/adversary_eval_download.rs`.
+//! evaluation on the device in one command buffer, and since
+//! story:vulkan-stepwise-multi-step-submit a host wait ends each segment of steps and each
+//! evaluation, so the counts here are those host waits and the reduction's state; the per-batch
+//! reduction is held by the runtime crate's `tests/adversary_eval_download.rs`.
 //!
 //! Every case is a device case, `#[ignore]` as "device"; run them with
 //! `MODELSPEC_VK_VALIDATION=1 cargo test -p modelspec-cli --features vulkan --test adversary_eval_download_cli -- --ignored`.
@@ -262,8 +263,9 @@ fn outside(cpu: &str, gpu: &str, m: usize) -> Vec<String> {
 
 /// A `HeldOut` split of exactly one full batch and a remainder (`mlm_bag` at `B = 5` over the
 /// fixture's 9 sequences): `--eval-every 1 --steps 3` on the device evaluates steps 0 to 3
-/// within the run tolerance of the CPU, with `3 + 1` host waits and submits: each evaluation
-/// rides its step's (story:vulkan-eval-metrics-on-device).
+/// within the run tolerance of the CPU, with `4 + 4` host waits and submits: each step a segment
+/// of its own, since the next is evaluated, and one per evaluation, none per batch
+/// (story:vulkan-eval-metrics-on-device, story:vulkan-stepwise-multi-step-submit).
 #[test]
 #[ignore = "device: needs a Vulkan device"]
 fn adv_ed_cli_one_full_batch_and_a_remainder_matches_the_cpu() {
@@ -289,8 +291,8 @@ fn adv_ed_cli_one_full_batch_and_a_remainder_matches_the_cpu() {
     );
     assert_eq!(eval_steps(&stdout(&gpu)), [0, 1, 2, 3]);
     let stats = stderr(&gpu);
-    assert_eq!(counter(&stats, "host waits"), 3 + 1, "{stats}");
-    assert_eq!(counter(&stats, "submits"), 3 + 1, "{stats}");
+    assert_eq!(counter(&stats, "host waits"), 4 + 4, "{stats}");
+    assert_eq!(counter(&stats, "submits"), 4 + 4, "{stats}");
 }
 
 /// A `HeldOut` split of fewer sequences than one batch is refused on the device as on the CPU:
@@ -333,8 +335,9 @@ fn adv_ed_cli_too_few_heldout_sequences_is_refused_as_on_the_cpu() {
 }
 
 /// A run resumed at step 4 with `--steps 6 --eval-every 5` evaluates steps 5 and 10 and no
-/// step of its own start, on the device as on the CPU, within the run tolerance, with `6 + 1`
-/// host waits, none per batch (story:vulkan-eval-metrics-on-device).
+/// step of its own start, on the device as on the CPU, within the run tolerance, with `3 + 2`
+/// host waits: the segments 4, 5 to 9 and 10, and the evaluations at 5 and 10, none per batch
+/// (story:vulkan-eval-metrics-on-device, story:vulkan-stepwise-multi-step-submit).
 #[test]
 #[ignore = "device: needs a Vulkan device"]
 fn adv_ed_cli_resumed_run_evaluates_from_the_next_multiple() {
@@ -371,7 +374,7 @@ fn adv_ed_cli_resumed_run_evaluates_from_the_next_multiple() {
     );
     let stats = stderr(&gpu);
     assert_eq!(counter(&stats, "steps"), 6, "{stats}");
-    assert_eq!(counter(&stats, "host waits"), 6 + 1, "{stats}");
+    assert_eq!(counter(&stats, "host waits"), 3 + 2, "{stats}");
 }
 
 /// The `StepCompleted` of an evaluated step of a recorded device run carries

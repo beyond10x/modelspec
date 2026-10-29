@@ -63,7 +63,7 @@ BERT-tiny pre-trained on one RTX 3090 for 10,000 steps reached a held-out loss o
 | `modelspec ir --stage tensor`, `--stage training` and `--stage kernel`: print the verified IR and the kernel plan | more than one device |
 | `modelspec train --backend cpu`: train on the CPU reference with seeded synthetic data or dense `f32` and `i32` tensor files (`--data`) | modules, layers, generics and `f16` |
 | `modelspec train --backend vulkan [--stats] [--profile]`: train on one Vulkan device with one host wait per run | |
-| `modelspec train --backend vulkan --data <packed-dir> [--eval-every <n>]`: train the hidden-32 BERT twin with dropout and AdamW on one Vulkan device, one host wait per step and one more per held-out batch of an evaluated step, and evaluate the held-out split on the device | |
+| `modelspec train --backend vulkan --data <packed-dir> [--eval-every <n>]`: train the hidden-32 BERT twin with dropout and AdamW on one Vulkan device, one host wait per segment of up to 8 steps and one more per evaluation, and evaluate the held-out split on the device | |
 | `embedding`, `add_rows`, `gelu`, `layer_norm`, `softmax`, `attention`, `cross_entropy` and `dropout`, with `i32` row ids, on the CPU reference; all eight also have Vulkan kernels | |
 | `modelspec data prepare`, `data tokenizer` and `data pack`: split a corpus, train a WordPiece tokenizer and pack token sequences | |
 | `modelspec train --backend cpu --data <packed-dir> [--eval-every <n>]`: train a masked-language model on packed sequences and evaluate the held-out split during the run | |

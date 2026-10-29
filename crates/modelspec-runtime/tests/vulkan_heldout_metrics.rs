@@ -1,6 +1,6 @@
 //! The held-out evaluation reduced on the device (story:vulkan-eval-metrics-on-device): the
 //! `HeldOutRows` and `HeldOutSum` kernels of `spirv::emit::held_out_kernels` and the stepwise
-//! Vulkan run that records them after each `HeldOut` batch, one host wait per evaluated step.
+//! Vulkan run that records them after each `HeldOut` batch, one host wait per evaluation.
 //!
 //! The cases without a device hold the modules to `spirv-val`, the kernels to their shapes, and
 //! `HeldOut::metrics_of_sums` to the bits of `HeldOut::metrics_of` when it is given the host's
@@ -11,7 +11,7 @@
 //! `f32::MAX`, and the stepwise run with `HeldOutReduction::Device` against the same
 //! run with `HeldOutReduction::Host` on `mlm_bag`, on the hidden-32 BERT twin and, given
 //! [`BERT_TINY_DATA`], on `examples/bert_tiny.mspec` over the packed corpus; and the evaluated
-//! steps to one host wait each and [`HELD_OUT_STATE`] floats down per evaluation, under the
+//! evaluations to one host wait each and [`HELD_OUT_STATE`] floats down per evaluation, under the
 //! Khronos validation layer's synchronization validation.
 //!
 //! The packed directory of `mlm_bag` and the twin is the original-text fixture
@@ -329,7 +329,7 @@ mod device {
     use modelspec_runtime::vulkan::negotiate::{Negotiated, negotiate};
     use modelspec_runtime::vulkan::runner::RunStats;
     use modelspec_runtime::vulkan::stepwise::{
-        Evaluation, HeldOutReduction, StepSeen, StepwiseOptions, train_stepwise,
+        Evaluation, HeldOutReduction, SUBMIT_STEPS, StepSeen, StepwiseOptions, train_stepwise,
     };
     use modelspec_runtime::vulkan::sync::Barrier;
     use modelspec_runtime::vulkan::{Device, VALIDATION_ENV, Vulkan};
@@ -666,11 +666,16 @@ mod device {
             .filter_map(|(k, d, h)| disagreement(*d, *h).map(|why| format!("eval {k}: {why}")))
             .collect();
         assert!(differing.is_empty(), "{differing:#?}");
-        assert_eq!(stats.host_waits, steps + 1, "{stats}");
-        assert_eq!(stats.submits, steps + 1, "{stats}");
+        // One host wait per segment, the steps from one evaluated step to the next (`every` is
+        // at most `SUBMIT_STEPS`) and the last step alone, and one per evaluation reduced on the
+        // device, one per batch on the host (story:vulkan-stepwise-multi-step-submit).
+        assert!(every <= SUBMIT_STEPS);
+        let segments = steps.div_ceil(every) + 1;
+        assert_eq!(stats.host_waits, segments + evaluations, "{stats}");
+        assert_eq!(stats.submits, segments + evaluations, "{stats}");
         assert_eq!(
             host_stats.host_waits,
-            steps + 1 + evaluations * batches,
+            segments + evaluations * batches,
             "{host_stats}"
         );
         let down = stats.bytes_downloaded - plain_stats.bytes_downloaded;
@@ -695,7 +700,7 @@ mod device {
 
     /// `mlm_bag` at `B = 2` over 4 `HeldOut` batches, `--eval-every 1` on 3 steps: the device
     /// reduction prints the host reduction's accuracy, and its loss within `EVAL_LOSS_ULPS`, at
-    /// every step, one host wait per step, 16 bytes down per evaluation, and the training of the run without evaluation.
+    /// every step, one host wait per step and one per evaluation, 16 bytes down per evaluation, and the training of the run without evaluation.
     #[test]
     #[ignore = "device: needs a Vulkan device"]
     fn device_reduction_of_mlm_bag_is_the_host_tallys() {
@@ -721,7 +726,7 @@ mod device {
 
     /// `examples/bert_tiny.mspec` over the packed corpus of [`BERT_TINY_DATA`] on 2 steps,
     /// `--eval-every 1`: the story's acceptance as decided in D141, the host tally's accuracy,
-    /// its loss within `EVAL_LOSS_ULPS`, one host wait per evaluated step and at most `8 · batches` bytes down per evaluation.
+    /// its loss within `EVAL_LOSS_ULPS`, one host wait per evaluation and at most `8 · batches` bytes down per evaluation.
     #[test]
     #[ignore = "device: needs a Vulkan device and MODELSPEC_BERT_TINY_PACKED"]
     fn device_reduction_of_bert_tiny_is_the_host_tallys() {
