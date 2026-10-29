@@ -759,7 +759,9 @@ fn build(
         Body::Stage1 | Body::Stage2 { .. } => Some((TREE, false)),
         Body::LossSum { chunk, .. } => Some((chunk, false)),
         Body::MatMul { layout, tile, .. } => Some((layout.shared_values(), tile.vector_reads())),
-        Body::Rowwise(rowwise) => rowwise.shared().map(|values| (values, false)),
+        Body::Rowwise(rowwise) => rowwise
+            .shared()
+            .map(|values| (values, rowwise.shared_vectors())),
         Body::AttentionLoss(body) => body.shared().map(|values| (values, false)),
         Body::HeldOut(body) => body.shared().map(|values| (values, false)),
         _ => None,

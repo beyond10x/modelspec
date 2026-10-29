@@ -1,7 +1,8 @@
-//! The modules of the thirteen row-wise kernels (DESIGN.md § 5.2): `Embedding`, `EmbeddingGrad`,
-//! `AddRows`, `Gelu`, `GeluGrad`, `Dropout` and `DropoutGrad` one invocation per output element;
+//! The modules of the fourteen row-wise kernels (DESIGN.md § 5.2): `EmbeddingSort` one invocation
+//! per id; `Embedding`, `EmbeddingGrad`, `AddRows`, `Gelu`, `GeluGrad`, `Dropout` and `DropoutGrad`
+//! one invocation per output element;
 //! `LayerNorm`, `LayerNormGradX`, `Softmax` and `SoftmaxGrad` one per output row; `SumRows` and
-//! `LayerNormGradGamma` one per output column. The two `sigreg` kernels
+//! `LayerNormGradGamma` one workgroup per few columns ([`ColumnTile`]). The two `sigreg` kernels
 //! (story:jepa-sigreg-vulkan) are per column too: `SigregColumns` writes its column's statistic
 //! and `SigregColumnsGrad` every row of its column, each recomputing the column's means in one
 //! pass over the rows and computing `sin` and `cos` by the CPU's written-out routine
@@ -31,10 +32,9 @@
 //! number of steps, so element `(r, j)` starts at `0.0` and adds column `j` of the gradient row
 //! of every id equal to `r` in ascending id position, as the CPU does, then writes once, without
 //! atomics; a row no id names writes `0.0`.
-//! `LayerNormGradGamma` runs workgroups of 64 columns; for each block of 64 rows, invocation `i`
-//! of the workgroup computes the mean and reciprocal standard deviation of row `i` of the block
-//! into workgroup memory, and after a barrier each invocation adds its column's terms of the
-//! block's rows in ascending order. `Dropout` and `DropoutGrad` compute
+//! `SumRows` and `LayerNormGradGamma` stage tiles of rows of their columns in workgroup memory,
+//! so every read is coalesced, and add each column in one invocation in ascending row order
+//! ([`Shell::sum_rows`], [`Shell::layer_norm_grad_gamma`]). `Dropout` and `DropoutGrad` compute
 //! the Philox4x32-10 block of each element from the site's RNG token and the run key, the
 //! specialization constants `crate::vulkan::pipeline::SEED_SPEC_IDS`, and keep the element when
 //! word 0 is at least [`keep_threshold`] of `p`.
@@ -42,7 +42,8 @@
 use super::{EmitError, Kernel, KernelKind, Operand, Shell, Word, operands_error, static_shape};
 use crate::cpu::interpreter::{SIGREG_KNOTS, sigreg_knot};
 use crate::cpu::tensor::{COS_P, FRAC_2_PI, PI_2_P1, PI_2_P2, PI_2_P3, SIN_P};
-use modelspec_core::ir::tensor::DType;
+use modelspec_core::ir::tensor::{DType, TensorOp};
+use modelspec_core::schedule::column_sum_columns;
 use rspirv::spirv::GlslStd450Op;
 
 /// `sqrt(2 / pi)`, the scale of the tanh form of GELU, as the CPU interpreter holds it.
@@ -56,8 +57,103 @@ const PHILOX_M: [u32; 2] = [0xD251_1F53, 0xCD9E_8D57];
 const PHILOX_W: [u32; 2] = [0x9E37_79B9, 0xBB67_AE85];
 /// The counter word of the dropout stream (`crate::train::init::Stream::Dropout`).
 const DROPOUT_STREAM: u32 = 4;
-/// The workgroup size of every row-wise kernel, and the rows `LayerNormGradGamma` stages.
+/// The workgroup size of every row-wise kernel, and the rows of a `LayerNormGradGamma` tile.
 const GROUP: u32 = 64;
+/// The columns of a block of a `LayerNormGradGamma` tile's rows staged to compute their
+/// moments, and the distance between two rows of a block in workgroup memory.
+const MOMENT_COLUMNS: u32 = 16;
+const MOMENT_PITCH: u32 = MOMENT_COLUMNS + 4;
+/// The most blocks of a `LayerNormGradGamma` tile an invocation loads ahead.
+const MOMENT_DEPTH: u32 = 4;
+
+/// The blocks a `LayerNormGradGamma` invocation over rows of `width` loads ahead: the most, up
+/// to [`MOMENT_DEPTH`], that divide the blocks of a tile, two for each [`MOMENT_COLUMNS`]
+/// columns, so every tile keeps its values of a block in the same variables.
+fn moment_depth(width: u32) -> u32 {
+    let steps = 2 * width.div_ceil(MOMENT_COLUMNS);
+    (1..=MOMENT_DEPTH)
+        .rev()
+        .find(|depth| steps.is_multiple_of(*depth))
+        .unwrap_or(1)
+}
+
+/// The tile of a column sum (story:vulkan-column-sums-coalesced): the columns one workgroup
+/// adds ([`column_sum_columns`]), the invocations that stage each of them, a power of two, and
+/// the rows of one tile. Workgroup memory holds a tile column by column, each column's values
+/// at a pitch of the tile's rows plus 4, so a `vec4` read of four rows of one column by each
+/// adding invocation is free of bank conflicts.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct ColumnTile {
+    columns: u32,
+    slots: u32,
+    rows: u32,
+}
+
+impl ColumnTile {
+    fn of(op: &TensorOp, width: u32) -> Self {
+        let columns = column_sum_columns(op, u64::from(width)).map_or(GROUP, |c| c as u32);
+        Self {
+            columns,
+            slots: GROUP / columns,
+            rows: GROUP,
+        }
+    }
+
+    /// `SumRows` over rows of `width`: tiles of 8 to 16 values per invocation, 256 rows where
+    /// that is within them.
+    fn sum_rows(width: u32) -> Self {
+        let tile = Self::of(&TensorOp::SumRows, width);
+        let per = (256 / tile.slots).clamp(8, 16);
+        Self {
+            rows: per * tile.slots,
+            ..tile
+        }
+    }
+
+    /// `LayerNormGradGamma` over rows of `width`: tiles of 64 rows. Its workgroup memory holds
+    /// the mean and `rstd` of each row of a tile, two blocks of [`MOMENT_COLUMNS`] columns of
+    /// the tile, and the `xhat` and `g` columns, in this order: at most 3,776 values, within the
+    /// 16 KiB every device has (`modelspec_core::ir::kernel::MIN_SHARED_MEMORY_BYTES`).
+    fn layer_norm_grad_gamma(width: u32) -> Self {
+        Self::of(&TensorOp::LayerNormGradGamma, width)
+    }
+
+    /// Where the two blocks of a `LayerNormGradGamma` tile start.
+    fn moment_blocks(self) -> [u32; 2] {
+        let start = 2 * self.rows;
+        [start, start + self.rows * MOMENT_PITCH]
+    }
+
+    /// Where the `xhat` columns of a `LayerNormGradGamma` tile start.
+    fn xhat_start(self) -> u32 {
+        2 * self.rows + 2 * self.rows * MOMENT_PITCH
+    }
+
+    /// Where the `g` columns of a `LayerNormGradGamma` tile start.
+    fn g_start(self) -> u32 {
+        self.xhat_start() + self.columns * self.pitch()
+    }
+
+    /// The `f32` values of a `LayerNormGradGamma` tile's workgroup memory.
+    fn layer_norm_values(self) -> u32 {
+        self.g_start() + self.columns * self.pitch()
+    }
+
+    /// The invocations of a dispatch over `width` columns: 64 per workgroup of `columns`.
+    fn invocations(self, width: u32) -> Option<u32> {
+        width.div_ceil(self.columns).checked_mul(GROUP)
+    }
+
+    /// The values each invocation stages per tile, one per `slots` rows.
+    fn per_invocation(self) -> u32 {
+        self.rows / self.slots
+    }
+
+    /// The distance between two columns of a tile in workgroup memory.
+    fn pitch(self) -> u32 {
+        self.rows + 4
+    }
+}
 
 /// `value` as the CPU interpreter's `f32` constant: the sum of its two `f32` parts, rounded.
 fn constant(value: f64) -> f32 {
@@ -218,9 +314,11 @@ impl Rowwise {
             {
                 (PerElement, out, Rowwise::AddRows { width: u(*h) })
             }
-            ("SumRows", [F32], [[n, h]], [rh], []) if h == rh => (
+            ("SumRows", [F32], [[n, h]], [rh], []) if h == rh && *n > 0 && *h > 0 => (
                 PerColumn,
-                u(*h),
+                ColumnTile::sum_rows(u(*h))
+                    .invocations(u(*h))
+                    .ok_or_else(|| wrong("too many columns"))?,
                 Rowwise::SumRows {
                     rows: u(*n),
                     width: u(*h),
@@ -247,11 +345,13 @@ impl Rowwise {
                 (PerRow, u(*n), Rowwise::LayerNormGradX { width: u(*h) })
             }
             ("LayerNormGradGamma", [F32, F32], [[n, h], g], [rh], [])
-                if h == rh && *g == [*n, *h] =>
+                if h == rh && *g == [*n, *h] && *n > 0 && *h > 0 =>
             {
                 (
                     PerColumn,
-                    u(*h),
+                    ColumnTile::layer_norm_grad_gamma(u(*h))
+                        .invocations(u(*h))
+                        .ok_or_else(|| wrong("too many columns"))?,
                     Rowwise::LayerNormGradGamma {
                         rows: u(*n),
                         width: u(*h),
@@ -317,8 +417,15 @@ impl Rowwise {
     /// The `f32` values of workgroup memory the module stages.
     pub(super) fn shared(self) -> Option<u32> {
         match self {
-            Rowwise::LayerNormGradGamma { .. } => Some(2 * GROUP),
+            Rowwise::LayerNormGradGamma { width, .. } => {
+                let tile = ColumnTile::layer_norm_grad_gamma(width);
+                Some(tile.layer_norm_values())
+            }
             Rowwise::EmbeddingSort { .. } => Some(GROUP),
+            Rowwise::SumRows { width, .. } => {
+                let tile = ColumnTile::sum_rows(width);
+                Some(tile.columns * tile.pitch())
+            }
             _ => None,
         }
     }
@@ -332,10 +439,21 @@ impl Rowwise {
         }
     }
 
+    /// Whether the module reads its workgroup memory as `vec4`s: the column sums do.
+    pub(super) fn shared_vectors(self) -> bool {
+        matches!(
+            self,
+            Rowwise::SumRows { .. } | Rowwise::LayerNormGradGamma { .. }
+        )
+    }
+
     /// The `f32` function variables the module keeps beside the shell's one.
     pub(super) fn f32_vars(self) -> usize {
         match self {
-            Rowwise::LayerNormGradGamma { .. } => 1,
+            Rowwise::SumRows { width, .. } => ColumnTile::sum_rows(width).per_invocation() as usize,
+            Rowwise::LayerNormGradGamma { width, .. } => {
+                (moment_depth(width) * MOMENT_COLUMNS) as usize
+            }
             Rowwise::SigregColumns { .. } | Rowwise::SigregColumnsGrad { .. } => {
                 2 * SIGREG_KNOTS - 1
             }
@@ -557,6 +675,9 @@ impl Shell {
         if let Rowwise::EmbeddingSort { ids } = rowwise {
             return self.embedding_sort(ids);
         }
+        if let Rowwise::SumRows { rows, width } = rowwise {
+            return self.sum_rows(rows, width);
+        }
         let (index, count) = (self.index, self.count);
         let inside = self.less(index, count)?;
         self.when(inside, |m| match rowwise {
@@ -568,20 +689,6 @@ impl Shell {
                 let b = m.read(1, j)?;
                 let sum = m.f_add(x, b)?;
                 m.write(index, sum)
-            }
-            Rowwise::SumRows { rows, width } => {
-                let (var, acc) = (m.u32_vars[0], m.f32_var);
-                let first = m.read(0, index)?;
-                m.b.store(acc, first, None, [])?;
-                let (one, end, w) = (m.uint(1), m.uint(rows), m.uint(width));
-                m.counted(var, one, end, one, |m, n| {
-                    let row = m.mul(n, w)?;
-                    let at = m.add(row, index)?;
-                    let x = m.read(0, at)?;
-                    m.accumulate(x)
-                })?;
-                let total = m.b.load(m.f32_ty, None, acc, None, [])?;
-                m.write(index, total)
             }
             Rowwise::Gelu => {
                 let x = m.read(0, index)?;
@@ -608,7 +715,8 @@ impl Shell {
             Rowwise::SigregColumnsGrad { rows, width } => m.sigreg_columns_grad(rows, width),
             Rowwise::LayerNormGradGamma { .. }
             | Rowwise::EmbeddingSort { .. }
-            | Rowwise::EmbeddingGrad { .. } => {
+            | Rowwise::EmbeddingGrad { .. }
+            | Rowwise::SumRows { .. } => {
                 unreachable!("handled above")
             }
         })
@@ -1124,64 +1232,348 @@ impl Shell {
         })
     }
 
-    /// Column `index` of the gradient of `LayerNorm` with respect to `gamma` (operands `x`,
-    /// `g`): over the rows in ascending order, `g * xhat` for row 0 and each later term fused
-    /// into the sum. Each block of 64 rows stages its rows' mean and `rstd` in workgroup
-    /// memory, row `i` of the block computed by invocation `i`, between two barriers that every
-    /// invocation of the workgroup reaches.
-    fn layer_norm_grad_gamma(&mut self, rows: u32, width: u32) -> Result<(), EmitError> {
-        let (index, count) = (self.index, self.count);
+    /// Where an invocation of a column sum of `tile` over rows of `width` stands: its column of
+    /// the workgroup's (`local % columns`), its slot (`local / columns`), its column of the
+    /// rows, that column clamped to the last for reads, and whether it adds: the invocations
+    /// of slot 0 whose column is inside the rows.
+    fn column_lanes(&mut self, tile: ColumnTile, width: u32) -> Result<ColumnLanes, EmitError> {
         let local = self.local.expect("a module with workgroup memory");
-        let [block_var, t_var] = self.u32_vars;
-        let column_acc = self.matmul_vars[0];
-        let (zero, one, two) = (self.uint(0), self.uint(1), self.uint(2));
-        let (w, n_rows, group) = (self.uint(width), self.uint(rows), self.uint(GROUP));
-        let f_zero = self.float(0.0);
-        self.b.store(column_acc, f_zero, None, [])?;
-        let inside = self.less(index, count)?;
-        self.counted(block_var, zero, n_rows, group, |m, block| {
-            let row = m.add(block, local)?;
-            let staged = m.less(row, n_rows)?;
-            m.when(staged, |m| {
-                let base = m.mul(row, w)?;
-                let (mean, rstd) = m.row_moments(0, base, width)?;
-                let at = m.mul(local, two)?;
-                m.store_shared(at, mean)?;
-                let next = m.add(at, one)?;
-                m.store_shared(next, rstd)
-            })?;
-            m.barrier()?;
-            m.when(inside, |m| {
-                let left = m.sub(n_rows, block)?;
-                let end = m.min(left, group)?;
-                m.counted(t_var, zero, end, one, |m, t| {
-                    let n = m.add(block, t)?;
-                    let at = m.mul(t, two)?;
-                    let mean = m.load_shared(at)?;
-                    let next = m.add(at, one)?;
-                    let rstd = m.load_shared(next)?;
-                    let row = m.mul(n, w)?;
-                    let element = m.add(row, index)?;
-                    let x = m.read(0, element)?;
-                    let g = m.read(1, element)?;
-                    let d = m.f_sub(x, mean)?;
-                    let xhat = m.f_mul(d, rstd)?;
-                    let product = m.f_mul(g, xhat)?;
-                    let sum = m.b.load(m.f32_ty, None, column_acc, None, [])?;
-                    let fused = m.f_fma(g, xhat, sum)?;
-                    let first = m.equal(n, zero)?;
-                    let next_sum = m.b.select(m.f32_ty, None, first, product, fused)?;
-                    m.b.store(column_acc, next_sum, None, [])?;
-                    Ok(())
-                })
-            })?;
-            m.barrier()
-        })?;
-        self.when(inside, |m| {
-            let total = m.b.load(m.f32_ty, None, column_acc, None, [])?;
-            m.write(index, total)
+        let (group, columns) = (self.uint(GROUP), self.uint(tile.columns));
+        let workgroup = self.div(self.index, group)?;
+        let lane = self.rem(local, columns)?;
+        let slot = self.div(local, columns)?;
+        let origin = self.mul(workgroup, columns)?;
+        let column = self.add(origin, lane)?;
+        let last_column = self.uint(width - 1);
+        let read_column = self.min(column, last_column)?;
+        let w = self.uint(width);
+        let inside = self.less(column, w)?;
+        let adds = self.less(local, columns)?;
+        let adder = self.and(inside, adds)?;
+        Ok(ColumnLanes {
+            lane,
+            slot,
+            column,
+            read_column,
+            adder,
         })
     }
+
+    /// `SumRows` over `[rows, width]` (story:vulkan-column-sums-coalesced): workgroup `w` sums
+    /// columns `w * C ..` of the [`ColumnTile::sum_rows`] tile's `C` columns, invocation
+    /// `c < C` column `c`, from row 0 and adding every later row in ascending order, as the CPU
+    /// does. Rows `1 ..` are staged a tile at a time in workgroup memory, invocation `i`
+    /// loading rows `i / C + S * k` of column `i % C`, so each row of a tile is one segment of
+    /// `C` consecutive values. The loads of the next tile are issued before the adds of the
+    /// current one, between two barriers every invocation reaches.
+    fn sum_rows(&mut self, rows: u32, width: u32) -> Result<(), EmitError> {
+        let tile = ColumnTile::sum_rows(width);
+        let (tile_rows, slots_n) = (tile.rows, tile.slots);
+        let ColumnLanes {
+            lane,
+            slot,
+            column,
+            read_column,
+            adder,
+        } = self.column_lanes(tile, width)?;
+        let (var, acc) = (self.u32_vars[0], self.f32_var);
+        let regs: Vec<Word> = self.matmul_vars[..tile.per_invocation() as usize].to_vec();
+        let w = self.uint(width);
+        let first = self.read(0, read_column)?;
+        self.b.store(acc, first, None, [])?;
+        let after = rows - 1;
+        let full = after / tile_rows;
+        let left = after % tile_rows;
+        let last_row = self.uint(rows - 1);
+        let load = |m: &mut Self, base: Word| -> Result<(), EmitError> {
+            for (k, &reg) in regs.iter().enumerate() {
+                let step = m.uint(slots_n * k as u32);
+                let at_tile = m.add(slot, step)?;
+                let row = m.add(base, at_tile)?;
+                let row = m.min(row, last_row)?;
+                let start = m.mul(row, w)?;
+                let at = m.add(start, read_column)?;
+                let x = m.read(0, at)?;
+                m.b.store(reg, x, None, [])?;
+            }
+            Ok(())
+        };
+        let pitch = self.uint(tile.pitch());
+        let segment = self.mul(lane, pitch)?;
+        let pitch4 = self.uint(tile.pitch() / 4);
+        let segment4 = self.mul(lane, pitch4)?;
+        let stage = |m: &mut Self| -> Result<(), EmitError> {
+            for (k, &reg) in regs.iter().enumerate() {
+                let step = m.uint(slots_n * k as u32);
+                let at_tile = m.add(slot, step)?;
+                let at = m.add(segment, at_tile)?;
+                let x = m.b.load(m.f32_ty, None, reg, None, [])?;
+                m.store_shared(at, x)?;
+            }
+            m.barrier()
+        };
+        let add = |m: &mut Self, count: u32| -> Result<(), EmitError> {
+            m.when(adder, |m| {
+                let mut sum = m.b.load(m.f32_ty, None, acc, None, [])?;
+                for v in 0..count.div_ceil(4) {
+                    let at = m.uint(v);
+                    let at = m.add(segment4, at)?;
+                    let values = m.load_shared_vector(at)?;
+                    for (j, &x) in values.iter().enumerate() {
+                        if 4 * v + (j as u32) < count {
+                            sum = m.f_add(sum, x)?;
+                        }
+                    }
+                }
+                m.b.store(acc, sum, None, [])?;
+                Ok(())
+            })?;
+            m.barrier()
+        };
+        let one = self.uint(1);
+        load(self, one)?;
+        if full > 0 {
+            let end = self.uint(1 + full * tile_rows);
+            let step = self.uint(tile_rows);
+            self.counted(var, one, end, step, |m, base| {
+                stage(m)?;
+                let next = m.add(base, step)?;
+                load(m, next)?;
+                add(m, tile_rows)
+            })?;
+        }
+        if left > 0 {
+            stage(self)?;
+            add(self, left)?;
+        }
+        self.when(adder, |m| {
+            let total = m.b.load(m.f32_ty, None, acc, None, [])?;
+            m.write(column, total)
+        })
+    }
+
+    /// `LayerNormGradGamma` over `[rows, width]` (operands `x`, `g`;
+    /// story:vulkan-column-sums-coalesced): workgroup `w` adds columns `w * C ..` of the
+    /// [`ColumnTile::layer_norm_grad_gamma`] tile's `C` columns, invocation `c < C` column `c`,
+    /// over the rows in ascending order, each term `g * xhat` fused into the sum, as the CPU
+    /// does. Each sum starts at `-0.0`, the one value `v` with `v + x = x` and
+    /// `fma(a, b, v) = a * b` for every `x`, `a` and `b`, so the first term of a column and the
+    /// first value of a row's sums are the CPU's bits.
+    ///
+    /// For each tile of 64 rows, invocation `r` computes the mean and `rstd` of row `r` of the
+    /// tile as `LayerNorm` does, from workgroup memory. The workgroup stages the tile's rows a
+    /// block of [`MOMENT_COLUMNS`] columns at a time, once for each of the two sums, invocation
+    /// `i` loading rows `i / MOMENT_COLUMNS + 4 * k` of column `i % MOMENT_COLUMNS`, into one of
+    /// two blocks of workgroup memory while the rows of the other are added, one barrier a
+    /// block. Each invocation loads its values of a block [`moment_depth`] blocks before it
+    /// stores them, the last ones of a tile from the next tile. After a barrier the means and
+    /// `rstd` are in workgroup memory, each invocation stages `xhat` and `g` of the values of
+    /// its columns it loaded at the tile's start, and after another the adding invocations add
+    /// the tile's terms.
+    fn layer_norm_grad_gamma(&mut self, rows: u32, width: u32) -> Result<(), EmitError> {
+        let tile = ColumnTile::layer_norm_grad_gamma(width);
+        let (slots_n, pitch_n, per) = (tile.slots, tile.pitch(), tile.per_invocation());
+        let ColumnLanes {
+            lane,
+            slot,
+            column,
+            read_column,
+            adder,
+        } = self.column_lanes(tile, width)?;
+        let local = self.local.expect("a module with workgroup memory");
+        let tile_var = self.u32_vars[0];
+        let acc = self.f32_var;
+        let chunks = width.div_ceil(MOMENT_COLUMNS);
+        let steps = 2 * chunks;
+        let depth = moment_depth(width);
+        let regs: Vec<Vec<Word>> = self.matmul_vars[..(depth * MOMENT_COLUMNS) as usize]
+            .chunks(MOMENT_COLUMNS as usize)
+            .map(<[Word]>::to_vec)
+            .collect();
+        let (zero, one, two, w) = (self.uint(0), self.uint(1), self.uint(2), self.uint(width));
+        let group = self.uint(GROUP);
+        let last_row = self.uint(rows - 1);
+        let last_value = self.uint(rows * width - 1);
+        let negative_zero = self.float(-0.0);
+        let k_n = self.uint(MOMENT_COLUMNS);
+        let block_row = self.div(local, k_n)?;
+        let block_column = self.rem(local, k_n)?;
+        let moment_pitch = self.uint(MOMENT_PITCH);
+        let block_start = self.mul(block_row, moment_pitch)?;
+        let block_at = self.add(block_start, block_column)?;
+        let own_pitch4 = self.uint(MOMENT_PITCH / 4);
+        let own_row4 = self.mul(local, own_pitch4)?;
+        let block_rows = GROUP / MOMENT_COLUMNS;
+        let mut lane_at = Vec::with_capacity(MOMENT_COLUMNS as usize);
+        for k in 0..MOMENT_COLUMNS {
+            let step = self.uint(block_rows * k);
+            let row = self.add(block_row, step)?;
+            let start = self.mul(row, w)?;
+            lane_at.push(self.add(start, block_column)?);
+        }
+        let blocks = tile.moment_blocks();
+        let (xhat_start, g_start) = (tile.xhat_start(), tile.g_start());
+        let pitch = self.uint(pitch_n);
+        let segment = self.mul(lane, pitch)?;
+        let pitch4 = self.uint(pitch_n / 4);
+        let segment4 = self.mul(lane, pitch4)?;
+        let xhat_at = self.uint(xhat_start);
+        let xhat_segment = self.add(xhat_at, segment)?;
+        let g_at = self.uint(g_start);
+        let g_segment = self.add(g_at, segment)?;
+        let xhat_at4 = self.uint(xhat_start / 4);
+        let xhat_segment4 = self.add(xhat_at4, segment4)?;
+        let g_at4 = self.uint(g_start / 4);
+        let g_segment4 = self.add(g_at4, segment4)?;
+        // Loads this invocation's values of step `u` of the tile at rows `base ..`, a step of
+        // the next tile from `steps` on, into `regs`; a value past the rows is read clamped.
+        let load = |m: &mut Self, base: Word, u: u32, regs: &[Word]| -> Result<(), EmitError> {
+            let (later, u) = (u / steps, u % steps);
+            let base = if later > 0 {
+                let ahead = m.uint(GROUP * later);
+                m.add(base, ahead)?
+            } else {
+                base
+            };
+            let start = m.mul(base, w)?;
+            let column = m.uint(u % chunks * MOMENT_COLUMNS);
+            let start = m.add(start, column)?;
+            for (&at_lane, &reg) in lane_at.iter().zip(regs) {
+                let at = m.add(start, at_lane)?;
+                let at = m.min(at, last_value)?;
+                let x = m.read(0, at)?;
+                m.b.store(reg, x, None, [])?;
+            }
+            Ok(())
+        };
+        let store = |m: &mut Self, block: u32, regs: &[Word]| -> Result<(), EmitError> {
+            let start = m.uint(blocks[block as usize]);
+            let at = m.add(start, block_at)?;
+            for (k, &reg) in regs.iter().enumerate() {
+                let step = m.uint(block_rows * MOMENT_PITCH * k as u32);
+                let at = m.add(at, step)?;
+                let x = m.b.load(m.f32_ty, None, reg, None, [])?;
+                m.store_shared(at, x)?;
+            }
+            Ok(())
+        };
+        let tile_of = |m: &mut Self, base: Word, count: u32| -> Result<(), EmitError> {
+            let mut staged = Vec::with_capacity(per as usize);
+            for k in 0..per {
+                let step = m.uint(slots_n * k);
+                let at_tile = m.add(slot, step)?;
+                let row = m.add(base, at_tile)?;
+                let row = m.min(row, last_row)?;
+                let start = m.mul(row, w)?;
+                let at = m.add(start, read_column)?;
+                let x = m.read(0, at)?;
+                let g = m.read(1, at)?;
+                staged.push((at_tile, x, g));
+            }
+            let mut sum = negative_zero;
+            let mut mean = None;
+            for t in 0..steps {
+                let next = &regs[((t + 1) % depth) as usize];
+                store(m, (t + 1) % 2, next)?;
+                load(m, base, t + 1 + depth, next)?;
+                let start = m.uint(blocks[(t % 2) as usize] / 4);
+                let own = m.add(start, own_row4)?;
+                let chunk = t % chunks;
+                let count = (width - chunk * MOMENT_COLUMNS).min(MOMENT_COLUMNS);
+                for v in 0..count.div_ceil(4) {
+                    let at = m.uint(v);
+                    let at = m.add(own, at)?;
+                    let xs = m.load_shared_vector(at)?;
+                    for &x in xs.iter().take((count - 4 * v).min(4) as usize) {
+                        sum = match mean {
+                            Some(mean) => {
+                                let d = m.f_sub(x, mean)?;
+                                m.f_fma(d, d, sum)?
+                            }
+                            None => m.f_add(sum, x)?,
+                        };
+                    }
+                }
+                if t + 1 == chunks {
+                    mean = Some(m.over_width(sum, width)?);
+                    sum = negative_zero;
+                }
+                m.barrier()?;
+            }
+            let mean = mean.expect("the first sum ends halfway");
+            let variance = m.over_width(sum, width)?;
+            let eps = m.float(LAYER_NORM_EPS);
+            let shifted = m.f_add(variance, eps)?;
+            let rstd = m.reciprocal_sqrt(shifted)?;
+            let at = m.mul(local, two)?;
+            m.store_shared(at, mean)?;
+            let next = m.add(at, one)?;
+            m.store_shared(next, rstd)?;
+            m.barrier()?;
+            for &(at_tile, x, g) in &staged {
+                let at = m.mul(at_tile, two)?;
+                let mean = m.load_shared(at)?;
+                let next = m.add(at, one)?;
+                let rstd = m.load_shared(next)?;
+                let d = m.f_sub(x, mean)?;
+                let xhat = m.f_mul(d, rstd)?;
+                let at = m.add(xhat_segment, at_tile)?;
+                m.store_shared(at, xhat)?;
+                let at = m.add(g_segment, at_tile)?;
+                m.store_shared(at, g)?;
+            }
+            m.barrier()?;
+            m.when(adder, |m| {
+                let mut sum = m.b.load(m.f32_ty, None, acc, None, [])?;
+                for v in 0..count.div_ceil(4) {
+                    let at = m.uint(v);
+                    let xhat_at = m.add(xhat_segment4, at)?;
+                    let xhats = m.load_shared_vector(xhat_at)?;
+                    let g_at = m.add(g_segment4, at)?;
+                    let gs = m.load_shared_vector(g_at)?;
+                    let terms = (count - 4 * v).min(4) as usize;
+                    for (&xhat, &g) in xhats.iter().zip(&gs).take(terms) {
+                        sum = m.f_fma(g, xhat, sum)?;
+                    }
+                }
+                m.b.store(acc, sum, None, [])?;
+                Ok(())
+            })
+        };
+        self.b.store(acc, negative_zero, None, [])?;
+        let first = &regs[0];
+        load(self, zero, 0, first)?;
+        store(self, 0, first)?;
+        for u in 1..=depth {
+            load(self, zero, u, &regs[(u % depth) as usize])?;
+        }
+        self.barrier()?;
+        let (full, left) = (rows / GROUP, rows % GROUP);
+        if full > 0 {
+            let stop = self.uint(full * GROUP);
+            self.counted(tile_var, zero, stop, group, |m, base| {
+                tile_of(m, base, GROUP)
+            })?;
+        }
+        if left > 0 {
+            let base = self.uint(full * GROUP);
+            tile_of(self, base, left)?;
+        }
+        self.when(adder, |m| {
+            let total = m.b.load(m.f32_ty, None, acc, None, [])?;
+            m.write(column, total)
+        })
+    }
+}
+
+/// [`Shell::column_lanes`].
+#[derive(Clone, Copy)]
+struct ColumnLanes {
+    lane: Word,
+    slot: Word,
+    column: Word,
+    read_column: Word,
+    adder: Word,
 }
 
 #[cfg(test)]

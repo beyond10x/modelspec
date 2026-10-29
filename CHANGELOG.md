@@ -22,6 +22,7 @@ history.
 ### Changed
 
 - `EmbeddingGrad` on Vulkan sorts the batch's ids once by id and position, an integer-only `per_row` dispatch into an `i32[n, 2]` buffer, and each element of the table gradient then adds only the gradient rows of its own id, in ascending position, where it compared its row with every id of the batch, with the same bits: on an RTX 3090, `examples/bert_tiny.mspec` at 200 steps over the packed corpus, `train --profile` steady µs per step after over before is 0.814 (0.794 to 0.856) and kernel time per step 0.793 (0.792 to 0.793) in 3 interleaved pairs on a loaded host, the training output byte-identical (story:vulkan-embedding-grad-sorted-ids).
+- `SumRows` and `LayerNormGradGamma` on Vulkan run one workgroup per few columns that stages tiles of rows in workgroup memory, so their reads are coalesced; each column is still added in ascending row order by one invocation, with the same bits. BERT-tiny's 26 column sums take 0.48 of their time per step and its steady step 0.91 (0.87 to 0.94) on an RTX 3090 (story:vulkan-column-sums-coalesced).
 
 ## [0.22.0] - 2026-10-28
 

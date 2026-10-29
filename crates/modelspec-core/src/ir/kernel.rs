@@ -161,9 +161,12 @@ pub enum KernelKind {
     /// rank by id and position, as `i32`; and one invocation per row and head of `Attention` and
     /// its three gradients, the head count a last, immediate operand ([`Kernel::heads`]).
     PerRow,
-    /// A column reduction over the rows of its operands in ascending row order, one output
-    /// column per invocation: `SumRows`, `LayerNormGradGamma`, `SigregColumns` and
-    /// `SigregColumnsGrad`, the last writing every row of its column.
+    /// A column reduction over the rows of its operands in ascending row order: `SigregColumns`
+    /// and `SigregColumnsGrad` one output column per invocation, the last writing every row of
+    /// its column; and the column sums `SumRows` and `LayerNormGradGamma` one workgroup of 64
+    /// invocations per [`crate::schedule::column_sum_columns`] columns, which stage tiles of
+    /// rows in workgroup memory and add each column in one invocation
+    /// (story:vulkan-column-sums-coalesced).
     PerColumn,
 }
 
