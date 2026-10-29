@@ -4,8 +4,9 @@
 //! `Softmax` and `SoftmaxGrad` one per output row; `LayerNorm`, `LayerNormGradX` and the row
 //! moments of `LayerNormGradGamma` one workgroup per [`layer_norm_rows`] rows staged whole in
 //! workgroup memory, each added by one invocation ([`Shell::layer_norm_rows`];
-//! story:vulkan-layer-norm-coalesced-rows), or one per output row where no row fits; `SumRows`
-//! and the column sum of `LayerNormGradGamma` one workgroup per few columns ([`ColumnTile`]). The
+//! story:vulkan-layer-norm-coalesced-rows), or one per output row where fewer than
+//! `modelspec_core::schedule::LAYER_NORM_MIN_ROWS` rows fit; `SumRows` and the column sum of
+//! `LayerNormGradGamma` one workgroup per few columns ([`ColumnTile`]). The
 //! two `sigreg` kernels (story:jepa-sigreg-vulkan) are per column too: `SigregColumns` writes its
 //! column's statistic and `SigregColumnsGrad` every row of its column, each recomputing the
 //! column's means in one pass over the rows and computing `sin` and `cos` by the CPU's
@@ -48,7 +49,9 @@ use super::{EmitError, Kernel, KernelKind, Operand, Shell, Word, operands_error,
 use crate::cpu::interpreter::{SIGREG_KNOTS, sigreg_knot};
 use crate::cpu::tensor::{COS_P, FRAC_2_PI, PI_2_P1, PI_2_P2, PI_2_P3, SIN_P};
 use modelspec_core::ir::tensor::{DType, TensorOp};
-use modelspec_core::schedule::{column_sum_columns, layer_norm_invocations, layer_norm_rows};
+use modelspec_core::schedule::{
+    column_sum_columns, layer_norm_invocations, layer_norm_row_stride, layer_norm_rows,
+};
 use rspirv::spirv::GlslStd450Op;
 
 /// `sqrt(2 / pi)`, the scale of the tanh form of GELU, as the CPU interpreter holds it.
@@ -445,8 +448,12 @@ impl Rowwise {
             | Rowwise::LayerNormMoments { group_rows: 0, .. }
             | Rowwise::LayerNormGradX { group_rows: 0, .. } => None,
             Rowwise::LayerNorm { width, group_rows }
-            | Rowwise::LayerNormMoments { width, group_rows } => Some(group_rows * width),
-            Rowwise::LayerNormGradX { width, group_rows } => Some(2 * group_rows * width),
+            | Rowwise::LayerNormMoments { width, group_rows } => {
+                Some(group_rows * row_stride(width))
+            }
+            Rowwise::LayerNormGradX { width, group_rows } => {
+                Some(2 * group_rows * row_stride(width))
+            }
             _ => None,
         }
     }
@@ -1291,10 +1298,14 @@ impl Shell {
     }
 
     /// Where element `c` of the workgroup's row `r` lies in workgroup memory, in the region of
-    /// `region` staged rows of `rows` rows of `width`: `r * width + (c + r) % width` past the
-    /// region's start. Each row is rotated by its place, so the invocations that add rows `0, 1,
-    /// …` at one column read 32 banks where the width is a multiple of 32, and the loads of
-    /// consecutive elements store to consecutive banks.
+    /// `region` staged rows of `rows` rows of `width`: `r * stride + c` past the region's start,
+    /// the stride [`layer_norm_row_stride`], the width where it is odd and one more where it is
+    /// even. The invocations that add rows `0, 1, …` at one column read values an odd number of
+    /// banks apart, 32 distinct banks at every width, and the loads of consecutive elements
+    /// store to consecutive banks. (A row rotated by its place, `r * width + (c + r) % width`,
+    /// spread the banks at a multiple of 32 but put every adding invocation on one bank at a
+    /// width one under it, and its remainder made the staging of an even width about 1.7 times
+    /// as slow as that of the odd width beside it; ADV-LNROWS-1.)
     fn block_at(
         &mut self,
         region: u32,
@@ -1303,15 +1314,14 @@ impl Shell {
         r: Word,
         c: Word,
     ) -> Result<Word, EmitError> {
-        let w = self.uint(width);
-        let shifted = self.add(c, r)?;
-        let rotated = self.rem(shifted, w)?;
-        let start = self.mul(r, w)?;
-        let at = self.add(start, rotated)?;
+        let stride = row_stride(width);
+        let s = self.uint(stride);
+        let start = self.mul(r, s)?;
+        let at = self.add(start, c)?;
         if region == 0 {
             return Ok(at);
         }
-        let offset = self.uint(region * rows * width);
+        let offset = self.uint(region * rows * stride);
         self.add(offset, at)
     }
 
@@ -1906,6 +1916,11 @@ struct ColumnLanes {
     column: Word,
     read_column: Word,
     adder: Word,
+}
+
+/// [`layer_norm_row_stride`] of a width that fits a `u32`, as the staged row kernels use it.
+fn row_stride(width: u32) -> u32 {
+    layer_norm_row_stride(u64::from(width)) as u32
 }
 
 #[cfg(test)]

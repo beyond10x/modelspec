@@ -23,7 +23,10 @@ use common::words::instructions;
 use common::{Draw, GUARD_WORDS, guard, guarded};
 use modelspec_core::ir::kernel::{Kernel, MIN_SHARED_MEMORY_BYTES, Operand};
 use modelspec_core::ir::tensor::{TensorOp, TensorProgramBuilder, TensorType};
-use modelspec_core::schedule::{layer_norm_grad_gamma_kernels, layer_norm_rows, rowwise_kernel};
+use modelspec_core::schedule::{
+    LAYER_NORM_MIN_ROWS, LAYER_NORM_MOMENTS_MAX_ROWS, layer_norm_grad_gamma_kernels,
+    layer_norm_row_stride, layer_norm_rows, rowwise_kernel,
+};
 use modelspec_runtime::cpu::interpreter::evaluate_seeded;
 use modelspec_runtime::cpu::tensor::HostTensor;
 use modelspec_runtime::spirv::emit::emit;
@@ -34,10 +37,11 @@ use modelspec_runtime::vulkan::{Device, VALIDATION_ENV, Vulkan};
 
 /// `[n, h]`: the decider's token and context rows, BERT-tiny's rows and masked rows, then rows
 /// one past a workgroup with a width one past a power of two, a width whose rows fill workgroup
-/// memory in 8 rows, a width under a vector, one element, a width of no power of two, a width
-/// whose `LayerNormGradX` rows do not fit workgroup memory whole, and one whose `LayerNorm` rows
-/// do not either (`modelspec_core::schedule::layer_norm_rows`): those keep one invocation per
-/// row reading the binding.
+/// memory in 7 rows, a width under a vector, one element, a width of no power of two whose
+/// `LayerNormGradX` rows fit only 2 to a workgroup, a width whose `LayerNorm` rows fit only 1,
+/// and one whose `LayerNorm` rows do not fit at all: where fewer than
+/// `modelspec_core::schedule::LAYER_NORM_MIN_ROWS` rows fit (`layer_norm_rows`), the kernel
+/// keeps one invocation per row reading the binding.
 const SHAPES: [(u64, u64); 11] = [
     (65536, 256),
     (4096, 256),
@@ -246,10 +250,15 @@ fn workgroup_bytes(words: &[u32]) -> u64 {
     total
 }
 
-/// Every shape's three kernels run workgroups of 64. Where [`layer_norm_rows`] rows of the width
-/// fit, a workgroup stages exactly those rows of each binding it stages in workgroup memory,
-/// within the 16 KiB every device has, and its workgroups cover them; where none fits, the kernel
-/// keeps no workgroup memory and one invocation per row.
+/// Every shape's three kernels run workgroups of 64. Where at least [`LAYER_NORM_MIN_ROWS`] rows
+/// of the width fit 16 KiB, each padded to [`layer_norm_row_stride`] values,
+/// [`layer_norm_rows`] is the most that fit, at most 64 and at most
+/// [`LAYER_NORM_MOMENTS_MAX_ROWS`] for the moments, and a workgroup stages exactly those
+/// rows of each binding it stages in workgroup memory, within the 16 KiB every device has, and
+/// its workgroups cover them; where fewer fit, the kernel keeps no workgroup memory and one
+/// invocation per row: 8 shapes stage rows in all three kernels, `[63, 1000]` in `LayerNorm` and
+/// the moments, whose 4 rows fit, but not in `LayerNormGradX`, whose 2 would, and `[5, 3000]`
+/// and `[3, 4097]` in none.
 #[test]
 fn layer_norm_row_kernels_stage_their_rows_in_workgroup_memory_within_16_kib() {
     let mut bad = Vec::new();
@@ -262,6 +271,19 @@ fn layer_norm_row_kernels_stage_their_rows_in_workgroup_memory_within_16_kib() {
                 bad.push(format!("{label}: workgroup size {}", kernel.workgroup_size));
             }
             let rows = layer_norm_rows(&which.op(), h).expect("a layer-norm op");
+            let fit = (u64::from(MIN_SHARED_MEMORY_BYTES)
+                / (4 * layer_norm_row_stride(h) * which.staged()))
+            .min(if which == Which::Moments {
+                LAYER_NORM_MOMENTS_MAX_ROWS
+            } else {
+                64
+            });
+            let want_rows = if fit < LAYER_NORM_MIN_ROWS { 0 } else { fit };
+            if rows != want_rows {
+                bad.push(format!(
+                    "{label}: {rows} rows per workgroup, not {want_rows} ({fit} fit)"
+                ));
+            }
             let words = emit(&kernel).unwrap_or_else(|e| panic!("{label} emits: {e}"));
             let bytes = workgroup_bytes(&words);
             let invocations: u64 = kernel
@@ -274,7 +296,10 @@ fn layer_norm_row_kernels_stage_their_rows_in_workgroup_memory_within_16_kib() {
                 (0, n)
             } else {
                 staged_shapes += 1;
-                (rows * h * which.staged() * 4, n.div_ceil(rows) * 64)
+                (
+                    rows * layer_norm_row_stride(h) * which.staged() * 4,
+                    n.div_ceil(rows) * 64,
+                )
             };
             if bytes != want_bytes {
                 bad.push(format!(
@@ -294,7 +319,7 @@ fn layer_norm_row_kernels_stage_their_rows_in_workgroup_memory_within_16_kib() {
         }
     }
     assert!(bad.is_empty(), "{bad:#?}");
-    assert!(staged_shapes >= 3 * 9, "{staged_shapes} kernels stage rows");
+    assert_eq!(staged_shapes, 3 * 8 + 2, "kernels that stage rows");
 }
 
 fn bytes_of(words: u64) -> u64 {
