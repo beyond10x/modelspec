@@ -29,9 +29,14 @@
 //! the forward's code path, and a masked key's rows of the `k` and `v` gradients stay `+0`
 //! (DESIGN.md § 4, coordinator decision D37). The key mask is checked before the op runs: a
 //! value other than 0 or 1 is [`RuntimeError::KeyMaskValue`], a sequence with no unmasked key
-//! [`RuntimeError::NoUnmaskedKey`]. `cross_entropy` and its gradient op recompute each row's
-//! maximum and sum of `exp(x - max)` through one code path, every reduction in ascending index
-//! order; the loss is the weighted sum of the row losses, its first product rounded and each
+//! [`RuntimeError::NoUnmaskedKey`]. An `i32 [U, 2]` operand in place of the mask holds
+//! (start, length) spans of key rows, ascending and disjoint (story:attention-event-spans): a
+//! query row attends to the keys of the span that holds it, or with `U` query rows query `u` to
+//! span `u`, and a row outside every span gives `+0`; a negative, empty, out-of-range or
+//! overlapping span is [`RuntimeError::SpanNegative`], [`RuntimeError::SpanEmpty`],
+//! [`RuntimeError::SpanOutOfRange`] or [`RuntimeError::SpanOverlap`]. `cross_entropy` and its
+//! gradient op recompute each row's maximum and sum of `exp(x - max)` through one code path,
+//! every reduction in ascending index order; the loss is the weighted sum of the row losses, its first product rounded and each
 //! later one fused, over the plain sum of the weights, both sums in `f64`, and a weight sum of 0
 //! gives a loss and a
 //! gradient of `+0` (DESIGN.md § 4, coordinator decision D43). Its labels and weights are checked
@@ -134,6 +139,31 @@ pub enum RuntimeError {
     /// whose softmax would divide by zero (DESIGN.md § 4).
     #[error("the key mask of {value} masks every key of sequence {sequence}")]
     NoUnmaskedKey { value: ValueId, sequence: usize },
+    /// A span of `attention` or one of its gradient ops with a negative start or length
+    /// (story:attention-event-spans).
+    #[error("span {span} of {value} has a negative start or length")]
+    SpanNegative { value: ValueId, span: usize },
+    /// A span of `attention` or one of its gradient ops of length 0, whose softmax would divide
+    /// by zero (story:attention-event-spans).
+    #[error("span {span} of {value} is empty")]
+    SpanEmpty { value: ValueId, span: usize },
+    /// A span of `attention` or one of its gradient ops past the rows of its keys
+    /// (story:attention-event-spans).
+    #[error(
+        "span {span} of {value}, {length} rows from row {start}, ends past the {rows} rows of \
+         its keys"
+    )]
+    SpanOutOfRange {
+        value: ValueId,
+        span: usize,
+        start: i32,
+        length: i32,
+        rows: u64,
+    },
+    /// A span of `attention` or one of its gradient ops that starts before the end of the span
+    /// before it: spans are disjoint and in ascending row order (story:attention-event-spans).
+    #[error("span {span} of {value} starts before the end of span {}", span - 1)]
+    SpanOverlap { value: ValueId, span: usize },
     /// A label of `cross_entropy` or its gradient op outside `[0, V)`, `V` the classes of its
     /// logits (DESIGN.md § 4, coordinator decision D43).
     #[error(
@@ -687,8 +717,17 @@ impl<'p, T: Element> Prepared<'p, T> {
         for i in 0..self.program.nodes.len() {
             let node = &self.program.nodes[i];
             if node.op.attention_heads().is_some() {
-                let mask = self.view(self.plan.operands[i][3], inputs, params);
-                check_key_mask(node.id, mask)?;
+                let reads = &self.plan.operands[i];
+                if self.program.nodes[reads[3]].ty.dtype == DType::I32 {
+                    check_key_spans(
+                        node.id,
+                        self.ids(reads[3], ids),
+                        self.plan.shapes[reads[1]][0],
+                    )?;
+                } else {
+                    let mask = self.view(reads[3], inputs, params);
+                    check_key_mask(node.id, mask)?;
+                }
             }
             if matches!(node.op, TensorOp::CrossEntropy | TensorOp::CrossEntropyGrad) {
                 let reads = &self.plan.operands[i];
@@ -835,6 +874,17 @@ impl<'p, T: Element> Prepared<'p, T> {
         let lhs = || match self.plan.hold[operands[0]] {
             Hold::InPlace(source) => (self.view(source, inputs, params), Lhs::Transposed),
             _ => (arg(0), Lhs::RowMajor),
+        };
+        // The operands of an attention op: its fourth an `f32` key mask or `i32` spans.
+        let attend = |heads: u64| {
+            let (q, k) = (arg(0), arg(1));
+            let keys = if self.program.nodes[operands[3]].ty.dtype == DType::I32 {
+                let spans = self.ids(operands[3], ids);
+                Keys::spans(spans, k.shape[0] as usize, q.shape[0] as usize)
+            } else {
+                Keys::mask(arg(3), q.shape[0])
+            };
+            Attend::new(q, k, arg(2), keys, heads)
         };
         data.clear();
         let n = self.count(i) as usize;
@@ -983,9 +1033,9 @@ impl<'p, T: Element> Prepared<'p, T> {
                 }
             }
             TensorOp::Attention { heads } => {
-                let at = Attend::new(arg(0), arg(1), arg(2), arg(3), *heads);
+                let at = attend(*heads);
                 data.resize(n, T::ZERO);
-                for i in 0..at.rows() {
+                for i in at.queries() {
                     for head in 0..at.heads {
                         let softmax = at.softmax(i, head);
                         let mut first = true;
@@ -1001,10 +1051,10 @@ impl<'p, T: Element> Prepared<'p, T> {
                 }
             }
             TensorOp::AttentionGradQ { heads } => {
-                let at = Attend::new(arg(0), arg(1), arg(2), arg(3), *heads);
+                let at = attend(*heads);
                 let g = arg(4);
                 data.resize(n, T::ZERO);
-                for i in 0..at.rows() {
+                for i in at.queries() {
                     for head in 0..at.heads {
                         let softmax = at.softmax(i, head);
                         let d = at.row_dot(i, head, softmax, g);
@@ -1024,11 +1074,11 @@ impl<'p, T: Element> Prepared<'p, T> {
                 }
             }
             TensorOp::AttentionGradK { heads } => {
-                let at = Attend::new(arg(0), arg(1), arg(2), arg(3), *heads);
+                let at = attend(*heads);
                 let g = arg(4);
                 data.resize(n, T::ZERO);
-                for i in 0..at.rows() {
-                    let first = i % at.l == 0;
+                for i in at.queries() {
+                    let first = at.first_query(i);
                     for head in 0..at.heads {
                         let softmax = at.softmax(i, head);
                         let d = at.row_dot(i, head, softmax, g);
@@ -1050,11 +1100,11 @@ impl<'p, T: Element> Prepared<'p, T> {
                 }
             }
             TensorOp::AttentionGradV { heads } => {
-                let at = Attend::new(arg(0), arg(1), arg(2), arg(3), *heads);
+                let at = attend(*heads);
                 let g = arg(4);
                 data.resize(n, T::ZERO);
-                for i in 0..at.rows() {
-                    let first = i % at.l == 0;
+                for i in at.queries() {
+                    let first = at.first_query(i);
                     for head in 0..at.heads {
                         let softmax = at.softmax(i, head);
                         for j in at.keys(i) {
@@ -1203,6 +1253,42 @@ fn check_key_mask<T: Element>(value: ValueId, mask: View<'_, T>) -> Result<(), R
     Ok(())
 }
 
+/// Checks the spans `spans`, `(start, length)` pairs over `rows` key rows, of the `attention` op
+/// or gradient op `value` before it runs (story:attention-event-spans), span by span in
+/// ascending order: a negative start or length is [`RuntimeError::SpanNegative`], a length of
+/// 0 [`RuntimeError::SpanEmpty`], an end past the rows [`RuntimeError::SpanOutOfRange`], and a
+/// start before the end of the span before [`RuntimeError::SpanOverlap`].
+pub(crate) fn check_key_spans(
+    value: ValueId,
+    spans: &[i32],
+    rows: u64,
+) -> Result<(), RuntimeError> {
+    let mut end = 0u64;
+    for (span, pair) in spans.as_chunks::<2>().0.iter().enumerate() {
+        let &[start, length] = pair;
+        let (Ok(first), Ok(count)) = (u64::try_from(start), u64::try_from(length)) else {
+            return Err(RuntimeError::SpanNegative { value, span });
+        };
+        if count == 0 {
+            return Err(RuntimeError::SpanEmpty { value, span });
+        }
+        if first + count > rows {
+            return Err(RuntimeError::SpanOutOfRange {
+                value,
+                span,
+                start,
+                length,
+                rows,
+            });
+        }
+        if first < end {
+            return Err(RuntimeError::SpanOverlap { value, span });
+        }
+        end = first + count;
+    }
+    Ok(())
+}
+
 /// `a * b` when `first`, else `a * b + acc` fused and rounded once: one step of an accumulation
 /// that starts from its first product, as [`sum_of_products`] does (DESIGN.md § 12 ADR-009).
 fn fused<T: Element>(first: bool, a: T, b: T, acc: T) -> T {
@@ -1216,17 +1302,15 @@ fn fused<T: Element>(first: bool, a: T, b: T, acc: T) -> T {
 /// token `j % S` of sequence `j / S`, and the key mask entry of key row `j` is element `j` of the
 /// mask; head `a` reads columns `a * H/A` to
 /// `(a + 1) * H/A - 1`. A masked key is skipped: it adds nothing to any sum, so no value of its
-/// `k` or `v` row reaches a result.
+/// `k` or `v` row reaches a result. Over spans that [`check_key_spans`] passed instead of a key
+/// mask ([`Keys::Spans`], story:attention-event-spans) the keys of a query are the rows of its
+/// span, and a query or key in no span takes part in no sum.
 struct Attend<'v, T> {
     q: View<'v, T>,
     k: View<'v, T>,
     v: View<'v, T>,
-    mask: View<'v, T>,
+    keys: Keys<'v, T>,
     heads: usize,
-    /// `S`, the keys per sequence.
-    s: usize,
-    /// `L`, the queries per sequence: the rows of `q` over the rows of the key mask.
-    l: usize,
     /// `H`, the width of `q`, `k` and `v`.
     h: usize,
     /// `H / heads`, the width of one head.
@@ -1243,13 +1327,65 @@ struct Softmax<T> {
     total: T,
 }
 
+/// Which keys each query of an [`Attend`] reads: the unmasked keys of its sequence under a key
+/// mask, or the rows of its span.
+enum Keys<'v, T> {
+    /// A key mask of `[B, S]`, `S` keys and `L` queries per sequence.
+    Mask {
+        mask: View<'v, T>,
+        s: usize,
+        l: usize,
+    },
+    /// The rows of each span, the span of each key row if it is in one, and whether `q` has one
+    /// row per span rather than the rows of `k`.
+    Spans {
+        rows: Vec<std::ops::Range<usize>>,
+        owner: Vec<Option<usize>>,
+        per_span: bool,
+    },
+}
+
+impl<'v, T> Keys<'v, T> {
+    /// The key mask `mask` of `[B, S]` over `q` of `rows` rows.
+    fn mask(mask: View<'v, T>, rows: u64) -> Self {
+        Keys::Mask {
+            s: mask.shape[1] as usize,
+            l: (rows / mask.shape[0]) as usize,
+            mask,
+        }
+    }
+
+    /// The spans `spans` of `[U, 2]` over `k` of `key_rows` rows and `q` of `rows`: one query
+    /// per span where `q` has `U` rows and they are not the rows of `k`.
+    fn spans(spans: &[i32], key_rows: usize, rows: usize) -> Self {
+        let rows_of: Vec<_> = spans
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|pair| {
+                let start = pair[0] as usize;
+                start..start + pair[1] as usize
+            })
+            .collect();
+        let mut owner = vec![None; key_rows];
+        for (u, span) in rows_of.iter().enumerate() {
+            for j in span.clone() {
+                owner[j] = Some(u);
+            }
+        }
+        Keys::Spans {
+            per_span: rows != key_rows,
+            rows: rows_of,
+            owner,
+        }
+    }
+}
+
 impl<'v, T: Element> Attend<'v, T> {
-    fn new(q: View<'v, T>, k: View<'v, T>, v: View<'v, T>, mask: View<'v, T>, heads: u64) -> Self {
+    fn new(q: View<'v, T>, k: View<'v, T>, v: View<'v, T>, keys: Keys<'v, T>, heads: u64) -> Self {
         let (h, heads) = (q.shape[1] as usize, heads as usize);
         let d = h / heads;
         Self {
-            s: mask.shape[1] as usize,
-            l: (q.shape[0] / mask.shape[0]) as usize,
             h,
             d,
             heads,
@@ -1257,13 +1393,14 @@ impl<'v, T: Element> Attend<'v, T> {
             q,
             k,
             v,
-            mask,
+            keys,
         }
     }
 
-    /// `B * L`, the rows of `q`.
-    fn rows(&self) -> usize {
-        self.q.shape[0] as usize
+    /// The rows of `q` that read a key, ascending: every row under a key mask, the rows in a
+    /// span over spans.
+    fn queries(&self) -> impl Iterator<Item = usize> + '_ {
+        (0..self.q.shape[0] as usize).filter(|&i| self.keys(i).next().is_some())
     }
 
     /// `B * S`, the rows of `k` and `v`.
@@ -1276,15 +1413,45 @@ impl<'v, T: Element> Attend<'v, T> {
         head * self.d..(head + 1) * self.d
     }
 
-    /// Whether the key mask keeps the key of row `j`.
+    /// Whether some query reads the key of row `j`: the key mask keeps it, or it is in a span.
     fn unmasked(&self, j: usize) -> bool {
-        self.mask.data[j] != T::ZERO
+        match &self.keys {
+            Keys::Mask { mask, .. } => mask.data[j] != T::ZERO,
+            Keys::Spans { owner, .. } => owner[j].is_some(),
+        }
     }
 
-    /// The rows of the unmasked keys of the sequence of row `i`, ascending.
+    /// The rows of the keys query `i` reads, ascending: the unmasked keys of its sequence, or
+    /// the rows of its span; none for a query row in no span.
     fn keys(&self, i: usize) -> impl Iterator<Item = usize> + '_ {
-        let start = i / self.l * self.s;
-        (start..start + self.s).filter(|&j| self.unmasked(j))
+        let (rows, mask) = match &self.keys {
+            Keys::Mask { mask, s, l } => {
+                let start = i / l * s;
+                (start..start + s, Some(mask))
+            }
+            Keys::Spans {
+                rows,
+                owner,
+                per_span,
+            } => {
+                let span = if *per_span { Some(i) } else { owner[i] };
+                (span.map_or(0..0, |u| rows[u].clone()), None)
+            }
+        };
+        rows.filter(move |&j| mask.is_none_or(|mask| mask.data[j] != T::ZERO))
+    }
+
+    /// Whether query `i` is the first of the queries that read its keys: the first of its
+    /// sequence, or of its span, or the one query of its span.
+    fn first_query(&self, i: usize) -> bool {
+        match &self.keys {
+            Keys::Mask { l, .. } => i.is_multiple_of(*l),
+            Keys::Spans {
+                rows,
+                owner,
+                per_span,
+            } => *per_span || owner[i].is_some_and(|u| rows[u].start == i),
+        }
     }
 
     /// The score of query `i` and key `j` in head `head`: their dot product over the head's

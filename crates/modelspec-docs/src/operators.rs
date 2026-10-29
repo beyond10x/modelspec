@@ -280,7 +280,9 @@ pub fn page(root: &Path) -> Result<String> {
         "The language has {} operators. A model calls them by name with positional arguments; there are no \
          infix operators yet, so `a + b` is written `add(a, b)`. Every operand is `f32` except \
          the ids of `embedding` and the labels of `cross_entropy`, each its second operand, \
-         which are `i32`. The Tensor IR op of `dropout` also reads the RNG token of its call \
+         which are `i32`, and the key mask of `attention`, its fourth, which may be `i32` spans of \
+         shape `[U, 2]`; an `i32` fourth operand of any other shape is `E-TYPE-018`. The Tensor IR \
+         op of `dropout` also reads the RNG token of its call \
          site, an internal `i32[2]` input that no source value supplies, and `sigreg` lowers to \
          `MatMul`, `SigregColumns` and `ReduceMean` over the projection of its call site, an \
          internal `f32[K, M]` input drawn at every step. After its operands an \

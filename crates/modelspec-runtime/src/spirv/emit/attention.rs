@@ -58,7 +58,7 @@ use super::{EmitError, Kernel, KernelKind, Operand, Shell, Word, operands_error,
 use modelspec_core::ir::kernel::SOFTMAX_STATS_PER_QUERY;
 use modelspec_core::ir::tensor::DType;
 use modelspec_core::schedule::{
-    ATTENTION_STAGE_VALUES, ATTENTION_WORKGROUP, MAX_ATTENTION_KEYS, attention_tile,
+    ATTENTION_STAGE_VALUES, ATTENTION_WORKGROUP, MAX_ATTENTION_KEYS, MAX_SPAN_KEYS, attention_tile,
     attention_workgroups,
 };
 use rspirv::spirv::GlslStd450Op;
@@ -106,6 +106,22 @@ pub(super) struct Attend {
     /// The columns of a head a workgroup stages per row of a chunk for its dot products
     /// ([`Shell::staged_dots`]): `d`, at most `8 · tile`.
     stage_columns: u32,
+    /// The spans the kernel reads in place of a key mask, `None` for a key mask
+    /// (story:attention-event-spans).
+    spans: Option<Spans>,
+}
+
+/// The spans of an attention kernel over spans (story:attention-event-spans): its fourth
+/// binding holds `U` pairs `(start, length)` as `u32`; span `u` is `S` "sequence" `u` of the
+/// workgroup layout, its keys rows `start .. start + length` of the `n` rows of `k` and `v`,
+/// `start` clamped to `n` and `length` to the rows left and to `S`
+/// (`modelspec_core::schedule::MAX_SPAN_KEYS`). Its queries are the same rows of `q`, or row `u`
+/// alone with `per_span`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct Spans {
+    n: u32,
+    u: u32,
+    per_span: bool,
 }
 
 /// The gradient seed of `CrossEntropyGrad`: a constant of the module or the rank-0 binding 3.
@@ -188,95 +204,107 @@ impl AttentionLoss {
             return Err(wrong("only an attention kernel shares softmax statistics"));
         }
         let (kind, invocations, body) = if let Some(op) = attention {
-            let arity = if op == AttentionOp::Forward { 4 } else { 5 };
-            let heads = match immediates[..] {
-                [heads] if heads >= 1.0 && heads.fract() == 0.0 => heads as u64,
-                _ => return Err(wrong("an attention kernel carries its head count last")),
-            };
-            if buffers.len() != arity || types.iter().any(|&t| t != F32) {
-                return Err(wrong(
-                    "attention reads f32 q, k, v, a key mask and its gradient",
-                ));
-            }
-            let (n, h) = match shapes[0] {
-                [n, h] => (*n, *h),
-                _ => return Err(wrong("attention reads [n, h] rows")),
-            };
-            let m = match shapes[1] {
-                [m, _] => *m,
-                _ => return Err(wrong("attention reads [m, h] keys")),
-            };
-            let rows_match = [1, 2].into_iter().all(|at| shapes[at] == [m, h])
-                && (arity == 4 || shapes[4] == [n, h]);
-            let (b, s) = match shapes[3] {
-                [b, s] => (*b, *s),
-                _ => return Err(wrong("attention reads a [b, s] key mask")),
-            };
-            let written = match op {
-                AttentionOp::GradK | AttentionOp::GradV => [m, h],
-                AttentionOp::Forward | AttentionOp::GradQ => [n, h],
-            };
-            if !rows_match
-                || result != written
-                || h % heads != 0
-                || b.checked_mul(s) != Some(m)
-                || n % b != 0
-                || !(1..=s).contains(&(n / b))
-                || s > MAX_ATTENTION_KEYS
-            {
-                return Err(wrong(
-                    "attention reads [b l, h] queries and [b s, h] keys, 1 <= l <= s, h a \
-                     multiple of the heads, at most 512 keys",
-                ));
-            }
-            let l = n / b;
-            let rows = match op {
-                AttentionOp::GradK | AttentionOp::GradV => s,
-                AttentionOp::Forward | AttentionOp::GradQ => l,
-            };
-            let stats = match &kernel.softmax_stats {
-                None => false,
-                Some(ty) => {
-                    let rows = n.saturating_mul(heads);
-                    if ty.dtype != F32
-                        || static_shape(kernel, ty)? != [rows, SOFTMAX_STATS_PER_QUERY]
-                    {
-                        return Err(wrong(
-                            "attention shares [n · heads, 3] f32 softmax statistics",
-                        ));
-                    }
-                    true
+            'attention: {
+                let arity = if op == AttentionOp::Forward { 4 } else { 5 };
+                let heads = match immediates[..] {
+                    [heads] if heads >= 1.0 && heads.fract() == 0.0 => heads as u64,
+                    _ => return Err(wrong("an attention kernel carries its head count last")),
+                };
+                let spans = buffers.len() == arity && types[3] == I32;
+                if buffers.len() != arity
+                    || types
+                        .iter()
+                        .enumerate()
+                        .any(|(at, &t)| t != F32 && !(spans && at == 3))
+                {
+                    return Err(wrong(
+                        "attention reads f32 q, k, v, a key mask and its gradient",
+                    ));
                 }
-            };
-            let groups = attention_workgroups(b, rows, s, heads)
-                .and_then(fits)
-                .filter(|&groups| {
-                    u64::from(groups) * u64::from(ATTENTION_WORKGROUP) <= u32::MAX.into()
-                })
-                .ok_or_else(|| wrong("more than 2^32 invocations"))?;
-            let tile = attention_tile(rows, s);
-            let d = h / heads;
-            (
-                KernelKind::PerRow,
-                groups * ATTENTION_WORKGROUP,
-                AttentionLoss::Attention(Attend {
-                    op,
-                    s: u(s),
-                    l: u(l),
-                    h: u(h),
-                    d: u(d),
-                    heads: u(heads),
-                    scale: 1.0f32 / (d as f32).sqrt(),
-                    stats,
-                    tile: u(tile),
-                    tiles: u(rows.div_ceil(tile)),
-                    lanes: ATTENTION_WORKGROUP / u(tile),
-                    groups,
-                    stage_columns: u(
-                        d.min(ATTENTION_STAGE_VALUES * tile / u64::from(ATTENTION_WORKGROUP))
-                    ),
-                }),
-            )
+                if spans {
+                    break 'attention Attend::over_spans(kernel, op, heads, &shapes, &result)?;
+                }
+                let (n, h) = match shapes[0] {
+                    [n, h] => (*n, *h),
+                    _ => return Err(wrong("attention reads [n, h] rows")),
+                };
+                let m = match shapes[1] {
+                    [m, _] => *m,
+                    _ => return Err(wrong("attention reads [m, h] keys")),
+                };
+                let rows_match = [1, 2].into_iter().all(|at| shapes[at] == [m, h])
+                    && (arity == 4 || shapes[4] == [n, h]);
+                let (b, s) = match shapes[3] {
+                    [b, s] => (*b, *s),
+                    _ => return Err(wrong("attention reads a [b, s] key mask")),
+                };
+                let written = match op {
+                    AttentionOp::GradK | AttentionOp::GradV => [m, h],
+                    AttentionOp::Forward | AttentionOp::GradQ => [n, h],
+                };
+                if !rows_match
+                    || result != written
+                    || h % heads != 0
+                    || b.checked_mul(s) != Some(m)
+                    || n % b != 0
+                    || !(1..=s).contains(&(n / b))
+                    || s > MAX_ATTENTION_KEYS
+                {
+                    return Err(wrong(
+                        "attention reads [b l, h] queries and [b s, h] keys, 1 <= l <= s, h a \
+                     multiple of the heads, at most 512 keys",
+                    ));
+                }
+                let l = n / b;
+                let rows = match op {
+                    AttentionOp::GradK | AttentionOp::GradV => s,
+                    AttentionOp::Forward | AttentionOp::GradQ => l,
+                };
+                let stats = match &kernel.softmax_stats {
+                    None => false,
+                    Some(ty) => {
+                        let rows = n.saturating_mul(heads);
+                        if ty.dtype != F32
+                            || static_shape(kernel, ty)? != [rows, SOFTMAX_STATS_PER_QUERY]
+                        {
+                            return Err(wrong(
+                                "attention shares [n · heads, 3] f32 softmax statistics",
+                            ));
+                        }
+                        true
+                    }
+                };
+                let groups = attention_workgroups(b, rows, s, heads)
+                    .and_then(fits)
+                    .filter(|&groups| {
+                        u64::from(groups) * u64::from(ATTENTION_WORKGROUP) <= u32::MAX.into()
+                    })
+                    .ok_or_else(|| wrong("more than 2^32 invocations"))?;
+                let tile = attention_tile(rows, s);
+                let d = h / heads;
+                (
+                    KernelKind::PerRow,
+                    groups * ATTENTION_WORKGROUP,
+                    AttentionLoss::Attention(Attend {
+                        op,
+                        s: u(s),
+                        l: u(l),
+                        h: u(h),
+                        d: u(d),
+                        heads: u(heads),
+                        scale: 1.0f32 / (d as f32).sqrt(),
+                        stats,
+                        tile: u(tile),
+                        tiles: u(rows.div_ceil(tile)),
+                        lanes: ATTENTION_WORKGROUP / u(tile),
+                        groups,
+                        stage_columns: u(
+                            d.min(ATTENTION_STAGE_VALUES * tile / u64::from(ATTENTION_WORKGROUP))
+                        ),
+                        spans: None,
+                    }),
+                )
+            }
         } else {
             match (
                 kernel.op,
@@ -406,6 +434,94 @@ impl AttentionLoss {
 }
 
 impl Attend {
+    /// The module of an attention kernel over spans (story:attention-event-spans), its
+    /// operands' types checked: `q` (and `g`) `[n, h]`, `k` and `v` `[m, h]`, spans `[U, 2]`,
+    /// `n = m` or `n = U`, `h` a multiple of the heads; its kind, invocations and body.
+    fn over_spans(
+        kernel: &Kernel,
+        op: AttentionOp,
+        heads: u64,
+        shapes: &[&[u64]],
+        result: &[u64],
+    ) -> Result<(KernelKind, u32, AttentionLoss), EmitError> {
+        let wrong = |what: &str| operands_error(kernel, what.to_owned());
+        let (n, h, m, u) = match (shapes[0], shapes[1], shapes[3]) {
+            ([n, h], [m, _], [u, 2]) => (*n, *h, *m, *u),
+            _ => {
+                return Err(wrong(
+                    "attention reads [n, h] rows, [m, h] keys and [u, 2] spans",
+                ));
+            }
+        };
+        let rows_match = [1, 2].into_iter().all(|at| shapes[at] == [m, h])
+            && (shapes.len() == 4 || shapes[4] == [n, h]);
+        let written = match op {
+            AttentionOp::GradK | AttentionOp::GradV => [m, h],
+            AttentionOp::Forward | AttentionOp::GradQ => [n, h],
+        };
+        if !rows_match || result != written || h % heads != 0 || (n != m && n != u) {
+            return Err(wrong(
+                "attention over spans reads [n, h] queries, one per key row or one per span, \
+                 and [m, h] keys, h a multiple of the heads",
+            ));
+        }
+        let s = MAX_SPAN_KEYS;
+        let per_span = n != m;
+        let rows = match op {
+            AttentionOp::GradK | AttentionOp::GradV => s,
+            AttentionOp::Forward | AttentionOp::GradQ if per_span => 1,
+            AttentionOp::Forward | AttentionOp::GradQ => s,
+        };
+        let stats = match &kernel.softmax_stats {
+            None => false,
+            Some(ty) => {
+                if ty.dtype != DType::F32
+                    || static_shape(kernel, ty)?
+                        != [n.saturating_mul(heads), SOFTMAX_STATS_PER_QUERY]
+                {
+                    return Err(wrong(
+                        "attention shares [n · heads, 3] f32 softmax statistics",
+                    ));
+                }
+                true
+            }
+        };
+        let groups = attention_workgroups(u, rows, s, heads)
+            .and_then(|groups| u32::try_from(groups).ok())
+            .filter(|&groups| {
+                groups > 0 && u64::from(groups) * u64::from(ATTENTION_WORKGROUP) <= u32::MAX.into()
+            })
+            .ok_or_else(|| wrong("more than 2^32 invocations"))?;
+        let tile = attention_tile(rows, s);
+        let d = h / heads;
+        let at = Attend {
+            op,
+            s: s as u32,
+            l: if per_span { 1 } else { s as u32 },
+            h: h as u32,
+            d: d as u32,
+            heads: heads as u32,
+            scale: 1.0f32 / (d as f32).sqrt(),
+            stats,
+            tile: tile as u32,
+            tiles: rows.div_ceil(tile) as u32,
+            lanes: ATTENTION_WORKGROUP / tile as u32,
+            groups,
+            stage_columns: d.min(ATTENTION_STAGE_VALUES * tile / u64::from(ATTENTION_WORKGROUP))
+                as u32,
+            spans: Some(Spans {
+                n: m as u32,
+                u: u as u32,
+                per_span,
+            }),
+        };
+        Ok((
+            KernelKind::PerRow,
+            groups * ATTENTION_WORKGROUP,
+            AttentionLoss::Attention(at),
+        ))
+    }
+
     /// The `f32` values of one row's weights of a workgroup: one per key of its sequence.
     fn weights(self) -> u32 {
         self.tile * self.s
@@ -532,6 +648,10 @@ struct Tile {
     base: Word,
     /// Where the row's statistics start in workgroup memory (`Attention`, `AttentionGradQ`).
     row_stats: Word,
+    /// The keys and the queries of the sequence: `S` and `L`, or a span's length and its
+    /// queries, the length or 1 (story:attention-event-spans).
+    keys: Word,
+    queries_count: Word,
 }
 
 /// A word an attention module computes from a row of a sequence: a weight, or whether the mask
@@ -613,6 +733,18 @@ impl Shell {
     fn greater_of(&mut self, x: Word, max: Word) -> Result<Word, EmitError> {
         let greater = self.b.f_ord_greater_than(self.bool_ty, None, x, max)?;
         Ok(self.b.select(self.f32_ty, None, greater, x, max)?)
+    }
+
+    /// `then` under `cond`, or unconditionally without one.
+    fn when_some(
+        &mut self,
+        cond: Option<Word>,
+        then: impl FnOnce(&mut Self) -> Result<(), EmitError>,
+    ) -> Result<(), EmitError> {
+        match cond {
+            Some(cond) => self.when(cond, then),
+            None => then(self),
+        }
     }
 
     /// The module body of `body`.
@@ -769,16 +901,22 @@ impl Shell {
 
     /// The softmax of the query head at `q_at` over the unmasked keys of its sequence from row
     /// `start`: the maximum score, the first unmasked one replaced by each later greater one,
-    /// then the sum of `exp(score - max)` in ascending key order.
+    /// then the sum of `exp(score - max)` in ascending key order. Over spans, `span_keys` the
+    /// span's length, its keys without a mask check (story:attention-event-spans).
     fn attention_softmax(
         &mut self,
         at: &Attend,
         q_at: Word,
         start: Word,
         column: Word,
+        span_keys: Option<Word>,
     ) -> Result<(Word, Word), EmitError> {
-        let keys = self.uint(at.s);
-        self.softmax_of(at, start, keys, column, &|m, _, k_at| {
+        let keys = match span_keys {
+            Some(keys) => keys,
+            None => self.uint(at.s),
+        };
+        let checked = span_keys.is_none();
+        self.softmax_of(at, start, keys, column, checked, &|m, _, k_at| {
             m.score(at, q_at, k_at)
         })
     }
@@ -792,10 +930,11 @@ impl Shell {
         start: Word,
         keys: Word,
         column: Word,
+        checked: bool,
         score: &dyn Fn(&mut Self, Word, Word) -> Result<Word, EmitError>,
     ) -> Result<(Word, Word), EmitError> {
-        let max = self.softmax_max(at, start, keys, column, true, score)?;
-        let total = self.exp_sum(at, start, keys, column, true, &|m, j, k_at| {
+        let max = self.softmax_max(at, start, keys, column, checked, score)?;
+        let total = self.exp_sum(at, start, keys, column, checked, &|m, j, k_at| {
             let x = score(m, j, k_at)?;
             let d = m.f_sub(x, max)?;
             m.exp(d)
@@ -880,7 +1019,7 @@ impl Shell {
     }
 
     /// The sum of products `P · dP` over the unmasked keys of the query head at `q_at`, in
-    /// ascending key order.
+    /// ascending key order; over spans the `span_keys` keys of the span, without a mask check.
     fn row_dot(
         &mut self,
         at: &Attend,
@@ -888,12 +1027,17 @@ impl Shell {
         start: Word,
         column: Word,
         softmax: (Word, Word),
+        span_keys: Option<Word>,
     ) -> Result<Word, EmitError> {
         let acc = self.matmul_vars[2];
         let start_sum = self.float(-0.0);
         self.b.store(acc, start_sum, None, [])?;
-        let keys = self.uint(at.s);
-        self.each_key(at, start, keys, column, true, |m, _, k_at| {
+        let keys = match span_keys {
+            Some(keys) => keys,
+            None => self.uint(at.s),
+        };
+        let checked = span_keys.is_none();
+        self.each_key(at, start, keys, column, checked, |m, _, k_at| {
             let p = m.probability(at, q_at, k_at, softmax)?;
             let dp = m.probability_grad(at, q_at, k_at)?;
             let sum = m.b.load(m.f32_ty, None, acc, None, [])?;
@@ -1182,6 +1326,9 @@ impl Shell {
 
     /// The words of the invocation's workgroup `group` and its index `local` in it.
     fn tile(&mut self, at: &Attend, group: Word, local: Word) -> Result<Tile, EmitError> {
+        if let Some(spans) = at.spans {
+            return self.span_tile(at, spans, group, local);
+        }
         let (tiles, heads) = (self.uint(at.tiles), self.uint(at.heads));
         let (s, d, rows_per_tile) = (self.uint(at.s), self.uint(at.d), self.uint(at.tile));
         let lanes = self.uint(at.lanes);
@@ -1224,7 +1371,157 @@ impl Shell {
             own_at,
             base,
             row_stats,
+            keys: s,
+            queries_count: l,
         })
+    }
+
+    /// The first row and the length of span `u`, `start` clamped to the `n` rows of the keys and
+    /// the length to the rows left and to `S`, so a span the CPU refuses reads no row outside the
+    /// keys (story:attention-event-spans). The clamp only bounds the reads: the host refuses such
+    /// a span before the first step, one the CPU refuses with `E-DATA-011`
+    /// (`train::data::DenseData::refuse_spans`) and one longer than `S` with `E-TARGET-011`
+    /// (`vulkan::stepwise::long_span_refused`), so no run returns a clamped result.
+    fn span_at(&mut self, at: &Attend, spans: Spans, u: Word) -> Result<(Word, Word), EmitError> {
+        let (one, two, n, s) = (
+            self.uint(1),
+            self.uint(2),
+            self.uint(spans.n),
+            self.uint(at.s),
+        );
+        let start_at = self.mul(u, two)?;
+        let length_at = self.add(start_at, one)?;
+        let start = self.read_u32(3, start_at)?;
+        let length = self.read_u32(3, length_at)?;
+        let start = self.min(start, n)?;
+        let room = self.sub(n, start)?;
+        let length = self.min(length, room)?;
+        let length = self.min(length, s)?;
+        Ok((start, length))
+    }
+
+    /// The words of the invocation's workgroup `group` over spans (story:attention-event-spans):
+    /// workgroup `(u · heads + head) · tiles + tile` takes rows `tile · T ..` of span `u`'s query
+    /// rows (`Attention`, `AttentionGradQ`) or key rows (`AttentionGradK`, `AttentionGradV`),
+    /// none where the span has fewer.
+    fn span_tile(
+        &mut self,
+        at: &Attend,
+        spans: Spans,
+        group: Word,
+        local: Word,
+    ) -> Result<Tile, EmitError> {
+        let (tiles, heads) = (self.uint(at.tiles), self.uint(at.heads));
+        let (s, d, rows_per_tile) = (self.uint(at.s), self.uint(at.d), self.uint(at.tile));
+        let (lanes, zero, one) = (self.uint(at.lanes), self.uint(0), self.uint(1));
+        let tile = self.rem(group, tiles)?;
+        let pair = self.div(group, tiles)?;
+        let head = self.rem(pair, heads)?;
+        let sequence = self.div(pair, heads)?;
+        let (start, keys) = self.span_at(at, spans, sequence)?;
+        let (queries, queries_count) = if spans.per_span {
+            (sequence, one)
+        } else {
+            (start, keys)
+        };
+        let column = self.mul(head, d)?;
+        let tile_start = self.mul(tile, rows_per_tile)?;
+        let (origin, count) = match at.op {
+            AttentionOp::Forward | AttentionOp::GradQ => (queries, queries_count),
+            AttentionOp::GradK | AttentionOp::GradV => (start, keys),
+        };
+        let first = self.add(origin, tile_start)?;
+        let some = self.less(tile_start, count)?;
+        let left = self.sub(count, tile_start)?;
+        let left = self.b.select(self.u32_ty, None, some, left, zero)?;
+        let rows = self.min(rows_per_tile, left)?;
+        let r = self.div(local, lanes)?;
+        let lane = self.rem(local, lanes)?;
+        let active = self.less(r, rows)?;
+        let own = self.add(first, r)?;
+        let own_at = head_at(self, at, own, column)?;
+        let base = self.mul(r, s)?;
+        let three = self.uint(SOFTMAX_STATS);
+        let stats_base = self.uint(at.stats_base());
+        let row_stats = self.mul(r, three)?;
+        let row_stats = self.add(stats_base, row_stats)?;
+        Ok(Tile {
+            start,
+            queries,
+            first,
+            rows,
+            column,
+            head,
+            lane,
+            active,
+            own,
+            own_at,
+            base,
+            row_stats,
+            keys,
+            queries_count,
+        })
+    }
+
+    /// Writes `+0` to the head's columns of the rows of the result no span computes
+    /// (story:attention-event-spans): the workgroups of span `u` the rows from its end to the
+    /// start of span `u + 1`, or to the last row after the last span, and those of span 0 also
+    /// the rows before it; the `T` tiles of a head share them, `ATTENTION_WORKGROUP` elements
+    /// a workgroup at a time. A result of one row per span has no such rows.
+    fn span_gaps(
+        &mut self,
+        at: &Attend,
+        spans: Spans,
+        t: &Tile,
+        group: Word,
+        local: Word,
+    ) -> Result<(), EmitError> {
+        let (zero, one, d, tiles) = (
+            self.uint(0),
+            self.uint(1),
+            self.uint(at.d),
+            self.uint(at.tiles),
+        );
+        let (n, last) = (self.uint(spans.n), self.uint(spans.u - 1));
+        let size = self.uint(ATTENTION_WORKGROUP);
+        let tile = self.rem(group, tiles)?;
+        let pair = self.div(group, tiles)?;
+        let heads = self.uint(at.heads);
+        let u = self.div(pair, heads)?;
+        let end = self.add(t.start, t.keys)?;
+        let after = self.add(u, one)?;
+        let more = self.less(u, last)?;
+        let next_u = self.b.select(self.u32_ty, None, more, after, u)?;
+        let (next, _) = self.span_at(at, spans, next_u)?;
+        let next = self.b.select(self.u32_ty, None, more, next, n)?;
+        let opens = self.equal(u, zero)?;
+        let stride = self.mul(tiles, size)?;
+        let offset = self.mul(tile, size)?;
+        let first = self.add(offset, local)?;
+        let var = self.extra_u32_vars[0];
+        let gaps = [(zero, t.start, Some(opens)), (end, next, None)];
+        for (from, to, when) in gaps {
+            let fill = |m: &mut Self| -> Result<(), EmitError> {
+                let wide = m.less(from, to)?;
+                let width = m.sub(to, from)?;
+                let width = m.b.select(m.u32_ty, None, wide, width, zero)?;
+                let elements = m.mul(width, d)?;
+                m.counted(var, first, elements, stride, |m, e| {
+                    let row = m.div(e, d)?;
+                    let c = m.rem(e, d)?;
+                    let row = m.add(from, row)?;
+                    let place = head_at(m, at, row, t.column)?;
+                    let place = m.add(place, c)?;
+                    let f_zero = m.float(0.0);
+                    m.write(place, f_zero)
+                })
+            };
+            match when {
+                Some(when) => self.when(when, fill)?,
+                None => fill(self)?,
+            }
+        }
+        Ok(())
     }
 
     /// Element `3 (row · heads + head) + offset` of the softmax statistics: the maximum, sum
@@ -1262,10 +1559,20 @@ impl Shell {
         let inside = self.less(group, groups)?;
         self.when(inside, |m| {
             let tile = m.tile(&at, group, local)?;
-            match at.op {
+            let body = |m: &mut Self| match at.op {
                 AttentionOp::Forward | AttentionOp::GradQ => m.query_tile(&at, tile, local),
                 AttentionOp::GradK | AttentionOp::GradV => m.key_tile(&at, tile, local),
+            };
+            let Some(spans) = at.spans else {
+                return body(m);
+            };
+            let per_query = matches!(at.op, AttentionOp::Forward | AttentionOp::GradQ);
+            if !(spans.per_span && per_query) {
+                m.span_gaps(&at, spans, &tile, group, local)?;
             }
+            let zero = m.uint(0);
+            let busy = m.less(zero, tile.rows)?;
+            m.when(busy, body)
         })
     }
 
@@ -1284,67 +1591,33 @@ impl Shell {
         let first_lane = self.equal(t.lane, zero)?;
         let serial = self.and(t.active, first_lane)?;
         let (keys, rows) = (self.extra_u32_vars[2], self.extra_u32_vars[3]);
-        // Whether the mask keeps a prefix of the sequence's keys, keys `0..L` and no other, and
-        // that `L`: the first invocation sets the flag and `L = S`, then the invocation of each
-        // key clears the flag where a kept key follows a masked one and writes `L = j` where
-        // key `j` is masked and is the first key or follows a kept one. Under a prefix mask at
-        // most one key writes `L`; under another the flag is cleared and `L` is not read.
-        let (flag_at, length_at) = (self.uint(at.prefix_flag()), self.uint(at.prefix_length()));
-        let first = self.equal(local, zero)?;
-        self.when(first, |m| {
-            let set = m.float(1.0);
-            m.store_shared(flag_at, set)?;
-            let all = m.float(at.s as f32);
-            m.store_shared(length_at, all)
-        })?;
-        self.barrier()?;
-        self.counted(keys, local, s, size, |m, j| {
-            let row = m.add(t.start, j)?;
-            let keep = m.unmasked(row)?;
-            let opens = m.equal(j, zero)?;
-            let before = m.sub(row, one)?;
-            let before = m.b.select(m.u32_ty, None, opens, row, before)?;
-            let kept_before = m.unmasked(before)?;
-            let masked_before = m.b.logical_not(m.bool_ty, None, kept_before)?;
-            let follows_masked = m.b.logical_and(m.bool_ty, None, masked_before, keep)?;
-            let late = m.b.logical_not(m.bool_ty, None, opens)?;
-            let breaks = m.and(follows_masked, late)?;
-            m.when(breaks, |m| {
-                let clear = m.float(0.0);
-                m.store_shared(flag_at, clear)
-            })?;
-            let masked = m.b.logical_not(m.bool_ty, None, keep)?;
-            let edge = m.b.logical_or(m.bool_ty, None, opens, kept_before)?;
-            let ends = m.and(masked, edge)?;
-            m.when(ends, |m| {
-                let length = m.b.convert_u_to_f(m.f32_ty, None, j)?;
-                m.store_shared(length_at, length)
-            })
-        })?;
-        self.barrier()?;
-        let flag = self.load_shared(flag_at)?;
-        let set = self.float(1.0);
-        let prefix = self.b.f_ord_equal(self.bool_ty, None, flag, set)?;
-        let some = self.b.logical_not(self.bool_ty, None, prefix)?;
-        let length = self.load_shared(length_at)?;
-        let length = self.b.convert_f_to_u(self.u32_ty, None, length)?;
-        // The keys every loop runs over: `0..L` under a prefix mask, else every key.
-        let end = self.b.select(self.u32_ty, None, prefix, length, s)?;
+        // The keys every loop runs over and the forms of the loops: over spans the span's
+        // keys, every one kept (story:attention-event-spans); under a key mask as below.
+        let (end, forms) = if at.spans.is_some() {
+            (t.keys, vec![(None, false)])
+        } else {
+            let (end, prefix, some) = self.prefix_keys(at, &t, local, keys)?;
+            (end, vec![(Some(prefix), false), (Some(some), true)])
+        };
         // `body(j, key row, weight place of row r)` for each row `r` of the tile and each key
         // `j` the mask keeps, one invocation per key, `head(j)` computed once per key.
         let each_kept =
             |m: &mut Self, head: HeldOf<'_>, body: KeyRow<'_>| -> Result<(), EmitError> {
                 m.counted(keys, local, end, size, |m, j| {
                     let row = m.add(t.start, j)?;
-                    let keep = m.unmasked(row)?;
-                    m.when(keep, |m| {
+                    let key = |m: &mut Self| {
                         let held = head(m, row)?;
                         m.counted(rows, zero, t.rows, one, |m, r| {
                             let weight_at = m.mul(r, s)?;
                             let weight_at = m.add(weight_at, j)?;
                             body(m, row, held.as_deref(), r, weight_at)
                         })
-                    })
+                    };
+                    if at.spans.is_some() {
+                        return key(m);
+                    }
+                    let keep = m.unmasked(row)?;
+                    m.when(keep, key)
                 })
             };
         // The scores of the invocation's row with each key below `end` the mask keeps, the
@@ -1359,12 +1632,16 @@ impl Shell {
                         valid: Word,
                         body: &dyn Fn(&mut Self, Word) -> Result<(), EmitError>|
          -> Result<(), EmitError> {
-            let zero = m.uint(0);
-            let safe = m.b.select(m.u32_ty, None, valid, j, zero)?;
-            let row = m.add(start, safe)?;
-            let kept = m.unmasked(row)?;
-            let keep = m.and(valid, kept)?;
-            let keep = m.and(keep, active)?;
+            let keep = if at.spans.is_some() {
+                m.and(valid, active)?
+            } else {
+                let zero = m.uint(0);
+                let safe = m.b.select(m.u32_ty, None, valid, j, zero)?;
+                let row = m.add(start, safe)?;
+                let kept = m.unmasked(row)?;
+                let keep = m.and(valid, kept)?;
+                m.and(keep, active)?
+            };
             m.when(keep, |m| {
                 let weight_at = m.add(base, j)?;
                 body(m, weight_at)
@@ -1431,8 +1708,10 @@ impl Shell {
             };
             // The maximum reads the mask even under a prefix mask: unchecked, scores -0.0 then
             // +0.0 gave a maximum of +0.0 on an RTX 3090, where the CPU keeps the first -0.0.
+            // Over spans there is no mask to read.
+            let max_checked = at.spans.is_none();
             self.when(serial, |m| {
-                let max = m.softmax_max(at, start, end, t.column, true, &weight)?;
+                let max = m.softmax_max(at, start, end, t.column, max_checked, &weight)?;
                 m.store_shared(t.row_stats, max)
             })?;
             self.barrier()?;
@@ -1446,8 +1725,8 @@ impl Shell {
             })?;
             self.barrier()?;
             self.when(serial, |m| {
-                for (when, checked) in [(prefix, false), (some, true)] {
-                    m.when(when, |m| {
+                for &(when, checked) in &forms {
+                    m.when_some(when, |m| {
                         let total = m.exp_sum(at, start, end, t.column, checked, &weight)?;
                         m.store_shared(total_at, total)
                     })?;
@@ -1500,8 +1779,8 @@ impl Shell {
                 let start_sum = m.float(-0.0);
                 m.b.store(acc, start_sum, None, [])?;
                 // Under a prefix mask every key before `end` is kept, so the loop reads no mask.
-                for (when, checked) in [(prefix, false), (some, true)] {
-                    m.when(when, |m| {
+                for &(when, checked) in &forms {
+                    m.when_some(when, |m| {
                         m.counted(m.extra_u32_vars[4], zero, end, one, |m, j| {
                             let weight_at = m.add(t.base, j)?;
                             let term = |m: &mut Self| -> Result<(), EmitError> {
@@ -1553,21 +1832,84 @@ impl Shell {
         };
         self.when(t.active, |m| {
             let columns = m.owned_columns(at, t.lane)?;
-            m.when(prefix, |m| {
-                let first = Terms::First(end);
-                let sums = m.row_sums(at, t.start, t.column, x, &columns, &weight, first)?;
-                m.write_sums(at, t.own_at, &columns, &sums, grad)
-            })?;
-            m.when(some, |m| {
-                let kept = |m: &mut Self, j: Word| -> Result<Word, EmitError> {
-                    let row = m.add(t.start, j)?;
-                    m.unmasked(row)
-                };
-                let kept = Terms::Kept(&kept);
-                let sums = m.row_sums(at, t.start, t.column, x, &columns, &weight, kept)?;
-                m.write_sums(at, t.own_at, &columns, &sums, grad)
-            })
+            let kept = |m: &mut Self, j: Word| -> Result<Word, EmitError> {
+                let row = m.add(t.start, j)?;
+                m.unmasked(row)
+            };
+            for &(when, checked) in &forms {
+                m.when_some(when, |m| {
+                    let terms = if checked {
+                        Terms::Kept(&kept)
+                    } else {
+                        Terms::First(end)
+                    };
+                    let sums = m.row_sums(at, t.start, t.column, x, &columns, &weight, terms)?;
+                    m.write_sums(at, t.own_at, &columns, &sums, grad)
+                })?;
+            }
+            Ok(())
         })
+    }
+
+    /// Whether the key mask keeps a prefix of the keys of the tile's sequence, keys `0..L` and no
+    /// other, whether it does not, and the keys the loops of [`Shell::query_tile`] run over:
+    /// `L` under a prefix mask, else `S`.
+    fn prefix_keys(
+        &mut self,
+        at: &Attend,
+        t: &Tile,
+        local: Word,
+        keys: Word,
+    ) -> Result<(Word, Word, Word), EmitError> {
+        let (s, zero, one) = (self.uint(at.s), self.uint(0), self.uint(1));
+        let size = self.uint(ATTENTION_WORKGROUP);
+        // Whether the mask keeps a prefix of the sequence's keys, keys `0..L` and no other, and
+        // that `L`: the first invocation sets the flag and `L = S`, then the invocation of each
+        // key clears the flag where a kept key follows a masked one and writes `L = j` where
+        // key `j` is masked and is the first key or follows a kept one. Under a prefix mask at
+        // most one key writes `L`; under another the flag is cleared and `L` is not read.
+        let (flag_at, length_at) = (self.uint(at.prefix_flag()), self.uint(at.prefix_length()));
+        let first = self.equal(local, zero)?;
+        self.when(first, |m| {
+            let set = m.float(1.0);
+            m.store_shared(flag_at, set)?;
+            let all = m.float(at.s as f32);
+            m.store_shared(length_at, all)
+        })?;
+        self.barrier()?;
+        self.counted(keys, local, s, size, |m, j| {
+            let row = m.add(t.start, j)?;
+            let keep = m.unmasked(row)?;
+            let opens = m.equal(j, zero)?;
+            let before = m.sub(row, one)?;
+            let before = m.b.select(m.u32_ty, None, opens, row, before)?;
+            let kept_before = m.unmasked(before)?;
+            let masked_before = m.b.logical_not(m.bool_ty, None, kept_before)?;
+            let follows_masked = m.b.logical_and(m.bool_ty, None, masked_before, keep)?;
+            let late = m.b.logical_not(m.bool_ty, None, opens)?;
+            let breaks = m.and(follows_masked, late)?;
+            m.when(breaks, |m| {
+                let clear = m.float(0.0);
+                m.store_shared(flag_at, clear)
+            })?;
+            let masked = m.b.logical_not(m.bool_ty, None, keep)?;
+            let edge = m.b.logical_or(m.bool_ty, None, opens, kept_before)?;
+            let ends = m.and(masked, edge)?;
+            m.when(ends, |m| {
+                let length = m.b.convert_u_to_f(m.f32_ty, None, j)?;
+                m.store_shared(length_at, length)
+            })
+        })?;
+        self.barrier()?;
+        let flag = self.load_shared(flag_at)?;
+        let set = self.float(1.0);
+        let prefix = self.b.f_ord_equal(self.bool_ty, None, flag, set)?;
+        let some = self.b.logical_not(self.bool_ty, None, prefix)?;
+        let length = self.load_shared(length_at)?;
+        let length = self.b.convert_f_to_u(self.u32_ty, None, length)?;
+        // The keys every loop runs over: `0..L` under a prefix mask, else every key.
+        let end = self.b.select(self.u32_ty, None, prefix, length, s)?;
+        Ok((end, prefix, some))
     }
 
     /// The weights of an `AttentionGradK` or `AttentionGradV` workgroup that reads the shared
@@ -1585,11 +1927,15 @@ impl Shell {
         var: Word,
     ) -> Result<(), EmitError> {
         let grad_k = at.op == AttentionOp::GradK;
-        let l = self.uint(at.l);
+        let l = t.queries_count;
         let own = self.b.select(self.u32_ty, None, t.active, t.own, t.first)?;
         let own_at = head_at(self, at, own, t.column)?;
-        let kept = self.unmasked(own)?;
-        let keep_own = self.and(t.active, kept)?;
+        let keep_own = if at.spans.is_some() {
+            t.active
+        } else {
+            let kept = self.unmasked(own)?;
+            self.and(t.active, kept)?
+        };
         let mut dots = vec![(Head::Global(1, own_at), 0)];
         if grad_k {
             dots.push((Head::Global(2, own_at), 4));
@@ -1643,24 +1989,13 @@ impl Shell {
         let (s, zero, one) = (self.uint(at.s), self.uint(0), self.uint(1));
         let size = self.uint(ATTENTION_WORKGROUP);
         let (queries, rows) = (self.u32_vars[0], self.extra_u32_vars[3]);
-        // Whether the mask keeps a key row of the tile: a workgroup of masked key rows only
-        // writes their `+0` rows, computing no weight.
-        let mut any = self.unmasked(t.first)?;
-        for u in 1..at.tile {
-            let u = self.uint(u);
-            let inside = self.less(u, t.rows)?;
-            let offset = self.b.select(self.u32_ty, None, inside, u, zero)?;
-            let key_row = self.add(t.first, offset)?;
-            let keep = self.unmasked(key_row)?;
-            let kept = self.and(inside, keep)?;
-            any = self.b.logical_or(self.bool_ty, None, any, kept)?;
-        }
-        self.when(any, |m| {
+        let spans = at.spans.is_some();
+        let weights = |m: &mut Self| -> Result<(), EmitError> {
             if at.stats {
                 m.staged_key_weights(at, &t, local, queries)?;
                 return m.barrier();
             }
-            let l = m.uint(at.l);
+            let l = t.queries_count;
             m.counted(queries, local, l, size, |m, i| {
                 let row = m.add(t.queries, i)?;
                 let q_at = head_at(m, at, row, t.column)?;
@@ -1679,9 +2014,10 @@ impl Shell {
                     };
                     (softmax, rd)
                 } else {
-                    let softmax = m.attention_softmax(at, q_at, t.start, t.column)?;
+                    let keys = spans.then_some(t.keys);
+                    let softmax = m.attention_softmax(at, q_at, t.start, t.column, keys)?;
                     let rd = if grad_k {
-                        Some(m.row_dot(at, q_at, t.start, t.column, softmax)?)
+                        Some(m.row_dot(at, q_at, t.start, t.column, softmax, keys)?)
                     } else {
                         None
                     };
@@ -1695,8 +2031,7 @@ impl Shell {
                 };
                 m.counted(rows, zero, t.rows, one, |m, r| {
                     let key_row = m.add(t.first, r)?;
-                    let keep = m.unmasked(key_row)?;
-                    m.when(keep, |m| {
+                    let weight = |m: &mut Self| {
                         let k_at = head_at(m, at, key_row, t.column)?;
                         let dot =
                             m.dot(Head::of(q.as_deref(), 0, q_at), Head::Global(1, k_at), at.d)?;
@@ -1720,13 +2055,47 @@ impl Shell {
                         let weight_at = m.mul(r, s)?;
                         let weight_at = m.add(weight_at, i)?;
                         m.store_shared(weight_at, weight)
-                    })
+                    };
+                    if spans {
+                        return weight(m);
+                    }
+                    let keep = m.unmasked(key_row)?;
+                    m.when(keep, weight)
                 })
             })?;
             m.barrier()
-        })?;
+        };
+        if spans {
+            // Over spans a workgroup computes only where its tile has rows, every one a key of
+            // the span (story:attention-event-spans).
+            weights(self)?;
+        } else {
+            // Whether the mask keeps a key row of the tile: a workgroup of masked key rows only
+            // writes their `+0` rows, computing no weight.
+            let mut any = self.unmasked(t.first)?;
+            for u in 1..at.tile {
+                let u = self.uint(u);
+                let inside = self.less(u, t.rows)?;
+                let offset = self.b.select(self.u32_ty, None, inside, u, zero)?;
+                let key_row = self.add(t.first, offset)?;
+                let keep = self.unmasked(key_row)?;
+                let kept = self.and(inside, keep)?;
+                any = self.b.logical_or(self.bool_ty, None, any, kept)?;
+            }
+            self.when(any, weights)?;
+        }
         let x = if grad_k { 0 } else { 4 };
         self.when(t.active, |m| {
+            let weight = |m: &mut Self, i: Word| -> Result<Word, EmitError> {
+                let weight_at = m.add(t.base, i)?;
+                m.load_shared(weight_at)
+            };
+            if spans {
+                let columns = m.owned_columns(at, t.lane)?;
+                let first = Terms::First(t.queries_count);
+                let sums = m.row_sums(at, t.queries, t.column, x, &columns, &weight, first)?;
+                return m.write_sums(at, t.own_at, &columns, &sums, grad_k);
+            }
             let keep = m.unmasked(t.own)?;
             let masked = m.b.logical_not(m.bool_ty, None, keep)?;
             let columns = m.owned_columns(at, t.lane)?;
@@ -1736,10 +2105,6 @@ impl Shell {
                 m.write_sums(at, t.own_at, &columns, &zeros, false)
             })?;
             m.when(keep, |m| {
-                let weight = |m: &mut Self, i: Word| -> Result<Word, EmitError> {
-                    let weight_at = m.add(t.base, i)?;
-                    m.load_shared(weight_at)
-                };
                 let all = Terms::All(at.l);
                 let sums = m.row_sums(at, t.queries, t.column, x, &columns, &weight, all)?;
                 m.write_sums(at, t.own_at, &columns, &sums, grad_k)

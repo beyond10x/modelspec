@@ -118,7 +118,9 @@ use std::time::{Duration, Instant};
 
 use modelspec_core::artifact::{CompiledArtifact, check_device};
 use modelspec_core::compile::CompiledTraining;
+use modelspec_core::compile::codes;
 use modelspec_core::device::DeviceProfile;
+use modelspec_core::diag::Diagnostic;
 use modelspec_core::ir::kernel::{BufferView, Kernel, Operand, PlanOp};
 use modelspec_core::ir::tensor::{DType, ParamId, TensorType};
 use modelspec_core::ir::training::{
@@ -126,7 +128,7 @@ use modelspec_core::ir::training::{
     sigreg_sites,
 };
 use modelspec_core::passes::masked_rows;
-use modelspec_core::schedule::host_inputs;
+use modelspec_core::schedule::{MAX_SPAN_KEYS, host_inputs};
 
 use super::Device;
 use super::dispatch::{Bound, DescriptorArena, Recording, Submitted};
@@ -145,7 +147,7 @@ use crate::cpu::HostTensor;
 use crate::spirv::emit::{
     HELD_OUT_STATE, HeldOutKernels, emit_kernels, emit_module_with, held_out_kernels, held_out_sums,
 };
-use crate::train::data::{DenseBatch, DenseData, PackedBatch, synthetic};
+use crate::train::data::{DataError, DenseBatch, DenseData, PackedBatch, synthetic};
 use crate::train::eval::{HeldOut, HeldOutMetrics};
 use crate::train::init::{Stream, dropout_token, initialize, sigreg_projection};
 use crate::train::masked;
@@ -242,9 +244,48 @@ pub fn needed(compiled: &CompiledTraining, artifact: &CompiledArtifact) -> bool 
         || masked_rows::site(&compiled.training.training.program).is_some()
 }
 
+/// `E-TARGET-011` at the `attention` that reads it, when the dense data `data` or the dense eval
+/// data `dense_eval` of a run of `compiled` hold a span longer than [`MAX_SPAN_KEYS`] keys
+/// (story:attention-event-spans): the four attention kernels read at most that many keys of a
+/// span, so the device would compute another result than the CPU interpreter, which reads the
+/// span whole. Checked over every span of the files, before the first step; `None` when every
+/// span is at most [`MAX_SPAN_KEYS`] keys long or the run reads no spans.
+pub fn long_span_refused(
+    compiled: &CompiledTraining,
+    data: Option<Data<'_>>,
+    dense_eval: Option<&DenseData>,
+) -> Option<Diagnostic> {
+    let dense = match data {
+        Some(Data::Dense(dense)) => Some(dense),
+        _ => None,
+    };
+    let long = [dense, dense_eval]
+        .into_iter()
+        .flatten()
+        .find_map(|d| d.span_longer_than(&compiled.forward, MAX_SPAN_KEYS))?;
+    let refused = Diagnostic::new(
+        codes::NO_KERNEL,
+        format!(
+            "operator `attention` has no Vulkan kernel for a span of {} keys: its kernels read at \
+             most {MAX_SPAN_KEYS} keys of a span",
+            long.length
+        ),
+    )
+    .with("input", long.input)
+    .with("position", long.position.to_string())
+    .with("length", long.length.to_string())
+    .with("bound", format!("length <= {MAX_SPAN_KEYS}"))
+    .note("split the span, or train and infer it with `--backend cpu`");
+    Some(match long.read_at {
+        Some(span) => refused.at(span),
+        None => refused,
+    })
+}
+
 /// Loads Vulkan, selects device `device` (0 when `None`), negotiates and opens it, with the
 /// pipeline executable statistics when `profiled` and the device offers them, and runs
-/// [`train_stepwise_profiled`] on it.
+/// [`train_stepwise_profiled`] on it. A span longer than [`MAX_SPAN_KEYS`] keys in its dense
+/// data is refused before a device is opened ([`long_span_refused`]).
 pub fn train_stepwise_on_device(
     device: Option<usize>,
     profiled: bool,
@@ -253,6 +294,9 @@ pub fn train_stepwise_on_device(
     options: StepwiseOptions<'_, '_>,
     observe: &mut Observe<'_>,
 ) -> Result<(Run, RunStats, Option<Profile>), DeviceRunError> {
+    if let Some(refused) = long_span_refused(compiled, options.data, options.dense_eval) {
+        return Err(DeviceRunError::Refused(refused));
+    }
     on_device(device, profiled, artifact, |opened, profile, negotiated| {
         Ok(train_stepwise_profiled(
             opened, profile, negotiated, compiled, artifact, profiled, options, observe,
@@ -378,6 +422,9 @@ pub fn train_stepwise_profiled(
         checkpoints,
         submit_steps,
     } = options;
+    if let Some(long) = long_span_refused(compiled, data, dense_eval) {
+        return Err(refused(RunError::Data(DataError::Refused(long))));
+    }
     let end = start.checked_add(config.steps).ok_or_else(|| {
         refused(RunError::StepCount {
             start,

@@ -1062,8 +1062,14 @@ impl Kernel {
     }
 
     /// The count of [`Kernel::flop`] for an attention kernel: `q` `[n, h]` its first operand, `k`
-    /// `[m, h]` its second and the key mask `[b, s]` its fourth.
+    /// `[m, h]` its second and the key mask `[b, s]` its fourth. `None` over spans
+    /// (story:attention-event-spans), whose keys per query are known only when the kernel runs.
     fn attention_flop(&self) -> Option<u64> {
+        if let Some(Operand::Buffer(ty)) = self.operands.get(3)
+            && ty.dtype == DType::I32
+        {
+            return None;
+        }
         let dims = |i: usize| match self.operands.get(i)? {
             Operand::Buffer(ty) => match ty.shape[..] {
                 [Dim::Static(rows), Dim::Static(cols)] => Some((rows, cols)),

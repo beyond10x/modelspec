@@ -45,7 +45,11 @@ pub mod codes {
     /// `attention` over more than 512 keys per sequence, or the optimizer `muon`, whose
     /// step runs on the CPU interpreter only and is reported at the `train` block; and, refused by
     /// `infer --backend vulkan` rather than the schedule, `dropout`, whose inference runs the
-    /// step plan with its dropouts (DESIGN.md § 8.1). The file checks; use `--backend cpu`.
+    /// step plan with its dropouts (DESIGN.md § 8.1); and, refused by `train --backend vulkan`
+    /// and `infer --backend vulkan` once the dense data is read and before the first step or
+    /// block, an `attention` over `i32` spans whose `--data`, `--eval` or function data holds a
+    /// span longer than 512 keys, which the CPU interpreter reads whole (DESIGN.md § 5.2). The
+    /// file checks; use `--backend cpu`.
     pub const NO_KERNEL: Code = Code::new("E-TARGET-011");
 }
 

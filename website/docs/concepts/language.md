@@ -73,7 +73,10 @@ purpose (DESIGN.md § 2.2):
 - `attention(q, k, v, key_mask, heads = A)` takes `k` and `v` of one shape `[B · S, H]`, a key
   mask `[B, S]` and `q` of `[B · L, H]`, and returns `q`'s shape. `L`, the queries per sequence, is
   the rows of `q` over `B`, from 1 to `S`: `L = S` is self-attention, `L = 1` reads one query per
-  sequence against all its keys. `A` must divide `H` (`E-TYPE-020`).
+  sequence against all its keys. `A` must divide `H` (`E-TYPE-020`). In place of the key mask it
+  takes `i32` spans `[U, 2]` of (start, length) key rows, ascending and disjoint: `q` of the rows
+  of `k` attends each row to its span, `q` of `U` rows one query per span, and a row outside every
+  span is 0.
 - `cross_entropy(logits [N, V], labels i32[N], weights [N])` returns a scalar.
 
 A call that breaks a rule is a compile error with its own code, the source position and both
