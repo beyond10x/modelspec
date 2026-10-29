@@ -18,7 +18,9 @@ use modelspec_core::compile::compile_artifact;
 use modelspec_core::device::DeviceProfile;
 use modelspec_core::ir::kernel::{DispatchCount, Kernel, KernelKind, Operand, PlanOp};
 use modelspec_core::ir::tensor::{Dim, TensorOp, TensorType};
-use modelspec_core::schedule::{embedding_grad_kernels, rowwise_kernel};
+use modelspec_core::schedule::{
+    embedding_grad_kernels, layer_norm_grad_gamma_kernels, rowwise_kernel,
+};
 use modelspec_runtime::spirv::emit::{emit, emit_kernels};
 use modelspec_runtime::spirv::validate::validate;
 
@@ -111,6 +113,9 @@ fn kernels_of_shape(n: u64, h: u64, v: u64, p: f32) -> Vec<Kernel> {
                 TensorOp::EmbeddingGrad { .. } => {
                     Vec::from(embedding_grad_kernels(operands, result).expect(&missing))
                 }
+                TensorOp::LayerNormGradGamma => {
+                    Vec::from(layer_norm_grad_gamma_kernels(operands, result).expect(&missing))
+                }
                 _ => vec![rowwise_kernel(&op, operands, result).expect(&missing)],
             }
         })
@@ -143,7 +148,7 @@ fn adv_rowwise_every_module_of_the_extended_grid_passes_spirv_val() {
         }
     }
     eprintln!("{modules} row-wise modules pass spirv-val");
-    assert_eq!(modules, 4 * 5 * 2 * 14);
+    assert_eq!(modules, 4 * 5 * 2 * 15);
 }
 
 const BLOCK: &str = "model Block {
@@ -241,7 +246,8 @@ fn adv_rowwise_every_division_is_uncontracted_outside_fast_math() {
             "{}",
             kernel.signature()
         );
-        let sqrt = kernel.op.starts_with("LayerNorm");
+        let sqrt = kernel.op.starts_with("LayerNorm")
+            && !(kernel.op == "LayerNormGradGamma" && kernel.kind == KernelKind::PerColumn);
         assert_eq!(
             uses_glsl(&off.spirv, GLSL_SQRT),
             sqrt,
@@ -265,30 +271,34 @@ fn adv_rowwise_every_division_is_uncontracted_outside_fast_math() {
 /// Hypothesis 5: the counting rule of DESIGN.md § 3.1 recomputed by hand for the `[4, 8]`
 /// block. `LayerNorm` `n·(8h + 3)` = 4·67 = 268 FLOP, bytes (32 + 8 + 8 + 32)·4 = 320;
 /// `LayerNormGradX` `n·(14h + 3)` = 4·115 = 460, (32 + 8 + 32 + 32)·4 = 416;
-/// `LayerNormGradGamma` 268, (32 + 32 + 8)·4 = 288; `Softmax` 5·32 = 160, (32 + 32)·4 = 256;
-/// `SoftmaxGrad` 4·32 = 128, 384; `Gelu` 10·32 = 320, 256; `GeluGrad` 24·32 = 768, 384;
-/// `AddRows` 32, (32 + 8 + 32)·4 = 288; `SumRows` 32, (32 + 8)·4 = 160. Every row-wise op is
-/// one dispatch per use, and the elementwise ops around it are not fused into it.
+/// `LayerNormGradGamma` 268 in two dispatches (story:vulkan-layer-norm-grad-gamma-row-moments),
+/// its row moments `n·(4h + 3)` = 4·35 = 140, (32 + 8)·4 = 160, and its column sum `4nh` = 128,
+/// (8 + 32 + 32 + 8)·4 = 320; `Softmax` 5·32 = 160, (32 + 32)·4 = 256; `SoftmaxGrad` 4·32 = 128,
+/// 384; `Gelu` 10·32 = 320, 256; `GeluGrad` 24·32 = 768, 384; `AddRows` 32, (32 + 8 + 32)·4 =
+/// 288; `SumRows` 32, (32 + 8)·4 = 160. Every other row-wise op is one dispatch per use, and the
+/// elementwise ops around it are not fused into it.
 #[test]
 fn adv_rowwise_counting_rule_recomputed_by_hand() {
     let artifact = block();
     let plan = &artifact.execution;
-    let expected: [(&str, u64, u64); 9] = [
-        ("LayerNorm", 268, 320),
-        ("LayerNormGradX", 460, 416),
-        ("LayerNormGradGamma", 268, 288),
-        ("Softmax", 160, 256),
-        ("SoftmaxGrad", 128, 384),
-        ("Gelu", 320, 256),
-        ("GeluGrad", 768, 384),
-        ("AddRows", 32, 288),
-        ("SumRows", 32, 160),
+    use KernelKind::{PerColumn, PerElement, PerRow};
+    let expected: [(&str, KernelKind, u64, u64); 10] = [
+        ("LayerNorm", PerRow, 268, 320),
+        ("LayerNormGradX", PerRow, 460, 416),
+        ("LayerNormGradGamma", PerRow, 140, 160),
+        ("LayerNormGradGamma", PerColumn, 128, 320),
+        ("Softmax", PerRow, 160, 256),
+        ("SoftmaxGrad", PerRow, 128, 384),
+        ("Gelu", PerElement, 320, 256),
+        ("GeluGrad", PerElement, 768, 384),
+        ("AddRows", PerElement, 32, 288),
+        ("SumRows", PerColumn, 32, 160),
     ];
-    for (op, flop, bytes) in expected {
+    for (op, kind, flop, bytes) in expected {
         let kernel = plan
             .kernels
             .iter()
-            .find(|k| k.op == op)
+            .find(|k| k.op == op && k.kind == kind)
             .unwrap_or_else(|| panic!("no {op} kernel"));
         let steps: Vec<_> = plan
             .step

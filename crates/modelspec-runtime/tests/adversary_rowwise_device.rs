@@ -17,7 +17,9 @@ use std::time::Instant;
 use common::{GPU_ATOL, GPU_RTOL, GUARD_WORDS, flush_subnormals, guard, guarded, within};
 use modelspec_core::ir::kernel::{Kernel, Operand};
 use modelspec_core::ir::tensor::{Dim, TensorOp, TensorProgramBuilder, TensorType, ValueId};
-use modelspec_core::schedule::{embedding_grad_kernels, rowwise_kernel};
+use modelspec_core::schedule::{
+    embedding_grad_kernels, layer_norm_grad_gamma_kernels, rowwise_kernel,
+};
 use modelspec_runtime::cpu::interpreter::evaluate_seeded;
 use modelspec_runtime::cpu::tensor::HostTensor;
 use modelspec_runtime::spirv::emit::emit;
@@ -241,7 +243,8 @@ fn cpu(case: &Case) -> Vec<f32> {
 }
 
 /// The kernels of `case`, as the schedule builds them: one for every op but `EmbeddingGrad`,
-/// which is a sort and a gradient.
+/// which is a sort and a gradient, and `LayerNormGradGamma`, which is the row moments and the
+/// column sum.
 fn kernels_of(case: &Case) -> Vec<Kernel> {
     let operands = case
         .operands
@@ -251,6 +254,10 @@ fn kernels_of(case: &Case) -> Vec<Kernel> {
     if matches!(case.op, TensorOp::EmbeddingGrad { .. }) {
         let kernels = embedding_grad_kernels(operands, case.result.clone());
         return Vec::from(kernels.expect("EmbeddingGrad has its two kernels"));
+    }
+    if case.op == TensorOp::LayerNormGradGamma {
+        let kernels = layer_norm_grad_gamma_kernels(operands, case.result.clone());
+        return Vec::from(kernels.expect("LayerNormGradGamma has its two kernels"));
     }
     vec![
         rowwise_kernel(&case.op, operands, case.result.clone())
