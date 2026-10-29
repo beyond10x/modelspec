@@ -8,7 +8,7 @@ summary: 'Lets the decider compute its last encoder layer on the one row per blo
 relations:
 - decomposes: epic:decider-training-support
 - serves: vision:modelspec
-revision: 3
+revision: 5
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-29T11:50:57Z", actor: "human:timo", revision: 2}
 - {from: "proposed", to: "active", at: "2026-10-29T11:50:58Z", actor: "human:timo", revision: 3}
@@ -35,9 +35,12 @@ Keys and values must stay at every row: each selected query attends to its whole
 - CPU interpreter: `attention` with `Lq = 1` and with `Lq = Lk` (today's case); the `Lq = 1`
   result for each sequence equals row 0 of the `Lq = Lk` result in bits, forward and gradients.
 - Gradient check of the new form on the CPU.
-- Vulkan: forward and the three gradients give the CPU bits on `Lq = 1` decider shapes and on
-  `Lq = Lk` BERT-tiny shapes, with validation on.
-- A decider model rewritten to gather `t3` at `evt_row` before layer 3 trains to the same loss
-  as today's model within the gate-5 tolerance over 20 steps (or the same bits, stated if so).
+- Vulkan: forward and the three gradients on `Lq = 1` decider shapes equal the device's own
+  `Lq = Lk` rows in bits and the CPU within the GPU tolerance (the device's exp and division are
+  not correctly rounded); `Lq = Lk` BERT-tiny shapes keep their bits; validation on.
+- A decider model rewritten to gather `t3` at `evt_row` before layer 3 trains to a loss within the
+  spread of a reorder-only control over 20 steps: today's model with two independent lines swapped,
+  which changes only the order gradients are summed in (SGD at lr 0.025 amplifies that rounding;
+  the gate-5 run tolerance holds through step 15 for both and for neither at steps 16-20).
 - Decider device step time, median of alternating A/B pairs at P0: lower by at least 15 %.
 - BERT-tiny step time not worse (A/B, 200 steps).
