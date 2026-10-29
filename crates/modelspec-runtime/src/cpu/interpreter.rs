@@ -1258,7 +1258,11 @@ fn check_key_mask<T: Element>(value: ValueId, mask: View<'_, T>) -> Result<(), R
 /// ascending order: a negative start or length is [`RuntimeError::SpanNegative`], a length of
 /// 0 [`RuntimeError::SpanEmpty`], an end past the rows [`RuntimeError::SpanOutOfRange`], and a
 /// start before the end of the span before [`RuntimeError::SpanOverlap`].
-fn check_key_spans(value: ValueId, spans: &[i32], rows: u64) -> Result<(), RuntimeError> {
+pub(crate) fn check_key_spans(
+    value: ValueId,
+    spans: &[i32],
+    rows: u64,
+) -> Result<(), RuntimeError> {
     let mut end = 0u64;
     for (span, pair) in spans.as_chunks::<2>().0.iter().enumerate() {
         let &[start, length] = pair;

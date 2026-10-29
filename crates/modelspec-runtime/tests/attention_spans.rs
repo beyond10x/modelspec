@@ -498,3 +498,93 @@ fn span_gradients_match_central_differences() {
         });
     }
 }
+
+/// Dense data whose declarations share the batch dimension `B = 2`: a sample of `spans` is one
+/// span, and a step's spans are those of the samples it reads.
+const BATCHED_SPANS: &str = "\
+model Rows {
+    param w: Tensor<f32, [4, 4]> = xavier_uniform();
+
+    fn forward(x: Tensor<f32, [2, 4]>, spans: Tensor<i32, [2, 2]>) -> Tensor<f32, [2, 4]> {
+        let h = matmul(x, w);
+        return attention(h, h, h, spans, heads = 2);
+    }
+}
+
+train Fit {
+    model = Rows;
+    input x: Tensor<f32, [2, 4]>;
+    input spans: Tensor<i32, [2, 2]>;
+    target y: Tensor<f32, [2, 4]>;
+    loss = mse(model.forward(x, spans), y);
+    optimizer = sgd(lr = 0.1);
+    steps = 2;
+    seed = 3;
+    device = cpu;
+}
+";
+
+/// A dense directory of `BATCHED_SPANS` with one span per sample and, when given, an order.
+fn batched_dense(name: &str, spans: &[(i32, i32)], order: Option<&[u32]>) -> std::path::PathBuf {
+    let dir =
+        std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("spans_dense_{name}"));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("scratch directory");
+    let f32s: Vec<u8> = (0..spans.len() * 4)
+        .flat_map(|i| ((i % 5) as f32 * 0.25 - 0.5).to_le_bytes())
+        .collect();
+    std::fs::write(dir.join("x.f32"), &f32s).expect("x");
+    std::fs::write(dir.join("y.f32"), &f32s).expect("y");
+    let words: Vec<u8> = spans
+        .iter()
+        .flat_map(|&(s, l)| [s, l])
+        .flat_map(i32::to_le_bytes)
+        .collect();
+    std::fs::write(dir.join("spans.i32"), words).expect("spans");
+    if let Some(order) = order {
+        let order: Vec<u8> = order.iter().flat_map(|i| i.to_le_bytes()).collect();
+        std::fs::write(dir.join("order.u32"), order).expect("order");
+    }
+    dir
+}
+
+/// With `B = 2` each span is valid alone, and only the batch a step or an eval batch assembles
+/// can be out of order: the dense readers check the spans of every batch the run reads, so an
+/// order that puts span `(1, 1)` before `(0, 1)` is E-DATA-011 at that step before the first
+/// step, as the CPU interpreter would refuse it at the step, and the same samples in file order
+/// are accepted.
+#[test]
+fn dense_spans_are_checked_in_every_batch_a_step_reads() {
+    use modelspec_core::compile::compile_training;
+    use modelspec_runtime::train::data::{DataError, E_DATA_011, dense, dense_eval};
+
+    let compiled = compile_training("rows.mspec", BATCHED_SPANS).expect("the model compiles");
+    let (config, forward) = (&compiled.config, &compiled.forward);
+    let alternating = [(0, 1), (1, 1), (0, 1), (1, 1)];
+    let in_order = batched_dense("in_order", &alternating, None);
+    assert!(dense(&in_order, config, forward).is_ok());
+    assert!(dense_eval(&in_order, config, forward).is_ok());
+
+    let reordered = batched_dense("reordered", &alternating, Some(&[1, 0, 2, 3]));
+    match dense(&reordered, config, forward) {
+        Err(DataError::Refused(d)) => {
+            assert_eq!(d.code, E_DATA_011, "{d}");
+            let text = d.to_string();
+            assert!(text.contains("starts before the end of span 0"), "{text}");
+            assert!(text.contains("step: 0"), "{text}");
+            assert!(text.contains("position: 0"), "{text}");
+        }
+        other => panic!("an out-of-order step batch is read: {other:?}"),
+    }
+
+    let overlapping = batched_dense("overlapping", &[(0, 1), (0, 1)], None);
+    for (reader, refused) in [
+        ("dense", dense(&overlapping, config, forward)),
+        ("dense_eval", dense_eval(&overlapping, config, forward)),
+    ] {
+        match refused {
+            Err(DataError::Refused(d)) => assert_eq!(d.code, E_DATA_011, "{reader}: {d}"),
+            other => panic!("{reader}: an overlapping batch is read: {other:?}"),
+        }
+    }
+}

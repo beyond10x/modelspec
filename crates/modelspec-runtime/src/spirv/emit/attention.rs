@@ -1378,7 +1378,10 @@ impl Shell {
 
     /// The first row and the length of span `u`, `start` clamped to the `n` rows of the keys and
     /// the length to the rows left and to `S`, so a span the CPU refuses reads no row outside the
-    /// keys (story:attention-event-spans).
+    /// keys (story:attention-event-spans). The clamp only bounds the reads: the host refuses such
+    /// a span before the first step, one the CPU refuses with `E-DATA-011`
+    /// (`train::data::DenseData::refuse_spans`) and one longer than `S` with `E-TARGET-011`
+    /// (`vulkan::stepwise::long_span_refused`), so no run returns a clamped result.
     fn span_at(&mut self, at: &Attend, spans: Spans, u: Word) -> Result<(Word, Word), EmitError> {
         let (one, two, n, s) = (
             self.uint(1),
