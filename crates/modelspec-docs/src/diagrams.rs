@@ -59,47 +59,63 @@ pub struct Generated {
     pub css: String,
 }
 
+/// One program drawn by [`draw`]: its levels and its JSON module's file name and text.
+pub struct Drawn {
+    pub level: Level,
+    pub module: (String, String),
+}
+
+/// The model view of `program`, read under `root`. A file that does not compile is an error
+/// naming the file and every diagnostic code, so generation stops instead of writing a page.
+pub fn draw(root: &Path, program: &Program) -> Result<Drawn> {
+    let source = std::fs::read_to_string(root.join(program.file)).map_err(io(program.file))?;
+    let graph = model_graph(program.file, &source).map_err(|diagnostics| {
+        format!(
+            "{}: does not compile: {}",
+            program.file,
+            diagnostics
+                .iter()
+                .map(|d| d.code.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    })?;
+    let compiled = compile::compile_training(program.file, &source)
+        .map_err(|_| format!("{}: does not compile", program.file))?;
+    let lines = graph::ir_lines(&compiled);
+    let view = DiagramView::Model;
+    let drawn = render(&graph, &RenderRequest::default());
+    let root_key = drawn.root.0.clone();
+    let text = svg::svg(&graph, &drawn, &lines);
+    let mut levels = Map::new();
+    levels.insert(root_key.clone(), Value::String(text.clone()));
+    let module = json!({
+        "program": program.key,
+        "source": program.file,
+        "views": {
+            view.name(): {
+                "root": root_key,
+                "levels": levels,
+            },
+        },
+    });
+    Ok(Drawn {
+        level: Level {
+            dir: format!("{IMAGES}/{}/{}", program.key, view.name()),
+            files: Pages::from([(format!("{root_key}.svg"), text)]),
+        },
+        module: (format!("{}.json", program.key), pretty(&module)?),
+    })
+}
+
 /// The diagrams of every program in [`PROGRAMS`], read under `root`.
 pub fn files(root: &Path) -> Result<Generated> {
     let mut images = Vec::new();
     let mut data = Pages::new();
     for program in PROGRAMS {
-        let source = std::fs::read_to_string(root.join(program.file)).map_err(io(program.file))?;
-        let graph = model_graph(program.file, &source).map_err(|diagnostics| {
-            format!(
-                "{}: does not compile: {}",
-                program.file,
-                diagnostics
-                    .iter()
-                    .map(|d| d.code.to_string())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )
-        })?;
-        let compiled = compile::compile_training(program.file, &source)
-            .map_err(|_| format!("{}: does not compile", program.file))?;
-        let lines = graph::ir_lines(&compiled);
-        let view = DiagramView::Model;
-        let drawn = render(&graph, &RenderRequest::default());
-        let root_key = drawn.root.0.clone();
-        let text = svg::svg(&graph, &drawn, &lines);
-        let mut levels = Map::new();
-        levels.insert(root_key.clone(), Value::String(text.clone()));
-        images.push(Level {
-            dir: format!("{IMAGES}/{}/{}", program.key, view.name()),
-            files: Pages::from([(format!("{root_key}.svg"), text)]),
-        });
-        let module = json!({
-            "program": program.key,
-            "source": program.file,
-            "views": {
-                view.name(): {
-                    "root": root_key,
-                    "levels": levels,
-                },
-            },
-        });
-        data.insert(format!("{}.json", program.key), pretty(&module)?);
+        let drawn = draw(root, program)?;
+        images.push(drawn.level);
+        data.insert(drawn.module.0, drawn.module.1);
     }
     Ok(Generated {
         images,
@@ -143,7 +159,10 @@ fn stylesheet() -> String {
     out
 }
 
-/// The layout of a diagram figure and of the gallery's glyph cells.
+/// The layout of a diagram figure and of the gallery's glyph cells. A diagram is drawn at 1.6
+/// times its natural size, `--ms-diagram-width` being the SVG's width in units, which
+/// `ModelDiagram.tsx` sets on the canvas: the smallest label, 10 units, then reads at 16 px, the
+/// body text's size. It never grows past the column, and shrinks with it on a narrow screen.
 const FIGURE_CSS: &str = "
 .ms-figure {
   margin: 0 0 var(--ifm-leading) 0;
@@ -159,6 +178,7 @@ const FIGURE_CSS: &str = "
 }
 
 .ms-figure__canvas svg {
+  width: calc(var(--ms-diagram-width) * 1.6px);
   max-width: 100%;
   height: auto;
 }

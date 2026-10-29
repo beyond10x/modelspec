@@ -255,14 +255,17 @@ fn outputs(root: &Path) -> Result<(Vec<Output>, Vec<String>)> {
     Ok((all, warnings))
 }
 
-/// The gallery pages, the diagrams of every program in `diagrams::PROGRAMS` and their
-/// stylesheet; and the glyph sprite module, which lands in the shared [`DATA`] directory.
+/// The gallery pages, the diagrams of every program in `diagrams::PROGRAMS` and of the gallery's
+/// own programs, and their stylesheet; and the glyph sprite module, which lands in the shared [`DATA`] directory.
 fn diagram_outputs(root: &Path) -> Result<(Vec<Output>, String)> {
-    let generated = diagrams::files(root)?;
+    let mut generated = diagrams::files(root)?;
+    let gallery = gallery::files(root)?;
+    generated.data.extend(gallery.data);
+    generated.images.extend(gallery.images);
     let mut outputs = vec![
         Output {
             dir: gallery::DIR.to_owned(),
-            files: gallery::pages(),
+            files: gallery.pages,
             exclusive: true,
         },
         Output {
