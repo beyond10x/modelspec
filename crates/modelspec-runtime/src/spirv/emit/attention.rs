@@ -1394,21 +1394,18 @@ impl Shell {
             // The softmax of each row from its scores: the first invocation of the row finds the
             // maximum, one invocation per key computes `exp(score - max)` in place, the first
             // invocation of the row sums them in ascending key order, one invocation per key
-            // divides each by the sum in place. Under a prefix mask the row's loops read no mask.
+            // divides each by the sum in place. Under a prefix mask only the sum reads no mask.
             let (base, start) = (t.base, t.start);
             let weight = |m: &mut Self, row: Word, _: Word| -> Result<Word, EmitError> {
                 let j = m.sub(row, start)?;
                 let weight_at = m.add(base, j)?;
                 m.load_shared(weight_at)
             };
+            // The maximum reads the mask even under a prefix mask: unchecked, scores -0.0 then
+            // +0.0 gave a maximum of +0.0 on an RTX 3090, where the CPU keeps the first -0.0.
             self.when(serial, |m| {
-                for (when, checked) in [(prefix, false), (some, true)] {
-                    m.when(when, |m| {
-                        let max = m.softmax_max(at, start, end, t.column, checked, &weight)?;
-                        m.store_shared(t.row_stats, max)
-                    })?;
-                }
-                Ok(())
+                let max = m.softmax_max(at, start, end, t.column, true, &weight)?;
+                m.store_shared(t.row_stats, max)
             })?;
             self.barrier()?;
             each_kept(self, &|_, _| Ok(None), &|m, _, _, r, weight_at| {
