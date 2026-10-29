@@ -59,7 +59,11 @@ fn cpu(n: u64, h: u64, x: &[f32], g: &[f32]) -> Vec<f32> {
             name.to_owned(),
             HostTensor::new(vec![n, h], data.to_vec()).expect("a host tensor"),
         );
-        values.push(builder.input(name.to_owned(), ty.clone()).expect("an input"));
+        values.push(
+            builder
+                .input(name.to_owned(), ty.clone())
+                .expect("an input"),
+        );
     }
     let out = builder
         .layer_norm_grad_gamma(values[0], values[1])
@@ -128,7 +132,11 @@ fn run(device: &Device<'_>, n: u64, h: u64, x: &[f32], g: &[f32]) -> (Vec<f32>, 
     ];
     let buffers: Vec<Buffer<'_>> = uploads
         .iter()
-        .map(|v| device.device_local_buffer(bytes_of(v.len())).expect("a buffer"))
+        .map(|v| {
+            device
+                .device_local_buffer(bytes_of(v.len()))
+                .expect("a buffer")
+        })
         .collect();
     let mut staging: Vec<Buffer<'_>> = uploads
         .iter()
@@ -146,7 +154,11 @@ fn run(device: &Device<'_>, n: u64, h: u64, x: &[f32], g: &[f32]) -> (Vec<f32>, 
     }
     recording.barrier(Barrier::TransferToCompute);
     recording
-        .dispatch_kernel(&moments_pipeline, &moments_kernel, &[&buffers[0], &buffers[2]])
+        .dispatch_kernel(
+            &moments_pipeline,
+            &moments_kernel,
+            &[&buffers[0], &buffers[2]],
+        )
         .expect("the moments dispatch is recorded");
     recording.barrier(Barrier::ComputeToCompute);
     recording
@@ -283,7 +295,11 @@ fn adv_lngg_moments_of_four_million_full_significand_rows_are_the_cpu_bits() {
                 "{label}: {differ} of {n} rows' moments differ from the CPU's ({means} means)"
             ));
         }
-        bad.extend(guards_changed(&format!("{label} moments"), &moments, 2 * n as usize));
+        bad.extend(guards_changed(
+            &format!("{label} moments"),
+            &moments,
+            2 * n as usize,
+        ));
         bad.extend(columns_differ(&label, &gradient, &want));
         bad.extend(guards_changed(&label, &gradient, h as usize));
         assert!(bad.is_empty(), "{bad:#?}");
@@ -319,12 +335,20 @@ fn adv_lngg_sixty_four_column_tiles_are_the_cpu_bits_in_three_runs() {
             let label = format!("LayerNormGradGamma [{n}, {h}]");
             let want = cpu(n, h, x, g);
             let (moments, first) = run(device, n, h, x, g);
-            bad.extend(guards_changed(&format!("{label} moments"), &moments, 2 * n as usize));
+            bad.extend(guards_changed(
+                &format!("{label} moments"),
+                &moments,
+                2 * n as usize,
+            ));
             bad.extend(columns_differ(&label, &first, &want));
             bad.extend(guards_changed(&label, &first, h as usize));
             for k in 1..3 {
                 let (_, again) = run(device, n, h, x, g);
-                if again.iter().map(|v| v.to_bits()).ne(first.iter().map(|v| v.to_bits())) {
+                if again
+                    .iter()
+                    .map(|v| v.to_bits())
+                    .ne(first.iter().map(|v| v.to_bits()))
+                {
                     bad.push(format!("{label}: run {k} differs from run 0"));
                 }
             }
@@ -393,7 +417,9 @@ fn adv_lngg_bert_moments_buffers_are_numbered_between_and_never_shared() {
     let mut moments: BTreeMap<u32, (usize, u64)> = BTreeMap::new();
     let mut sorted: BTreeSet<u32> = BTreeSet::new();
     for at in 0..plan.step.len() {
-        let Some(kernel) = kernel_of(at) else { continue };
+        let Some(kernel) = kernel_of(at) else {
+            continue;
+        };
         if kernel.kind != KernelKind::PerRow {
             continue;
         }
@@ -417,7 +443,10 @@ fn adv_lngg_bert_moments_buffers_are_numbered_between_and_never_shared() {
     }
     let mut bad = Vec::new();
     if moments.len() != sites {
-        bad.push(format!("{} moments buffers for {sites} sites", moments.len()));
+        bad.push(format!(
+            "{} moments buffers for {sites} sites",
+            moments.len()
+        ));
     }
     let others: Vec<u32> = (0..plan.buffers.len() as u32)
         .filter(|b| !moments.contains_key(b) && !sorted.contains(b))
@@ -426,23 +455,33 @@ fn adv_lngg_bert_moments_buffers_are_numbered_between_and_never_shared() {
     if let (Some(&last_other), Some(&first_m)) = (others.iter().max(), first_m)
         && last_other > first_m
     {
-        bad.push(format!("buffer {last_other} is numbered after moments buffer {first_m}"));
+        bad.push(format!(
+            "buffer {last_other} is numbered after moments buffer {first_m}"
+        ));
     }
     if let (Some(&last_m), Some(&first_s)) = (last_m, sorted.iter().min())
         && last_m > first_s
     {
-        bad.push(format!("moments buffer {last_m} is numbered after sorted ids {first_s}"));
+        bad.push(format!(
+            "moments buffer {last_m} is numbered after sorted ids {first_s}"
+        ));
     }
     for (&b, &(at, rows)) in &moments {
         if plan.buffers[b as usize] != 8 * rows {
-            bad.push(format!("moments buffer {b} is {} bytes for {rows} rows", plan.buffers[b as usize]));
+            bad.push(format!(
+                "moments buffer {b} is {} bytes for {rows} rows",
+                plan.buffers[b as usize]
+            ));
         }
         for (s, step) in plan.step.iter().enumerate() {
             let writes = step.writes.iter().any(|v| v.buffer == b);
             let reads = step.reads.iter().any(|v| v.buffer == b);
             let allowed_write = s == at || (step.op == PlanOp::Allocate && s + 1 == at);
             if writes && !allowed_write {
-                bad.push(format!("step {s} ({:?}) writes moments buffer {b}", step.op));
+                bad.push(format!(
+                    "step {s} ({:?}) writes moments buffer {b}",
+                    step.op
+                ));
             }
             if reads {
                 let column = kernel_of(s).is_some_and(|k| {
