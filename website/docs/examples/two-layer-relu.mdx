@@ -7,6 +7,9 @@ description: "A two-layer model with a relu between the layers, written for this
 custom_edit_url: null
 ---
 
+import ModelDiagram from '@site/src/components/ModelDiagram';
+import diagram from '@site/data/diagrams/two-layer-relu.json';
+
 Two weights and a `relu` between them, written in the M0 subset: a `let` binding, nested operator calls and two parameters with one canonical path each. [Write a model](../guides/write-a-model.md) builds it step by step.
 
 The output below was recorded by `modelspec-docs` running the `modelspec` command line on the model; `task docs-check` fails when a run prints anything else.
@@ -38,6 +41,8 @@ train FitTwoLayer {
     device = cpu;
 }
 ```
+
+<ModelDiagram data={diagram} view="model" />
 
 ## Runs
 

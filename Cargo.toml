@@ -13,6 +13,7 @@ modelspec-core = { path = "crates/modelspec-core", version = "0.25.0" }
 modelspec-runtime = { path = "crates/modelspec-runtime", version = "0.25.0" }
 modelspec-observatory = { path = "crates/modelspec-observatory", version = "0.25.0" }
 modelspec-cli = { path = "crates/modelspec-cli", version = "0.25.0" }
+modelspec-diagram = { path = "crates/modelspec-diagram", version = "0.25.0" }
 logos = "0.16"
 thiserror = "2.0"
 blake3 = "1"

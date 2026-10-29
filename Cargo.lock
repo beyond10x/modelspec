@@ -1032,6 +1032,7 @@ dependencies = [
  "jsonschema",
  "modelspec-cli",
  "modelspec-core",
+ "modelspec-diagram",
  "modelspec-runtime",
  "serde",
  "serde_json",

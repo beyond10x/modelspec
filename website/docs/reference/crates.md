@@ -27,4 +27,4 @@ Generators and checks the repository's own gate runs. Nothing outside the reposi
 
 | Package | Directory | In Rust | Depends on | What it is |
 |---|---|---|---|---|
-| `modelspec-docs` | [`crates/modelspec-docs`](https://github.com/beyond10x/modelspec/tree/main/crates/modelspec-docs) | binary `modelspec-docs` | `modelspec-cli`, `modelspec-core`, `modelspec-runtime` | Generates and checks the derived pages of the ModelSpec documentation site. |
+| `modelspec-docs` | [`crates/modelspec-docs`](https://github.com/beyond10x/modelspec/tree/main/crates/modelspec-docs) | binary `modelspec-docs` | `modelspec-cli`, `modelspec-core`, `modelspec-diagram`, `modelspec-runtime` | Generates and checks the derived pages of the ModelSpec documentation site. |

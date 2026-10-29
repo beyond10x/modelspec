@@ -14,7 +14,9 @@ mod benchmarks;
 mod cli;
 mod crates;
 mod diagnostics;
+mod diagrams;
 mod example;
+mod gallery;
 mod grammar;
 mod operators;
 mod status;
@@ -197,7 +199,7 @@ type Pages = BTreeMap<String, String>;
 /// The generated files of one directory.
 struct Output {
     /// Relative to the repository root.
-    dir: &'static str,
+    dir: String,
     files: Pages,
     /// Whether the directory holds generated files only: a file nobody generates is drift, and
     /// `generate` empties the directory before writing.
@@ -215,41 +217,71 @@ fn outputs(root: &Path) -> Result<(Vec<Output>, Vec<String>)> {
         ("operators.md".to_owned(), operators::page(root)?),
         ("crates.md".to_owned(), crates::page(root)?),
     ]);
+    let (mut diagram_outputs, glyphs) = diagram_outputs(root)?;
     let data = Pages::from([
         (status::FILE.to_owned(), status),
         (example::TERMINAL.to_owned(), examples.terminal),
         (grammar::FILE.to_owned(), grammar::document()?),
+        (diagrams::GLYPHS.to_owned(), glyphs),
     ]);
-    Ok((
-        vec![
-            Output {
-                dir: REFERENCE,
-                files: reference,
-                exclusive: true,
-            },
-            Output {
-                dir: EXAMPLES,
-                files: examples.pages,
-                exclusive: true,
-            },
-            Output {
-                dir: DATA,
-                files: data,
-                exclusive: false,
-            },
-            Output {
-                dir: DOCS,
-                files: Pages::from([(benchmarks::PAGE.to_owned(), benchmarks_page)]),
-                exclusive: false,
-            },
-            Output {
-                dir: benchmarks::IMAGES,
-                files: charts,
-                exclusive: true,
-            },
-        ],
-        warnings,
-    ))
+    let mut all = vec![
+        Output {
+            dir: REFERENCE.to_owned(),
+            files: reference,
+            exclusive: true,
+        },
+        Output {
+            dir: EXAMPLES.to_owned(),
+            files: examples.pages,
+            exclusive: true,
+        },
+        Output {
+            dir: DATA.to_owned(),
+            files: data,
+            exclusive: false,
+        },
+        Output {
+            dir: DOCS.to_owned(),
+            files: Pages::from([(benchmarks::PAGE.to_owned(), benchmarks_page)]),
+            exclusive: false,
+        },
+        Output {
+            dir: benchmarks::IMAGES.to_owned(),
+            files: charts,
+            exclusive: true,
+        },
+    ];
+    all.append(&mut diagram_outputs);
+    Ok((all, warnings))
+}
+
+/// The gallery pages, the diagrams of every program in `diagrams::PROGRAMS` and their
+/// stylesheet; and the glyph sprite module, which lands in the shared [`DATA`] directory.
+fn diagram_outputs(root: &Path) -> Result<(Vec<Output>, String)> {
+    let generated = diagrams::files(root)?;
+    let mut outputs = vec![
+        Output {
+            dir: gallery::DIR.to_owned(),
+            files: gallery::pages(),
+            exclusive: true,
+        },
+        Output {
+            dir: diagrams::DATA.to_owned(),
+            files: generated.data,
+            exclusive: true,
+        },
+        Output {
+            dir: diagrams::CSS_DIR.to_owned(),
+            files: Pages::from([(diagrams::CSS.to_owned(), generated.css)]),
+            exclusive: false,
+        },
+    ];
+    outputs.extend(generated.images.into_iter().map(|level| Output {
+        dir: level.dir,
+        files: level.files,
+        exclusive: true,
+    }));
+    Ok((outputs, generated.glyphs))
 }
 
 /// Every difference between the expected files and the files in `dir`. Subdirectories are not
@@ -283,7 +315,7 @@ fn drift(expected: &Pages, dir: &Path, exclusive: bool) -> Result<Vec<String>> {
 }
 
 fn write(root: &Path, output: &Output) -> Result<()> {
-    let dir = root.join(output.dir);
+    let dir = root.join(&output.dir);
     if output.exclusive && dir.exists() {
         fs::remove_dir_all(&dir).map_err(io(dir.display()))?;
     }
@@ -300,7 +332,7 @@ fn generate(root: &Path, check: bool) -> Result<()> {
     let (outputs, warnings) = outputs(root)?;
     for output in &outputs {
         if check {
-            let problems = drift(&output.files, &root.join(output.dir), output.exclusive)?;
+            let problems = drift(&output.files, &root.join(&output.dir), output.exclusive)?;
             if !problems.is_empty() {
                 return Err(format!(
                     "{} has drifted ({}); run `task docs-generate`",
@@ -432,7 +464,7 @@ mod tests {
         fs::create_dir_all(root.join("website/data")).unwrap();
         fs::write(root.join("website/data/keep.json"), "{}").unwrap();
         let output = Output {
-            dir: "website/data",
+            dir: "website/data".to_owned(),
             files: Pages::from([("status.json".to_owned(), "{}\n".to_owned())]),
             exclusive: false,
         };
@@ -443,6 +475,52 @@ mod tests {
             "{}\n"
         );
         let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Acceptance 1, `gallery.atoms.drift`: the committed diagram and gallery files are what the
+    /// code generates now, and the check that `task docs-check` runs fails when one byte of
+    /// `FitTwoLayer.svg` or of `atoms.mdx` changes.
+    #[test]
+    fn gallery_atoms_drift() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let (outputs, glyphs) = diagram_outputs(&root).unwrap();
+        for output in &outputs {
+            let problems = drift(&output.files, &root.join(&output.dir), output.exclusive).unwrap();
+            assert!(problems.is_empty(), "{}: {problems:?}", output.dir);
+        }
+        assert_eq!(
+            fs::read_to_string(root.join(DATA).join(diagrams::GLYPHS)).unwrap(),
+            glyphs
+        );
+        for (dir, name) in [
+            (
+                "website/static/img/diagrams/two-layer-relu/model",
+                "FitTwoLayer.svg",
+            ),
+            (gallery::DIR, gallery::atoms::PAGE),
+        ] {
+            let output = outputs.iter().find(|o| o.dir == dir).unwrap();
+            let copy = scratch(&format!("drift-{name}"));
+            for (file, text) in &output.files {
+                fs::write(copy.join(file), text).unwrap();
+            }
+            assert!(
+                drift(&output.files, &copy, output.exclusive)
+                    .unwrap()
+                    .is_empty()
+            );
+            let mut bytes = fs::read(copy.join(name)).unwrap();
+            let middle = (bytes.len() / 2..)
+                .find(|&i| bytes[i].is_ascii_alphanumeric())
+                .unwrap();
+            bytes[middle] = if bytes[middle] == b'x' { b'y' } else { b'x' };
+            fs::write(copy.join(name), bytes).unwrap();
+            assert_eq!(
+                drift(&output.files, &copy, output.exclusive).unwrap(),
+                [format!("stale or edited {name}")]
+            );
+            let _ = fs::remove_dir_all(&copy);
+        }
     }
 
     #[test]
