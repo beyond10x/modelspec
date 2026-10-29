@@ -29,7 +29,7 @@ site, keep the CPU-reference tests green, time it, publish the row on the Benchm
 ## Milestones
 
 The milestones are those of [DESIGN.md § 1](https://github.com/beyond10x/modelspec/blob/main/DESIGN.md#1-scope-and-milestones).
-M0 is built and released as 0.1.0. M1 is in progress; the latest release is 0.23.0. Some M2 items
+M0 is built and released as 0.1.0. M1 is in progress; the latest release is 0.24.0. Some M2 items
 were done early, in M1. The current milestone is a small BERT, pre-trained from scratch, which is
 one of the two proof models of M3: its operators run on the CPU reference interpreter, the row-wise
 ones also have Vulkan kernels since 0.14.0, and `attention`, `cross_entropy` and AdamW have theirs
@@ -72,6 +72,7 @@ reference interpreter, and `modelspec check`, `ir` and `train --backend cpu`.
 | 0.21.0 | no change to the Vulkan backend; `examples/transformer_block.mspec`, the two encoder layers of BERT-tiny, trains through Vulkan within the run tolerance of the CPU run, and the Benchmarks page measures it against PyTorch CUDA eager and `torch.compile` at batches of 8, 32 and 128 sequences |
 | 0.22.0 | Vulkan kernels for `sigreg`, `SigregColumns` and `SigregColumnsGrad`, hold its losses and parameters to the CPU run within the run tolerance; `train --backend vulkan --data` binds every named `f32` and `i32` input and target of a dense directory, `--eval` runs on Vulkan too, and `infer --backend vulkan --data --function --out` runs any model function over every block |
 | 0.23.0 | a BERT-tiny step 14.6 times faster than on 2026-10-28 with the same bits (15,245.2 against 222,576.0 µs per step on the RTX 3090, still 1.95× PyTorch eager and 3.61× `torch.compile`): held-out evaluation reduced on the device with `HeldOutRows` and `HeldOutSum`, one host wait per evaluated step; per-row and per-element `cross_entropy`, `cross_entropy` gradient and `EmbeddingGrad` kernels; attention kernels that share their softmax statistics and run one workgroup per sequence, head and tile; the MLM head and loss on the masked rows only (`--masked-rows`); one pipeline per SPIR-V module, created in parallel through a `VkPipelineCache` on disk; `train --profile` on a stepwise run |
+| 0.24.0 | the profiled steady BERT-tiny step at 0.55 of its time on the RTX 3090 (8,098.4 against 14,702.7 µs per step under `train --profile`, 5 alternating pairs; no new run against PyTorch): `EmbeddingGrad` over the batch's ids sorted once; coalesced column sums for `SumRows` and `LayerNormGradGamma`; `LayerNormGradGamma` row moments once per row; up to 8 steps per command buffer, one host wait per segment; the same bits, except that `rstd` on Vulkan is now the CPU's bits; a Vulkan `mse` loss that overflows names the step the CPU names |
 
 The 9 acceptance boxes of DESIGN.md § 9 are not ticked.
 

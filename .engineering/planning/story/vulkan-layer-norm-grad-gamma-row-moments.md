@@ -2,7 +2,7 @@
 format: aep.planning-md/3
 id: story:vulkan-layer-norm-grad-gamma-row-moments
 kind: story
-status: active
+status: implemented
 title: LayerNormGradGamma reads each row moments once
 summary: A per-row moments dispatch feeds the column kernel, so no workgroup recomputes every row mean and rstd; bits unchanged.
 relations:
@@ -17,10 +17,11 @@ scope:
   path: crates/modelspec-runtime/src/spirv/emit/rowwise.rs
 - confidence: inferred
   path: crates/modelspec-runtime/src/vulkan/stepwise.rs
-revision: 7
+revision: 8
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-29T06:02:11Z", actor: "human:timo", revision: 6}
 - {from: "proposed", to: "active", at: "2026-10-29T06:02:12Z", actor: "human:timo", revision: 7}
+- {from: "active", to: "implemented", at: "2026-10-29T10:15:13Z", actor: "human:timo", revision: 8, decided_on: {"recorded":{"test_result":1}}}
 ---
 # LayerNormGradGamma reads each row moments once
 
