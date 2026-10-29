@@ -1558,12 +1558,26 @@ pub const ATTENTION_WORKGROUP: u32 = 128;
 /// The most rows of one sequence's head an attention workgroup computes.
 pub const MAX_ATTENTION_TILE: u64 = 32;
 
+/// The values of the rows of one chunk an attention workgroup stages in workgroup memory for
+/// its dot products, before the padding of [`attention_stage_values`]: the
+/// `ATTENTION_WORKGROUP / tile` rows of a chunk times at most `8 · tile` columns of a head
+/// (story:vulkan-attention-tiled-decider-shapes).
+pub const ATTENTION_STAGE_VALUES: u64 = 1024;
+
+/// The `f32` values of workgroup memory one staged operand of an attention workgroup of `tile`
+/// rows takes: `8 · tile` columns, at most, of `ATTENTION_WORKGROUP / tile` rows, each column
+/// padded by one value against bank conflicts.
+pub fn attention_stage_values(tile: u64) -> u64 {
+    ATTENTION_STAGE_VALUES + ATTENTION_STAGE_VALUES * tile / u64::from(ATTENTION_WORKGROUP)
+}
+
 /// The `f32` values of workgroup memory an attention workgroup of `tile` rows over `keys` keys
-/// may stage: two `[tile, keys]` arrays of scores and three statistics per row, or one array
-/// and three statistics per key, each with one value per key to spare.
+/// may stage: two `[tile, keys]` arrays of scores, three statistics per row, the two values of
+/// a prefix mask and one staged operand, or one array and two staged operands.
 pub fn attention_workgroup_values(tile: u64, keys: u64) -> u64 {
-    let rows = 2 * tile * keys + 3 * tile + keys;
-    let columns = tile * keys + 4 * keys;
+    let stage = attention_stage_values(tile);
+    let rows = 2 * tile * keys + 3 * tile + 2 + stage;
+    let columns = tile * keys + 2 * stage;
     rows.max(columns)
 }
 
