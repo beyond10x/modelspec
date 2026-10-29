@@ -57,7 +57,8 @@ use super::{EmitError, Kernel, KernelKind, Operand, Shell, Word, operands_error,
 use modelspec_core::ir::kernel::SOFTMAX_STATS_PER_QUERY;
 use modelspec_core::ir::tensor::DType;
 use modelspec_core::schedule::{
-    ATTENTION_WORKGROUP, MAX_ATTENTION_KEYS, attention_tile, attention_workgroups,
+    ATTENTION_STAGE_VALUES, ATTENTION_WORKGROUP, MAX_ATTENTION_KEYS, attention_tile,
+    attention_workgroups,
 };
 use rspirv::spirv::GlslStd450Op;
 
@@ -100,6 +101,9 @@ pub(super) struct Attend {
     tiles: u32,
     lanes: u32,
     groups: u32,
+    /// The columns of a head a workgroup stages per row of a chunk for its dot products
+    /// ([`Shell::staged_dots`]): `d`, at most `8 · tile`.
+    stage_columns: u32,
 }
 
 /// The gradient seed of `CrossEntropyGrad`: a constant of the module or the rank-0 binding 3.
@@ -251,6 +255,9 @@ impl AttentionLoss {
                     tiles: u(s.div_ceil(tile)),
                     lanes: ATTENTION_WORKGROUP / u(tile),
                     groups,
+                    stage_columns: u(
+                        d.min(ATTENTION_STAGE_VALUES * tile / u64::from(ATTENTION_WORKGROUP))
+                    ),
                 }),
             )
         } else {
@@ -401,16 +408,46 @@ impl Attend {
     /// them, for `AttentionGradQ` after the probability gradients; within
     /// `modelspec_core::schedule::attention_workgroup_values`.
     fn staged(self) -> u32 {
+        let operands = match self.op {
+            AttentionOp::GradK => 2,
+            _ => 1,
+        };
+        self.stage_base() + operands * self.stage()
+    }
+
+    /// Where a workgroup's staged operands start in its workgroup memory: after the prefix
+    /// length of `Attention` and `AttentionGradQ`, after the weights of `AttentionGradK` and
+    /// `AttentionGradV`.
+    fn stage_base(self) -> u32 {
         match self.op {
-            AttentionOp::Forward | AttentionOp::GradQ => self.all_kept() + 1,
+            AttentionOp::Forward | AttentionOp::GradQ => self.prefix_length() + 1,
             AttentionOp::GradK | AttentionOp::GradV => self.weights(),
         }
     }
 
-    /// Where an `Attention` or `AttentionGradQ` workgroup keeps whether the mask keeps every
-    /// key of its sequence, `1.0` if it does, else `0.0`: after its rows' statistics.
-    fn all_kept(self) -> u32 {
+    /// The stride of a staged column: one value per row of a chunk and one against bank
+    /// conflicts.
+    fn stage_stride(self) -> u32 {
+        self.lanes + 1
+    }
+
+    /// The `f32` values of one staged operand: [`Attend::stage_columns`] columns of
+    /// [`Attend::stage_stride`], within `modelspec_core::schedule::attention_stage_values`.
+    fn stage(self) -> u32 {
+        self.stage_columns * self.stage_stride()
+    }
+
+    /// Where an `Attention` or `AttentionGradQ` workgroup keeps whether the mask keeps a prefix
+    /// of the keys of its sequence, keys `0..L` and no other, `1.0` if it does, else `0.0`:
+    /// after its rows' statistics.
+    fn prefix_flag(self) -> u32 {
         self.stats_base() + SOFTMAX_STATS * self.tile
+    }
+
+    /// Where an `Attention` or `AttentionGradQ` workgroup keeps the `L` of a prefix mask, as an
+    /// `f32`: after [`Attend::prefix_flag`].
+    fn prefix_length(self) -> u32 {
+        self.prefix_flag() + 1
     }
 
     /// The output columns an invocation owns: `d / lanes`, rounded up.
@@ -482,8 +519,24 @@ struct Tile {
 /// keeps it.
 type OfRow<'a> = &'a dyn Fn(&mut Shell, Word) -> Result<Word, EmitError>;
 
+/// The rows of a sequence an output sum takes ([`Shell::row_sums`]).
+#[derive(Clone, Copy)]
+enum Terms<'a> {
+    /// Every row, without a mask check.
+    All,
+    /// The first rows, as many as the word holds, without a mask check: the keys of a mask that
+    /// keeps a prefix of them.
+    First(Word),
+    /// Every row the function keeps.
+    Kept(OfRow<'a>),
+}
+
 /// The head of a key an invocation holds, if it holds one ([`Shell::held_head`]).
 type HeldOf<'a> = &'a dyn Fn(&mut Shell, Word) -> Result<Option<Vec<Word>>, EmitError>;
+
+/// The end of [`Shell::staged_dots`] for one row: the shell, the row, whether it is below the
+/// count and its sums.
+type Finish<'a> = &'a dyn Fn(&mut Shell, Word, Word, &[Word]) -> Result<(), EmitError>;
 
 /// The work of one key and one row of a query tile: the key's row, its held head, the tile's
 /// row and the place of their weight.
@@ -666,20 +719,27 @@ impl Shell {
         Ok(self.b.f_unord_not_equal(self.bool_ty, None, entry, zero)?)
     }
 
-    /// `body(j, k_at)` for each unmasked key row `j` of the sequence from row `start`, in
-    /// ascending order, `k_at` its head's place. The key counter is the shell's second `u32`
-    /// variable.
+    /// `body(j, k_at)` for each unmasked key row `j` of the first `keys` rows of the sequence from
+    /// row `start`, in ascending order, `k_at` its head's place; every one of them without
+    /// `checked`, where the caller knows the mask keeps them. The key counter is the shell's
+    /// second `u32` variable.
     fn each_key(
         &mut self,
         at: &Attend,
         start: Word,
+        keys: Word,
         column: Word,
+        checked: bool,
         mut body: impl FnMut(&mut Self, Word, Word) -> Result<(), EmitError>,
     ) -> Result<(), EmitError> {
         let var = self.u32_vars[1];
-        let (one, s) = (self.uint(1), self.uint(at.s));
-        let end = self.add(start, s)?;
+        let one = self.uint(1);
+        let end = self.add(start, keys)?;
         self.counted(var, start, end, one, |m, j| {
+            if !checked {
+                let k_at = head_at(m, at, j, column)?;
+                return body(m, j, k_at);
+            }
             let keep = m.unmasked(j)?;
             m.when(keep, |m| {
                 let k_at = head_at(m, at, j, column)?;
@@ -698,25 +758,51 @@ impl Shell {
         start: Word,
         column: Word,
     ) -> Result<(Word, Word), EmitError> {
-        self.softmax_of(at, start, column, &|m, _, k_at| m.score(at, q_at, k_at))
+        let keys = self.uint(at.s);
+        self.softmax_of(at, start, keys, column, &|m, _, k_at| {
+            m.score(at, q_at, k_at)
+        })
     }
 
     /// The softmax of [`Shell::attention_softmax`] over the scores `score(j, k_at)` of the
-    /// unmasked key rows `j` of the sequence from row `start`, `k_at` their head's place.
+    /// unmasked key rows `j` of the first `keys` rows of the sequence from row `start`, `k_at`
+    /// their head's place: [`Shell::softmax_max`], then [`Shell::exp_sum`] of `exp(score - max)`.
     fn softmax_of(
         &mut self,
         at: &Attend,
         start: Word,
+        keys: Word,
         column: Word,
         score: &dyn Fn(&mut Self, Word, Word) -> Result<Word, EmitError>,
     ) -> Result<(Word, Word), EmitError> {
+        let max = self.softmax_max(at, start, keys, column, true, score)?;
+        let total = self.exp_sum(at, start, keys, column, true, &|m, j, k_at| {
+            let x = score(m, j, k_at)?;
+            let d = m.f_sub(x, max)?;
+            m.exp(d)
+        })?;
+        Ok((max, total))
+    }
+
+    /// The softmax maximum of the scores `score(j, k_at)` of the key rows of
+    /// [`Shell::each_key`]: the first one, replaced by each later greater one; `0.0` without
+    /// one.
+    fn softmax_max(
+        &mut self,
+        at: &Attend,
+        start: Word,
+        keys: Word,
+        column: Word,
+        checked: bool,
+        score: &dyn Fn(&mut Self, Word, Word) -> Result<Word, EmitError>,
+    ) -> Result<Word, EmitError> {
         let flag = self.extra_u32_vars[1];
-        let (max_var, total_var) = (self.matmul_vars[0], self.matmul_vars[1]);
+        let max_var = self.matmul_vars[0];
         let (zero, one) = (self.uint(0), self.uint(1));
         let f_zero = self.float(0.0);
         self.b.store(flag, zero, None, [])?;
         self.b.store(max_var, f_zero, None, [])?;
-        self.each_key(at, start, column, |m, j, k_at| {
+        self.each_key(at, start, keys, column, checked, |m, j, k_at| {
             let x = score(m, j, k_at)?;
             let max = m.b.load(m.f32_ty, None, max_var, None, [])?;
             let kept = m.greater_of(x, max)?;
@@ -727,20 +813,31 @@ impl Shell {
             m.b.store(flag, one, None, [])?;
             Ok(())
         })?;
-        let max = self.b.load(self.f32_ty, None, max_var, None, [])?;
+        Ok(self.b.load(self.f32_ty, None, max_var, None, [])?)
+    }
+
+    /// The softmax sum of the terms `term(j, k_at)` of the key rows of [`Shell::each_key`], each
+    /// `exp(score - max)`: from `-0.0`, each added in ascending key order.
+    fn exp_sum(
+        &mut self,
+        at: &Attend,
+        start: Word,
+        keys: Word,
+        column: Word,
+        checked: bool,
+        term: &dyn Fn(&mut Self, Word, Word) -> Result<Word, EmitError>,
+    ) -> Result<Word, EmitError> {
+        let total_var = self.matmul_vars[1];
         let start_sum = self.float(-0.0);
         self.b.store(total_var, start_sum, None, [])?;
-        self.each_key(at, start, column, |m, j, k_at| {
-            let x = score(m, j, k_at)?;
-            let d = m.f_sub(x, max)?;
-            let e = m.exp(d)?;
+        self.each_key(at, start, keys, column, checked, |m, j, k_at| {
+            let e = term(m, j, k_at)?;
             let total = m.b.load(m.f32_ty, None, total_var, None, [])?;
             let sum = m.f_add(total, e)?;
             m.b.store(total_var, sum, None, [])?;
             Ok(())
         })?;
-        let total = self.b.load(self.f32_ty, None, total_var, None, [])?;
-        Ok((max, total))
+        Ok(self.b.load(self.f32_ty, None, total_var, None, [])?)
     }
 
     /// The probability of the key head at `k_at` for the query head at `q_at`:
@@ -776,7 +873,8 @@ impl Shell {
         let acc = self.matmul_vars[2];
         let start_sum = self.float(-0.0);
         self.b.store(acc, start_sum, None, [])?;
-        self.each_key(at, start, column, |m, _, k_at| {
+        let keys = self.uint(at.s);
+        self.each_key(at, start, keys, column, true, |m, _, k_at| {
             let p = m.probability(at, q_at, k_at, softmax)?;
             let dp = m.probability_grad(at, q_at, k_at)?;
             let sum = m.b.load(m.f32_ty, None, acc, None, [])?;
@@ -789,11 +887,12 @@ impl Shell {
 
     /// The sums of products `weight(i) * x[i_at + c]` for each owned column `c` of `columns`
     /// ([`Shell::owned_columns`]), in ascending order of the rows `i` of the sequence from row
-    /// `start` that `kept(i)` keeps, every row without `kept`, `i_at` their head's place at
-    /// `column`: each starts at `-0.0` and fuses each product into it, as the CPU's sums of
-    /// `P · V`, `dS · K`, `dS · Q` and `P · G`. A row's weight is loaded once for all the
-    /// columns. Without `kept` the rows are taken [`Attend::sum_rows`] at a time, every value
-    /// loaded before the first product is fused. Uses the term counter and the output sums.
+    /// `start` that `terms` names ([`Terms`]), `i_at` their head's place at `column`: each starts
+    /// at `-0.0` and fuses each product into it, as the CPU's sums of `P · V`, `dS · K`, `dS · Q`
+    /// and `P · G`. A row's weight is loaded once for all the columns. Without a mask check the
+    /// rows are taken [`Attend::sum_rows`] at a time, every value loaded before the first product
+    /// is fused, and the rows past the last whole group one at a time. Uses the term counter and
+    /// the output sums.
     #[allow(clippy::too_many_arguments)]
     fn row_sums(
         &mut self,
@@ -803,7 +902,7 @@ impl Shell {
         x: usize,
         columns: &[(Word, Option<Word>)],
         weight: OfRow<'_>,
-        kept: Option<OfRow<'_>>,
+        terms: Terms<'_>,
     ) -> Result<Vec<Word>, EmitError> {
         let var = self.extra_u32_vars[4];
         let sums = self.matmul_vars[OUTPUT_SUMS..OUTPUT_SUMS + columns.len()].to_vec();
@@ -835,15 +934,35 @@ impl Shell {
             Ok(())
         };
         let (zero, one, s) = (self.uint(0), self.uint(1), self.uint(at.s));
-        match kept {
-            Some(kept) => self.counted(var, zero, s, one, |m, i| {
+        match terms {
+            Terms::Kept(kept) => self.counted(var, zero, s, one, |m, i| {
                 let keep = kept(m, i)?;
                 m.when(keep, |m| {
                     let term = load(m, i)?;
                     fuse(m, &[term])
                 })
             })?,
-            None => {
+            Terms::First(count) => {
+                let rows = at.sum_rows();
+                let step = self.uint(rows);
+                let left = self.rem(count, step)?;
+                let whole = self.sub(count, left)?;
+                self.counted(var, zero, whole, step, |m, first| {
+                    let terms = (0..rows)
+                        .map(|u| {
+                            let offset = m.uint(u);
+                            let i = m.add(first, offset)?;
+                            load(m, i)
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    fuse(m, &terms)
+                })?;
+                self.counted(var, whole, count, one, |m, i| {
+                    let term = load(m, i)?;
+                    fuse(m, &[term])
+                })?;
+            }
+            Terms::All => {
                 let rows = at.sum_rows();
                 let whole = at.s / rows * rows;
                 if whole > 0 {
@@ -899,6 +1018,121 @@ impl Shell {
             }
         }
         Ok(())
+    }
+
+    /// The dot products of the invocation's own heads with the rows of its sequence below
+    /// `count` (story:vulkan-attention-tiled-decider-shapes). The rows are taken in chunks of
+    /// [`Attend::lanes`], on the chunk counter `var`, and each `(own, binding)` of `dots` is a dot
+    /// product of the own head `own` with the head of row `chunk + lane` of `binding`. The
+    /// workgroup stages the chunk's heads of each binding in workgroup memory,
+    /// [`Attend::stage_columns`] columns at a time, column `c` of row `i` at `c · (lanes + 1) +
+    /// i`, every invocation reading consecutive columns of a row from the binding; between
+    /// barriers each invocation then fuses the products of the staged columns into its sums.
+    /// Each sum starts at `-0.0` and fuses the products of the head's columns in ascending
+    /// order, `own` first in each product when `own_first`, else second, as
+    /// [`Shell::dot`] computes it. Then `finish(i, valid, sums)` runs on every invocation, `i`
+    /// the row of the sequence its sums belong to and `valid` whether `i` is below `count`.
+    #[allow(clippy::too_many_arguments)]
+    fn staged_dots(
+        &mut self,
+        at: &Attend,
+        t: &Tile,
+        local: Word,
+        var: Word,
+        count: Word,
+        dots: &[(Head<'_>, usize)],
+        own_first: bool,
+        finish: Finish<'_>,
+    ) -> Result<(), EmitError> {
+        let (zero, lanes) = (self.uint(0), self.uint(at.lanes));
+        let stride = at.stage_stride();
+        self.counted(var, zero, count, lanes, |m, chunk| {
+            let start_sum = m.float(-0.0);
+            let mut sums = vec![start_sum; dots.len()];
+            let mut from = 0;
+            while from < at.d {
+                let width = at.stage_columns.min(at.d - from);
+                let elements = at.lanes * width;
+                m.barrier()?;
+                for u in 0..elements.div_ceil(ATTENTION_WORKGROUP) {
+                    let offset = m.uint(u * ATTENTION_WORKGROUP);
+                    let e = m.add(local, offset)?;
+                    let columns = m.uint(width);
+                    let i = m.div(e, columns)?;
+                    let c = m.rem(e, columns)?;
+                    let index = m.add(chunk, i)?;
+                    let below = m.less(index, count)?;
+                    let inside = if (u + 1) * ATTENTION_WORKGROUP <= elements {
+                        None
+                    } else {
+                        let n = m.uint(elements);
+                        Some(m.less(e, n)?)
+                    };
+                    let valid = match inside {
+                        Some(inside) => m.and(below, inside)?,
+                        None => below,
+                    };
+                    let safe = m.b.select(m.u32_ty, None, valid, index, zero)?;
+                    let row = m.add(t.start, safe)?;
+                    let row_at = head_at(m, at, row, t.column)?;
+                    let first = m.uint(from);
+                    let row_at = m.add(row_at, first)?;
+                    let place = m.add(row_at, c)?;
+                    let step = m.uint(stride);
+                    let slot = m.mul(c, step)?;
+                    let slot = m.add(slot, i)?;
+                    let stores = dots
+                        .iter()
+                        .enumerate()
+                        .map(|(k, &(_, binding))| {
+                            let value = m.read(binding, place)?;
+                            let f_zero = m.float(0.0);
+                            let value = m.b.select(m.f32_ty, None, valid, value, f_zero)?;
+                            let base = m.uint(at.stage_base() + k as u32 * at.stage());
+                            Ok((m.add(base, slot)?, value))
+                        })
+                        .collect::<Result<Vec<_>, EmitError>>()?;
+                    let store = |m: &mut Self| -> Result<(), EmitError> {
+                        for &(slot, value) in &stores {
+                            m.store_shared(slot, value)?;
+                        }
+                        Ok(())
+                    };
+                    match inside {
+                        Some(inside) => m.when(inside, store)?,
+                        None => store(m)?,
+                    }
+                }
+                m.barrier()?;
+                for c in 0..width {
+                    for (k, &(own, _)) in dots.iter().enumerate() {
+                        let base = at.stage_base() + k as u32 * at.stage() + c * stride;
+                        let base = m.uint(base);
+                        let slot = m.add(base, t.lane)?;
+                        let staged = m.load_shared(slot)?;
+                        let column = from + c;
+                        let mine = match own {
+                            Head::Values(values) => values[column as usize],
+                            Head::Global(binding, own_at) => {
+                                let offset = m.uint(column);
+                                let place = m.add(own_at, offset)?;
+                                m.read(binding, place)?
+                            }
+                        };
+                        let (x, y) = if own_first {
+                            (mine, staged)
+                        } else {
+                            (staged, mine)
+                        };
+                        sums[k] = m.f_fma(x, y, sums[k])?;
+                    }
+                }
+                from += width;
+            }
+            let index = m.add(chunk, t.lane)?;
+            let valid = m.less(index, count)?;
+            finish(m, index, valid, &sums)
+        })
     }
 
     /// The columns of its row's output head the invocation at `lane` owns: `lane + u · lanes`
@@ -1023,11 +1257,57 @@ impl Shell {
         let first_lane = self.equal(t.lane, zero)?;
         let serial = self.and(t.active, first_lane)?;
         let (keys, rows) = (self.extra_u32_vars[2], self.extra_u32_vars[3]);
+        // Whether the mask keeps a prefix of the sequence's keys, keys `0..L` and no other, and
+        // that `L`: the first invocation sets the flag and `L = S`, then the invocation of each
+        // key clears the flag where a kept key follows a masked one and writes `L = j` where
+        // key `j` is masked and is the first key or follows a kept one. Under a prefix mask at
+        // most one key writes `L`; under another the flag is cleared and `L` is not read.
+        let (flag_at, length_at) = (self.uint(at.prefix_flag()), self.uint(at.prefix_length()));
+        let first = self.equal(local, zero)?;
+        self.when(first, |m| {
+            let set = m.float(1.0);
+            m.store_shared(flag_at, set)?;
+            let all = m.float(at.s as f32);
+            m.store_shared(length_at, all)
+        })?;
+        self.barrier()?;
+        self.counted(keys, local, s, size, |m, j| {
+            let row = m.add(t.start, j)?;
+            let keep = m.unmasked(row)?;
+            let opens = m.equal(j, zero)?;
+            let before = m.sub(row, one)?;
+            let before = m.b.select(m.u32_ty, None, opens, row, before)?;
+            let kept_before = m.unmasked(before)?;
+            let masked_before = m.b.logical_not(m.bool_ty, None, kept_before)?;
+            let follows_masked = m.b.logical_and(m.bool_ty, None, masked_before, keep)?;
+            let late = m.b.logical_not(m.bool_ty, None, opens)?;
+            let breaks = m.and(follows_masked, late)?;
+            m.when(breaks, |m| {
+                let clear = m.float(0.0);
+                m.store_shared(flag_at, clear)
+            })?;
+            let masked = m.b.logical_not(m.bool_ty, None, keep)?;
+            let edge = m.b.logical_or(m.bool_ty, None, opens, kept_before)?;
+            let ends = m.and(masked, edge)?;
+            m.when(ends, |m| {
+                let length = m.b.convert_u_to_f(m.f32_ty, None, j)?;
+                m.store_shared(length_at, length)
+            })
+        })?;
+        self.barrier()?;
+        let flag = self.load_shared(flag_at)?;
+        let set = self.float(1.0);
+        let prefix = self.b.f_ord_equal(self.bool_ty, None, flag, set)?;
+        let some = self.b.logical_not(self.bool_ty, None, prefix)?;
+        let length = self.load_shared(length_at)?;
+        let length = self.b.convert_f_to_u(self.u32_ty, None, length)?;
+        // The keys every loop runs over: `0..L` under a prefix mask, else every key.
+        let end = self.b.select(self.u32_ty, None, prefix, length, s)?;
         // `body(j, key row, weight place of row r)` for each row `r` of the tile and each key
         // `j` the mask keeps, one invocation per key, `head(j)` computed once per key.
         let each_kept =
             |m: &mut Self, head: HeldOf<'_>, body: KeyRow<'_>| -> Result<(), EmitError> {
-                m.counted(keys, local, s, size, |m, j| {
+                m.counted(keys, local, end, size, |m, j| {
                     let row = m.add(t.start, j)?;
                     let keep = m.unmasked(row)?;
                     m.when(keep, |m| {
@@ -1040,65 +1320,46 @@ impl Shell {
                     })
                 })
             };
-        // Whether the mask keeps every key of the sequence: set by the first invocation, then
-        // cleared by the invocation of each masked key.
-        let all_kept = self.uint(at.all_kept());
-        let first = self.equal(local, zero)?;
-        self.when(first, |m| {
-            let set = m.float(1.0);
-            m.store_shared(all_kept, set)
-        })?;
-        self.barrier()?;
-        self.counted(keys, local, s, size, |m, j| {
-            let row = m.add(t.start, j)?;
-            let keep = m.unmasked(row)?;
-            let masked = m.b.logical_not(m.bool_ty, None, keep)?;
-            m.when(masked, |m| {
-                let clear = m.float(0.0);
-                m.store_shared(all_kept, clear)
+        // The scores of the invocation's row with each key below `end` the mask keeps, the
+        // query head held and the key heads staged, a chunk of keys at a time.
+        let own = self.b.select(self.u32_ty, None, t.active, t.own, t.first)?;
+        let own_at = head_at(self, at, own, t.column)?;
+        let (start, base, active) = (t.start, t.base, t.active);
+        // `body(j, sums)` where the invocation's row is one of the tile's and key `j` is below
+        // `end` and kept.
+        let kept_key = |m: &mut Self,
+                        j: Word,
+                        valid: Word,
+                        body: &dyn Fn(&mut Self, Word) -> Result<(), EmitError>|
+         -> Result<(), EmitError> {
+            let zero = m.uint(0);
+            let safe = m.b.select(m.u32_ty, None, valid, j, zero)?;
+            let row = m.add(start, safe)?;
+            let kept = m.unmasked(row)?;
+            let keep = m.and(valid, kept)?;
+            let keep = m.and(keep, active)?;
+            m.when(keep, |m| {
+                let weight_at = m.add(base, j)?;
+                body(m, weight_at)
             })
-        })?;
-        each_kept(
-            self,
-            &|m, row| {
-                let k_at = head_at(m, at, row, t.column)?;
-                m.held_head(at, 1, k_at)
-            },
-            &|m, row, k, r, weight_at| {
-                let q_row = m.add(t.first, r)?;
-                let q_at = head_at(m, at, q_row, t.column)?;
-                let k_at = head_at(m, at, row, t.column)?;
-                let dot = m.dot(Head::Global(0, q_at), Head::of(k, 1, k_at), at.d)?;
-                let scale = m.float(at.scale);
-                let x = m.f_mul(dot, scale)?;
-                m.store_shared(weight_at, x)
+        };
+        let q = self.held_head(at, 0, own_at)?;
+        self.staged_dots(
+            at,
+            &t,
+            local,
+            keys,
+            end,
+            &[(Head::of(q.as_deref(), 0, own_at), 1)],
+            true,
+            &|m, j, valid, sums| {
+                kept_key(m, j, valid, &|m, weight_at| {
+                    let scale = m.float(at.scale);
+                    let x = m.f_mul(sums[0], scale)?;
+                    m.store_shared(weight_at, x)
+                })
             },
         )?;
-        self.barrier()?;
-        self.when(serial, |m| {
-            let total_at = m.add(t.row_stats, one)?;
-            let softmax = if grad && at.stats {
-                let max_at = m.stats_at(at, t.own, t.head, 0)?;
-                let sum_at = m.stats_at(at, t.own, t.head, 1)?;
-                (m.read_out(0, max_at)?, m.read_out(0, sum_at)?)
-            } else {
-                let (base, start) = (t.base, t.start);
-                m.softmax_of(at, t.start, t.column, &|m, row, _| {
-                    let j = m.sub(row, start)?;
-                    let weight_at = m.add(base, j)?;
-                    m.load_shared(weight_at)
-                })?
-            };
-            m.store_shared(t.row_stats, softmax.0)?;
-            m.store_shared(total_at, softmax.1)?;
-            if at.stats && !grad {
-                let max_at = m.stats_at(at, t.own, t.head, 0)?;
-                let sum_at = m.stats_at(at, t.own, t.head, 1)?;
-                m.write_to(0, max_at, softmax.0)?;
-                m.write_to(0, sum_at, softmax.1)?;
-            }
-            Ok(())
-        })?;
         self.barrier()?;
         let stats_base = self.uint(at.stats_base());
         let three = self.uint(SOFTMAX_STATS);
@@ -1107,17 +1368,18 @@ impl Shell {
             let slot = m.mul(r, three)?;
             m.add(stats_base, slot)
         };
-        each_kept(
-            self,
-            &|m, row| {
-                if grad {
-                    let v_at = head_at(m, at, row, t.column)?;
-                    m.held_head(at, 2, v_at)
-                } else {
-                    Ok(None)
-                }
-            },
-            &|m, row, v, r, weight_at| {
+        let total_at = self.add(t.row_stats, one)?;
+        if grad && at.stats {
+            self.when(serial, |m| {
+                let max_at = m.stats_at(at, t.own, t.head, 0)?;
+                let sum_at = m.stats_at(at, t.own, t.head, 1)?;
+                let max = m.read_out(0, max_at)?;
+                let total = m.read_out(0, sum_at)?;
+                m.store_shared(t.row_stats, max)?;
+                m.store_shared(total_at, total)
+            })?;
+            self.barrier()?;
+            each_kept(self, &|_, _| Ok(None), &|m, _, _, r, weight_at| {
                 let slot = row_stats(m, r)?;
                 let total_at = m.add(slot, one)?;
                 let max = m.load_shared(slot)?;
@@ -1126,38 +1388,115 @@ impl Shell {
                 let d = m.f_sub(x, max)?;
                 let e = m.exp(d)?;
                 let p = m.f_div(e, total)?;
-                m.store_shared(weight_at, p)?;
-                if grad {
-                    let g_row = m.add(t.first, r)?;
-                    let g_at = head_at(m, at, g_row, t.column)?;
-                    let v_at = head_at(m, at, row, t.column)?;
-                    let dp = m.dot(Head::Global(4, g_at), Head::of(v, 2, v_at), at.d)?;
-                    let dp_at = m.add(gradients, weight_at)?;
-                    m.store_shared(dp_at, dp)?;
+                m.store_shared(weight_at, p)
+            })?;
+        } else {
+            // The softmax of each row from its scores: the first invocation of the row finds the
+            // maximum, one invocation per key computes `exp(score - max)` in place, the first
+            // invocation of the row sums them in ascending key order, one invocation per key
+            // divides each by the sum in place. Under a prefix mask the row's loops read no mask.
+            let (base, start) = (t.base, t.start);
+            let weight = |m: &mut Self, row: Word, _: Word| -> Result<Word, EmitError> {
+                let j = m.sub(row, start)?;
+                let weight_at = m.add(base, j)?;
+                m.load_shared(weight_at)
+            };
+            self.when(serial, |m| {
+                for (when, checked) in [(prefix, false), (some, true)] {
+                    m.when(when, |m| {
+                        let max = m.softmax_max(at, start, end, t.column, checked, &weight)?;
+                        m.store_shared(t.row_stats, max)
+                    })?;
                 }
                 Ok(())
-            },
-        )?;
+            })?;
+            self.barrier()?;
+            each_kept(self, &|_, _| Ok(None), &|m, _, _, r, weight_at| {
+                let slot = row_stats(m, r)?;
+                let max = m.load_shared(slot)?;
+                let x = m.load_shared(weight_at)?;
+                let d = m.f_sub(x, max)?;
+                let e = m.exp(d)?;
+                m.store_shared(weight_at, e)
+            })?;
+            self.barrier()?;
+            self.when(serial, |m| {
+                for (when, checked) in [(prefix, false), (some, true)] {
+                    m.when(when, |m| {
+                        let total = m.exp_sum(at, start, end, t.column, checked, &weight)?;
+                        m.store_shared(total_at, total)
+                    })?;
+                }
+                if at.stats {
+                    let max = m.load_shared(t.row_stats)?;
+                    let total = m.load_shared(total_at)?;
+                    let max_at = m.stats_at(at, t.own, t.head, 0)?;
+                    let sum_at = m.stats_at(at, t.own, t.head, 1)?;
+                    m.write_to(0, max_at, max)?;
+                    m.write_to(0, sum_at, total)?;
+                }
+                Ok(())
+            })?;
+            self.barrier()?;
+            each_kept(self, &|_, _| Ok(None), &|m, _, _, r, weight_at| {
+                let slot = row_stats(m, r)?;
+                let total_at = m.add(slot, one)?;
+                let total = m.load_shared(total_at)?;
+                let e = m.load_shared(weight_at)?;
+                let p = m.f_div(e, total)?;
+                m.store_shared(weight_at, p)
+            })?;
+        }
+        if grad {
+            // `dP`, the gradient head of the invocation's row with each value head below `end`
+            // the mask keeps, beside the probabilities.
+            let g = self.held_head(at, 4, own_at)?;
+            self.staged_dots(
+                at,
+                &t,
+                local,
+                keys,
+                end,
+                &[(Head::of(g.as_deref(), 4, own_at), 2)],
+                true,
+                &|m, j, valid, sums| {
+                    kept_key(m, j, valid, &|m, weight_at| {
+                        let dp_at = m.add(gradients, weight_at)?;
+                        m.store_shared(dp_at, sums[0])
+                    })
+                },
+            )?;
+        }
         self.barrier()?;
         if grad {
             self.when(serial, |m| {
                 let acc = m.matmul_vars[2];
                 let start_sum = m.float(-0.0);
                 m.b.store(acc, start_sum, None, [])?;
-                m.counted(m.extra_u32_vars[4], zero, s, one, |m, j| {
-                    let weight_at = m.add(t.base, j)?;
-                    let row = m.add(t.start, j)?;
-                    let keep = m.unmasked(row)?;
-                    m.when(keep, |m| {
-                        let p = m.load_shared(weight_at)?;
-                        let dp_at = m.add(gradients, weight_at)?;
-                        let dp = m.load_shared(dp_at)?;
-                        let sum = m.b.load(m.f32_ty, None, acc, None, [])?;
-                        let fused = m.f_fma(p, dp, sum)?;
-                        m.b.store(acc, fused, None, [])?;
-                        Ok(())
-                    })
-                })?;
+                // Under a prefix mask every key before `end` is kept, so the loop reads no mask.
+                for (when, checked) in [(prefix, false), (some, true)] {
+                    m.when(when, |m| {
+                        m.counted(m.extra_u32_vars[4], zero, end, one, |m, j| {
+                            let weight_at = m.add(t.base, j)?;
+                            let term = |m: &mut Self| -> Result<(), EmitError> {
+                                let p = m.load_shared(weight_at)?;
+                                let dp_at = m.add(gradients, weight_at)?;
+                                let dp = m.load_shared(dp_at)?;
+                                let sum = m.b.load(m.f32_ty, None, acc, None, [])?;
+                                let fused = m.f_fma(p, dp, sum)?;
+                                m.b.store(acc, fused, None, [])?;
+                                Ok(())
+                            };
+                            if checked {
+                                let row = m.add(t.start, j)?;
+                                let keep = m.unmasked(row)?;
+                                m.when(keep, term)
+                            } else {
+                                term(m)
+                            }
+                        })
+                    })?;
+                }
                 let rd = m.b.load(m.f32_ty, None, acc, None, [])?;
                 let rd_at = m.add(t.row_stats, two)?;
                 m.store_shared(rd_at, rd)?;
@@ -1186,14 +1525,11 @@ impl Shell {
             let weight_at = m.add(t.base, j)?;
             m.load_shared(weight_at)
         };
-        let flag = self.load_shared(all_kept)?;
-        let set = self.float(1.0);
-        let every = self.b.f_ord_equal(self.bool_ty, None, flag, set)?;
-        let some = self.b.logical_not(self.bool_ty, None, every)?;
         self.when(t.active, |m| {
             let columns = m.owned_columns(at, t.lane)?;
-            m.when(every, |m| {
-                let sums = m.row_sums(at, t.start, t.column, x, &columns, &weight, None)?;
+            m.when(prefix, |m| {
+                let first = Terms::First(end);
+                let sums = m.row_sums(at, t.start, t.column, x, &columns, &weight, first)?;
                 m.write_sums(at, t.own_at, &columns, &sums, grad)
             })?;
             m.when(some, |m| {
@@ -1201,8 +1537,61 @@ impl Shell {
                     let row = m.add(t.start, j)?;
                     m.unmasked(row)
                 };
-                let sums = m.row_sums(at, t.start, t.column, x, &columns, &weight, Some(&kept))?;
+                let kept = Terms::Kept(&kept);
+                let sums = m.row_sums(at, t.start, t.column, x, &columns, &weight, kept)?;
                 m.write_sums(at, t.own_at, &columns, &sums, grad)
+            })
+        })
+    }
+
+    /// The weights of an `AttentionGradK` or `AttentionGradV` workgroup that reads the shared
+    /// softmax statistics (story:vulkan-attention-tiled-decider-shapes): each invocation computes
+    /// the weight of its key row of the tile with the queries `chunk + lane` of the sequence, the
+    /// query heads (and for `AttentionGradK` the gradient heads) staged a chunk at a time
+    /// ([`Shell::staged_dots`]) and the key head (and value head) read in place, by the
+    /// instructions of the per-query loop of [`Shell::key_tile`]: `dS` for `AttentionGradK` and
+    /// `P` for `AttentionGradV`, where the key row is one of the tile's and the mask keeps it.
+    fn staged_key_weights(
+        &mut self,
+        at: &Attend,
+        t: &Tile,
+        local: Word,
+        var: Word,
+    ) -> Result<(), EmitError> {
+        let grad_k = at.op == AttentionOp::GradK;
+        let s = self.uint(at.s);
+        let own = self.b.select(self.u32_ty, None, t.active, t.own, t.first)?;
+        let own_at = head_at(self, at, own, t.column)?;
+        let kept = self.unmasked(own)?;
+        let keep_own = self.and(t.active, kept)?;
+        let mut dots = vec![(Head::Global(1, own_at), 0)];
+        if grad_k {
+            dots.push((Head::Global(2, own_at), 4));
+        }
+        let (start, head, base) = (t.start, t.head, t.base);
+        self.staged_dots(at, t, local, var, s, &dots, false, &|m, i, valid, sums| {
+            let keep = m.and(valid, keep_own)?;
+            m.when(keep, |m| {
+                let row = m.add(start, i)?;
+                let max_at = m.stats_at(at, row, head, 0)?;
+                let sum_at = m.stats_at(at, row, head, 1)?;
+                let max = m.read(STATS_BINDING, max_at)?;
+                let total = m.read(STATS_BINDING, sum_at)?;
+                let scale = m.float(at.scale);
+                let x = m.f_mul(sums[0], scale)?;
+                let d = m.f_sub(x, max)?;
+                let e = m.exp(d)?;
+                let p = m.f_div(e, total)?;
+                let weight = if grad_k {
+                    let rd_at = m.stats_at(at, row, head, 2)?;
+                    let rd = m.read(STATS_BINDING, rd_at)?;
+                    let diff = m.f_sub(sums[1], rd)?;
+                    m.f_mul(p, diff)?
+                } else {
+                    p
+                };
+                let weight_at = m.add(base, i)?;
+                m.store_shared(weight_at, weight)
             })
         })
     }
@@ -1218,69 +1607,87 @@ impl Shell {
         let (s, zero, one) = (self.uint(at.s), self.uint(0), self.uint(1));
         let size = self.uint(ATTENTION_WORKGROUP);
         let (queries, rows) = (self.u32_vars[0], self.extra_u32_vars[3]);
-        self.counted(queries, local, s, size, |m, i| {
-            let row = m.add(t.start, i)?;
-            let q_at = head_at(m, at, row, t.column)?;
-            let (softmax, rd) = if at.stats {
-                let max_at = m.stats_at(at, row, t.head, 0)?;
-                let sum_at = m.stats_at(at, row, t.head, 1)?;
-                let softmax = (
-                    m.read(STATS_BINDING, max_at)?,
-                    m.read(STATS_BINDING, sum_at)?,
-                );
-                let rd = if grad_k {
-                    let rd_at = m.stats_at(at, row, t.head, 2)?;
-                    Some(m.read(STATS_BINDING, rd_at)?)
-                } else {
-                    None
-                };
-                (softmax, rd)
-            } else {
-                let softmax = m.attention_softmax(at, q_at, t.start, t.column)?;
-                let rd = if grad_k {
-                    Some(m.row_dot(at, q_at, t.start, t.column, softmax)?)
-                } else {
-                    None
-                };
-                (softmax, rd)
-            };
-            let q = m.held_head(at, 0, q_at)?;
-            let g = if grad_k {
-                m.held_head(at, 4, q_at)?
-            } else {
-                None
-            };
-            m.counted(rows, zero, t.rows, one, |m, r| {
-                let key_row = m.add(t.first, r)?;
-                let keep = m.unmasked(key_row)?;
-                m.when(keep, |m| {
-                    let k_at = head_at(m, at, key_row, t.column)?;
-                    let dot =
-                        m.dot(Head::of(q.as_deref(), 0, q_at), Head::Global(1, k_at), at.d)?;
-                    let scale = m.float(at.scale);
-                    let x = m.f_mul(dot, scale)?;
-                    let d = m.f_sub(x, softmax.0)?;
-                    let e = m.exp(d)?;
-                    let p = m.f_div(e, softmax.1)?;
-                    let weight = match rd {
-                        Some(rd) => {
-                            let dp = m.dot(
-                                Head::of(g.as_deref(), 4, q_at),
-                                Head::Global(2, k_at),
-                                at.d,
-                            )?;
-                            let diff = m.f_sub(dp, rd)?;
-                            m.f_mul(p, diff)?
-                        }
-                        None => p,
+        // Whether the mask keeps a key row of the tile: a workgroup of masked key rows only
+        // writes their `+0` rows, computing no weight.
+        let mut any = self.unmasked(t.first)?;
+        for u in 1..at.tile {
+            let u = self.uint(u);
+            let inside = self.less(u, t.rows)?;
+            let offset = self.b.select(self.u32_ty, None, inside, u, zero)?;
+            let key_row = self.add(t.first, offset)?;
+            let keep = self.unmasked(key_row)?;
+            let kept = self.and(inside, keep)?;
+            any = self.b.logical_or(self.bool_ty, None, any, kept)?;
+        }
+        self.when(any, |m| {
+            if at.stats {
+                m.staged_key_weights(at, &t, local, queries)?;
+                return m.barrier();
+            }
+            m.counted(queries, local, s, size, |m, i| {
+                let row = m.add(t.start, i)?;
+                let q_at = head_at(m, at, row, t.column)?;
+                let (softmax, rd) = if at.stats {
+                    let max_at = m.stats_at(at, row, t.head, 0)?;
+                    let sum_at = m.stats_at(at, row, t.head, 1)?;
+                    let softmax = (
+                        m.read(STATS_BINDING, max_at)?,
+                        m.read(STATS_BINDING, sum_at)?,
+                    );
+                    let rd = if grad_k {
+                        let rd_at = m.stats_at(at, row, t.head, 2)?;
+                        Some(m.read(STATS_BINDING, rd_at)?)
+                    } else {
+                        None
                     };
-                    let weight_at = m.mul(r, s)?;
-                    let weight_at = m.add(weight_at, i)?;
-                    m.store_shared(weight_at, weight)
+                    (softmax, rd)
+                } else {
+                    let softmax = m.attention_softmax(at, q_at, t.start, t.column)?;
+                    let rd = if grad_k {
+                        Some(m.row_dot(at, q_at, t.start, t.column, softmax)?)
+                    } else {
+                        None
+                    };
+                    (softmax, rd)
+                };
+                let q = m.held_head(at, 0, q_at)?;
+                let g = if grad_k {
+                    m.held_head(at, 4, q_at)?
+                } else {
+                    None
+                };
+                m.counted(rows, zero, t.rows, one, |m, r| {
+                    let key_row = m.add(t.first, r)?;
+                    let keep = m.unmasked(key_row)?;
+                    m.when(keep, |m| {
+                        let k_at = head_at(m, at, key_row, t.column)?;
+                        let dot =
+                            m.dot(Head::of(q.as_deref(), 0, q_at), Head::Global(1, k_at), at.d)?;
+                        let scale = m.float(at.scale);
+                        let x = m.f_mul(dot, scale)?;
+                        let d = m.f_sub(x, softmax.0)?;
+                        let e = m.exp(d)?;
+                        let p = m.f_div(e, softmax.1)?;
+                        let weight = match rd {
+                            Some(rd) => {
+                                let dp = m.dot(
+                                    Head::of(g.as_deref(), 4, q_at),
+                                    Head::Global(2, k_at),
+                                    at.d,
+                                )?;
+                                let diff = m.f_sub(dp, rd)?;
+                                m.f_mul(p, diff)?
+                            }
+                            None => p,
+                        };
+                        let weight_at = m.mul(r, s)?;
+                        let weight_at = m.add(weight_at, i)?;
+                        m.store_shared(weight_at, weight)
+                    })
                 })
-            })
+            })?;
+            m.barrier()
         })?;
-        self.barrier()?;
         let x = if grad_k { 0 } else { 4 };
         self.when(t.active, |m| {
             let keep = m.unmasked(t.own)?;
@@ -1296,7 +1703,7 @@ impl Shell {
                     let weight_at = m.add(t.base, i)?;
                     m.load_shared(weight_at)
                 };
-                let sums = m.row_sums(at, t.start, t.column, x, &columns, &weight, None)?;
+                let sums = m.row_sums(at, t.start, t.column, x, &columns, &weight, Terms::All)?;
                 m.write_sums(at, t.own_at, &columns, &sums, grad_k)
             })
         })
