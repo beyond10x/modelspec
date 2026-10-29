@@ -145,14 +145,19 @@ fn evals(out: &str) -> Vec<(u64, f64)> {
         .collect()
 }
 
-/// The twin for 200 steps with `--clock` and `extra`, timed from outside: its stdout and wall
-/// seconds.
+/// The twin for 200 steps on the CPU with `--clock` and `extra`, timed from outside: its stdout
+/// and wall seconds.
 fn timed(packed: &Path, extra: &[&str]) -> (String, f64) {
+    timed_on("cpu", packed, extra)
+}
+
+/// [`timed`] on `backend`.
+fn timed_on(backend: &str, packed: &Path, extra: &[&str]) -> (String, f64) {
     let mut args = vec![
         "train",
         TWIN,
         "--backend",
-        "cpu",
+        backend,
         "--data",
         path(packed),
         "--steps",
@@ -176,6 +181,37 @@ fn train_and_eval_seconds_split_the_run_and_each_eval_line_carries_the_training_
     let case = scratch("split");
     let packed = packed(&case);
     let (out, wall) = timed(&packed, &["--eval-every", "100"]);
+    let (train, eval, steps) = clock(&out);
+    assert_eq!(steps, 200, "{out}");
+    assert!(train > 0.0 && eval > 0.0, "{out}");
+    assert!(
+        train + eval <= wall,
+        "train {train} + eval {eval} is more than the wall time {wall}"
+    );
+    let evals = evals(&out);
+    assert_eq!(
+        evals.iter().map(|(k, _)| *k).collect::<Vec<_>>(),
+        [0, 100, 200],
+        "{out}"
+    );
+    assert_eq!(evals[0].1, 0.0, "no training before step 0:\n{out}");
+    assert!(
+        evals.windows(2).all(|pair| pair[0].1 < pair[1].1),
+        "the clock rises from eval to eval:\n{out}"
+    );
+    assert!(evals[2].1 <= train, "{out}");
+}
+
+/// The split above on a stepwise Vulkan run, whose held-out evaluations the device reduces: the
+/// evaluations are timed into `eval_seconds`, not into the training clock
+/// (story:vulkan-stepwise-multi-step-submit; `eval_seconds 0.000000` before it).
+#[cfg(feature = "vulkan")]
+#[test]
+#[ignore = "needs a Vulkan device"]
+fn device_train_and_eval_seconds_split_a_stepwise_run() {
+    let case = scratch("split_vulkan");
+    let packed = packed(&case);
+    let (out, wall) = timed_on("vulkan", &packed, &["--eval-every", "100"]);
     let (train, eval, steps) = clock(&out);
     assert_eq!(steps, 200, "{out}");
     assert!(train > 0.0 && eval > 0.0, "{out}");

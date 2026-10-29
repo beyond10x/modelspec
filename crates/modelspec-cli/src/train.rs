@@ -18,11 +18,13 @@
 //! training clock (story:bert-tiny-vs-pytorch-cuda, coordinator decision D87) leaves out
 //! the compile, the plan build and pipeline creation, the held-out evaluations of `--eval-every`
 //! (counted apart as `eval_seconds`), the final loss evaluation after the last update,
-//! checkpoint files and the events of `--serve` and `--record`. A stepwise Vulkan run sums, per
-//! update, the time from recording the step's command buffer to the end of its host wait
-//! ([`modelspec_runtime::vulkan::stepwise`]), so the host's batch draw before each step is left
-//! out too; a chunked Vulkan run sums, per stop, the time from recording its first command buffer
-//! to the end of the wait for its steps, and records the read-back, the final loss evaluation and
+//! checkpoint files and the events of `--serve` and `--record`. A stepwise Vulkan run sums the
+//! spans in which a segment of its steps is in flight on the device, from recording the first
+//! segment after a pause to the host wait that leaves none in flight
+//! ([`modelspec_runtime::vulkan::stepwise`]), and times each held-out evaluation, on the device
+//! or on the host, into `eval_seconds` (story:vulkan-stepwise-multi-step-submit); a chunked
+//! Vulkan run sums, per stop, the time from recording its first command buffer to the end of
+//! the wait for its steps, and records the read-back, the final loss evaluation and
 //! the checkpoint after them in a command buffer of their own, one more host wait per stop
 //! (story:bert-tiny-vs-pytorch-cuda, ADV-BP-3);
 //! a CPU run counts the time of its loop of updates from the first step's batch to the
@@ -50,14 +52,17 @@
 //! reads back then and no other step. A run whose step plan has a `dropout` kernel or reads
 //! optimizer inputs (`adamw`'s rate, bias corrections and moments), and every run with `--data`,
 //! `--eval` or `--eval-every`, runs stepwise instead ([`modelspec_runtime::vulkan::stepwise`]; coordinator
-//! decision D73, 2026-10-25, `.engineering/waves/bert-1.md`): one command buffer and one host
-//! wait per step and one for the final loss, the step's batch, RNG tokens and AdamW scalars
-//! uploaded before it and the moments kept on the device. An evaluated step first runs each
-//! held-out batch without dropout in a command buffer of its own, one host wait per batch
-//! (coordinator decision D76, story:vulkan-eval-download-per-batch); with `--eval` the last step
-//! first runs each batch of the eval directory the same way (story:decider-dense-named-data). A
-//! stepwise run's `--profile` writes the timestamps of each step's command buffer into one query
-//! pool and reads them back after that step's host wait, adding none
+//! decision D73, 2026-10-25, `.engineering/waves/bert-1.md`): its steps run in segments of up to
+//! 8 steps, one command buffer and one host wait each, and one for the final loss, each step's
+//! batch, RNG tokens and AdamW scalars uploaded before its segment and the moments kept on the
+//! device; the next segment is recorded while the device runs the one in flight, and the lines
+//! are those of one step per command buffer (story:vulkan-stepwise-multi-step-submit). An
+//! evaluated step first runs its held-out batches without dropout in a command buffer of their
+//! own, one host wait, or one per batch where the host reduces them (coordinator decision D76,
+//! story:vulkan-eval-metrics-on-device); with `--eval` the last step first runs each batch of the
+//! eval directory in a command buffer of its own (story:decider-dense-named-data). A stepwise
+//! run's `--profile` writes the timestamps of each segment's command buffer into one query pool
+//! and reads them back after that segment's host wait, adding none
 //! (story:bert-tiny-vs-pytorch-cuda); its held-out and eval batches are not timed. `--stats`
 //! prints the run's counters on stderr after it
 //! (host waits, submits, dispatches, dispatches and barriers per step, bytes up and down, device
@@ -281,8 +286,8 @@ pub struct Args {
     /// among the run's steps and at the run's last step, so a resumed run evaluates no step 0 of
     /// its own and starts at the first multiple of N at or after the step it resumes at. The
     /// last (count mod B) HeldOut sequences are never evaluated, count the split's sequences and
-    /// B the batch. With --backend vulkan each HeldOut batch is evaluated on the device in its
-    /// own command buffer, one host wait per batch.
+    /// B the batch. With --backend vulkan the HeldOut batches are evaluated on the device in a
+    /// command buffer of their own, one host wait per evaluation.
     #[arg(long, value_name = "N")]
     pub eval_every: Option<u64>,
     /// Run N steps instead of the steps of the file's train block; a resumed run ends at its
@@ -297,6 +302,10 @@ pub struct Args {
     /// checkpoint and at the end, so that its clock leaves out the read-back and the final loss.
     #[arg(long)]
     pub clock: bool,
+    /// The most steps a stepwise Vulkan run records into one command buffer, instead of the
+    /// runner's choice: the lines and losses are those of any other N (for tests).
+    #[arg(long, value_name = "N", hide = true, value_parser = clap::value_parser!(u64).range(1..))]
+    pub submit_steps: Option<u64>,
     /// After the last step, write the parameters, step and optimizer to the .msckpt file PATH. A
     /// file trained with adamw or muon takes it only with --steps 0 and without
     /// --checkpoint-every: the checkpoint of the initial parameters.
@@ -490,6 +499,8 @@ struct Files {
     resume: Option<(u64, BTreeMap<ParamId, HostTensor<f32>>)>,
     /// `--clock`: stdout carries the training clock.
     clock: bool,
+    /// The hidden `--submit-steps`: the steps of one stepwise command buffer at most.
+    submit_steps: Option<u64>,
 }
 
 /// The files of a run, read before its first step.
@@ -928,6 +939,7 @@ pub fn run(args: Args, stdout: &mut dyn Write, stderr: &mut dyn Write) -> u8 {
         checkpoint_every: args.checkpoint_every,
         resume,
         clock: args.clock,
+        submit_steps: args.submit_steps,
     };
     emit(RunEventBody::RunStarted(RunStarted {
         steps: compiled.config.steps,
@@ -1062,7 +1074,8 @@ fn train(
                 None => Ok(()),
             };
             // A run the host feeds before each step: one command buffer and one host wait per
-            // step, each step streamed after its wait (coordinator decision D73).
+            // segment of steps, each step streamed after its segment's wait (coordinator decision
+            // D73, story:vulkan-stepwise-multi-step-submit).
             if stepwise::needed(compiled, artifact)
                 || files.data.is_some()
                 || files.eval.is_some()
@@ -1106,6 +1119,7 @@ fn train(
                         every,
                         write: &mut write,
                     }),
+                    submit_steps: files.submit_steps,
                 };
                 // The `--eval` result, which the last step carries.
                 let mut dense_eval: Option<Eval> = None;

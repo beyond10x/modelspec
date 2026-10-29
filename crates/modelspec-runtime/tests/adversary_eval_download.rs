@@ -537,7 +537,9 @@ mod device {
         assert!(wrong.is_empty(), "{wrong:#?}");
         assert_eq!(stats.host_waits, 4 + evaluations * batches, "{stats}");
         assert_eq!(stats.submits, 4 + evaluations * batches, "{stats}");
-        assert_eq!(plain_stats.host_waits, 4, "{plain_stats}");
+        // Without evaluation the steps 0 to 2 are one segment and the last step another
+        // (story:vulkan-stepwise-multi-step-submit).
+        assert_eq!(plain_stats.host_waits, 2, "{plain_stats}");
         assert_eq!(
             stats.bytes_downloaded - plain_stats.bytes_downloaded,
             evaluations * batches * prediction,
@@ -628,6 +630,7 @@ mod device {
         assert_eq!(loss_bits(&first), loss_bits(&second));
         assert_eq!(loss_bits(&first), loss_bits(&plain), "training losses");
         assert_eq!(param_bits(&first), param_bits(&plain), "final parameters");
-        assert_eq!(first_stats.host_waits, 5 + 3 * 4, "{first_stats}");
+        // The segments 0 to 1, 2 to 3 and 4, and 4 batches at each of 3 evaluations.
+        assert_eq!(first_stats.host_waits, 3 + 3 * 4, "{first_stats}");
     }
 }

@@ -1,11 +1,13 @@
 //! A training run on one Vulkan device that the host feeds before every step (coordinator decision
-//! D73, story:bert-vulkan-kernels-attention-loss-adamw): one command buffer and one host wait per
-//! step, and one per held-out batch an evaluation reduces on the host, for a step plan that reads
-//! more than its parameters and one batch.
+//! D73, story:bert-vulkan-kernels-attention-loss-adamw), for a step plan that reads more than its
+//! parameters and one batch: the steps are recorded in segments of at most `cap` steps each, one
+//! command buffer and one host wait per segment (story:vulkan-stepwise-multi-step-submit), one
+//! per evaluation the device reduces, and one per held-out batch an evaluation reduces on the host.
 //!
 //! [`super::runner::train`] records up to [`super::runner::CHUNK_STEPS`] steps into one command
 //! buffer and uploads once, so it runs a step plan whose only inputs are the parameters and the
 //! synthetic batch. [`train_stepwise`] runs the plans it refuses:
+//!
 //!
 //! - a step with `dropout`: each `Dropout` and `DropoutGrad` pipeline is created under the run
 //!   key, the run's seed ([`super::Device::kernel_pipeline_seeded`]), and the RNG token of every
@@ -32,11 +34,11 @@
 //!   prediction is computed from, without the loss sum
 //!   ([`modelspec_core::ir::kernel::ExecutionPlan::prediction_steps`]), with dropout off. With
 //!   [`HeldOutReduction::Device`] (story:vulkan-eval-metrics-on-device) every batch is recorded
-//!   at the start of the evaluated step's command buffer, followed by the kernels of
+//!   in one command buffer before the evaluated step's segment, followed by the kernels of
 //!   [`crate::spirv::emit::held_out_kernels`], which add its row losses and correct rows to a
-//!   device state of [`crate::spirv::emit::HELD_OUT_STATE`] floats; the state comes down with the
-//!   step's loss, and after the step's one host wait [`HeldOut::metrics_of_sums`] divides it as the
-//!   CPU evaluation divides its sums. With [`HeldOutReduction::Host`] (coordinator decision D76,
+//!   device state of [`crate::spirv::emit::HELD_OUT_STATE`] floats; the state comes down at its
+//!   end, and after its one host wait [`HeldOut::metrics_of_sums`] divides it as the CPU
+//!   evaluation divides its sums. With [`HeldOutReduction::Host`] (coordinator decision D76,
 //!   story:vulkan-eval-download-per-batch), and for a plan whose prediction does not start its
 //!   buffer, each batch is a command buffer of its own before the step's, which copies the
 //!   prediction into a download buffer of one prediction ([`download_bytes`]), and after its
@@ -57,34 +59,56 @@
 //! the loss steps run with each `Dropout` pipeline replaced by the one of the same kernel at
 //! `p = 0`, which keeps every element and scales it by 1, so it copies its input.
 //!
-//! The first command buffer of the run, a held-out batch's or step `start`'s, copies the
-//! parameters and the zero moments up. Step `k`'s command buffer, for `k` from the start to the
-//! end, after the held-out batches an evaluation reduces on the host and after the batches and
-//! held-out kernels of one the device reduces: the step's batch, tokens and scalars are copied
-//! up, the step plan runs (the loss steps without dropout at the end), and the loss is copied
-//! down, with the device reduction's state on an evaluated step, and with the parameters and
-//! moments after the last step and at each due checkpoint. The host waits once per step and
-//! once per held-out batch an evaluation reduces on the host, checks the loss, and the parameters and moments where it read them, with E-TRAIN-001 as the CPU run
-//! does, and shows the step to the observer ([`StepSeen`]). A step whose loss is not
-//! finite stops the run with one more host wait, which reads the parameters and moments the
-//! diverged run holds.
+//! The steps run in segments (story:vulkan-stepwise-multi-step-submit). A segment is the steps
+//! `k..=through` one command buffer records: at most `cap` of them,
+//! [`StepwiseOptions::submit_steps`] or the runner's choice [`steps_per_submit`], ending at a
+//! step after which a checkpoint is due and before an evaluated step and the last step, which is
+//! a segment of its own. Before it is recorded the host draws each step's batch, tokens and
+//! scalars as the one-step run draws them for that step (its dropout tokens, its batch and its
+//! AdamW step count `k + 1`) into the step's region of an upload buffer. The command buffer
+//! copies each step's region in, runs its plan steps (the loss steps without dropout at the last
+//! step) and copies its loss down to its slot, with a compute-to-compute and a
+//! compute-to-transfer barrier between two steps, the barriers that open each later command
+//! buffer; the parameters and moments come down after the last step and at each due checkpoint.
+//! Since every step reads what the one-step run's step reads, in the same order, the losses and
+//! parameters are its bits.
+//!
+//! Two upload buffers, two loss downloads and two timestamp pools take turns: the host submits a
+//! segment behind the one in flight, then waits for that one, shows its steps to the observer and
+//! draws and records the next segment while the device runs. An evaluated step, the last step and
+//! a segment whose state the host reads are not queued behind another: the host waits for the
+//! segment in flight first, and for a segment whose state it reads at once.
+//!
+//! The first command buffer of the run, a held-out batch's or the first segment's, copies the
+//! parameters and the zero moments up. An evaluated step first runs its evaluation: each batch an
+//! evaluation reduces on the host in a command buffer of its own, or every batch and the held-out
+//! kernels of one the device reduces in one command buffer, whose state comes down after its host
+//! wait. After a segment's host wait the host checks each step's loss, and the parameters and
+//! moments where it read them, with E-TRAIN-001 as the CPU run does, and shows the steps to the
+//! observer ([`StepSeen`]) in order. A step whose loss is not finite stops the run at that step,
+//! after the host waited for the segment in flight, with one more host wait, which reads the
+//! parameters and moments the diverged run holds: those after the last step the device ran.
 //!
 //! The run keeps a training clock (story:bert-tiny-vs-pytorch-cuda, coordinator decision D87):
-//! [`RunStats::training`] sums, over the updates, the time from recording the step's command
-//! buffer to the end of its host wait; the held-out batches of an evaluated step are timed apart
-//! into [`RunStats::evaluation`], from recording the first batch's command buffer to the host's
-//! tally of the last. Neither holds the plan build, the SPIR-V emission and pipeline creation,
-//! the batch the host draws and stages before each step, the final loss evaluation and the dense
-//! eval batches before it (the CPU run measures `--eval` after its loop), or the checkpoint
-//! files and the observer, which run outside both spans. [`StepSeen::trained`] is the clock
-//! through the updates before the step.
+//! [`RunStats::training`] sums the spans in which segments are in flight, from recording the
+//! first segment after a pause to the host wait that leaves none in flight, without the last
+//! step's; a span holds the host's work on later segments while the device runs (drawing their
+//! batches, recording them and showing the steps before them to the observer). The evaluations
+//! are timed apart into [`RunStats::evaluation`], from recording the first command buffer of an
+//! evaluation to the host's metrics. Neither holds the plan build, the SPIR-V emission and pipeline
+//! creation, the batches the host draws before a span opens, the final loss evaluation and the
+//! dense eval batches before it (the CPU run measures `--eval` after its loop), or the checkpoint
+//! files, which are written after a pause. [`StepSeen::trained`] is the clock through the spans
+//! closed before its segment was recorded: at an evaluated step, which starts a segment after a
+//! pause, the clock through the updates before the step.
 //!
 //! A profiled run ([`train_stepwise_profiled`], `train --profile`) writes a timestamp before and
-//! after each dispatch of a step's command buffer into one query pool, reset at the start of each
-//! step's command buffer and read after its host wait, so it adds no host wait; the held-out
+//! after each dispatch of a segment's command buffer into its timestamp pool, reset at the start
+//! of the command buffer and read after its host wait, so it adds no host wait; the evaluations
 //! and dense eval batches are not timed. The stamps of every step, then those of the final loss
-//! evaluation, make the [`Profile`] of the chunked run ([`super::profile::timings`]); its steady time per step
-//! also holds the host's time between two steps' command buffers and any evaluation between them.
+//! evaluation, make the [`Profile`] of the chunked run ([`super::profile::timings`]); its steady
+//! time per step also holds the device's idle time between two segments and any evaluation
+//! between them.
 
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
@@ -102,7 +126,7 @@ use modelspec_core::passes::masked_rows;
 use modelspec_core::schedule::host_inputs;
 
 use super::Device;
-use super::dispatch::{Bound, DescriptorArena, Recording};
+use super::dispatch::{Bound, DescriptorArena, Recording, Submitted};
 use super::memory::{Buffer, MemorySpan};
 use super::negotiate::Negotiated;
 use super::pipeline::{Pipeline, PipelineRequest, PipelineStatistics, reads_seed};
@@ -140,11 +164,12 @@ pub struct Evaluation<'o, 'h> {
 pub enum HeldOutReduction {
     /// On the device (story:vulkan-eval-metrics-on-device): the kernels of
     /// [`crate::spirv::emit::held_out_kernels`] after each batch's prediction, the whole
-    /// evaluation in the evaluated step's command buffer, [`crate::spirv::emit::HELD_OUT_STATE`]
-    /// floats read back after its one host wait and finished by
-    /// [`HeldOut::metrics_of_sums`]. A plan whose prediction view does not start its buffer is
-    /// reduced on the host. The accuracy is the host reduction's bit for bit and the loss within 4
-    /// ulps of it (coordinator decision D141): the device's `Exp` and `Log` are not the host libm's.
+    /// evaluation in one command buffer before the evaluated step's segment,
+    /// [`crate::spirv::emit::HELD_OUT_STATE`] floats read back after its one host wait and
+    /// finished by [`HeldOut::metrics_of_sums`]. A plan whose prediction view does not start its
+    /// buffer is reduced on the host. The accuracy is the host reduction's bit for bit and the
+    /// loss within 4 ulps of it (coordinator decision D141): the device's `Exp` and `Log` are not
+    /// the host libm's.
     #[default]
     Device,
     /// On the host (story:vulkan-eval-download-per-batch): each batch's logits read back after
@@ -173,6 +198,9 @@ pub struct StepwiseOptions<'o, 'h> {
     pub dense_predictions: Option<&'o mut Vec<f32>>,
     /// The checkpoints to write on the way.
     pub checkpoints: Option<Checkpoints<'o>>,
+    /// The most steps one command buffer records; `None` lets the runner choose
+    /// ([`steps_per_submit`]).
+    pub submit_steps: Option<u64>,
 }
 
 /// One step of a stepwise run as its observer sees it, after the host waited for it.
@@ -252,6 +280,40 @@ enum MaskedInput {
     Weights,
 }
 
+/// The most steps one command buffer of a stepwise run records when the caller names none
+/// ([`StepwiseOptions::submit_steps`]): past it a longer segment saves no measurable host time
+/// (story:vulkan-stepwise-multi-step-submit).
+pub const SUBMIT_STEPS: u64 = 8;
+
+/// The most bytes the per-step uploads of the two segments a run keeps take together, unless
+/// one step's upload alone is more.
+pub const SUBMIT_UPLOAD_BYTES: u64 = 64 << 20;
+
+/// The steps one command buffer of a stepwise run records at most when the caller names none:
+/// [`SUBMIT_STEPS`], fewer when the uploads of two segments of steps of `step_bytes` each would
+/// pass [`SUBMIT_UPLOAD_BYTES`], and at least 1. The evaluation and checkpoint schedule ends a
+/// segment earlier: at a due checkpoint, before an evaluated step and before the last step.
+pub fn steps_per_submit(step_bytes: u64) -> u64 {
+    (SUBMIT_UPLOAD_BYTES / (2 * step_bytes).max(1)).clamp(1, SUBMIT_STEPS)
+}
+
+/// A segment of a stepwise run, steps `first..=through` recorded into one command buffer, and
+/// what its steps show the observer once the host waited for it.
+struct Segment {
+    first: u64,
+    through: u64,
+    /// Which of the two upload, loss and timestamp buffers it uses.
+    parity: usize,
+    /// The held-out metrics of step `first`, evaluated before the segment.
+    metrics: Option<HeldOutMetrics>,
+    /// The `--eval` result, at the last step.
+    dense_eval: Option<Eval>,
+    /// The training clock when the segment was recorded.
+    trained: Duration,
+    /// The timestamps it wrote.
+    stamps: u32,
+}
+
 /// What one word range of the per-step upload holds.
 enum Fed {
     /// The data declaration of this name, `i32` ones as their bits.
@@ -264,8 +326,8 @@ enum Fed {
 
 /// Trains `compiled` on `device`, whose profile is `profile` and which was opened with
 /// `negotiated`, by the execution plan of `artifact`, one command buffer and one host wait per
-/// step and per evaluated held-out batch (the module documentation), and calls `observe` after
-/// each step's wait.
+/// segment of steps and per evaluation (the module documentation), and calls `observe` for each
+/// step after its segment's wait.
 pub fn train_stepwise(
     device: &Device<'_>,
     profile: &DeviceProfile,
@@ -282,11 +344,11 @@ pub fn train_stepwise(
 }
 
 /// [`train_stepwise`], and when `profiled` with a timestamp before and after every dispatch of
-/// each step's command buffer on a device with timestamp queries, read back after the step's
-/// host wait (the module documentation): the run's commands, results and [`RunStats`] are those
-/// of [`train_stepwise`], and the [`Profile`] is that of the chunked run, `None` when not
-/// `profiled`. A run that diverges returns the profile of the steps it recorded, without the
-/// final loss evaluation, in its [`DivergedOnDevice`].
+/// each segment's command buffer on a device with timestamp queries, read back after the
+/// segment's host wait (the module documentation): the run's commands, results and
+/// [`RunStats`] are those of [`train_stepwise`], and the [`Profile`] is that of the chunked run,
+/// `None` when not `profiled`. A run that diverges returns the profile of the steps it recorded,
+/// without the final loss evaluation, in its [`DivergedOnDevice`].
 #[allow(clippy::too_many_arguments)]
 pub fn train_stepwise_profiled(
     device: &Device<'_>,
@@ -311,6 +373,7 @@ pub fn train_stepwise_profiled(
         dense_eval,
         mut dense_predictions,
         checkpoints,
+        submit_steps,
     } = options;
     let end = start.checked_add(config.steps).ok_or_else(|| {
         refused(RunError::StepCount {
@@ -528,9 +591,16 @@ pub fn train_stepwise_profiled(
         upload.write_f32(&first_words)?;
     }
 
-    // What goes up before every step: the batch, the tokens and the scalars.
+    // What goes up before every step: the batch, the tokens and the scalars, one region per step
+    // of a segment, in two buffers: the segment in flight's and the one recorded behind it.
     let step_bytes: u64 = fed.iter().map(|(view, _)| view.size_bytes).sum();
-    let mut step_upload = staging(device, step_bytes)?;
+    let cap = submit_steps
+        .unwrap_or_else(|| steps_per_submit(step_bytes))
+        .max(1);
+    let uploads = [
+        staging(device, step_bytes * cap)?,
+        staging(device, step_bytes * cap)?,
+    ];
     // Where each projection lies in the per-step upload: a held-out batch reads the projections
     // of the step it is evaluated at, as the CPU evaluation does.
     let mut projection_regions: Vec<(u64, BufferView)> = Vec::new();
@@ -616,11 +686,15 @@ pub fn train_stepwise_profiled(
     };
     let predicted_batches = host_tallied + if dense_predicted { dense_batches } else { 0 };
     let download = download_bytes(&prediction, predicted_batches);
-    let mut loss_download = device.download_buffer(download.loss)?;
+    // One loss slot per step of a segment, in two buffers as the uploads are.
+    let loss_downloads = [
+        device.download_buffer(download.loss * cap)?,
+        device.download_buffer(download.loss * cap)?,
+    ];
     let mut prediction_download = download_buffer(device, download.prediction)?;
     let param_bytes: u64 = plan.parameters.iter().map(|p| p.views[0].size_bytes).sum();
     let moment_bytes: u64 = moments.iter().map(|(view, _, _)| view.size_bytes).sum();
-    let mut state_download = device.download_buffer(param_bytes + moment_bytes)?;
+    let state_download = device.download_buffer(param_bytes + moment_bytes)?;
 
     let dispatch_steps = plan
         .step
@@ -669,10 +743,10 @@ pub fn train_stepwise_profiled(
         None => None,
     };
 
-    // The dispatch sites a profile times, and the one timestamp pool every step's command buffer
-    // resets and writes: two queries per dispatch of a training step or of the final loss
-    // evaluation, whichever records more. A training step records `train_actions`, so its sites
-    // are theirs (story:vulkan-mlm-masked-row-gather).
+    // The dispatch sites a profile times, and the two timestamp pools, one per upload buffer, that
+    // a segment's command buffer resets and writes: two queries per dispatch of each training step
+    // of a segment or of the final loss evaluation, whichever records more. A training step records
+    // `train_actions`, so its sites are theirs (story:vulkan-mlm-masked-row-gather).
     let site = |plan_name: PlanName, action: &Action<'_>| match action {
         Action::Dispatch(_, at) => {
             let id = plan.step[*at].kernel_module_id?;
@@ -697,11 +771,13 @@ pub fn train_stepwise_profiled(
     let clock = device
         .clock()
         .filter(|_| profiled && profile.timestamp_queries);
-    let pool = match clock {
-        Some(_) => {
-            Some(device.timestamp_pool(count_u32(2 * step_sites.len().max(final_sites.len()))?)?)
-        }
-        None => None,
+    let queries = count_u32(2 * (step_sites.len() * cap as usize).max(final_sites.len()))?;
+    let pools = match clock {
+        Some(_) => [
+            Some(device.timestamp_pool(queries)?),
+            Some(device.timestamp_pool(queries)?),
+        ],
+        None => [None, None],
     };
     // The stamps read back so far: each recorded step's, then the final loss evaluation's.
     let mut stamped: Vec<u64> = Vec::new();
@@ -793,78 +869,237 @@ pub fn train_stepwise_profiled(
     };
 
     let mut losses: Vec<f32> = Vec::new();
-    let mut words: Vec<f32> = Vec::with_capacity((step_bytes / 4) as usize);
+    let mut words: Vec<f32> = Vec::with_capacity((cap * step_bytes / 4) as usize);
     let mut finished = None;
     // Whether a command buffer of the run was recorded ([`open`]).
     let mut opened = false;
-    for k in start..=end {
-        let last = k == end;
-        let evaluated = eval
-            .as_ref()
-            .is_some_and(|eval| k.is_multiple_of(eval.every) || last);
-        let due = !last && write.is_some() && (k + 1).is_multiple_of(every) && k + 1 < end;
-        let reads_state = last || due;
-        if let Some(upload) = &mut step_upload {
-            let (inputs, ids) = feed.inputs(k).map_err(|error| refused(error.into()))?;
-            let scalars = adamw.map(|adamw| adamw.scalars(lr, k + 1, end));
-            let gathered = match &masked_site {
-                Some(site) => Some(
-                    masked::gather(site, inputs, ids, k).map_err(|error| refused(error.into()))?,
-                ),
-                None => None,
+    // Whether step `s` is evaluated, whether a checkpoint is due after its update, and whether
+    // its command buffer copies the parameters and moments down.
+    let evaluated = |s: u64| {
+        eval.as_ref()
+            .is_some_and(|eval| s.is_multiple_of(eval.every) || s == end)
+    };
+    let writes = write.is_some();
+    let due = |s: u64| s < end && writes && (s + 1).is_multiple_of(every) && s + 1 < end;
+    let reads_state = |s: u64| s == end || due(s);
+    // The segment in flight, and the segments waited for and not yet shown to the observer.
+    let mut in_flight: Option<(Submitted<'_>, Segment)> = None;
+    let mut waited: Vec<Segment> = Vec::new();
+    // Since when segments have been in flight without a pause: the open span of the training
+    // clock.
+    let mut busy_since: Option<Instant> = None;
+    // The upload, loss and timestamp buffers of the next segment: 0 or 1, in turn.
+    let mut parity = 0usize;
+    let mut next = Some(start);
+    loop {
+        for segment in waited.drain(..) {
+            let Segment {
+                first,
+                through,
+                parity: was,
+                metrics,
+                dense_eval: dense_measured,
+                trained,
+                stamps,
+            } = segment;
+            if let Some(pool) = &pools[was] {
+                stamped.extend(pool.read_first(stamps)?);
+            }
+            let segment_losses: Vec<f32> =
+                loss_downloads[was].mapped_f32()?[..(through - first + 1) as usize].to_vec();
+            let mut state = if reads_state(through) {
+                Some(read_state(state_download.mapped_f32()?)?)
+            } else {
+                None
             };
-            words.clear();
-            for (view, what) in &fed {
-                match what {
-                    Fed::Data { name, ids: is_ids } => {
-                        push_data(&mut words, view, name, *is_ids, inputs, ids)?;
+            for s in first..=through {
+                let last = s == end;
+                let loss_s = segment_losses[(s - first) as usize];
+                let state_s = if s == through { state.take() } else { None };
+                let values = if s == start {
+                    Some(&initial)
+                } else if last {
+                    state_s.as_ref().map(|(values, _)| values)
+                } else {
+                    None
+                };
+                observe(&StepSeen {
+                    step: s,
+                    loss: loss_s,
+                    held_out: if s == first { metrics } else { None },
+                    dense_eval: if s == first { dense_measured } else { None },
+                    values,
+                    trained,
+                })
+                .map_err(VulkanRunError::Run)?;
+                losses.push(loss_s);
+                let unread = BTreeMap::new();
+                let diagnostic = match &state_s {
+                    Some((values, read_moments)) => {
+                        non_finite(compiled, s, loss_s, values, read_moments)
                     }
-                    Fed::Hosted(Hosted::Token(site)) => {
-                        let token = dropout_token(site, k);
-                        check_count(view, token.len())?;
-                        words.extend(token.data().iter().map(|&w| f32::from_bits(w as u32)));
+                    None => non_finite(compiled, s, loss_s, &unread, &BTreeMap::new()),
+                };
+                if let Some(diagnostic) = diagnostic {
+                    // The device also ran the rest of the segment and the segment in flight: the
+                    // parameters and moments it holds are those after the last of them.
+                    let ran_through = match in_flight.take() {
+                        Some((submitted, behind)) => {
+                            submitted.wait()?;
+                            behind.through
+                        }
+                        None => through,
+                    };
+                    if let Some(since) = busy_since.take() {
+                        training += since.elapsed();
                     }
-                    Fed::Hosted(Hosted::Projection(site, ty)) => {
-                        let projection = sigreg_projection(config.seed, site, k, ty)
-                            .map_err(|error| refused(error.into()))?;
-                        check_count(view, projection.len())?;
-                        words.extend_from_slice(projection.data());
+                    let (values, read_moments) = match state_s {
+                        Some(state) => state,
+                        None => {
+                            // One more host wait: the parameters and moments the diverged run
+                            // holds.
+                            let mut recording = device.record()?;
+                            recording.barrier(Barrier::ComputeToTransfer);
+                            copy_state(&mut recording, &state_views, &buffers, &state_download)?;
+                            recording.barrier(Barrier::TransferToHost);
+                            let recorded = recording.finish()?;
+                            device.submit(recorded)?.wait()?;
+                            read_state(state_download.mapped_f32()?)?
+                        }
+                    };
+                    let version = if last { s } else { ran_through + 1 };
+                    let mut state = state_of(compiled, values, version);
+                    state.moments.extend(read_moments);
+                    let run = Run {
+                        start_step: start,
+                        initial: initial.clone(),
+                        losses,
+                        state,
+                        teacher: feed.teacher(),
+                    };
+                    let ran = s - start;
+                    return Err(VulkanRunError::NonFinite(Box::new(DivergedOnDevice {
+                        diverged: Diverged { diagnostic, run },
+                        stats: count(
+                            ran,
+                            dispatches_per_step,
+                            barriers_per_step,
+                            first_submit,
+                            training,
+                            evaluation,
+                        ),
+                        profile: profile_of(&stamped, last)?,
+                    })));
+                }
+                if let Some((values, read_moments)) = state_s {
+                    if due(s)
+                        && let Some(write) = write.as_mut()
+                    {
+                        write(s + 1, &values).map_err(|error| refused(error.into()))?;
                     }
-                    Fed::Hosted(Hosted::Masked(input)) => {
-                        let gathered = gathered.as_ref().ok_or_else(|| {
-                            VulkanRunError::Plan("a masked-row input without its site".into())
-                        })?;
-                        let as_bits = |values: &[i32]| -> Vec<f32> {
-                            values.iter().map(|&v| f32::from_bits(v as u32)).collect()
-                        };
-                        let values = match input {
-                            MaskedInput::Rows => as_bits(&gathered.rows),
-                            MaskedInput::Labels => as_bits(&gathered.labels),
-                            MaskedInput::Weights => gathered.weights.clone(),
-                        };
-                        check_count(view, values.len())?;
-                        words.extend_from_slice(&values);
-                    }
-                    Fed::Hosted(scalar) => {
-                        let scalars = scalars.ok_or_else(|| {
-                            VulkanRunError::Plan("an optimizer scalar without adamw".into())
-                        })?;
-                        check_count(view, 1)?;
-                        words.push(match scalar {
-                            Hosted::LrT => scalars.lr_t,
-                            Hosted::C1 => scalars.c1,
-                            _ => scalars.c2,
-                        });
+                    if last {
+                        finished = Some((values, read_moments));
                     }
                 }
             }
-            upload.write_f32(&words)?;
         }
-        // An evaluated step reduced on the host: before the step's command buffer, each held-out
-        // batch in one of its own, read back and tallied before the next batch overwrites the
-        // download. Reduced on the device, the batches open the step's command buffer.
+        let Some(k) = next else {
+            break;
+        };
+        // The segment of steps `k..=through` one command buffer records: at most `cap` steps,
+        // ending at a due checkpoint and before an evaluated step and the last step, which is a
+        // segment of its own.
+        let through = if k == end {
+            end
+        } else {
+            let mut s = k;
+            while s + 1 - k < cap && !due(s) && s + 1 < end && !evaluated(s + 1) {
+                s += 1;
+            }
+            s
+        };
+        // A segment that starts with an evaluation or ends the run waits for the one in flight
+        // first: its evaluation reads the parameters after step `k - 1`, and the run's last
+        // command buffer is timed apart from the training clock.
+        if (k == end || evaluated(k))
+            && let Some((submitted, segment)) = in_flight.take()
+        {
+            submitted.wait()?;
+            waited.push(segment);
+            if let Some(since) = busy_since.take() {
+                training += since.elapsed();
+            }
+            continue;
+        }
+        if let Some(upload) = &uploads[parity] {
+            words.clear();
+            for s in k..=through {
+                let (inputs, ids) = feed.inputs(s).map_err(|error| refused(error.into()))?;
+                let scalars = adamw.map(|adamw| adamw.scalars(lr, s + 1, end));
+                let gathered = match &masked_site {
+                    Some(site) => Some(
+                        masked::gather(site, inputs, ids, s)
+                            .map_err(|error| refused(error.into()))?,
+                    ),
+                    None => None,
+                };
+                for (view, what) in &fed {
+                    match what {
+                        Fed::Data { name, ids: is_ids } => {
+                            push_data(&mut words, view, name, *is_ids, inputs, ids)?;
+                        }
+                        Fed::Hosted(Hosted::Token(site)) => {
+                            let token = dropout_token(site, s);
+                            check_count(view, token.len())?;
+                            words.extend(token.data().iter().map(|&w| f32::from_bits(w as u32)));
+                        }
+                        Fed::Hosted(Hosted::Projection(site, ty)) => {
+                            let projection = sigreg_projection(config.seed, site, s, ty)
+                                .map_err(|error| refused(error.into()))?;
+                            check_count(view, projection.len())?;
+                            words.extend_from_slice(projection.data());
+                        }
+                        Fed::Hosted(Hosted::Masked(input)) => {
+                            let gathered = gathered.as_ref().ok_or_else(|| {
+                                VulkanRunError::Plan("a masked-row input without its site".into())
+                            })?;
+                            let as_bits = |values: &[i32]| -> Vec<f32> {
+                                values.iter().map(|&v| f32::from_bits(v as u32)).collect()
+                            };
+                            let values = match input {
+                                MaskedInput::Rows => as_bits(&gathered.rows),
+                                MaskedInput::Labels => as_bits(&gathered.labels),
+                                MaskedInput::Weights => gathered.weights.clone(),
+                            };
+                            check_count(view, values.len())?;
+                            words.extend_from_slice(&values);
+                        }
+                        Fed::Hosted(scalar) => {
+                            let scalars = scalars.ok_or_else(|| {
+                                VulkanRunError::Plan("an optimizer scalar without adamw".into())
+                            })?;
+                            check_count(view, 1)?;
+                            words.push(match scalar {
+                                Hosted::LrT => scalars.lr_t,
+                                Hosted::C1 => scalars.c1,
+                                _ => scalars.c2,
+                            });
+                        }
+                    }
+                }
+            }
+            // SAFETY: the last submission that read this buffer, the segment two before this
+            // one, was waited for when the segment after it was submitted: at most one segment
+            // is in flight, and it reads the other buffer. Nothing takes a slice of an upload's
+            // mapping.
+            unsafe { upload.write_f32_shared(&words)? };
+        }
+        // An evaluated step reduced on the host: before the segment's command buffer, each
+        // held-out batch in one of its own, read back and tallied before the next batch
+        // overwrites the download. The projections it reads are step `k`'s, the first of the
+        // segment's upload.
         let metrics = match held_out {
-            Some(held_out) if evaluated && tally_bound.is_none() => {
+            Some(held_out) if evaluated(k) && tally_bound.is_none() => {
                 let download = prediction_download.as_mut().ok_or_else(|| {
                     VulkanRunError::Plan("a held-out evaluation without its download".into())
                 })?;
@@ -894,7 +1129,7 @@ pub fn train_stepwise_profiled(
                                 at += view.size_bytes;
                             }
                         }
-                        if let Some(upload) = &step_upload {
+                        if let Some(upload) = &uploads[parity] {
                             for (at, view) in &projection_regions {
                                 recording.copy_region(
                                     upload,
@@ -928,13 +1163,83 @@ pub fn train_stepwise_profiled(
             }
             _ => None,
         };
-        let trained = training;
-        // The last step of a run with `--eval`: before the step's command buffer, each dense eval
+        // An evaluated step reduced on the device: every held-out batch and the reduction in one
+        // command buffer before the segment's, and the reduction's state read back after its
+        // host wait, timed into the evaluation clock.
+        let metrics = match (&device_tally, &tally_bound, held_out) {
+            (Some(tally), Some(bound), Some(held_out)) if evaluated(k) => {
+                let evaluating = Instant::now();
+                {
+                    let mut recording = device.record()?;
+                    open(
+                        &mut recording,
+                        &mut opened,
+                        first_upload.as_ref(),
+                        &first_views,
+                        &buffers,
+                    )?;
+                    for b in 0..eval_batches {
+                        if b > 0 {
+                            recording.barrier(Barrier::ComputeToCompute);
+                            recording.barrier(Barrier::ComputeToTransfer);
+                            recording.barrier(Barrier::TransferToTransfer);
+                        }
+                        if let Some(upload) = &eval_upload {
+                            let mut at = b as u64 * data_bytes;
+                            for declaration in &plan.data {
+                                let view = declaration.view;
+                                recording.copy_region(
+                                    upload,
+                                    at,
+                                    buffer(&buffers, &view)?,
+                                    view.offset,
+                                    view.size_bytes,
+                                )?;
+                                at += view.size_bytes;
+                            }
+                        }
+                        if let Some(upload) = &uploads[parity] {
+                            for (at, view) in &projection_regions {
+                                recording.copy_region(
+                                    upload,
+                                    *at,
+                                    buffer(&buffers, view)?,
+                                    view.offset,
+                                    view.size_bytes,
+                                )?;
+                            }
+                        }
+                        tally.copy_targets(&mut recording, b)?;
+                        recording.barrier(Barrier::TransferToCompute);
+                        record(&mut recording, eval_actions.iter().copied(), &buffers, None)?;
+                        recording.barrier(Barrier::ComputeToCompute);
+                        tally.reduce(&mut recording, bound, b == 0);
+                    }
+                    recording.barrier(Barrier::ComputeToCompute);
+                    recording.barrier(Barrier::ComputeToTransfer);
+                    recording.barrier(Barrier::TransferToTransfer);
+                    tally.copy_state(&mut recording)?;
+                    recording.barrier(Barrier::TransferToHost);
+                    let recorded = recording.finish()?;
+                    first_submit.get_or_insert_with(Instant::now);
+                    device.submit(recorded)?.wait()?;
+                }
+                let (numerator, correct) = tally.sums()?;
+                let metrics = held_out
+                    .metrics_of_sums(numerator, correct)
+                    .map_err(refused)?;
+                evaluation += evaluating.elapsed();
+                Some(metrics)
+            }
+            _ => metrics,
+        };
+
+        // The last step of a run with `--eval`: before the step's segment, each dense eval
         // batch in one of its own, its loss, and its prediction when the accuracy is measured,
         // read back before the next batch overwrites them; the losses are summed in `f64` in
         // batch order, as the CPU evaluation sums them.
         let dense_measured = match dense_eval {
-            Some(dense) if last => {
+            Some(dense) if k == end => {
                 let mut sum = 0.0f64;
                 let mut correct = 0usize;
                 let mut rows = 0usize;
@@ -962,7 +1267,7 @@ pub fn train_stepwise_profiled(
                                 at += view.size_bytes;
                             }
                         }
-                        if let Some(upload) = &step_upload {
+                        if let Some(upload) = &uploads[parity] {
                             for (at, view) in &projection_regions {
                                 recording.copy_region(
                                     upload,
@@ -976,7 +1281,13 @@ pub fn train_stepwise_profiled(
                         recording.barrier(Barrier::TransferToCompute);
                         record(&mut recording, loss_actions.iter().copied(), &buffers, None)?;
                         recording.barrier(Barrier::ComputeToTransfer);
-                        recording.copy_region(loss, plan.loss_view.offset, &loss_download, 0, 4)?;
+                        recording.copy_region(
+                            loss,
+                            plan.loss_view.offset,
+                            &loss_downloads[parity],
+                            0,
+                            4,
+                        )?;
                         if dense_predicted {
                             let download = prediction_download.as_ref().ok_or_else(|| {
                                 VulkanRunError::Plan("a dense eval without its download".into())
@@ -994,7 +1305,7 @@ pub fn train_stepwise_profiled(
                         first_submit.get_or_insert_with(Instant::now);
                         device.submit(recorded)?.wait()?;
                     }
-                    sum += f64::from(loss_download.read_f32()?[0]);
+                    sum += f64::from(loss_downloads[parity].mapped_f32()?[0]);
                     let predicted = match prediction_download.as_mut() {
                         Some(download) if dense_predicted => Some(download.read_f32()?),
                         _ => None,
@@ -1023,68 +1334,39 @@ pub fn train_stepwise_profiled(
             }
             _ => None,
         };
-        {
-            let stepping = Instant::now();
-            let mut recording = device.record()?;
-            let mut stamps = pool.as_ref().map(|pool| Stamps { pool, next: 0 });
-            if let Some(stamps) = &stamps {
-                recording.reset_timestamps(stamps.pool);
-            }
-            open(
-                &mut recording,
-                &mut opened,
-                first_upload.as_ref(),
-                &first_views,
-                &buffers,
-            )?;
-            if let (Some(tally), Some(bound)) = (&device_tally, &tally_bound)
-                && evaluated
-            {
-                for b in 0..eval_batches {
-                    if b > 0 {
-                        recording.barrier(Barrier::ComputeToCompute);
-                        recording.barrier(Barrier::ComputeToTransfer);
-                        recording.barrier(Barrier::TransferToTransfer);
-                    }
-                    if let Some(upload) = &eval_upload {
-                        let mut at = b as u64 * data_bytes;
-                        for declaration in &plan.data {
-                            let view = declaration.view;
-                            recording.copy_region(
-                                upload,
-                                at,
-                                buffer(&buffers, &view)?,
-                                view.offset,
-                                view.size_bytes,
-                            )?;
-                            at += view.size_bytes;
-                        }
-                    }
-                    if let Some(upload) = &step_upload {
-                        for (at, view) in &projection_regions {
-                            recording.copy_region(
-                                upload,
-                                *at,
-                                buffer(&buffers, view)?,
-                                view.offset,
-                                view.size_bytes,
-                            )?;
-                        }
-                    }
-                    tally.copy_targets(&mut recording, b)?;
-                    recording.barrier(Barrier::TransferToCompute);
-                    record(&mut recording, eval_actions.iter().copied(), &buffers, None)?;
-                    recording.barrier(Barrier::ComputeToCompute);
-                    tally.reduce(&mut recording, bound, b == 0);
-                }
+        // The segment's command buffer: per step, its upload copied in from its region, its plan
+        // steps (the loss steps without dropout at the last step), and its loss copied down to
+        // its slot; the state after the segment's last step where it is read. It is submitted
+        // behind the segment in flight, which the host then waits for, so the device runs one
+        // segment while the host shows the one before to the observer and records the next.
+        let trained = training;
+        if busy_since.is_none() {
+            busy_since = Some(Instant::now());
+        }
+        let mut recording = device.record()?;
+        let mut stamps = pools[parity].as_ref().map(|pool| Stamps { pool, next: 0 });
+        if let Some(stamps) = &stamps {
+            recording.reset_timestamps(stamps.pool);
+        }
+        open(
+            &mut recording,
+            &mut opened,
+            first_upload.as_ref(),
+            &first_views,
+            &buffers,
+        )?;
+        for s in k..=through {
+            let slot = s - k;
+            if slot > 0 {
+                // The barriers that open a command buffer, and one from the copies of the step
+                // before, so that this step's copies write its views after them.
                 recording.barrier(Barrier::ComputeToCompute);
                 recording.barrier(Barrier::ComputeToTransfer);
                 recording.barrier(Barrier::TransferToTransfer);
-                tally.copy_state(&mut recording)?;
             }
             let barriers_before = recorded_barriers();
-            if let Some(upload) = &step_upload {
-                let mut at = 0;
+            if let Some(upload) = &uploads[parity] {
+                let mut at = slot * step_bytes;
                 for (view, _) in &fed {
                     recording.copy_region(
                         upload,
@@ -1098,7 +1380,7 @@ pub fn train_stepwise_profiled(
             }
             recording.barrier(Barrier::TransferToCompute);
             let before = recording.dispatches();
-            if last {
+            if s == end {
                 record(
                     &mut recording,
                     loss_actions.iter().copied(),
@@ -1115,109 +1397,51 @@ pub fn train_stepwise_profiled(
                 dispatches_per_step = recording.dispatches() - before;
             }
             recording.barrier(Barrier::ComputeToTransfer);
-            recording.copy_region(loss, plan.loss_view.offset, &loss_download, 0, 4)?;
-            if !last {
+            recording.copy_region(
+                loss,
+                plan.loss_view.offset,
+                &loss_downloads[parity],
+                4 * slot,
+                4,
+            )?;
+            if s != end {
                 barriers_per_step = recorded_barriers() - barriers_before;
             }
-            if reads_state {
-                copy_state(&mut recording, &state_views, &buffers, &state_download)?;
-            }
-            recording.barrier(Barrier::TransferToHost);
-            let recorded = recording.finish()?;
-            first_submit.get_or_insert_with(Instant::now);
-            device.submit(recorded)?.wait()?;
-            if !last {
-                training += stepping.elapsed();
-            }
-            if let Some(stamps) = stamps {
-                stamped.extend(stamps.pool.read_first(stamps.next)?);
-            }
         }
-        let metrics = match (&device_tally, held_out) {
-            (Some(tally), Some(held_out)) if evaluated => {
-                let (numerator, correct) = tally.sums()?;
-                Some(
-                    held_out
-                        .metrics_of_sums(numerator, correct)
-                        .map_err(refused)?,
-                )
-            }
-            _ => metrics,
-        };
-        let loss_k = loss_download.read_f32()?[0];
-        let state = if reads_state {
-            Some(read_state(&state_download.read_f32()?)?)
-        } else {
-            None
-        };
-        let values = if k == start {
-            Some(&initial)
-        } else if last {
-            state.as_ref().map(|(values, _)| values)
-        } else {
-            None
-        };
-        observe(&StepSeen {
-            step: k,
-            loss: loss_k,
-            held_out: metrics,
+        if reads_state(through) {
+            copy_state(&mut recording, &state_views, &buffers, &state_download)?;
+        }
+        recording.barrier(Barrier::TransferToHost);
+        let recorded = recording.finish()?;
+        first_submit.get_or_insert_with(Instant::now);
+        let submitted = device.submit(recorded)?;
+        let segment = Segment {
+            first: k,
+            through,
+            parity,
+            metrics,
             dense_eval: dense_measured,
-            values,
             trained,
-        })
-        .map_err(VulkanRunError::Run)?;
-        losses.push(loss_k);
-        let unread = BTreeMap::new();
-        let diagnostic = match &state {
-            Some((values, read_moments)) => non_finite(compiled, k, loss_k, values, read_moments),
-            None => non_finite(compiled, k, loss_k, &unread, &BTreeMap::new()),
+            stamps: stamps.map_or(0, |stamps| stamps.next),
         };
-        if let Some(diagnostic) = diagnostic {
-            let (values, read_moments) = match state {
-                Some(state) => state,
-                None => {
-                    // One more host wait: the parameters and moments the diverged run holds.
-                    let mut recording = device.record()?;
-                    recording.barrier(Barrier::ComputeToTransfer);
-                    copy_state(&mut recording, &state_views, &buffers, &state_download)?;
-                    recording.barrier(Barrier::TransferToHost);
-                    let recorded = recording.finish()?;
-                    device.submit(recorded)?.wait()?;
-                    read_state(&state_download.read_f32()?)?
-                }
-            };
-            let version = if last { k } else { k + 1 };
-            let mut state = state_of(compiled, values, version);
-            state.moments.extend(read_moments);
-            let run = Run {
-                start_step: start,
-                initial: initial.clone(),
-                losses,
-                state,
-                teacher: feed.teacher(),
-            };
-            let ran = k - start;
-            return Err(VulkanRunError::NonFinite(Box::new(DivergedOnDevice {
-                diverged: Diverged { diagnostic, run },
-                stats: count(
-                    ran,
-                    dispatches_per_step,
-                    barriers_per_step,
-                    first_submit,
-                    training,
-                    evaluation,
-                ),
-                profile: profile_of(&stamped, last)?,
-            })));
+        if let Some((behind, segment)) = in_flight.replace((submitted, segment)) {
+            behind.wait()?;
+            waited.push(segment);
         }
-        if let Some((values, read_moments)) = state {
-            if due && let Some(write) = write.as_mut() {
-                write(k + 1, &values).map_err(|error| refused(error.into()))?;
-            }
-            if last {
-                finished = Some((values, read_moments));
+        // A segment whose state the host reads, and the last, is waited for at once.
+        if reads_state(through)
+            && let Some((submitted, segment)) = in_flight.take()
+        {
+            submitted.wait()?;
+            waited.push(segment);
+            if let Some(since) = busy_since.take()
+                && through != end
+            {
+                training += since.elapsed();
             }
         }
+        parity = 1 - parity;
+        next = (through != end).then(|| through + 1);
     }
     let stats = count(
         end - start,
@@ -1573,5 +1797,22 @@ mod tests {
         )
         .expect("the artifact compiles");
         assert!(!needed(&compiled, &artifact));
+    }
+
+    #[test]
+    fn a_segment_holds_eight_steps_unless_two_segments_of_uploads_pass_the_budget() {
+        assert_eq!(steps_per_submit(0), SUBMIT_STEPS);
+        assert_eq!(steps_per_submit(64 << 10), SUBMIT_STEPS);
+        assert_eq!(
+            steps_per_submit(SUBMIT_UPLOAD_BYTES / (2 * SUBMIT_STEPS)),
+            SUBMIT_STEPS
+        );
+        assert_eq!(
+            steps_per_submit(SUBMIT_UPLOAD_BYTES / (2 * SUBMIT_STEPS) + 1),
+            7
+        );
+        assert_eq!(steps_per_submit(SUBMIT_UPLOAD_BYTES / 4), 2);
+        assert_eq!(steps_per_submit(SUBMIT_UPLOAD_BYTES), 1);
+        assert_eq!(steps_per_submit(u64::MAX / 2), 1);
     }
 }
