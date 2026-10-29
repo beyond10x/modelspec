@@ -24,7 +24,9 @@
 //! sum that reads them.
 //! `Attention`, `AttentionGradQ`, `AttentionGradK` and `AttentionGradV` are one Dispatch each of
 //! workgroups of [`ATTENTION_WORKGROUP`], one per sequence, head and tile of [`attention_tile`]
-//! rows ([`attention_workgroups`], story:vulkan-attention-workgroup-per-head), the head count a
+//! rows ([`attention_workgroups`], story:vulkan-attention-workgroup-per-head): query rows for
+//! `Attention` and `AttentionGradQ` and key rows for the other two, which differ where `q` has
+//! fewer rows per sequence than `k` (story:attention-fewer-query-rows); the head count a
 //! last immediate operand; `CrossEntropy` is two Dispatches, one invocation per row that writes
 //! the row's loss into a partials buffer, then a loss sum of one workgroup that adds the weighted
 //! losses in row order ([`cross_entropy_kernels`]), and `CrossEntropyGrad` is two Dispatches, one
@@ -1581,26 +1583,42 @@ pub fn attention_workgroup_values(tile: u64, keys: u64) -> u64 {
     rows.max(columns)
 }
 
-/// The rows of one sequence's head each workgroup of an attention kernel over `keys` keys per
-/// sequence computes: the largest power of two of at most [`MAX_ATTENTION_TILE`] and `keys` whose
-/// [`attention_workgroup_values`] fit the workgroup memory of every device
-/// ([`MIN_SHARED_MEMORY_BYTES`]); 1 past [`MAX_ATTENTION_KEYS`].
-pub fn attention_tile(keys: u64) -> u64 {
+/// The rows of one sequence's head each workgroup of an attention kernel that computes `rows`
+/// rows per sequence over `keys` keys per sequence takes: the largest power of two of at most
+/// [`MAX_ATTENTION_TILE`], `rows` and `keys` whose [`attention_workgroup_values`] fit the
+/// workgroup memory of every device ([`MIN_SHARED_MEMORY_BYTES`]); 1 past
+/// [`MAX_ATTENTION_KEYS`]. `rows` is the query rows per sequence for `Attention` and
+/// `AttentionGradQ`, at most `keys`, and `keys` for `AttentionGradK` and `AttentionGradV`
+/// (story:attention-fewer-query-rows); with `rows = keys` it is the tile every attention kernel
+/// took before.
+pub fn attention_tile(rows: u64, keys: u64) -> u64 {
     let budget = u64::from(MIN_SHARED_MEMORY_BYTES) / 4;
     let mut tile = MAX_ATTENTION_TILE;
-    while tile > 1 && (tile > keys || attention_workgroup_values(tile, keys) > budget) {
+    while tile > 1
+        && (tile > keys || tile > rows || attention_workgroup_values(tile, keys) > budget)
+    {
         tile /= 2;
     }
     tile
 }
 
-/// The workgroups of an attention kernel over `sequences` sequences of `keys` keys and `heads`
-/// heads: one per sequence, head and tile of [`attention_tile`] rows, the tiles of a head
-/// consecutive, the heads of a sequence consecutive.
-pub fn attention_workgroups(sequences: u64, keys: u64, heads: u64) -> Option<u64> {
+/// The workgroups of an attention kernel that computes `rows` rows of each of `sequences`
+/// sequences of `keys` keys and `heads` heads: one per sequence, head and tile of
+/// [`attention_tile`] rows, the tiles of a head consecutive, the heads of a sequence consecutive.
+pub fn attention_workgroups(sequences: u64, rows: u64, keys: u64, heads: u64) -> Option<u64> {
     sequences
         .checked_mul(heads)?
-        .checked_mul(keys.div_ceil(attention_tile(keys)))
+        .checked_mul(rows.div_ceil(attention_tile(rows, keys)))
+}
+
+/// The rows per sequence an attention kernel of `op` computes, the operands `q` of `[n, h]` and
+/// the key mask of `[b, s]`: the query rows `n / b` for `Attention` and `AttentionGradQ`, the
+/// keys `s` for `AttentionGradK` and `AttentionGradV`.
+pub fn attention_rows(op: &TensorOp, n: u64, b: u64, s: u64) -> u64 {
+    match op {
+        TensorOp::AttentionGradK { .. } | TensorOp::AttentionGradV { .. } => s,
+        _ => n / b,
+    }
 }
 
 /// The kernel kind of `Attention`, its three gradients, `CrossEntropy`, `CrossEntropyGrad`,
@@ -1613,9 +1631,11 @@ pub fn attention_workgroups(sequences: u64, keys: u64, heads: u64) -> Option<u64
 /// one per output element of `Sqrt` and `Div` ([`KernelKind::Elementwise`]). `None` for another
 /// op, a shape that is not static or has a zero dimension, or operands that are not the op's:
 ///
-/// - attention: `q`, `k`, `v` (and the gradient `g` of a gradient op) `f32` buffers `[N, H]`, a
-///   key mask `f32` `[B, S]` with `B·S = N` and `S` at most [`MAX_ATTENTION_KEYS`], and `heads`
-///   dividing `H`;
+/// - attention: `q` (and the gradient `g` of a gradient op) `f32` buffers `[B·L, H]`, `k` and `v`
+///   `f32` buffers `[B·S, H]`, a key mask `f32` `[B, S]` with `1 <= L <= S` and `S` at most
+///   [`MAX_ATTENTION_KEYS`], and `heads` dividing `H`, into `q`'s shape for `Attention` and
+///   `AttentionGradQ` and `k`'s for `AttentionGradK` and `AttentionGradV`, one invocation per
+///   row and head of the result;
 /// - cross-entropy row losses: logits `f32` `[N, V]` and labels `i32` `[N]` into `f32` `[N]`;
 ///   their sum: the row losses and the weights, `f32` `[N]` each, into a rank-0 result;
 /// - cross-entropy gradient: its row statistics, logits `f32` `[N, V]`, labels `i32` `[N]` and
@@ -1657,21 +1677,28 @@ fn attention_loss_shape(
             let [n, h] = rows[..] else {
                 return None;
             };
-            let same = [1, 2].into_iter().chain((arity == 5).then_some(4));
-            for at in same {
-                if f32s(at)? != rows {
-                    return None;
-                }
+            let keys = f32s(1)?;
+            let [m, kh] = keys[..] else {
+                return None;
+            };
+            if kh != h || f32s(2)? != keys || (arity == 5 && f32s(4)? != rows) {
+                return None;
             }
             let [b, s] = f32s(3)?[..] else {
                 return None;
             };
-            let fits = out == rows
+            let written = match op {
+                TensorOp::AttentionGradK { .. } | TensorOp::AttentionGradV { .. } => &keys,
+                _ => &rows,
+            };
+            let fits = out == *written
                 && h % heads == 0
-                && b.checked_mul(s) == Some(n)
+                && b.checked_mul(s) == Some(m)
+                && n % b == 0
+                && (1..=s).contains(&(n / b))
                 && s <= MAX_ATTENTION_KEYS
                 && *heads <= 1 << 24;
-            fits.then_some((KernelKind::PerRow, n.checked_mul(*heads)?))
+            fits.then_some((KernelKind::PerRow, written[0].checked_mul(*heads)?))
         }
         TensorOp::CrossEntropy => {
             if operands.len() != 2 {
@@ -1782,9 +1809,14 @@ fn attention_loss_groups(
             let [b, s] = static_dims(mask)?[..] else {
                 return None;
             };
+            let Some(Operand::Buffer(q)) = operands.first() else {
+                return None;
+            };
+            let n = *static_dims(q)?.first()?;
+            let rows = attention_rows(op, n, b, s);
             Some((
                 kind,
-                attention_workgroups(b, s, heads)?,
+                attention_workgroups(b, rows, s, heads)?,
                 ATTENTION_WORKGROUP,
             ))
         }

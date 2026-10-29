@@ -112,8 +112,9 @@ pub mod codes {
         /// `add`, `sub`, `mul` or `mse` operands of different shapes, neither of them rank 0, an
         /// `add_rows(x, b)` whose `b` is not as long as a row of `x`, a
         /// `layer_norm(x, gamma, beta)` whose `gamma` or `beta` is not as long as a row of `x`,
-        /// an `attention(q, k, v, key_mask, heads = A)` whose `k` or `v` differs from `q` in shape
-        /// or whose `key_mask` of shape `[B, S]` has `B * S` other than the rows of `q`, or a
+        /// an `attention(q, k, v, key_mask, heads = A)` whose `k` differs from `q` in width, whose
+        /// `v` differs from `k` in shape, or whose `key_mask` of shape `[B, S]` has `B * S` other
+        /// than the rows of `k` or a `B` that does not divide the rows of `q` into at most `S`, or a
         /// `cross_entropy(logits, labels, weights)` whose `labels` or `weights` is not as long as
         /// the rows of `logits`.
         SHAPE_MISMATCH = "E-TYPE-003";
@@ -1702,8 +1703,9 @@ fn op_diagnostic(
             } else if name == "add_rows" {
                 "`add_rows(x, b)` needs `b` of shape [H] for `x` of shape [N, H]".to_owned()
             } else if name == "attention" {
-                "`attention(q, k, v, key_mask, heads = A)` needs `q`, `k` and `v` of one shape \
-                 [N, H] and `key_mask` of shape [B, S] with B * S = N"
+                "`attention(q, k, v, key_mask, heads = A)` needs `k` and `v` of one shape \
+                 [B * S, H], `key_mask` of shape [B, S] and `q` of shape [B * L, H] with \
+                 1 <= L <= S"
                     .to_owned()
             } else if name == "cross_entropy" {
                 let rule = "`cross_entropy(logits, labels, weights)` needs `labels` and `weights` \

@@ -116,10 +116,14 @@ const EXAMPLES: &[Examples] = &[
     Examples {
         operator: "attention",
         named: &[NamedValue::Integer(2)],
-        accepted: &[&[&[6, 4], &[6, 4], &[6, 4], &[2, 3]]],
+        accepted: &[
+            &[&[6, 4], &[6, 4], &[6, 4], &[2, 3]],
+            &[&[2, 4], &[6, 4], &[6, 4], &[2, 3]],
+        ],
         refused: &[
             &[&[6, 4], &[6, 4], &[6, 4], &[2, 4]],
             &[&[6, 4], &[6, 2], &[6, 4], &[2, 3]],
+            &[&[8, 4], &[6, 4], &[6, 4], &[2, 3]],
         ],
     },
     Examples {
@@ -479,8 +483,8 @@ mod tests {
     }
 
     /// `attention` is on the page with its named argument `heads`: an accepted call, a key mask
-    /// of the wrong rows and `heads = 3` with `H = 4` refused, and its gradient row with the
-    /// three gradient ops.
+    /// of the wrong rows and `heads = 3` with `H = 4` refused, one query per sequence accepted
+    /// and more queries than keys refused, and its gradient row with the three gradient ops.
     #[test]
     fn attention_is_on_the_page_with_heads_and_its_gradients() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -499,6 +503,13 @@ mod tests {
         )));
         assert!(page.contains(&format!(
             "| `attention({operands}, Tensor<f32, [2, 3]>, heads = 3)` | refused: "
+        )));
+        let keys = "Tensor<f32, [6, 4]>, Tensor<f32, [6, 4]>, Tensor<f32, [2, 3]>";
+        assert!(page.contains(&format!(
+            "| `attention(Tensor<f32, [2, 4]>, {keys}, heads = 2)` | `Tensor<f32, [2, 4]>` |"
+        )));
+        assert!(page.contains(&format!(
+            "| `attention(Tensor<f32, [8, 4]>, {keys}, heads = 2)` | refused: "
         )));
         assert!(page.contains("`attention` takes `heads` (an integer literal of at least 1)"));
         let row = page

@@ -175,8 +175,10 @@ Tensor IR op `Attention`, 4 operand(s), then the named argument(s) `heads` (an i
 | Call | Result |
 |---|---|
 | `attention(Tensor<f32, [6, 4]>, Tensor<f32, [6, 4]>, Tensor<f32, [6, 4]>, Tensor<f32, [2, 3]>, heads = 2)` | `Tensor<f32, [6, 4]>` |
+| `attention(Tensor<f32, [2, 4]>, Tensor<f32, [6, 4]>, Tensor<f32, [6, 4]>, Tensor<f32, [2, 3]>, heads = 2)` | `Tensor<f32, [2, 4]>` |
 | `attention(Tensor<f32, [6, 4]>, Tensor<f32, [6, 4]>, Tensor<f32, [6, 4]>, Tensor<f32, [2, 4]>, heads = 2)` | refused: `Attention operand shapes differ`: `lhs Tensor<f32, [6, 4]>`, `rhs Tensor<f32, [2, 4]>` |
 | `attention(Tensor<f32, [6, 4]>, Tensor<f32, [6, 2]>, Tensor<f32, [6, 4]>, Tensor<f32, [2, 3]>, heads = 2)` | refused: `Attention operand shapes differ`: `lhs Tensor<f32, [6, 4]>`, `rhs Tensor<f32, [6, 2]>` |
+| `attention(Tensor<f32, [8, 4]>, Tensor<f32, [6, 4]>, Tensor<f32, [6, 4]>, Tensor<f32, [2, 3]>, heads = 2)` | refused: `Attention operand shapes differ`: `lhs Tensor<f32, [8, 4]>`, `rhs Tensor<f32, [2, 3]>` |
 | `attention(Tensor<f32, [6, 4]>, Tensor<f32, [6, 4]>, Tensor<f32, [6, 4]>, Tensor<f32, [2, 3]>, heads = 3)` | refused: `Attention needs heads to divide the width 4; got heads = 3` |
 
 ## `cross_entropy`

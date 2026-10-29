@@ -1028,7 +1028,7 @@ impl<'p, T: Element> Prepared<'p, T> {
                 let g = arg(4);
                 data.resize(n, T::ZERO);
                 for i in 0..at.rows() {
-                    let first = i % at.s == 0;
+                    let first = i % at.l == 0;
                     for head in 0..at.heads {
                         let softmax = at.softmax(i, head);
                         let d = at.row_dot(i, head, softmax, g);
@@ -1041,7 +1041,7 @@ impl<'p, T: Element> Prepared<'p, T> {
                         }
                     }
                 }
-                for j in 0..at.rows() {
+                for j in 0..at.key_rows() {
                     if at.unmasked(j) {
                         for out in &mut data[j * at.h..(j + 1) * at.h] {
                             *out = *out * at.scale;
@@ -1054,7 +1054,7 @@ impl<'p, T: Element> Prepared<'p, T> {
                 let g = arg(4);
                 data.resize(n, T::ZERO);
                 for i in 0..at.rows() {
-                    let first = i % at.s == 0;
+                    let first = i % at.l == 0;
                     for head in 0..at.heads {
                         let softmax = at.softmax(i, head);
                         for j in at.keys(i) {
@@ -1209,10 +1209,12 @@ fn fused<T: Element>(first: bool, a: T, b: T, acc: T) -> T {
     if first { a * b } else { a.mul_add(b, acc) }
 }
 
-/// The operands of one `attention` or gradient op, `q`, `k`, `v` of shape `[N, H]` and a key
-/// mask of shape `[B, S]` that [`check_key_mask`] passed, with `heads` dividing `H` (DESIGN.md
-/// § 4, coordinator decision D37). Row `i` is token `i % S` of sequence `i / S`, and the key mask
-/// entry of row `j` is element `j` of the mask; head `a` reads columns `a * H/A` to
+/// The operands of one `attention` or gradient op, `q` of shape `[B * L, H]`, `k` and `v` of shape
+/// `[B * S, H]` and a key mask of shape `[B, S]` that [`check_key_mask`] passed, with `heads`
+/// dividing `H` and `1 <= L <= S` (DESIGN.md § 4, coordinator decision D37,
+/// story:attention-fewer-query-rows). Query row `i` belongs to sequence `i / L` and key row `j` is
+/// token `j % S` of sequence `j / S`, and the key mask entry of key row `j` is element `j` of the
+/// mask; head `a` reads columns `a * H/A` to
 /// `(a + 1) * H/A - 1`. A masked key is skipped: it adds nothing to any sum, so no value of its
 /// `k` or `v` row reaches a result.
 struct Attend<'v, T> {
@@ -1221,8 +1223,10 @@ struct Attend<'v, T> {
     v: View<'v, T>,
     mask: View<'v, T>,
     heads: usize,
-    /// `S`, the tokens per sequence.
+    /// `S`, the keys per sequence.
     s: usize,
+    /// `L`, the queries per sequence: the rows of `q` over the rows of the key mask.
+    l: usize,
     /// `H`, the width of `q`, `k` and `v`.
     h: usize,
     /// `H / heads`, the width of one head.
@@ -1245,6 +1249,7 @@ impl<'v, T: Element> Attend<'v, T> {
         let d = h / heads;
         Self {
             s: mask.shape[1] as usize,
+            l: (q.shape[0] / mask.shape[0]) as usize,
             h,
             d,
             heads,
@@ -1256,9 +1261,14 @@ impl<'v, T: Element> Attend<'v, T> {
         }
     }
 
-    /// `N`, the rows of `q`.
+    /// `B * L`, the rows of `q`.
     fn rows(&self) -> usize {
         self.q.shape[0] as usize
+    }
+
+    /// `B * S`, the rows of `k` and `v`.
+    fn key_rows(&self) -> usize {
+        self.k.shape[0] as usize
     }
 
     /// The columns head `head` reads.
@@ -1273,7 +1283,7 @@ impl<'v, T: Element> Attend<'v, T> {
 
     /// The rows of the unmasked keys of the sequence of row `i`, ascending.
     fn keys(&self, i: usize) -> impl Iterator<Item = usize> + '_ {
-        let start = i / self.s * self.s;
+        let start = i / self.l * self.s;
         (start..start + self.s).filter(|&j| self.unmasked(j))
     }
 

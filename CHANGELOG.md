@@ -12,6 +12,7 @@ history.
 ### Added
 
 - A stepwise Vulkan run records up to 8 steps into one command buffer, one submit and one host wait per segment, and records the next segment while the device runs the last, with the bits, printed lines, events and checkpoints of one step per command buffer; held-out evaluations reduced on the device run in a command buffer of their own and are now timed, so `train --clock` no longer prints `eval_seconds 0.000000` after evaluations ran (story:vulkan-stepwise-multi-step-submit).
+- `attention(q, k, v, key_mask, heads = A)` takes `q` of `B * L` rows for `k` and `v` of `B * S`, `1 <= L <= S`, `L` inferred from the rows of `q` and of the key mask, on the CPU interpreter, in autodiff and on Vulkan, forward and the three gradients; `L = S` keeps its bits. The decider gathering its one read row per sequence before its last encoder layer takes a device step of 222.4 ms instead of 279.8 on an RTX 3090, the median of 3 interleaved pairs, and BERT-tiny's step is unchanged (DESIGN.md revision 0.77) (story:attention-fewer-query-rows).
 
 ### Changed
 

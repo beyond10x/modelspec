@@ -1,8 +1,9 @@
 //! `modelspec check` and `ir` on multi-head attention with a key mask (DESIGN.md § 2.1, § 2.2,
 //! § 4; story:bert-attention).
 //!
-//! `attention(q, k, v, key_mask, heads = A)` takes `q`, `k`, `v` of shape `[N, H]`, `key_mask` of
-//! shape `[B, S]` with `B * S = N`, and the named compile-time argument `heads`, an integer
+//! `attention(q, k, v, key_mask, heads = A)` takes `k`, `v` of shape `[N, H]`, `key_mask` of
+//! shape `[B, S]` with `B * S = N`, `q` of `[B * L, H]` with `1 <= L <= S`
+//! (story:attention-fewer-query-rows), and the named compile-time argument `heads`, an integer
 //! literal that divides `H`. Each refused call exits 1 with one diagnostic at the call, or at
 //! the argument it names. A file that uses `attention` correctly checks clean and lowers to a
 //! training program holding its three gradient ops. The fixtures are under `tests/fixtures/` of
