@@ -2,13 +2,16 @@
 format: aep.planning-md/3
 id: story:vulkan-cross-entropy-sum-per-row
 kind: story
-status: draft
+status: active
 title: 'CrossEntropy loss sum: per-row kernel, then one ordered sum'
 summary: Replaces the single-workgroup serial loss sum; bit-identical; about -31 ms per step
 relations:
 - decomposes: epic:bert-tiny-step-tenth
 - serves: vision:modelspec
-revision: 1
+revision: 3
+transitions:
+- {from: "draft", to: "proposed", at: "2026-10-28T20:19:06Z", actor: "human:timo", revision: 2}
+- {from: "proposed", to: "active", at: "2026-10-28T20:19:06Z", actor: "human:timo", revision: 3}
 ---
 # CrossEntropy loss sum: per-row kernel, then one ordered sum
 

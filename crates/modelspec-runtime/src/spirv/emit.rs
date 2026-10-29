@@ -224,7 +224,9 @@ fn module_for(
     variant: Variant,
     fast_math: bool,
 ) -> Result<KernelModule, EmitError> {
-    let float_controls = matches!(kernel.kind, KernelKind::LossSum | KernelKind::MatMul)
+    // The row losses of `CrossEntropy` keep the float controls of the loss sum they feed.
+    let float_controls = (matches!(kernel.kind, KernelKind::LossSum | KernelKind::MatMul)
+        || (kernel.kind, kernel.op) == (KernelKind::PerRow, "CrossEntropy"))
         && reports_float_controls(profile);
     let body = body_of(kernel, variant, profile.max_shared_memory_bytes)?;
     let chunk = match body {
@@ -385,10 +387,11 @@ fn body_of(kernel: &Kernel, variant: Variant, shared_bytes: u32) -> Result<Body,
         }
         (
             KernelKind::PerRow,
-            "Attention" | "AttentionGradQ" | "AttentionGradK" | "AttentionGradV"
+            "Attention" | "AttentionGradQ" | "AttentionGradK" | "AttentionGradV" | "CrossEntropy"
             | "CrossEntropyGrad",
         )
-        | (KernelKind::LossSum, "CrossEntropy") => {
+        | (KernelKind::LossSum, "CrossEntropy")
+        | (KernelKind::PerElement, "CrossEntropyGrad") => {
             // Only the `mse` loss sum has an undivided module (DESIGN.md § 5.4).
             if variant == Variant::Undivided {
                 return Err(unsupported());

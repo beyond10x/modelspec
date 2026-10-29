@@ -2,13 +2,16 @@
 format: aep.planning-md/3
 id: story:vulkan-embedding-grad-per-element
 kind: story
-status: draft
+status: active
 title: EmbeddingGrad with one invocation per (row, column)
 summary: Same per-element order, bit-identical; about -9 ms per step
 relations:
 - decomposes: epic:bert-tiny-step-tenth
 - serves: vision:modelspec
-revision: 1
+revision: 3
+transitions:
+- {from: "draft", to: "proposed", at: "2026-10-28T20:19:07Z", actor: "human:timo", revision: 2}
+- {from: "proposed", to: "active", at: "2026-10-28T20:19:08Z", actor: "human:timo", revision: 3}
 ---
 # EmbeddingGrad with one invocation per (row, column)
 

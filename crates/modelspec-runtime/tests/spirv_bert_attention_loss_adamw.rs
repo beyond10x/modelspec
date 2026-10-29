@@ -1,6 +1,7 @@
 //! story:bert-vulkan-kernels-attention-loss-adamw, DESIGN.md § 9 gate 6, no Vulkan instance: the
 //! eight kernels `Attention`, `AttentionGradQ`, `AttentionGradK`, `AttentionGradV`,
-//! `CrossEntropy`, `CrossEntropyGrad`, `Sqrt` and `Div` are scheduled as one dispatch each, with
+//! `CrossEntropy`, `CrossEntropyGrad`, `Sqrt` and `Div` are scheduled as one dispatch each, but
+//! `CrossEntropy` (story:vulkan-cross-entropy-sum-per-row) and `CrossEntropyGrad` as two, with
 //! a kernel record, a workgroup size and a module id, printed by `ir --stage kernel` with a FLOP
 //! and byte count; each module passes `spirv-val --target-env vulkan1.2`, on the shapes of the
 //! hidden-32 twin's AdamW step and on shapes whose edges do not fill a workgroup, and decorates
@@ -28,10 +29,10 @@ use modelspec_core::ir::kernel::{
     DispatchCount, ExecutionPlan, Kernel, KernelKind, Operand, PlanOp,
 };
 use modelspec_core::ir::print::print_kernel;
-use modelspec_core::ir::tensor::{TensorOp, TensorType};
+use modelspec_core::ir::tensor::{Dim, TensorOp, TensorType};
 use modelspec_core::ir::training::{C1_INPUT, C2_INPUT, LR_T_INPUT, dropout_sites, moment_input};
 use modelspec_core::ir::verify::verify_plan;
-use modelspec_core::schedule::{attention_loss_kernel, host_inputs, schedule};
+use modelspec_core::schedule::{self, attention_loss_kernel, host_inputs, schedule};
 use modelspec_runtime::spirv::emit::{emit, emit_kernels};
 use modelspec_runtime::spirv::validate::validate;
 
@@ -108,8 +109,9 @@ fn every_module_of_the_twin_step_passes_spirv_val() {
 
 /// Each of the eight ops is one dispatch with a kernel record of workgroup size 64 and a module
 /// id derived from it; `ir --stage kernel` prints it with its kind and a FLOP and byte count,
-/// never `uncounted`. Attention and its gradients run per row, cross-entropy as the loss sum,
-/// its gradient per row, `Sqrt` and `Div` per element of the elementwise family.
+/// never `uncounted`. Attention and its gradients run per row, cross-entropy per row and then as
+/// the loss sum, its gradient per row and then per element, `Sqrt` and `Div` per element of the
+/// elementwise family.
 #[test]
 fn each_new_op_is_one_counted_dispatch_printed_with_its_kernel() {
     let artifact = twin_artifact();
@@ -118,13 +120,14 @@ fn each_new_op_is_one_counted_dispatch_printed_with_its_kernel() {
     for op in OPS {
         let kernels: Vec<&Kernel> = plan.kernels.iter().filter(|k| k.op == op).collect();
         assert!(!kernels.is_empty(), "no kernel of {op}:\n{printed}");
-        let kind = match op {
-            "CrossEntropy" => KernelKind::LossSum,
-            "Sqrt" | "Div" => KernelKind::Elementwise,
-            _ => KernelKind::PerRow,
+        let kinds: &[KernelKind] = match op {
+            "CrossEntropy" => &[KernelKind::PerRow, KernelKind::LossSum],
+            "CrossEntropyGrad" => &[KernelKind::PerRow, KernelKind::PerElement],
+            "Sqrt" | "Div" => &[KernelKind::Elementwise],
+            _ => &[KernelKind::PerRow],
         };
         for kernel in kernels {
-            assert_eq!(kernel.kind, kind, "{}", kernel.signature());
+            assert!(kinds.contains(&kernel.kind), "{}", kernel.signature());
             assert_eq!(kernel.workgroup_size, 64, "{}", kernel.signature());
             assert_eq!(kernel.id, Kernel::module_id(&kernel.signature()));
             let dispatches: Vec<_> = plan
@@ -189,29 +192,22 @@ fn attention_kernels(b: u64, s: u64, h: u64, heads: u64) -> Vec<Kernel> {
     .collect()
 }
 
-/// The cross-entropy kernels of `n` rows of `v` classes: the loss, and its gradient with the
-/// backward seed as an immediate and as a rank-0 buffer.
+/// The cross-entropy kernels of `n` rows of `v` classes: the loss's row losses and their sum,
+/// and its gradient's row statistics and elements with the backward seed as an immediate and as
+/// a rank-0 buffer.
 fn cross_entropy_kernels(n: u64, v: u64) -> Vec<Kernel> {
     let operands = vec![f32s(&[n, v]), i32s(&[n]), f32s(&[n])];
     let mut seeded = operands.clone();
     seeded.push(Operand::Immediate(1.0));
     let mut buffered = operands.clone();
     buffered.push(f32s(&[]));
-    [
-        (TensorOp::CrossEntropy, operands, TensorType::f32_scalar()),
-        (TensorOp::CrossEntropyGrad, seeded, TensorType::f32(&[n, v])),
-        (
-            TensorOp::CrossEntropyGrad,
-            buffered,
-            TensorType::f32(&[n, v]),
-        ),
-    ]
-    .into_iter()
-    .map(|(op, operands, result)| {
-        attention_loss_kernel(&op, operands, result)
-            .unwrap_or_else(|| panic!("{} [{n}, {v}] has a kernel", op.name()))
-    })
-    .collect()
+    let loss = schedule::cross_entropy_kernels(operands, TensorType::f32_scalar())
+        .unwrap_or_else(|| panic!("CrossEntropy [{n}, {v}] has kernels"));
+    let gradients = [seeded, buffered].into_iter().flat_map(|operands| {
+        schedule::cross_entropy_grad_kernels(operands, TensorType::f32(&[n, v]))
+            .unwrap_or_else(|| panic!("CrossEntropyGrad [{n}, {v}] has kernels"))
+    });
+    loss.into_iter().chain(gradients).collect()
 }
 
 /// The `Sqrt` and `Div` kernels of `shape`: `Div` of two tensors, of a tensor by a rank-0
@@ -274,7 +270,7 @@ fn every_new_kernel_on_unaligned_shapes_passes_spirv_val() {
     }
     assert_eq!(
         modules,
-        4 * ATTENTION_SHAPES.len() + 3 * CROSS_ENTROPY_SHAPES.len() + 5 * OPTIMIZER_SHAPES.len()
+        4 * ATTENTION_SHAPES.len() + 6 * CROSS_ENTROPY_SHAPES.len() + 5 * OPTIMIZER_SHAPES.len()
     );
 }
 
@@ -296,13 +292,8 @@ fn ill_shaped_operands_have_no_kernel() {
         ),
         (
             TensorOp::CrossEntropy,
-            vec![f32s(&[6, 4]), f32s(&[6]), f32s(&[6])],
-            TensorType::f32_scalar(),
-        ),
-        (
-            TensorOp::CrossEntropyGrad,
-            vec![f32s(&[6, 4]), i32s(&[6]), f32s(&[6]), f32s(&[6])],
-            rows,
+            vec![f32s(&[6, 4]), f32s(&[6])],
+            TensorType::f32(&[6]),
         ),
     ];
     for (op, operands, result) in refused {
@@ -312,6 +303,16 @@ fn ill_shaped_operands_have_no_kernel() {
             op.name()
         );
     }
+    let float_labels = vec![f32s(&[6, 4]), f32s(&[6]), f32s(&[6])];
+    assert!(
+        schedule::cross_entropy_kernels(float_labels, TensorType::f32_scalar()).is_none(),
+        "CrossEntropy of f32 labels"
+    );
+    let vector_seed = vec![f32s(&[6, 4]), i32s(&[6]), f32s(&[6]), f32s(&[6])];
+    assert!(
+        schedule::cross_entropy_grad_kernels(vector_seed, rows).is_none(),
+        "CrossEntropyGrad of a seed that is not rank 0"
+    );
 }
 
 /// The float adds, subtracts, multiplies and `Fma`s of a module, and how many of them are
@@ -448,4 +449,97 @@ fn every_host_input_has_a_view_and_each_moment_is_written_in_place() {
             assert_eq!(input.ty, TensorType::f32_scalar(), "{}", input.name);
         }
     }
+}
+
+/// The `[n, v]` logits of the twin's `CrossEntropy`, from its row-loss kernel.
+fn logits_of(plan: &ExecutionPlan) -> (u64, u64) {
+    let rows = plan
+        .kernels
+        .iter()
+        .find(|k| k.op == "CrossEntropy" && k.kind == KernelKind::PerRow)
+        .expect("the row-loss kernel");
+    match &rows.operands[0] {
+        Operand::Buffer(ty) => match ty.shape[..] {
+            [Dim::Static(n), Dim::Static(v)] => (n, v),
+            _ => panic!("static logits: {ty}"),
+        },
+        Operand::Immediate(_) => panic!("buffered logits"),
+    }
+}
+
+/// story:vulkan-cross-entropy-sum-per-row: the twin's `CrossEntropy` is two dispatches. A
+/// `per_row` kernel, one invocation per row, writes the `n` row losses into a buffer an
+/// `Allocate` makes; after a barrier a `loss_sum` kernel of one workgroup reads them and the
+/// weights and writes the loss. The two count the FLOP the one-workgroup kernel counted,
+/// `n·(4v + 3)` and `3n + 1` against `n·(4v + 6) + 1`.
+#[test]
+fn cross_entropy_is_a_per_row_kernel_then_one_ordered_sum() {
+    let (_, plan) = twin();
+    let (n, v) = logits_of(&plan);
+    let entropy: Vec<&Kernel> = plan
+        .kernels
+        .iter()
+        .filter(|k| k.op == "CrossEntropy")
+        .collect();
+    let mut kinds: Vec<KernelKind> = entropy.iter().map(|k| k.kind).collect();
+    kinds.sort();
+    assert_eq!(
+        kinds,
+        [KernelKind::LossSum, KernelKind::PerRow],
+        "{entropy:#?}"
+    );
+    let of = |kind: KernelKind| *entropy.iter().find(|k| k.kind == kind).unwrap();
+    let (rows, sum) = (of(KernelKind::PerRow), of(KernelKind::LossSum));
+    assert_eq!(
+        rows.operands,
+        [
+            Operand::Buffer(TensorType::f32(&[n, v])),
+            Operand::Buffer(TensorType::i32(&[n]))
+        ]
+    );
+    assert_eq!(rows.result, TensorType::f32(&[n]));
+    assert_eq!(rows.workgroups, [n.div_ceil(64) as u32, 1, 1]);
+    assert_eq!(
+        sum.operands,
+        [
+            Operand::Buffer(TensorType::f32(&[n])),
+            Operand::Buffer(TensorType::f32(&[n]))
+        ]
+    );
+    assert_eq!(sum.result, TensorType::f32_scalar());
+    assert_eq!(sum.workgroups, [1, 1, 1]);
+    assert_eq!(rows.flop(), Some(n * (4 * v + 3)));
+    assert_eq!(sum.flop(), Some(3 * n + 1));
+
+    let at = |kernel: &Kernel| {
+        let found: Vec<usize> = (0..plan.step.len())
+            .filter(|&i| {
+                plan.step[i].op == PlanOp::Dispatch
+                    && plan.step[i].kernel_module_id == Some(kernel.id)
+            })
+            .collect();
+        assert_eq!(found.len(), 1, "{} is dispatched once", kernel.signature());
+        found[0]
+    };
+    let (r, s) = (at(rows), at(sum));
+    assert!(r < s, "the row losses before their sum");
+    let [partials] = plan.step[r].writes[..] else {
+        panic!("the per-row kernel writes one view");
+    };
+    assert_eq!(plan.step[s].reads[0], partials);
+    assert_eq!(plan.step[s].writes, [plan.loss_view]);
+    assert!(
+        plan.step[..r]
+            .iter()
+            .any(|step| step.op == PlanOp::Allocate && step.writes == [partials]),
+        "an Allocate makes the row losses' buffer"
+    );
+    assert!(
+        plan.step[s]
+            .depends_on
+            .iter()
+            .any(|&b| b > r && plan.step[b].op == PlanOp::Barrier),
+        "the sum waits on a barrier after the row losses"
+    );
+    verify_plan(&plan).unwrap_or_else(|error| panic!("the twin's plan verifies: {error}"));
 }

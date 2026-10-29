@@ -27,6 +27,7 @@ use modelspec_core::ir::tensor::{Dim, TensorOp, TensorType};
 use modelspec_core::schedule::rowwise_kernel;
 use modelspec_runtime::spirv::emit::{emit, emit_kernels};
 use modelspec_runtime::spirv::validate::validate;
+use modelspec_runtime::vulkan::dispatch::kernel_bindings;
 use modelspec_runtime::vulkan::runner::{DeviceRunError, infer_on_device};
 
 const FIXTURE: &str = include_str!(concat!(
@@ -356,4 +357,95 @@ fn device_inference_with_dropout_is_refused_before_vulkan_is_loaded() {
     );
     let span = refused.span.as_ref().expect("a span");
     assert_eq!((span.line, span.column), (10, 24), "{refused}");
+}
+
+/// story:vulkan-embedding-grad-per-element: `EmbeddingGrad` is one invocation per element of
+/// the `[v, h]` table gradient, `v·h` of them in workgroups of 64, each adding the gradient
+/// column of every id equal to its row in ascending id position, so it still counts one FLOP
+/// per element of the gradient it reads: on the block's 11 by 13 table and on tables whose
+/// elements do not fill a workgroup.
+#[test]
+fn embedding_grad_is_one_invocation_per_table_element() {
+    let artifact = block();
+    let plan = &artifact.execution;
+    let grads: Vec<&Kernel> = plan
+        .kernels
+        .iter()
+        .filter(|k| k.op == "EmbeddingGrad")
+        .collect();
+    assert_eq!(grads.len(), 1, "{grads:#?}");
+    let mut kernels: Vec<(Kernel, u64, u64, u64)> = vec![(grads[0].clone(), 5, 13, 11)];
+    for (n, h, v) in [(1, 1, 1), (63, 65, 3), (65, 7, 129), (130, 33, 2)] {
+        let built = kernels_of_shape(n, h, v)
+            .into_iter()
+            .find(|k| k.op == "EmbeddingGrad")
+            .expect("an EmbeddingGrad kernel");
+        kernels.push((built, n, h, v));
+    }
+    for (kernel, n, h, v) in &kernels {
+        let signature = kernel.signature();
+        assert_eq!(kernel.kind, KernelKind::PerElement, "{signature}");
+        assert_eq!(kernel.workgroup_size, 64, "{signature}");
+        assert_eq!(
+            kernel.workgroups,
+            [(v * h).div_ceil(64) as u32, 1, 1],
+            "{signature}"
+        );
+        assert_eq!(kernel.flop(), Some(n * h), "{signature}");
+        let bindings = kernel_bindings(kernel).expect("the kernel binds");
+        assert_eq!(u64::from(bindings.count), v * h, "{signature}");
+        assert_eq!(bindings.invocations, v * h, "{signature}");
+        assert_valid(kernel);
+    }
+    let id = grads[0].id;
+    let printed = print_kernel(plan);
+    assert!(
+        printed.lines().any(|l| l.starts_with("kernel ")
+            && l.contains(&format!(" {id} per_element EmbeddingGrad "))),
+        "{printed}"
+    );
+}
+
+/// `OpVariable`, its storage class `Workgroup`, and `OpControlBarrier`.
+const OP_VARIABLE: u32 = 59;
+const STORAGE_WORKGROUP: u32 = 4;
+const OP_CONTROL_BARRIER: u32 = 224;
+
+/// The `EmbeddingGrad` module stages the ids in workgroup memory, 64 at a time, between
+/// barriers, so each invocation compares its row with ids it reads from there: one
+/// `Workgroup` variable and a barrier, on the block's table and on tables whose elements do not
+/// fill a workgroup.
+#[test]
+fn embedding_grad_stages_the_ids_in_workgroup_memory() {
+    let artifact = block();
+    let mut kernels: Vec<Kernel> = artifact
+        .execution
+        .kernels
+        .iter()
+        .filter(|k| k.op == "EmbeddingGrad")
+        .cloned()
+        .collect();
+    for (n, h, v) in [(1, 1, 1), (63, 65, 3), (65, 7, 129), (130, 33, 2)] {
+        kernels.extend(
+            kernels_of_shape(n, h, v)
+                .into_iter()
+                .filter(|k| k.op == "EmbeddingGrad"),
+        );
+    }
+    assert_eq!(kernels.len(), 5);
+    for kernel in &kernels {
+        let words = emit(kernel).expect("the kernel emits");
+        let module = instructions(&words);
+        let workgroup = module
+            .iter()
+            .filter(|(op, w)| *op == OP_VARIABLE && w[3] == STORAGE_WORKGROUP)
+            .count();
+        let barriers = module
+            .iter()
+            .filter(|(op, _)| *op == OP_CONTROL_BARRIER)
+            .count();
+        assert_eq!(workgroup, 1, "{}", kernel.signature());
+        assert!(barriers > 0, "{}", kernel.signature());
+        assert_valid(kernel);
+    }
 }
