@@ -303,7 +303,8 @@ pub struct Args {
     #[arg(long)]
     pub clock: bool,
     /// The most steps a stepwise Vulkan run records into one command buffer, instead of the
-    /// runner's choice: the lines and losses are those of any other N (for tests).
+    /// runner's choice, at most the run's steps: the lines and losses are those of any other N
+    /// (for tests).
     #[arg(long, value_name = "N", hide = true, value_parser = clap::value_parser!(u64).range(1..))]
     pub submit_steps: Option<u64>,
     /// After the last step, write the parameters, step and optimizer to the .msckpt file PATH. A

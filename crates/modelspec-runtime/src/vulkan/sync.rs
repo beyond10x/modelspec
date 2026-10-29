@@ -30,7 +30,9 @@ pub enum Barrier {
     ComputeToCompute,
     /// Dispatches wrote, before copies read.
     ComputeToTransfer,
-    /// Copies wrote, before later copies read.
+    /// Dispatches wrote, before copies overwrite what they wrote.
+    ComputeToTransferWrite,
+    /// Copies wrote, before later copies read or write.
     TransferToTransfer,
     /// Copies wrote, before the host reads after the fence.
     TransferToHost,
@@ -65,6 +67,12 @@ impl Barrier {
                 A::SHADER_WRITE,
                 S::TRANSFER,
                 A::TRANSFER_READ,
+            ),
+            Self::ComputeToTransferWrite => (
+                S::COMPUTE_SHADER,
+                A::SHADER_WRITE,
+                S::TRANSFER,
+                A::TRANSFER_WRITE,
             ),
             Self::TransferToTransfer => (
                 S::TRANSFER,

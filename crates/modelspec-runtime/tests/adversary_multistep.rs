@@ -347,7 +347,7 @@ fn first_difference(a: &Finished, b: &Finished) -> Option<String> {
 /// choice: no validation message at any K. Each K runs on an instance of its own, the runner's
 /// choice first, since the layer stops repeating a message after its duplicate limit.
 #[test]
-#[ignore = "finding MS-1: back-to-back segments race on the per-step copies (WRITE_AFTER_WRITE)"]
+#[ignore = "device: needs a Vulkan device"]
 fn ms_device_back_to_back_segments_are_sync_clean() {
     {
         let gpu = gpu();
@@ -586,7 +586,7 @@ fn ms_device_a_resumed_run_is_the_bits_of_one_step_per_submit() {
 /// parameters and versions after the failing step, not after the last step the device ran past
 /// it.
 #[test]
-#[ignore = "finding MS-2: a diverged run returns the state after the last step the device ran, not the failing step's"]
+#[ignore = "device: needs a Vulkan device"]
 fn ms_device_a_diverged_run_returns_the_state_of_its_failing_step() {
     let gpu = gpu();
     let device = gpu
@@ -654,7 +654,7 @@ fn ms_device_a_diverged_run_returns_the_state_of_its_failing_step() {
 /// The largest `submit_steps` is a refusal or a run, not a panic: the runner sizes two upload
 /// buffers of `step_bytes · K`.
 #[test]
-#[ignore = "finding MS-3: submit_steps u64::MAX overflows step_bytes * cap (device)"]
+#[ignore = "device: needs a Vulkan device"]
 fn ms_device_the_largest_submit_steps_does_not_panic() {
     let gpu = gpu();
     let device = gpu

@@ -80,7 +80,7 @@ fn ms_cli_submit_steps_zero_and_negative_are_usage_errors() {
 /// MS-3. `--submit-steps 18446744073709551615` (u64::MAX, which the flag accepts) is a refusal
 /// or a run, exit 0 or 1, not a panic (exit 101).
 #[test]
-#[ignore = "finding MS-3: --submit-steps u64::MAX overflows step_bytes * cap (device)"]
+#[ignore = "device: needs a Vulkan device"]
 fn ms_cli_the_largest_submit_steps_is_not_a_panic() {
     let dir = scratch("largest");
     let file = source(&dir);

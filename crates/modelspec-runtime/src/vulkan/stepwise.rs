@@ -87,7 +87,10 @@
 //! moments where it read them, with E-TRAIN-001 as the CPU run does, and shows the steps to the
 //! observer ([`StepSeen`]) in order. A step whose loss is not finite stops the run at that step,
 //! after the host waited for the segment in flight, with one more host wait, which reads the
-//! parameters and moments the diverged run holds: those after the last step the device ran.
+//! parameters and moments after that step, as one step per command buffer leaves them: each
+//! segment first copies the parameters and moments it starts from into a device buffer of its
+//! own, one per upload buffer, and that command buffer copies them back, runs the segment's
+//! steps through the failing one again from the segment's uploads and copies the result down.
 //!
 //! The run keeps a training clock (story:bert-tiny-vs-pytorch-cuda, coordinator decision D87):
 //! [`RunStats::training`] sums the spans in which segments are in flight, from recording the
@@ -593,13 +596,24 @@ pub fn train_stepwise_profiled(
 
     // What goes up before every step: the batch, the tokens and the scalars, one region per step
     // of a segment, in two buffers: the segment in flight's and the one recorded behind it.
+    // A segment holds no more steps than the run has, so a named `submit_steps` past them sizes
+    // the buffers for the run's steps (finding MS-3), and one whose buffers would pass `u64`
+    // bytes is refused.
     let step_bytes: u64 = fed.iter().map(|(view, _)| view.size_bytes).sum();
     let cap = submit_steps
         .unwrap_or_else(|| steps_per_submit(step_bytes))
+        .min((end - start).saturating_add(1))
         .max(1);
+    let too_large = || {
+        VulkanRunError::Plan(format!(
+            "{cap} steps per command buffer of {step_bytes} upload bytes each exceed the sizes \
+             a stepwise run addresses"
+        ))
+    };
+    let upload_bytes = step_bytes.checked_mul(cap).ok_or_else(too_large)?;
     let uploads = [
-        staging(device, step_bytes * cap)?,
-        staging(device, step_bytes * cap)?,
+        staging(device, upload_bytes)?,
+        staging(device, upload_bytes)?,
     ];
     // Where each projection lies in the per-step upload: a held-out batch reads the projections
     // of the step it is evaluated at, as the CPU evaluation does.
@@ -687,14 +701,22 @@ pub fn train_stepwise_profiled(
     let predicted_batches = host_tallied + if dense_predicted { dense_batches } else { 0 };
     let download = download_bytes(&prediction, predicted_batches);
     // One loss slot per step of a segment, in two buffers as the uploads are.
+    let loss_bytes = download.loss.checked_mul(cap).ok_or_else(too_large)?;
     let loss_downloads = [
-        device.download_buffer(download.loss * cap)?,
-        device.download_buffer(download.loss * cap)?,
+        device.download_buffer(loss_bytes)?,
+        device.download_buffer(loss_bytes)?,
     ];
     let mut prediction_download = download_buffer(device, download.prediction)?;
     let param_bytes: u64 = plan.parameters.iter().map(|p| p.views[0].size_bytes).sum();
     let moment_bytes: u64 = moments.iter().map(|(view, _, _)| view.size_bytes).sum();
     let state_download = device.download_buffer(param_bytes + moment_bytes)?;
+    // The parameters and moments at the start of a segment, copied on the device as it starts,
+    // one buffer per upload buffer: a run that diverges inside a segment the device ran past
+    // restores them and runs the segment's steps again through the failing one (finding MS-2).
+    let backups = [
+        device.device_local_buffer(param_bytes + moment_bytes)?,
+        device.device_local_buffer(param_bytes + moment_bytes)?,
+    ];
 
     let dispatch_steps = plan
         .step
@@ -771,7 +793,12 @@ pub fn train_stepwise_profiled(
     let clock = device
         .clock()
         .filter(|_| profiled && profile.timestamp_queries);
-    let queries = count_u32(2 * (step_sites.len() * cap as usize).max(final_sites.len()))?;
+    let segment_sites = usize::try_from(cap)
+        .ok()
+        .and_then(|cap| step_sites.len().checked_mul(cap))
+        .and_then(|sites| sites.max(final_sites.len()).checked_mul(2))
+        .ok_or_else(too_large)?;
+    let queries = count_u32(segment_sites)?;
     let pools = match clock {
         Some(_) => [
             Some(device.timestamp_pool(queries)?),
@@ -869,7 +896,8 @@ pub fn train_stepwise_profiled(
     };
 
     let mut losses: Vec<f32> = Vec::new();
-    let mut words: Vec<f32> = Vec::with_capacity((cap * step_bytes / 4) as usize);
+    let mut words: Vec<f32> =
+        Vec::with_capacity(usize::try_from(upload_bytes / 4).map_err(|_| too_large())?);
     let mut finished = None;
     // Whether a command buffer of the run was recorded ([`open`]).
     let mut opened = false;
@@ -941,25 +969,57 @@ pub fn train_stepwise_profiled(
                     None => non_finite(compiled, s, loss_s, &unread, &BTreeMap::new()),
                 };
                 if let Some(diagnostic) = diagnostic {
-                    // The device also ran the rest of the segment and the segment in flight: the
-                    // parameters and moments it holds are those after the last of them.
-                    let ran_through = match in_flight.take() {
-                        Some((submitted, behind)) => {
-                            submitted.wait()?;
-                            behind.through
-                        }
-                        None => through,
-                    };
+                    // The device may also have run the rest of the segment and the segment in
+                    // flight, past step `s`.
+                    if let Some((submitted, _)) = in_flight.take() {
+                        submitted.wait()?;
+                    }
                     if let Some(since) = busy_since.take() {
                         training += since.elapsed();
                     }
                     let (values, read_moments) = match state_s {
                         Some(state) => state,
                         None => {
-                            // One more host wait: the parameters and moments the diverged run
-                            // holds.
+                            // One more host wait: the parameters and moments after step `s`, as
+                            // one step per command buffer leaves them (finding MS-2). The
+                            // segment's start state comes back from its backup and its steps
+                            // through `s` run again from its uploads, which no later segment
+                            // has overwritten, and the result comes down.
                             let mut recording = device.record()?;
+                            recording.barrier(Barrier::ComputeToCompute);
+                            recording.barrier(Barrier::ComputeToTransferWrite);
+                            recording.barrier(Barrier::TransferToTransfer);
+                            restore_state(&mut recording, &state_views, &buffers, &backups[was])?;
+                            for r in (first..=s).filter(|r| *r != end) {
+                                let slot = r - first;
+                                if slot > 0 {
+                                    recording.barrier(Barrier::ComputeToCompute);
+                                    recording.barrier(Barrier::ComputeToTransfer);
+                                    recording.barrier(Barrier::TransferToTransfer);
+                                }
+                                if let Some(upload) = &uploads[was] {
+                                    let mut at = slot * step_bytes;
+                                    for (view, _) in &fed {
+                                        recording.copy_region(
+                                            upload,
+                                            at,
+                                            buffer(&buffers, view)?,
+                                            view.offset,
+                                            view.size_bytes,
+                                        )?;
+                                        at += view.size_bytes;
+                                    }
+                                }
+                                recording.barrier(Barrier::TransferToCompute);
+                                record(
+                                    &mut recording,
+                                    train_actions.iter().copied(),
+                                    &buffers,
+                                    None,
+                                )?;
+                            }
                             recording.barrier(Barrier::ComputeToTransfer);
+                            recording.barrier(Barrier::TransferToTransfer);
                             copy_state(&mut recording, &state_views, &buffers, &state_download)?;
                             recording.barrier(Barrier::TransferToHost);
                             let recorded = recording.finish()?;
@@ -967,7 +1027,7 @@ pub fn train_stepwise_profiled(
                             read_state(state_download.mapped_f32()?)?
                         }
                     };
-                    let version = if last { s } else { ran_through + 1 };
+                    let version = if last { s } else { s + 1 };
                     let mut state = state_of(compiled, values, version);
                     state.moments.extend(read_moments);
                     let run = Run {
@@ -1355,6 +1415,7 @@ pub fn train_stepwise_profiled(
             &first_views,
             &buffers,
         )?;
+        copy_state(&mut recording, &state_views, &buffers, &backups[parity])?;
         for s in k..=through {
             let slot = s - k;
             if slot > 0 {
@@ -1646,7 +1707,10 @@ impl<'d> DeviceTally<'d> {
 /// Starts a command buffer of a stepwise run. The first of the run copies the parameters'
 /// initial values and the zero moments up from `first`, the views `views` one after the other;
 /// every later one starts after the one before it, whose dispatches wrote what this one's read
-/// and read the views its copies overwrite.
+/// and read the views its copies overwrite, and whose copies wrote the views and buffers this
+/// one's copies overwrite (story:vulkan-stepwise-multi-step-submit, finding MS-1: a segment
+/// submitted behind the one in flight runs after it with no host wait between them). Either way
+/// the copies this one records next read and write after those before them.
 fn open<'r>(
     recording: &mut Recording<'r>,
     opened: &mut bool,
@@ -1657,6 +1721,7 @@ fn open<'r>(
     if *opened {
         recording.barrier(Barrier::ComputeToCompute);
         recording.barrier(Barrier::ComputeToTransfer);
+        recording.barrier(Barrier::TransferToTransfer);
     } else if let Some(upload) = first {
         let mut at = 0;
         for view in views {
@@ -1669,6 +1734,7 @@ fn open<'r>(
             )?;
             at += view.size_bytes;
         }
+        recording.barrier(Barrier::TransferToTransfer);
     }
     *opened = true;
     Ok(())
@@ -1688,6 +1754,28 @@ fn copy_state<'r>(
             view.offset,
             download,
             at,
+            view.size_bytes,
+        )?;
+        at += view.size_bytes;
+    }
+    Ok(())
+}
+
+/// Copies `from`, laid out as [`copy_state`] lays out its download, back into the views `views`
+/// of `buffers`.
+fn restore_state<'r>(
+    recording: &mut Recording<'r>,
+    views: &[BufferView],
+    buffers: &'r [Buffer<'_>],
+    from: &'r Buffer<'_>,
+) -> Result<(), VulkanRunError> {
+    let mut at = 0;
+    for view in views {
+        recording.copy_region(
+            from,
+            at,
+            buffer(buffers, view)?,
+            view.offset,
             view.size_bytes,
         )?;
         at += view.size_bytes;
