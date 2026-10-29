@@ -2,14 +2,17 @@
 format: aep.planning-md/3
 id: epic:bert-tiny-parity-with-eager
 kind: epic
-status: draft
+status: active
 title: Full BERT-tiny at parity with PyTorch eager per step
 summary: Median us per step of bert_tiny.mspec at batch 32 on Vulkan at most PyTorch eager's, same day, f32.
 relations:
 - decomposes: initiative:bert-tiny-beats-pytorch
 - depends_on: epic:transformer-block-within-3x
 - serves: vision:modelspec
-revision: 1
+revision: 3
+transitions:
+- {from: "draft", to: "proposed", at: "2026-10-29T03:20:12Z", actor: "human:timo", revision: 2}
+- {from: "proposed", to: "active", at: "2026-10-29T03:20:12Z", actor: "human:timo", revision: 3}
 ---
 ## Outcome
 

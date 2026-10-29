@@ -167,7 +167,8 @@ fn adversary_every_published_gflops_cell_follows_its_run() {
 }
 
 /// Every run that counts by `MatmulOnly` states its workload's count (spec/domains/benchmark.yaml,
-/// FlopRule): `3196·B·H` for the sweep and `339,738,624·B` for `transformer-block`, so the sides
+/// FlopRule): `3196·B·H` for the sweep, `339,738,624·B` for `transformer-block` and
+/// `1,170,210,816·B` for `bert-tiny-pretrain`, so the sides
 /// of one point state one count; `MatmulOnly` on any other workload is wrong.
 #[test]
 fn adversary_every_matmul_only_run_states_3196_b_h() {
@@ -185,6 +186,7 @@ fn adversary_every_matmul_only_run_states_3196_b_h() {
                 .zip(run.hidden)
                 .map(|(batch, hidden)| 3196 * batch * hidden),
             "transformer-block" => run.batch.map(|batch| 339_738_624 * batch),
+            "bert-tiny-pretrain" => run.batch.map(|batch| 1_170_210_816 * batch),
             _ => None,
         };
         if expected.is_none() || run.flop != expected {
@@ -543,14 +545,19 @@ fn adversary_a_realistic_first_transformer_run_leaves_not_measured() {
     assert_eq!(outcome.code, Some(0), "{}", outcome.stderr);
     let page = read(&root, PAGE);
     assert!(page.contains("\n## Transformer block\n"), "{page}");
-    let not_measured = &page[page
+    // BERT-tiny pre-training has runs since verification-report:bert-tiny-vs-pytorch-2026-10-28,
+    // so with the block measured no declared workload is left and the section is gone.
+    let not_measured = page
         .find("\n## Not measured\n")
-        .expect("BERT is still listed")..];
+        .map_or("", |at| &page[at..]);
     assert!(
         !not_measured.contains("Transformer block"),
         "{not_measured}"
     );
-    assert!(not_measured.contains("**BERT-tiny pre-training**"));
+    assert!(
+        !page.contains("- **BERT-tiny pre-training** (`bert-tiny-pretrain`)"),
+        "{page}"
+    );
     assert!(
         root.join("website/static/img/benchmarks/transformer-block-batch.svg")
             .is_file()

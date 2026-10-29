@@ -47,6 +47,7 @@ fn kernel(op: &'static str, operands: Vec<Operand>, count: u64) -> Kernel {
         reduces: None,
         epilogue: None,
         transposed: [false, false],
+        softmax_stats: None,
         workgroup_size: kind.workgroup_size(),
         workgroups: [u32::try_from(groups).expect("one dimension"), 1, 1],
     };

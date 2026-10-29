@@ -153,7 +153,29 @@ impl Buffer<'_> {
         self.write_words(values)
     }
 
+    /// [`Buffer::write_f32`] through a shared reference, for a staging buffer that a recording
+    /// still borrows while the host fills it for the next submission (a stepwise run's per-step
+    /// uploads, written while the segment before them runs).
+    ///
+    /// # Safety
+    ///
+    /// No submission that reads or writes the buffer is pending, and no slice
+    /// [`Buffer::mapped_f32`] returned for it is alive.
+    pub unsafe fn write_f32_shared(&self, values: &[f32]) -> Result<(), ExecError> {
+        // SAFETY: the caller's contract is this one's.
+        unsafe { self.write_words_shared(values) }
+    }
+
     fn write_words<T: Copy>(&mut self, values: &[T]) -> Result<(), ExecError> {
+        // SAFETY: `self` is borrowed mutably, so no recording that could be pending borrows the
+        // buffer and no slice of its mapping is alive.
+        unsafe { self.write_words_shared(values) }
+    }
+
+    /// # Safety
+    ///
+    /// As [`Buffer::write_f32_shared`]'s.
+    unsafe fn write_words_shared<T: Copy>(&self, values: &[T]) -> Result<(), ExecError> {
         let needed = std::mem::size_of_val(values) as u64;
         let at = self.mapped.ok_or(ExecError::NotHostVisible)?;
         if needed > self.bytes {
@@ -162,8 +184,8 @@ impl Buffer<'_> {
                 size: self.bytes,
             });
         }
-        // SAFETY: the mapping covers `bytes` bytes, at least `needed`, and nothing else
-        // references it while `self` is borrowed mutably.
+        // SAFETY: the mapping covers `bytes` bytes, at least `needed`, and by the caller's
+        // contract neither the device nor a slice of the mapping reads it meanwhile.
         unsafe { std::ptr::copy_nonoverlapping(values.as_ptr().cast::<u8>(), at, needed as usize) };
         Ok(())
     }
@@ -205,12 +227,25 @@ impl Buffer<'_> {
     ///
     /// [`Submitted::wait`]: super::dispatch::Submitted::wait
     pub fn read_f32(&mut self) -> Result<Vec<f32>, ExecError> {
+        self.mapped_f32().map(<[f32]>::to_vec)
+    }
+
+    /// The words of a host-visible buffer where they are mapped, without copying them, as
+    /// [`Buffer::read_f32`] reads them: after the host wait of the work that wrote them, and
+    /// before any work that writes them again is submitted, which the borrow prevents. A
+    /// held-out batch's logits are 134 MB on `examples/bert_tiny.mspec`, and copying them took
+    /// about 50 ms per batch on the RTX 3090 host (story:bert-tiny-vs-pytorch-cuda).
+    pub fn mapped_f32(&self) -> Result<&[f32], ExecError> {
         let at = self.mapped.ok_or(ExecError::NotHostVisible)?;
         let count = (self.bytes / 4) as usize;
-        let mut values = vec![0f32; count];
-        // SAFETY: the mapping covers `bytes` bytes, at least `4 * count`.
-        unsafe { std::ptr::copy_nonoverlapping(at, values.as_mut_ptr().cast::<u8>(), count * 4) };
-        Ok(values)
+        // A mapping starts at `minMemoryMapAlignment`, at least 64 bytes, and the buffer at its
+        // memory's offset 0, so the words are aligned; anything else is refused, never read.
+        if at.align_offset(std::mem::align_of::<f32>()) != 0 {
+            return Err(ExecError::NotHostVisible);
+        }
+        // SAFETY: the mapping covers `bytes` bytes, at least `4 * count`, is aligned for `f32`
+        // (checked above) and stays mapped while `self` lives; every bit pattern is an `f32`.
+        Ok(unsafe { std::slice::from_raw_parts(at.cast::<f32>(), count) })
     }
 }
 

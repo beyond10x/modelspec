@@ -67,6 +67,10 @@ fn stats() -> RunStats {
         peak_device_bytes: 1024,
         class: NumericsClass::Tolerance,
         elapsed: Duration::from_micros(90),
+        training: Duration::from_micros(90),
+        evaluation: Duration::ZERO,
+        pipelines: 6,
+        pipeline_creation: Duration::from_micros(1500),
     }
 }
 
@@ -88,7 +92,9 @@ fn the_stats_lines_name_the_barriers_per_step_the_device_allocations_and_the_pea
          device allocations: 5\n\
          peak device bytes: 1024\n\
          numerics class: tolerance\n\
-         us per step: 30.000\n"
+         us per step: 30.000\n\
+         pipelines: 6\n\
+         pipeline creation us: 1500.000\n"
     );
 }
 

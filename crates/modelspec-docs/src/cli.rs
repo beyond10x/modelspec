@@ -91,11 +91,13 @@ fn possible_values(arg: &clap::Arg) -> String {
     }
 }
 
-/// One row per argument of `command`: how it is written, whether it is required, its default and
-/// its help.
+/// One row per argument of `command` that its help shows: how it is written, whether it is
+/// required, its default and its help. A hidden argument, such as a test override, has no row,
+/// as a hidden possible value has no line.
 fn arguments(command: &clap::Command) -> Vec<[String; 4]> {
     command
         .get_arguments()
+        .filter(|arg| !arg.is_hide_set())
         .filter(|arg| !matches!(arg.get_id().as_str(), "help" | "version"))
         .map(|arg| {
             let value = arg
@@ -322,5 +324,28 @@ mod tests {
         assert!(page.contains("<br/>`kernel`: Kernel IR"));
         assert!(page.contains("| `2` | a usage error |"));
         assert!(!page.contains("modelspec help"));
+    }
+
+    /// A hidden argument, such as `train --submit-steps`, a test override, has no row, as its
+    /// help hides it (finding MS-5).
+    #[test]
+    fn a_hidden_argument_has_no_row() {
+        let command = modelspec_cli::Cli::command();
+        let train = command.find_subcommand("train").expect("modelspec train");
+        let hidden: Vec<&clap::Arg> = train
+            .get_arguments()
+            .filter(|arg| arg.is_hide_set())
+            .collect();
+        assert!(
+            hidden
+                .iter()
+                .any(|arg| arg.get_long() == Some("submit-steps")),
+            "train hides --submit-steps"
+        );
+        let page = page();
+        for arg in hidden {
+            let long = arg.get_long().expect("a hidden flag");
+            assert!(!page.contains(&format!("`--{long}")), "--{long} has a row");
+        }
     }
 }

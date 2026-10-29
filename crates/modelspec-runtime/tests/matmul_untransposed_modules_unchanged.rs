@@ -9,7 +9,10 @@
 //! at the base commit, with the blake3 of the words `emit` gives, recorded with
 //! `MODELSPEC_SAME_BITS_RECORD=1`. The hashes of the signatures that still occur were re-recorded
 //! once at story:deterministic-fma, whose fused multiply-add changed the matmul and loss-sum
-//! words (DESIGN.md § 12 ADR-009). Needs no device.
+//! words (DESIGN.md § 12 ADR-009), and the loss-sum hashes alone at
+//! story:vulkan-loss-sum-overflow-parity, which adds a sum of each difference scaled by the
+//! reciprocal of the element count, written where the unscaled sum overflows (DESIGN.md § 5.4,
+//! revision 0.75). Needs no device.
 #![cfg(feature = "vulkan")]
 
 use std::collections::{BTreeMap, BTreeSet};

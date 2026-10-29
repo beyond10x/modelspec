@@ -3,7 +3,9 @@
 //!
 //! A profiled run ([`super::runner::train_profiled`]) writes a timestamp before each dispatch
 //! (top of pipe) and after it (bottom of pipe), for every step and for the final loss
-//! evaluation, into query pools it reads back after its one host wait. [`timings`] sums the
+//! evaluation, into query pools it reads back after its one host wait; a stepwise run
+//! ([`super::stepwise::train_stepwise_profiled`]) writes them into one pool it resets in each
+//! step's command buffer and reads back after that step's host wait. [`timings`] sums the
 //! stamps per dispatch site: one site per Dispatch step of the step plan, called once per
 //! step, then one per Dispatch step the final loss evaluation records, called once. Two sites
 //! that dispatch one module are two sites. Each site carries the FLOP and bytes of its plan

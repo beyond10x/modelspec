@@ -14,11 +14,16 @@
 //!   workgroup-memory loads (for the block, components of `vec4` workgroup-memory loads) and whose
 //!   addend is the accumulator: the `k = 0` product, an earlier
 //!   `Fma` or a load of the accumulator's function variable;
-//! - a loss-sum module holds no `OpFAdd`, one `OpFMul` (the first term), and an `Fma` for every
-//!   later term, each squaring one difference `a - b` that the module stages;
+//! - an undivided loss-sum module holds no `OpFAdd`, one `OpFMul` (the first term), and an `Fma`
+//!   for every later term, each squaring one difference `a - b` that the module stages; the
+//!   plan's loss-sum module holds that sum and a scaled one beside it: no `OpFAdd`, three
+//!   `OpFMul` for the first term (its square, the difference times `1/n`, that times the
+//!   difference), and for every later term an `Fma` of each sum and one more `OpFMul`, the first
+//!   factor of the scaled sum's `Fma`, a staged difference times `1/n`; every constant an `OpFMul`
+//!   reads is `1/n` rounded to `f32`, for `n` the element count (DESIGN.md § 5.4, revision 0.75);
 //! - no `OpFAdd` anywhere reads an `OpFMul` result, the factors of every `Fma` are not themselves
-//!   products, and `GLSL.std.450` is imported exactly once by a module that uses it and by no
-//!   other module;
+//!   products but for that scaled difference of the plan's loss sum, and `GLSL.std.450` is
+//!   imported exactly once by a module that uses it and by no other module;
 //! - in a deterministic module every remaining `OpFAdd`, `OpFSub` and `OpFMul` is decorated
 //!   `NoContraction`; the `fast_math` module is the deterministic one less those decorations,
 //!   with the same `Fma` instructions;
@@ -37,7 +42,8 @@ use common::words::{
 use modelspec_core::artifact::{Backend, CompiledArtifact};
 use modelspec_core::compile::{compile_artifact, compile_training};
 use modelspec_core::device::DeviceProfile;
-use modelspec_core::ir::kernel::{Epilogue, Kernel, KernelKind, MatMulLimits, MatMulTile};
+use modelspec_core::ir::kernel::{Epilogue, Kernel, KernelKind, MatMulLimits, MatMulTile, Operand};
+use modelspec_core::ir::tensor::Dim;
 use modelspec_core::schedule::schedule_for;
 use modelspec_runtime::spirv::emit::{emit_kernels, emit_loss_sum_undivided, emit_module};
 use modelspec_runtime::spirv::validate::validate;
@@ -48,6 +54,7 @@ const OP_LOAD: u32 = 61;
 const OP_ACCESS_CHAIN: u32 = 65;
 const OP_COMPOSITE_EXTRACT: u32 = 81;
 const OP_VARIABLE: u32 = 59;
+const OP_CONSTANT: u32 = 43;
 /// `GLSL.std.450` instruction `Fma`.
 const GLSL_FMA: u32 = 50;
 const STORAGE_FUNCTION: u32 = 7;
@@ -136,6 +143,10 @@ struct Census {
     bare_fma: usize,
     /// `NoContraction` decorations.
     decorations: usize,
+    /// `Fma` factors that are an `OpFMul` of a value staged in workgroup memory by a constant.
+    scaled: usize,
+    /// The bits of every constant an `OpFMul` reads.
+    mul_constants: BTreeSet<u32>,
     /// What breaks the fused form, one line each.
     wrong: Vec<String>,
 }
@@ -156,8 +167,15 @@ fn census(module: &[u32]) -> Census {
     // A component of a vector to the vector: the block reads its factors as `vec4`s.
     let mut extracts: BTreeMap<u32, u32> = BTreeMap::new();
     let mut f_adds: Vec<[u32; 2]> = Vec::new();
+    // An `OpFMul` result to its two operands, and a constant to its bits.
+    let mut f_muls: BTreeMap<u32, [u32; 2]> = BTreeMap::new();
+    let mut constants: BTreeMap<u32, u32> = BTreeMap::new();
     for (op, w) in &all {
         match *op {
+            OP_CONSTANT => {
+                constants.insert(w[2], w[3]);
+                defined.insert(w[2], *op);
+            }
             OP_DECORATE if w[2] == DECORATION_NO_CONTRACTION => {
                 decorated.insert(w[1]);
                 c.decorations += 1;
@@ -199,7 +217,10 @@ fn census(module: &[u32]) -> Census {
                         f_adds.push([w[3], w[4]]);
                     }
                     OP_F_SUB => c.f_sub += 1,
-                    _ => c.f_mul += 1,
+                    _ => {
+                        c.f_mul += 1;
+                        f_muls.insert(w[2], [w[3], w[4]]);
+                    }
                 }
                 defined.insert(w[2], *op);
             }
@@ -234,13 +255,29 @@ fn census(module: &[u32]) -> Census {
             }
         }
     }
+    c.mul_constants = f_muls
+        .values()
+        .flatten()
+        .filter_map(|operand| constants.get(operand).copied())
+        .collect();
+    // A staged value times a constant: the scaled difference of the plan's loss sum.
+    let scaled = |factor: u32| -> bool {
+        f_muls.get(&factor).is_some_and(|[value, k]| {
+            storage_of(*value) == Some(STORAGE_WORKGROUP) && constants.contains_key(k)
+        })
+    };
     for (id, [x, y, acc]) in &fmas {
         for factor in [x, y] {
-            if storage_of(*factor) != Some(STORAGE_WORKGROUP) {
-                c.wrong.push(format!(
-                    "Fma %{id}: factor %{factor} is not a value staged in workgroup memory"
-                ));
+            if storage_of(*factor) == Some(STORAGE_WORKGROUP) {
+                continue;
             }
+            if factor == x && scaled(*factor) {
+                c.scaled += 1;
+                continue;
+            }
+            c.wrong.push(format!(
+                "Fma %{id}: factor %{factor} is not a value staged in workgroup memory"
+            ));
         }
         let addend = match defined.get(acc) {
             Some(&OP_F_MUL) | Some(&OP_EXT_INST) => true,
@@ -266,8 +303,24 @@ fn emitted_k(k: u64, tile: &MatMulTile) -> u64 {
     k - looped.saturating_sub(4) * depth
 }
 
-/// Checks one deterministic `module` of `kernel` and its `fast_math` twin, when there is one.
+/// Checks one deterministic plan `module` of `kernel` and its `fast_math` twin, when there is one.
 fn check(what: &str, kernel: &Kernel, module: &[u32], fast: Option<&[u32]>) -> Vec<String> {
+    check_module(what, kernel, module, fast, false)
+}
+
+/// Checks the undivided `module` of the loss-sum `kernel` ([`emit_loss_sum_undivided`]).
+fn check_undivided(what: &str, kernel: &Kernel, module: &[u32]) -> Vec<String> {
+    check_module(what, kernel, module, None, true)
+}
+
+/// [`check`] or [`check_undivided`], by `undivided`.
+fn check_module(
+    what: &str,
+    kernel: &Kernel,
+    module: &[u32],
+    fast: Option<&[u32]>,
+    undivided: bool,
+) -> Vec<String> {
     let mut wrong = Vec::new();
     if let Err(error) = validate(module) {
         wrong.push(format!("{what}: {error}"));
@@ -306,12 +359,51 @@ fn check(what: &str, kernel: &Kernel, module: &[u32], fast: Option<&[u32]>) -> V
                 ));
             }
         }
-        KernelKind::LossSum => {
-            if c.f_add != 0 || c.f_mul != 1 || c.f_sub == 0 {
+        KernelKind::LossSum if undivided => {
+            if c.f_add != 0 || c.f_mul != 1 || c.f_sub == 0 || c.scaled != 0 {
                 wrong.push(format!(
-                    "{what}: {} OpFAdd, {} OpFMul, {} OpFSub, {} Fma; wanted no OpFAdd and one \
-                     OpFMul, the first term",
-                    c.f_add, c.f_mul, c.f_sub, c.fma
+                    "{what}: {} OpFAdd, {} OpFMul, {} OpFSub, {} Fma, {} scaled factors; wanted \
+                     no OpFAdd, one OpFMul, the first term, and no scaled factor",
+                    c.f_add, c.f_mul, c.f_sub, c.fma, c.scaled
+                ));
+            }
+            if !c.mul_constants.is_empty() {
+                wrong.push(format!(
+                    "{what}: an OpFMul reads the constants {:x?}",
+                    c.mul_constants
+                ));
+            }
+        }
+        KernelKind::LossSum => {
+            if c.f_add != 0
+                || !c.fma.is_multiple_of(2)
+                || c.f_mul != c.fma / 2 + 3
+                || c.f_sub == 0
+                || c.scaled != c.fma / 2
+            {
+                wrong.push(format!(
+                    "{what}: {} OpFAdd, {} OpFMul, {} OpFSub, {} Fma, {} scaled factors; wanted \
+                     no OpFAdd, an Fma of the scaled sum for each of the sum, three OpFMul for \
+                     the first term and one per scaled Fma, its scaled factor",
+                    c.f_add, c.f_mul, c.f_sub, c.fma, c.scaled
+                ));
+            }
+            let Operand::Buffer(ty) = &kernel.operands[0] else {
+                panic!("{what}: the loss sum reads a buffer");
+            };
+            let n = ty
+                .shape
+                .iter()
+                .map(|d| match d {
+                    Dim::Static(n) => *n,
+                    Dim::Symbol(_) => panic!("{what}: a static shape"),
+                })
+                .product::<u64>();
+            let reciprocal = ((1.0 / n as f64) as f32).to_bits();
+            if c.mul_constants != BTreeSet::from([reciprocal]) {
+                wrong.push(format!(
+                    "{what}: OpFMul reads the constants {:x?}, wanted only 1/{n} = {reciprocal:x}",
+                    c.mul_constants
                 ));
             }
         }
@@ -383,11 +475,10 @@ fn every_product_and_sum_of_the_step_plans_is_one_fma() {
                         losses += 1;
                         let undivided =
                             emit_loss_sum_undivided(kernel, &profile).expect("the sum emits");
-                        wrong.extend(check(
+                        wrong.extend(check_undivided(
                             &format!("{what} undivided"),
                             kernel,
                             &undivided.spirv,
-                            None,
                         ));
                     }
                     _ => {}
@@ -469,10 +560,15 @@ fn the_loss_sum_fuses_each_square_into_its_sum() {
             let plan = emit_module(&kernel, &profile).expect("emits");
             let undivided = emit_loss_sum_undivided(&kernel, &profile).expect("emits");
             for (variant, module) in [("plan", &plan.spirv), ("undivided", &undivided.spirv)] {
-                let mut found = check(&format!("{what} {variant}"), &kernel, module, None);
+                let what = format!("{what} {variant}");
+                let mut found = if variant == "plan" {
+                    check(&what, &kernel, module, None)
+                } else {
+                    check_undivided(&what, &kernel, module)
+                };
                 let c = census(module);
                 if count > 1 && c.fma == 0 {
-                    found.push(format!("{what} {variant}: no Fma for {count} terms"));
+                    found.push(format!("{what}: no Fma for {count} terms"));
                 }
                 wrong.extend(found);
                 checked += 1;

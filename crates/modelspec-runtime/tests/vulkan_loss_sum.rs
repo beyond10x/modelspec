@@ -16,6 +16,11 @@
 //!   and either exact or a rounding both modes resolve the same way, so these two checks are exact
 //!   on every device, inside the bit-for-bit class or not.
 //!
+//! `story:vulkan-loss-sum-overflow-parity`: at 2, 8, 65 and 1,000 terms whose `f32` sum passes
+//! `f32::MAX`, the undivided module writes `inf` and the plan's module writes the mean the CPU
+//! interpreter writes, within the `mse` tolerance where that mean is finite and `inf` where it is
+//! not (DESIGN.md § 5.4, revision 0.75).
+//!
 //! The device test is ignored by default: it creates a Vulkan instance, which `task ci` never
 //! does. Run it with
 //! `MODELSPEC_VK_VALIDATION=1 cargo test -p modelspec-runtime --features vulkan --test vulkan_loss_sum -- --ignored`;
@@ -271,6 +276,86 @@ fn the_staged_loss_sum_keeps_the_row_major_order_at_every_count_and_chunk() {
             "off"
         },
         started.elapsed().as_secs_f64()
+    );
+    assert!(wrong.is_empty(), "{wrong:#?}");
+}
+
+/// The term counts of the overflow case: two terms, eight (the 8-row fits of
+/// `train_vulkan_non_finite`), one past a chunk of 64, and 1,000.
+const OVERFLOW_COUNTS: [u64; 4] = [2, 8, 65, 1_000];
+
+#[test]
+#[ignore = "needs a Vulkan device"]
+fn a_loss_sum_past_f32_max_writes_the_mean_the_cpu_writes() {
+    let vulkan = Vulkan::load().expect("the Vulkan loader opens");
+    let candidates = vulkan.candidates().expect("the devices are probed");
+    let profile = candidates[0].profile.clone();
+    let negotiated = negotiate(&profile).expect("device 0 negotiates");
+    let device = vulkan
+        .create_device(0, &negotiated)
+        .expect("device 0 opens");
+    let setup = vulkan.take_validation_messages();
+    assert!(setup.is_empty(), "validation messages at setup: {setup:#?}");
+    let mse_tol = common::term_tolerance(KernelOp::Mse);
+    let mut wrong = Vec::new();
+    let mut runs = 0;
+    // Each square of 1.35e19 is past half of `f32::MAX`, so two overflow an `f32` sum while their
+    // mean does not; each square of 2e19 is past `f32::MAX`, and so is the mean.
+    for (d, finite) in [(1.35e19f32, true), (2e19f32, false)] {
+        for count in OVERFLOW_COUNTS {
+            let n = count as usize;
+            let (a, b) = (vec![d; n], vec![0.0f32; n]);
+            let squares = abs_terms(&a, &b);
+            let mean = (squares / count as f64) as f32;
+            assert_eq!(
+                mean.is_finite(),
+                finite,
+                "the CPU mean of {count} terms {d:e}"
+            );
+            let r_mean = mse_tol.r(mean, squares, count);
+            let kernel = common::loss_sum_kernel(count);
+            for target in profiles(&profile) {
+                let what = format!(
+                    "{count} terms {d:e}, {} bytes",
+                    target.max_shared_memory_bytes
+                );
+                let undivided = emit_loss_sum_undivided(&kernel, &target).expect("it emits");
+                let plan = emit_module(&kernel, &target).expect("it emits");
+                let sum = run(&device, &kernel, &undivided, &a, &b);
+                let divided = run(&device, &kernel, &plan, &a, &b);
+                runs += 2;
+                for output in [&sum, &divided] {
+                    for i in 0..GUARD_WORDS {
+                        if output[1 + i].to_bits() != guard(i) {
+                            wrong.push(format!("{what}: guard word {i} changed"));
+                        }
+                    }
+                }
+                if sum[0] != f32::INFINITY {
+                    wrong.push(format!("{what}: sum gpu {:?}, not inf", sum[0]));
+                }
+                let passes = if finite {
+                    divided[0].is_finite() && mse_tol.accepts(divided[0], mean, r_mean)
+                } else {
+                    divided[0].to_bits() == mean.to_bits()
+                };
+                if !passes {
+                    wrong.push(format!(
+                        "{what}: mse gpu {:?} cpu {mean:?} outside {mse_tol}",
+                        divided[0]
+                    ));
+                }
+                for message in vulkan.take_validation_messages() {
+                    wrong.push(format!("{what}: {message}"));
+                }
+            }
+        }
+    }
+    eprintln!(
+        "vulkan_loss_sum overflow: {runs} runs over {} counts, 2 magnitudes and 3 chunk sizes, \
+         {} findings",
+        OVERFLOW_COUNTS.len(),
+        wrong.len()
     );
     assert!(wrong.is_empty(), "{wrong:#?}");
 }

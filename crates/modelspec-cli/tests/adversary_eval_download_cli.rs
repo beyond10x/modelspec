@@ -3,7 +3,11 @@
 //! edges of the per-batch evaluation: one full `HeldOut` batch and a remainder, too few
 //! sequences for one batch, a resumed run, the recorded `StepCompleted` metrics, a run that
 //! diverges at an evaluated step, three runs of the twin over 123 batches, and the device memory
-//! the evaluation adds.
+//! the evaluation adds. Since story:vulkan-eval-metrics-on-device the CLI reduces each
+//! evaluation on the device in one command buffer, and since
+//! story:vulkan-stepwise-multi-step-submit a host wait ends each segment of steps and each
+//! evaluation, so the counts here are those host waits and the reduction's state; the per-batch
+//! reduction is held by the runtime crate's `tests/adversary_eval_download.rs`.
 //!
 //! Every case is a device case, `#[ignore]` as "device"; run them with
 //! `MODELSPEC_VK_VALIDATION=1 cargo test -p modelspec-cli --features vulkan --test adversary_eval_download_cli -- --ignored`.
@@ -17,6 +21,7 @@ use std::process::{Command, Output};
 
 use modelspec_core::compile::compile_training;
 use modelspec_runtime::dataset::SplitRole;
+use modelspec_runtime::spirv::emit::HELD_OUT_STATE;
 use modelspec_runtime::train::data::{self, DataSource, PackedData};
 use serde_json::Value;
 
@@ -258,7 +263,9 @@ fn outside(cpu: &str, gpu: &str, m: usize) -> Vec<String> {
 
 /// A `HeldOut` split of exactly one full batch and a remainder (`mlm_bag` at `B = 5` over the
 /// fixture's 9 sequences): `--eval-every 1 --steps 3` on the device evaluates steps 0 to 3
-/// within the run tolerance of the CPU, with `4 + 4 · 1` host waits and submits.
+/// within the run tolerance of the CPU, with `4 + 4` host waits and submits: each step a segment
+/// of its own, since the next is evaluated, and one per evaluation, none per batch
+/// (story:vulkan-eval-metrics-on-device, story:vulkan-stepwise-multi-step-submit).
 #[test]
 #[ignore = "device: needs a Vulkan device"]
 fn adv_ed_cli_one_full_batch_and_a_remainder_matches_the_cpu() {
@@ -328,15 +335,16 @@ fn adv_ed_cli_too_few_heldout_sequences_is_refused_as_on_the_cpu() {
 }
 
 /// A run resumed at step 4 with `--steps 6 --eval-every 5` evaluates steps 5 and 10 and no
-/// step of its own start, on the device as on the CPU, within the run tolerance, with
-/// `7 + 2 · batches` host waits.
+/// step of its own start, on the device as on the CPU, within the run tolerance, with `3 + 2`
+/// host waits: the segments 4, 5 to 9 and 10, and the evaluations at 5 and 10, none per batch
+/// (story:vulkan-eval-metrics-on-device, story:vulkan-stepwise-multi-step-submit).
 #[test]
 #[ignore = "device: needs a Vulkan device"]
 fn adv_ed_cli_resumed_run_evaluates_from_the_next_multiple() {
     let case = scratch("resume");
     let data = fixture_packed(&case);
     let file = bag(&case, 2, 4, "1.0");
-    let (batches, _, m) = heldout(&file, &data);
+    let (_, _, m) = heldout(&file, &data);
     let checkpoint = case.join("at4.msckpt");
     assert_exit(
         &train(&file, "cpu", &data, &["--checkpoint", path(&checkpoint)]),
@@ -366,11 +374,7 @@ fn adv_ed_cli_resumed_run_evaluates_from_the_next_multiple() {
     );
     let stats = stderr(&gpu);
     assert_eq!(counter(&stats, "steps"), 6, "{stats}");
-    assert_eq!(
-        counter(&stats, "host waits"),
-        7 + 2 * batches as u64,
-        "{stats}"
-    );
+    assert_eq!(counter(&stats, "host waits"), 3 + 2, "{stats}");
 }
 
 /// The `StepCompleted` of an evaluated step of a recorded device run carries
@@ -510,7 +514,8 @@ fn adv_ed_cli_three_twin_runs_print_the_same_bytes() {
 /// The twin over 123 full `HeldOut` batches: `--eval-every 5` adds to the run's peak device bytes
 /// one prediction and the held-out batches' data (each batch's five tensors of `B·S` 4-byte
 /// elements at most), within 1 MiB of allocation rounding, not a prediction per batch; and to
-/// its bytes downloaded exactly one prediction per batch per evaluated step.
+/// its bytes downloaded exactly the device reduction's state per evaluated step, no prediction
+/// (story:vulkan-eval-metrics-on-device).
 #[test]
 #[ignore = "device: needs a Vulkan device"]
 fn adv_ed_cli_eval_adds_one_prediction_of_device_memory() {
@@ -542,7 +547,7 @@ fn adv_ed_cli_eval_adds_one_prediction_of_device_memory() {
     );
     assert_eq!(
         counter(&e, "bytes downloaded") - counter(&p, "bytes downloaded"),
-        3 * batches as u64 * prediction,
+        3 * 4 * HELD_OUT_STATE,
         "{p}\n{e}"
     );
 }

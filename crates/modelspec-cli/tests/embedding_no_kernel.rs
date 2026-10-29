@@ -94,7 +94,7 @@ fn every_command_that_needs_a_vulkan_kernel_schedules_embedding() {
             "ir" => {
                 assert_eq!(output.status.code(), Some(0), "{args:?}:\n{text}");
                 let printed = String::from_utf8_lossy(&output.stdout);
-                for kernel in [" per_element Embedding ", " per_row EmbeddingGrad "] {
+                for kernel in [" per_element Embedding ", " per_element EmbeddingGrad "] {
                     assert!(
                         printed
                             .lines()

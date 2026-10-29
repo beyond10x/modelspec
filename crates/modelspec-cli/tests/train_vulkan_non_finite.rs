@@ -21,6 +21,12 @@ use std::time::Duration;
 
 use serde_json::Value;
 
+#[allow(dead_code)]
+#[path = "../../modelspec-runtime/tests/common/mod.rs"]
+mod common;
+
+use common::{GPU_RUN_ATOL, GPU_RUN_RTOL, within};
+
 const EXAMPLE: &str = "examples/linear_regression.mspec";
 const SCHEMA: &str =
     "crates/modelspec-observatory/schema/entities/modelspec.observatory.RunEvent.schema.json";
@@ -71,6 +77,53 @@ fn a_divergent_loss_on_vulkan_prints_what_the_cpu_prints() {
         (cpu.status.code(), text(&cpu.stdout), text(&cpu.stderr)),
         "status, stdout and stderr of --backend vulkan against --backend cpu"
     );
+}
+
+/// story:vulkan-loss-sum-overflow-parity: the example's 8 rows at `lr = 0.6` overflow the loss
+/// at step 382 on the CPU, whose `f64` mean of the squared differences passes `f32::MAX` there
+/// (DESIGN.md § 2.2), and the device names the same step (DESIGN.md § 5.4, § 8.1): status and
+/// stderr equal, and stdout line for line, each finite loss of a `step` line within the run
+/// tolerance of DESIGN.md § 9 gate 5 and the rest of it byte for byte. Before the fix the
+/// device's `f32` sum of the 8 squared differences overflowed at step 372, ten steps early.
+#[test]
+#[ignore = "needs a Vulkan device"]
+fn an_eight_row_loss_overflows_at_the_cpu_step_on_vulkan() {
+    let path = with_lr("lr0.6.mspec", "0.6");
+    let cpu = train(&path, "cpu", &[]);
+    let gpu = train(&path, "vulkan", &[]);
+    let (cpu_err, gpu_err) = (text(&cpu.stderr), text(&gpu.stderr));
+    assert_eq!(cpu.status.code(), Some(1), "{cpu_err}");
+    assert!(
+        cpu_err.starts_with("E-TRAIN-001: the loss of step 382 is not finite"),
+        "{cpu_err}"
+    );
+    assert_eq!(
+        (gpu.status.code(), gpu_err.as_str()),
+        (cpu.status.code(), cpu_err.as_str()),
+        "status and stderr of --backend vulkan against --backend cpu"
+    );
+    let (cpu_out, gpu_out) = (text(&cpu.stdout), text(&gpu.stdout));
+    let (c, g): (Vec<&str>, Vec<&str>) = (cpu_out.lines().collect(), gpu_out.lines().collect());
+    assert_eq!(g.len(), c.len(), "stdout lines\n{gpu_out}\n---\n{cpu_out}");
+    assert_eq!(c.last(), Some(&"step 382 loss inf"), "{cpu_out}");
+    for (g, c) in g.iter().zip(&c) {
+        let same = match (g.rsplit_once(" loss "), c.rsplit_once(" loss ")) {
+            (Some((g_head, g_loss)), Some((c_head, c_loss))) if c_head.starts_with("step ") => {
+                let (g_loss, c_loss): (f32, f32) = (
+                    g_loss.parse().expect("a loss"),
+                    c_loss.parse().expect("a loss"),
+                );
+                g_head == c_head
+                    && if c_loss.is_finite() {
+                        within(g_loss, c_loss, c_loss.abs(), GPU_RUN_ATOL, GPU_RUN_RTOL)
+                    } else {
+                        g_loss.to_bits() == c_loss.to_bits()
+                    }
+            }
+            _ => g == c,
+        };
+        assert!(same, "vulkan `{g}` against the CPU's `{c}`");
+    }
 }
 
 /// Acceptance 1, `lr = 1e38`, as the device can check it without reading the parameters back
@@ -260,7 +313,8 @@ fn served_events(path: &str, backend: &str) -> Vec<Value> {
 /// Acceptance 2: under `--serve` the device run's stream validates against the run event schema
 /// and carries the CPU run's event bodies in the CPU run's order: `RunStarted`, one
 /// `StepCompleted` per step through the failing one, whose loss is `null`, then `RunFailed` with
-/// E-TRAIN-001; each `parameters` list is the CPU's as a device run carries it ([`as_on_device`]).
+/// E-TRAIN-001; each `parameters` list is the CPU's as a device run carries it ([`as_on_device`]),
+/// and each finite loss within the run tolerance of the CPU's ([`assert_bodies_as_the_cpu`]).
 #[test]
 #[ignore = "needs a Vulkan device"]
 fn a_divergent_vulkan_run_ends_its_stream_as_the_cpu_run_does() {
@@ -283,7 +337,7 @@ fn a_divergent_vulkan_run_ends_its_stream_as_the_cpu_run_does() {
         events.iter().map(|event| event["body"].clone()).collect()
     };
     let gpu_bodies = bodies(&gpu);
-    assert_eq!(gpu_bodies, as_on_device(&bodies(&cpu)));
+    assert_bodies_as_the_cpu(&gpu_bodies, &as_on_device(&bodies(&cpu)), "lr 100");
     let first = gpu_bodies[1]["value"]["parameters"]
         .as_array()
         .expect("a parameters list");
@@ -297,6 +351,49 @@ fn a_divergent_vulkan_run_ends_its_stream_as_the_cpu_run_does() {
     let failing = &gpu_bodies[gpu_bodies.len() - 2];
     assert_eq!(failing["kind"], "StepCompleted", "{failing}");
     assert_eq!(failing["value"]["loss"], Value::Null, "{failing}");
+}
+
+/// Whether the device run's event body `g` is the CPU run's `c` as DESIGN.md § 8 holds a device
+/// run to it: every field equal except the loss of a `StepCompleted`, which is `null` where the
+/// CPU's is and otherwise within the run tolerance `GPU_RUN_ATOL + GPU_RUN_RTOL·|c|` of DESIGN.md
+/// § 9 gate 5. Since release 0.21.0 the CPU sums the `mse` loss of the whole batch in `f64` and
+/// the device in `f32` (DESIGN.md § 5.4, coordinator decision D84, commit a123c1a5): from step 2
+/// the `lr = 100.0` losses differ in their last bits (`144924770304` on the CPU, `144924753920`
+/// on the RTX 3090, one `f32` ULP), as the device dropout test's printed losses do (D88).
+fn body_as_the_cpu(g: &Value, c: &Value) -> bool {
+    if g["kind"] != "StepCompleted" || c["kind"] != "StepCompleted" {
+        return g == c;
+    }
+    let (mut g_rest, mut c_rest) = (g.clone(), c.clone());
+    g_rest["value"]["loss"] = Value::Null;
+    c_rest["value"]["loss"] = Value::Null;
+    if g_rest != c_rest {
+        return false;
+    }
+    match (g["value"]["loss"].as_f64(), c["value"]["loss"].as_f64()) {
+        (Some(g), Some(c)) => {
+            let (g, c) = (g as f32, c as f32);
+            within(g, c, c.abs(), GPU_RUN_ATOL, GPU_RUN_RTOL)
+        }
+        (None, None) => g["value"]["loss"] == c["value"]["loss"],
+        _ => false,
+    }
+}
+
+/// The device run's event bodies `gpu` against the CPU run's `cpu`, one for one by
+/// [`body_as_the_cpu`].
+fn assert_bodies_as_the_cpu(gpu: &[Value], cpu: &[Value], label: &str) {
+    assert_eq!(
+        gpu.len(),
+        cpu.len(),
+        "{label}: events\n{gpu:?}\n---\n{cpu:?}"
+    );
+    for (at, (g, c)) in gpu.iter().zip(cpu).enumerate() {
+        assert!(
+            body_as_the_cpu(g, c),
+            "{label}: event {at}: vulkan {g} against the CPU's {c}"
+        );
+    }
 }
 
 /// The event bodies `cpu` of a CPU run as a device run sends them (`spec/domains/observatory.yaml`,

@@ -1,8 +1,8 @@
 ---
 title: The language
-description: A tour of the .mspec language from DESIGN.md § 2, the subset the 0.22.0 compiler accepts, and the target language it grows into.
+description: A tour of the .mspec language from DESIGN.md § 2, the subset the 0.25.0 compiler accepts, and the target language it grows into.
 sidebar_position: 2
-lede: "A .mspec file is declarative, statically typed and pure, and 0.22.0 parses and checks a subset of the language DESIGN.md § 2 designs, refusing each construct beyond it with its own code."
+lede: "A .mspec file is declarative, statically typed and pure, and 0.25.0 parses and checks a subset of the language DESIGN.md § 2 designs, refusing each construct beyond it with its own code."
 source: "DESIGN.md § 2; crates/modelspec-core/src/syntax, resolve.rs, types.rs and ops.rs; the tests syntax.rs of crates/modelspec-core and check.rs, check_i32.rs, check_attention.rs and check_dropout.rs of crates/modelspec-cli; the diagnostic reference generated from crates/modelspec-core/src/diag.rs."
 ---
 
@@ -11,7 +11,7 @@ source: "DESIGN.md § 2; crates/modelspec-core/src/syntax, resolve.rs, types.rs 
 A `.mspec` file is declarative, statically typed and pure by default. It says what a model
 computes and how it is trained; it does no I/O and has no runtime objects. This page is a tour of
 [DESIGN.md § 2](https://github.com/beyond10x/modelspec/blob/main/DESIGN.md#2-modelspec-source-language),
-in two parts: the subset that 0.22.0 parses and checks, and the target language it grows into.
+in two parts: the subset that 0.25.0 parses and checks, and the target language it grows into.
 The subset is called M0, after the milestone that defined its syntax; later releases added
 operators, the `i32` element type and named operator arguments to it, and no new statements.
 
@@ -70,8 +70,13 @@ purpose (DESIGN.md § 2.2):
 - `embedding(table [V, H], ids i32[N])` is `[N, H]`.
 - `add_rows([N, H], [H])` adds the row to every row; `layer_norm([N, H], gamma [H], beta [H])` is
   `[N, H]`; `softmax` takes a rank-2 operand and keeps its shape.
-- `attention(q, k, v, key_mask, heads = A)` takes `q`, `k` and `v` of one shape `[N, H]` and a key
-  mask `[B, S]` with `N = B · S`, and returns `[N, H]`; `A` must divide `H` (`E-TYPE-020`).
+- `attention(q, k, v, key_mask, heads = A)` takes `k` and `v` of one shape `[B · S, H]`, a key
+  mask `[B, S]` and `q` of `[B · L, H]`, and returns `q`'s shape. `L`, the queries per sequence, is
+  the rows of `q` over `B`, from 1 to `S`: `L = S` is self-attention, `L = 1` reads one query per
+  sequence against all its keys. `A` must divide `H` (`E-TYPE-020`). In place of the key mask it
+  takes `i32` spans `[U, 2]` of (start, length) key rows, ascending and disjoint: `q` of the rows
+  of `k` attends each row to its span, `q` of `U` rows one query per span, and a row outside every
+  span is 0.
 - `cross_entropy(logits [N, V], labels i32[N], weights [N])` returns a scalar.
 
 A call that breaks a rule is a compile error with its own code, the source position and both
@@ -101,7 +106,7 @@ literal of its kind is `E-TYPE-019`, a name the operator does not take or one gi
 
 ## The target language
 
-DESIGN.md § 2 designs a larger language. This model is its running example, and 0.22.0 refuses
+DESIGN.md § 2 designs a larger language. This model is its running example, and 0.25.0 refuses
 it:
 
 ```modelspec
@@ -126,7 +131,7 @@ model TinyMLP<B: dim> {
 }
 ```
 
-| Construct | Meaning | 0.22.0 |
+| Construct | Meaning | 0.25.0 |
 |---|---|---|
 | `module` | a reusable group of parameters and functions | refused, `E-SYNTAX-004` |
 | `layer` | a named module instance, elaborated statically; each instance owns its own weights | refused, `E-SYNTAX-005` |

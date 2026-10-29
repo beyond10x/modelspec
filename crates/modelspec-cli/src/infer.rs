@@ -557,7 +557,7 @@ fn on_device(
         dense_predictions: Some(&mut kept),
         ..StepwiseOptions::default()
     };
-    match train_stepwise_on_device(device, function, artifact, options, &mut |_| Ok(())) {
+    match train_stepwise_on_device(device, false, function, artifact, options, &mut |_| Ok(())) {
         Ok(_) => Ok(kept),
         Err(DeviceRunError::Refused(diagnostic)) => {
             Err(Stop::Refused(vec![diagnostic.to_string()]))

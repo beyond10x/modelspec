@@ -47,6 +47,7 @@ use modelspec_core::compile::CompiledTraining;
 use modelspec_core::diag::{Code, Diagnostic};
 use modelspec_core::ir::tensor::ParamId;
 use modelspec_core::ir::training::{Moment, OptimizerRule, dropout_sites};
+use modelspec_core::passes::masked_rows;
 use thiserror::Error;
 
 use super::checkpoint::CheckpointError;
@@ -57,6 +58,7 @@ use super::eval::EvalError;
 use super::init::{
     InitError, Stream, dropout_token, initialize, sigreg_projections, with_projections,
 };
+use super::masked;
 use super::optimizer::{ParamState, PreparedStep, StepError};
 use crate::cpu::{HostTensor, RuntimeError, evaluate_all_with_ids, evaluate_with_ids};
 
@@ -410,6 +412,7 @@ pub fn run_checked(
     let mut prepared: Option<PreparedStep<'_>> = None;
     let training_program = &compiled.training.training.program;
     let sites = dropout_sites(training_program);
+    let masked_site = masked_rows::site(training_program);
     let mut losses = Vec::new();
     for step in start..=end {
         // The Muon parameters whose norm this step's update found not finite.
@@ -427,10 +430,20 @@ pub fn run_checked(
             // The projection of every `sigreg` site at this step, beside the batch
             // (story:jepa-sigreg-cpu).
             let projections = sigreg_projections(training_program, config.seed, step)?;
-            let inputs = with_projections(inputs, &projections);
+            // The rows of non-zero weight of a gathered step (DESIGN.md § 3.3), refused before
+            // the step when more than the gather holds.
+            let gathered = match &masked_site {
+                Some(site) => Some(masked::gather(site, inputs, ids, step)?.named(site)),
+                None => None,
+            };
+            let mut inputs = with_projections(inputs, &projections);
             // The `i32` inputs of the step: the batch's ids (packed data) and the RNG token of
             // every dropout site at this step (DESIGN.md § 2.3), by name.
             let mut tokens: BTreeMap<String, HostTensor<i32>> = ids.clone();
+            if let Some((weights, rows)) = gathered {
+                inputs.to_mut().extend(weights);
+                tokens.extend(rows);
+            }
             tokens.extend(
                 sites
                     .iter()
@@ -452,6 +465,11 @@ pub fn run_checked(
             loss
         } else {
             let (inputs, ids) = feed.inputs(end)?;
+            // The final loss reads every row through the forward program; its batch is held to
+            // the gather as every trained batch is, so both backends refuse the same batch.
+            if let Some(site) = &masked_site {
+                masked::gather(site, inputs, ids, end)?;
+            }
             let projections = sigreg_projections(forward, config.seed, end)?;
             let inputs = with_projections(inputs, &projections);
             let loss = evaluate_with_ids(forward, &inputs, ids, &state.values)?[0].data()[0];

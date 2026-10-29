@@ -11,7 +11,7 @@
 //! is its [`MatMulTile`]'s: a function of its shape and of the invocation limit of the device
 //! profile its plan is scheduled for, 128 without one (DESIGN.md § 3.1, § 5.2).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use crate::artifact::{DataSpec, ParameterSpec};
@@ -133,9 +133,9 @@ pub enum KernelKind {
     /// The second stage: one workgroup reads every partial and writes the result.
     ReduceStage2,
     /// The `mse` loss: one workgroup stages its terms in workgroup memory and invocation 0 sums
-    /// them in row-major order (DESIGN.md § 5.2, § 5.4); the `cross_entropy` loss: one workgroup
-    /// computes 64 row losses at a time into workgroup memory and invocation 0 adds their
-    /// weighted sum and the weight sum in ascending row order.
+    /// them in row-major order (DESIGN.md § 5.2, § 5.4); the sum of the `cross_entropy` loss: one
+    /// workgroup stages 64 row losses and their weights at a time in workgroup memory and
+    /// invocation 0 adds their weighted sum and the weight sum in ascending row order.
     LossSum,
     Transpose,
     /// One invocation per output element in the blocks of its [`MatMulTile`], with an optional
@@ -145,18 +145,31 @@ pub enum KernelKind {
     /// (or `(p, g, lr)`) it is `p - (lr * g)`, the product rounded before the subtraction and
     /// neither contracted; with operands `(p, d)` it is `p - d`.
     SgdUpdate,
-    /// A row-wise op computed one output element per invocation: `Embedding`, `AddRows`,
-    /// `Gelu`, `GeluGrad`, `Dropout` and `DropoutGrad` (DESIGN.md § 5.2).
+    /// A row-wise op computed one output element per invocation: `Embedding`, `EmbeddingGrad`
+    /// (each element of the table gradient adds its column of the gradient rows of every id equal
+    /// to its row, in ascending id position, found in the ids its sort wrote), `AddRows`, `Gelu`,
+    /// `GeluGrad`, `Dropout`,
+    /// `DropoutGrad` and `CrossEntropyGrad` (each gradient element from the row statistics the
+    /// per-row stage wrote) (DESIGN.md § 5.2).
     PerElement,
     /// A row-wise op computed one output row per invocation, its reductions over the row in
-    /// ascending column order: `EmbeddingGrad` (each table row, its ids scanned in ascending
-    /// order), `LayerNorm`, `LayerNormGradX`, `Softmax`, `SoftmaxGrad` and `CrossEntropyGrad`;
-    /// and one invocation per row and head of `Attention` and its three gradients, the head
-    /// count a last, immediate operand ([`Kernel::heads`]).
+    /// ascending column order: `LayerNorm`, `LayerNormGradX`, `Softmax`, `SoftmaxGrad`,
+    /// `CrossEntropy` (the unweighted loss of each row, which the loss sum then adds) and
+    /// `CrossEntropyGrad` (the maximum and exponential sum of each row, and from one more
+    /// invocation the weight sum, which the per-element stage then reads); one invocation per id
+    /// for the sort of `EmbeddingGrad`, which writes each id and its position into the row of its
+    /// rank by id and position, as `i32`; one invocation per row for the moments of
+    /// `LayerNormGradGamma`, which writes each row's mean and `rstd` into an `f32[n, 2]` that its
+    /// column sum reads; and one invocation per row and head of `Attention` and
+    /// its three gradients, the head count a last, immediate operand ([`Kernel::heads`]).
     PerRow,
-    /// A column reduction over the rows of its operands in ascending row order, one output
-    /// column per invocation: `SumRows`, `LayerNormGradGamma`, `SigregColumns` and
-    /// `SigregColumnsGrad`, the last writing every row of its column.
+    /// A column reduction over the rows of its operands in ascending row order: `SigregColumns`
+    /// and `SigregColumnsGrad` one output column per invocation, the last writing every row of
+    /// its column; and the column sums `SumRows` and `LayerNormGradGamma` one workgroup of 64
+    /// invocations per [`crate::schedule::column_sum_columns`] columns, which stage tiles of
+    /// rows in workgroup memory and add each column in one invocation
+    /// (story:vulkan-column-sums-coalesced), `LayerNormGradGamma` reading the row moments of its
+    /// `per_row` kernel (story:vulkan-layer-norm-grad-gamma-row-moments).
     PerColumn,
 }
 
@@ -185,9 +198,10 @@ pub const MATMUL_TWO_ROWS_FROM_WORKGROUPS: u64 = 256;
 pub const MATMUL_TWO_ROW_TILE: (u32, u32) = (16, 2);
 
 /// A register-blocked [`MatMulTile`] (DESIGN.md § 5.2): its workgroup size, columns, rows and
-/// columns per invocation, its depth before [`MIN_SHARED_MEMORY_BYTES`] lowers it, and the
-/// shapes that take it: `n` of at least `cols`, `k` of at least `from_k`, and at least
-/// `from_workgroups` workgroups of the block over the output.
+/// columns per invocation, its depth before [`MIN_SHARED_MEMORY_BYTES`] lowers it, the tiles it
+/// reads ahead, and the shapes that take it: `n` of at least `cols`, `k` of at least `from_k`,
+/// `m` of at least `from_m` and at least `from_workgroups` workgroups of the block over the
+/// output.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MatMulBlock {
     pub workgroup_size: u32,
@@ -195,8 +209,10 @@ pub struct MatMulBlock {
     pub rows: u32,
     pub cols_per_invocation: u32,
     pub depth: u32,
+    pub ahead: u32,
     pub from_k: u64,
     pub from_workgroups: u64,
+    pub from_m: u64,
 }
 
 /// The block register-blocked tile: 256 invocations of 8 rows by 8 columns, a block of 128 rows
@@ -213,8 +229,10 @@ pub const MATMUL_LARGE_BLOCK: MatMulBlock = MatMulBlock {
     rows: 8,
     cols_per_invocation: 8,
     depth: 8,
+    ahead: 1,
     from_k: 64,
     from_workgroups: 128,
+    from_m: 1,
 };
 
 /// The wide register-blocked tile: 128 invocations of 8 rows by 8 columns, a block of 64 rows by
@@ -229,8 +247,10 @@ pub const MATMUL_WIDE_BLOCK: MatMulBlock = MatMulBlock {
     rows: 8,
     cols_per_invocation: 8,
     depth: 8,
+    ahead: 1,
     from_k: 64,
     from_workgroups: 128,
+    from_m: 1,
 };
 
 /// The square register-blocked tile: 128 invocations of 8 rows by 4 columns, a block of 64 rows
@@ -245,8 +265,55 @@ pub const MATMUL_SQUARE_BLOCK: MatMulBlock = MatMulBlock {
     rows: 8,
     cols_per_invocation: 4,
     depth: 16,
+    ahead: 1,
     from_k: 1,
     from_workgroups: 128,
+    from_m: 1,
+};
+
+/// The long-`k` register-blocked tile: 64 invocations of 8 rows by 4 columns, a block of 64
+/// rows by 32 columns, tiles of 16 values of `k` read 4 tiles ahead, workgroup memory read in
+/// vectors ([`MatMulTile::vector_reads`]). It takes the outputs too small for
+/// [`MATMUL_SQUARE_BLOCK`] whose `k` of at least 16,384 makes each element's sum long: on the
+/// RTX 3090 it takes the weight gradient `[256, 65536]ᵀ x [65536, 1024]` from 7,052 µs on the
+/// two-row tile to 2,792 µs and `[256, 16384]ᵀ x [16384, 1024]` from 1,734 to 732 µs, and at
+/// 32 workgroups (`[256, 16384]ᵀ x [16384, 256]`) is slower than
+/// [`MATMUL_LONG_K_NARROW_BLOCK`] (669 against 368 µs), hence `from_workgroups`. With 16
+/// rows or fewer it is slower than the one-column tile it replaces (`[16, 16384]ᵀ x
+/// [16384, 4096]` 672 against 509 µs, `[1, 16384]ᵀ x [16384, 4096]` 553 against 449 µs) and
+/// with 32 faster (693 against 931 µs), hence `from_m` (finding LK-1; DESIGN.md § 5.2).
+pub const MATMUL_LONG_K_BLOCK: MatMulBlock = MatMulBlock {
+    workgroup_size: 64,
+    cols: 32,
+    rows: 8,
+    cols_per_invocation: 4,
+    depth: 16,
+    ahead: 4,
+    from_k: 16_384,
+    from_workgroups: 128,
+    from_m: 32,
+};
+
+/// The narrow long-`k` register-blocked tile: 128 invocations of 4 rows by 2 columns, a block
+/// of 32 rows by 32 columns, tiles of 16 values of `k` read 4 tiles ahead, workgroup memory
+/// read in vectors ([`MatMulTile::vector_reads`]). It takes the long-`k` outputs with too few
+/// blocks for [`MATMUL_LONG_K_BLOCK`]: on the RTX 3090 it takes `[256, 65536]ᵀ x [65536, 256]`
+/// (64 workgroups) from 2,210 µs on the two-row tile to 1,390 µs and `[256, 16384]ᵀ x
+/// [16384, 256]` from 579 to 368 µs; fewer workgroups were not measured and keep the one- and
+/// two-row tiles, hence `from_workgroups`. With 16 rows it is no faster than the tile it
+/// replaces (`[16, 16384]ᵀ x [16384, 2048]` 329 against 329 µs), with 1 row slower
+/// (`[1, 16384]ᵀ x [16384, 2048]` 342 against 177 µs), and with 32 faster (341 against
+/// 526 µs), hence `from_m` (finding LK-1; DESIGN.md § 5.2).
+pub const MATMUL_LONG_K_NARROW_BLOCK: MatMulBlock = MatMulBlock {
+    workgroup_size: 128,
+    cols: 32,
+    rows: 4,
+    cols_per_invocation: 2,
+    depth: 16,
+    ahead: 4,
+    from_k: 16_384,
+    from_workgroups: 64,
+    from_m: 32,
 };
 
 /// How a matmul kernel `[m, k] x [k, n] -> [m, n]` covers its output (DESIGN.md § 5.2): each
@@ -291,8 +358,9 @@ impl MatMulTile {
 
     /// The tile of a `[m, k] x [k, n]` matmul whose workgroups may hold `max_invocations`
     /// invocations, a function of the shape and the limit: the first of [`MATMUL_LARGE_BLOCK`],
-    /// [`MATMUL_WIDE_BLOCK`] and [`MATMUL_SQUARE_BLOCK`] whose workgroup size is within the limit
-    /// and which the shape takes, read 1 tile ahead with `b` unpadded. Otherwise 128 invocations
+    /// [`MATMUL_WIDE_BLOCK`], [`MATMUL_SQUARE_BLOCK`], [`MATMUL_LONG_K_BLOCK`] and
+    /// [`MATMUL_LONG_K_NARROW_BLOCK`] whose workgroup size is within the limit and which the
+    /// shape takes, read [`MatMulBlock::ahead`] tiles ahead with `b` unpadded. Otherwise 128 invocations
     /// of one column each, 16 columns (fewer, a power of two, when `n` is smaller), one row per
     /// invocation, or two when one row needs at least [`MATMUL_TWO_ROWS_FROM_WORKGROUPS`]
     /// workgroups, tiles of up to 64 values read 6 tiles ahead for one row and of up to 16 values
@@ -302,7 +370,13 @@ impl MatMulTile {
     /// minimum, so every limit up to 255 gives the tiles of [`MatMulTile::of`].
     pub fn of_invocations(m: u64, k: u64, n: u64, max_invocations: u32) -> Self {
         let limit = max_invocations.max(MAX_WORKGROUP_INVOCATIONS);
-        for block in [MATMUL_LARGE_BLOCK, MATMUL_WIDE_BLOCK, MATMUL_SQUARE_BLOCK] {
+        for block in [
+            MATMUL_LARGE_BLOCK,
+            MATMUL_WIDE_BLOCK,
+            MATMUL_SQUARE_BLOCK,
+            MATMUL_LONG_K_BLOCK,
+            MATMUL_LONG_K_NARROW_BLOCK,
+        ] {
             if block.workgroup_size > limit {
                 continue;
             }
@@ -312,12 +386,13 @@ impl MatMulTile {
                 rows: block.rows,
                 cols_per_invocation: block.cols_per_invocation,
                 depth: block.depth,
-                ahead: 1,
+                ahead: block.ahead,
                 buffers: 1,
                 b_pad: 0,
             };
             if n >= u64::from(block.cols)
                 && k >= block.from_k
+                && m >= block.from_m
                 && tile.workgroups(m, n) >= block.from_workgroups
             {
                 return tile.fitted(k);
@@ -430,13 +505,37 @@ impl MatMulTile {
     /// Whether each invocation reads its values of `a` and `b` of one `k` from workgroup memory
     /// as vectors of 4 `f32` ([`MatMulTile::vector_layout`]): the tiles of more than
     /// [`MAX_WORKGROUP_INVOCATIONS`] invocations, [`MATMUL_LARGE_BLOCK`], whose rows and columns
-    /// per invocation are multiples of 4. Invocation `t` then computes 4 adjacent columns from
-    /// `4 · (t % lanes)` in each group of `4 · lanes` columns, and 4 adjacent rows from
-    /// `4 · (t / lanes)` in each group of `4 · workgroup_size / lanes` rows.
+    /// per invocation are multiples of 4, and the long-`k` tiles ([`MatMulTile::long_k`]).
+    /// Invocation `t` then computes runs of [`MatMulTile::vector_runs`] adjacent rows and
+    /// columns: with runs of 4, 4 adjacent columns from `4 · (t % lanes)` in each group of
+    /// `4 · lanes` columns, and 4 adjacent rows from `4 · (t / lanes)` in each group of
+    /// `4 · workgroup_size / lanes` rows; with a run of 1, the columns or rows of a tile without
+    /// vector reads, each read as one `f32`.
     pub fn vector_reads(&self) -> bool {
-        self.workgroup_size > MAX_WORKGROUP_INVOCATIONS
+        (self.workgroup_size > MAX_WORKGROUP_INVOCATIONS
             && self.rows.is_multiple_of(4)
-            && self.cols_per_invocation.is_multiple_of(4)
+            && self.cols_per_invocation.is_multiple_of(4))
+            || self.long_k()
+    }
+
+    /// Whether the tile is [`MATMUL_LONG_K_BLOCK`] or [`MATMUL_LONG_K_NARROW_BLOCK`], the
+    /// register-blocked tiles read more than 1 tile ahead. Besides its vector reads, an operand
+    /// such a tile reads with its rows or columns contiguous (`a` transposed, `b` as is), whose
+    /// block's rows or columns `across` divide the workgroup size, is staged by invocation `t`
+    /// at step `s` from the row or column `t % across` at `k` index
+    /// `t / across + s · workgroup_size / across`: its places in the binding and in workgroup
+    /// memory are those of step 0 plus a constant, where the other tiles compute both per step
+    /// (DESIGN.md § 5.2).
+    pub fn long_k(&self) -> bool {
+        self.cols_per_invocation > 1 && self.ahead > 1
+    }
+
+    /// The adjacent rows and columns of an invocation's runs in a tile with
+    /// [`MatMulTile::vector_reads`]: 4 where its rows or columns per invocation are a multiple
+    /// of 4, else 1.
+    pub fn vector_runs(&self) -> (u32, u32) {
+        let run = |x: u32| if x.is_multiple_of(4) { 4 } else { 1 };
+        (run(self.rows), run(self.cols_per_invocation))
     }
 
     /// The layout of a tile with [`MatMulTile::vector_reads`]: both blocks `k`-major, so the 4
@@ -849,8 +948,15 @@ fn intern(name: String) -> &'static str {
     leaked
 }
 
-/// One kernel of Kernel IR. Its bindings are its buffer operands in order, each read, then what
-/// it writes: the pre-activation of an [`Epilogue`] that keeps it, then its result.
+/// The values an attention kernel keeps per query head in its softmax statistics
+/// ([`Kernel::softmax_stats`]): the softmax maximum, the softmax sum and the row dot of the
+/// gradient, in that order.
+pub const SOFTMAX_STATS_PER_QUERY: u64 = 3;
+
+/// One kernel of Kernel IR. Its bindings are its buffer operands in order, each read, and the
+/// softmax statistics an `AttentionGradK` or `AttentionGradV` kernel reads, then what it writes:
+/// the pre-activation of an [`Epilogue`] that keeps it or the softmax statistics an `Attention`
+/// or `AttentionGradQ` kernel writes, then its result ([`Kernel::bindings`]).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Kernel {
     /// [`Kernel::module_id`] of the other fields.
@@ -874,20 +980,67 @@ pub struct Kernel {
     /// a folded `transpose` read, and the kernel reads it in place. `[false, false]` on every
     /// other kind.
     pub transposed: [bool; 2],
+    /// The softmax statistics an attention kernel shares with the other kernels of its call
+    /// through a scratch buffer of this type, `[rows · heads, 3]` `f32`: per query head, at
+    /// `(row · heads + head) · 3`, its softmax maximum, its softmax sum and the row dot of its
+    /// gradient ([`SOFTMAX_STATS_PER_QUERY`]; story:vulkan-attention-softmax-stats-reused). An
+    /// `Attention` kernel writes the maximum and sum, an `AttentionGradQ` kernel reads them and
+    /// writes the row dot, and `AttentionGradK` and `AttentionGradV` read them instead of
+    /// recomputing them for every query in every key invocation. `None` on every other kernel
+    /// and on an attention kernel that recomputes them, as every attention kernel did before.
+    pub softmax_stats: Option<TensorType>,
     pub workgroup_size: u32,
     pub workgroups: [u32; 3],
 }
 
 impl Kernel {
-    /// The bindings the kernel writes, after its buffer operands: 2 for an epilogue that keeps
-    /// the pre-activation, else 1. Each has the result's type.
+    /// The bindings the kernel writes, after its buffer operands and the statistics it reads: 2
+    /// for an epilogue that keeps the pre-activation and for an attention kernel that writes
+    /// softmax statistics ([`Kernel::writes_softmax_stats`]), else 1. Each has the result's type
+    /// but the statistics.
     pub fn written(&self) -> usize {
         match self.epilogue {
             Some(Epilogue::Relu {
                 writes_pre_activation: true,
             }) => 2,
+            _ if self.writes_softmax_stats() => 2,
             _ => 1,
         }
+    }
+
+    /// Whether the kernel writes softmax statistics ([`Kernel::softmax_stats`]): an `Attention`
+    /// kernel its maximum and sum, an `AttentionGradQ` kernel the row dot beside the two it reads.
+    /// The statistics are its first written binding, before its result.
+    pub fn writes_softmax_stats(&self) -> bool {
+        self.softmax_stats.is_some() && matches!(self.op, "Attention" | "AttentionGradQ")
+    }
+
+    /// Whether the kernel only reads softmax statistics ([`Kernel::softmax_stats`]): an
+    /// `AttentionGradK` or `AttentionGradV` kernel, whose statistics are the binding after its
+    /// buffer operands.
+    pub fn reads_softmax_stats(&self) -> bool {
+        self.softmax_stats.is_some() && matches!(self.op, "AttentionGradK" | "AttentionGradV")
+    }
+
+    /// The type of each storage-buffer binding of the kernel, in binding order: each buffer
+    /// operand, the statistics it reads ([`Kernel::reads_softmax_stats`]), then each binding it
+    /// writes ([`Kernel::written`]): the statistics it writes, else the pre-activation of an
+    /// epilogue that keeps it, each of the result's type, then the result.
+    pub fn bindings(&self) -> Vec<&TensorType> {
+        let mut bindings: Vec<&TensorType> = self
+            .operands
+            .iter()
+            .filter_map(|operand| match operand {
+                Operand::Buffer(ty) => Some(ty),
+                Operand::Immediate(_) => None,
+            })
+            .collect();
+        let stats = self.softmax_stats.as_ref();
+        bindings.extend(stats.filter(|_| self.reads_softmax_stats()));
+        bindings.extend(stats.filter(|_| self.writes_softmax_stats()));
+        let results = self.written() - usize::from(self.writes_softmax_stats());
+        bindings.extend(std::iter::repeat_n(&self.result, results));
+        bindings
     }
 
     /// The head count of an `Attention`, `AttentionGradQ`, `AttentionGradK` or `AttentionGradV`
@@ -908,9 +1061,15 @@ impl Kernel {
         }
     }
 
-    /// The count of [`Kernel::flop`] for an attention kernel: `q` `[n, h]` its first operand and
-    /// the key mask `[b, s]` its fourth.
+    /// The count of [`Kernel::flop`] for an attention kernel: `q` `[n, h]` its first operand, `k`
+    /// `[m, h]` its second and the key mask `[b, s]` its fourth. `None` over spans
+    /// (story:attention-event-spans), whose keys per query are known only when the kernel runs.
     fn attention_flop(&self) -> Option<u64> {
+        if let Some(Operand::Buffer(ty)) = self.operands.get(3)
+            && ty.dtype == DType::I32
+        {
+            return None;
+        }
         let dims = |i: usize| match self.operands.get(i)? {
             Operand::Buffer(ty) => match ty.shape[..] {
                 [Dim::Static(rows), Dim::Static(cols)] => Some((rows, cols)),
@@ -918,7 +1077,7 @@ impl Kernel {
             },
             Operand::Immediate(_) => None,
         };
-        let ((n, h), (_, s)) = (dims(0)?, dims(3)?);
+        let ((n, h), (m, _), (_, s)) = (dims(0)?, dims(1)?, dims(3)?);
         let a = self.heads()?;
         let d = h.checked_div(a)?;
         let per_key = |per_column: u64, more: u64| per_column.checked_mul(d)?.checked_add(more);
@@ -930,7 +1089,7 @@ impl Kernel {
                 .checked_add(n.checked_mul(a)?.checked_mul(d)?),
             "AttentionGradK" => keys
                 .checked_mul(per_key(6, 9)?)?
-                .checked_add(n.checked_mul(h)?),
+                .checked_add(m.checked_mul(h)?),
             _ => None,
         }
     }
@@ -962,12 +1121,16 @@ impl Kernel {
     /// `p - (lr * g)`; one per element of the buffer operands of a reduction stage or a loss
     /// sum; none for a transpose or a broadcast. A row-wise kernel counts the operations of the
     /// CPU interpreter's definition of its op, each add, subtract, multiply, compare, division,
-    /// square root and `exp` one and each fused multiply-add two: none for `Embedding`; one per
+    /// square root and `exp` one and each fused multiply-add two: none for `Embedding` and the
+    /// integer sort of `EmbeddingGrad`; one per
     /// output element for `AddRows`, `Dropout` and `DropoutGrad`; one per element of the
     /// gradient for `EmbeddingGrad` and of the operand for `SumRows`; 10 per element for `Gelu`
     /// and 24 for `GeluGrad`; 5 per element for `Softmax` and 4 for `SoftmaxGrad`; for an
-    /// `[n, h]` operand, `n·(8h + 3)` for `LayerNorm` and `LayerNormGradGamma` and
-    /// `n·(14h + 3)` for `LayerNormGradX` (DESIGN.md § 3.1). For `P: [n, m]`, the instructions
+    /// `[n, h]` operand, `n·(8h + 3)` for `LayerNorm` and `n·(14h + 3)` for `LayerNormGradX`,
+    /// and `n·(8h + 3)` for `LayerNormGradGamma`, `n·(4h + 3)` of them for its row moments (an
+    /// add, a subtraction and a fused square per element) and `4nh` for its column sum (a
+    /// subtraction, a product and a fused term per element) (DESIGN.md § 3.1). For `P: [n, m]`,
+    /// the instructions
     /// the kernel emits (DESIGN.md § 5.2), its written-out `sin`/`cos` 24 and each corrected
     /// division by `n` 6 (the `OpFDiv`, two `Fma`s and the compare of the residual step), a
     /// negation, rounding, conversion or select none: `m·(216n + 128)` for `SigregColumns`, per
@@ -977,20 +1140,23 @@ impl Kernel {
     /// `0 - d`, the product `2 g`, then per element and knot the argument's product,
     /// `sin`/`cos`, `S·cos` and the fused term, the eight weighted terms and the product by
     /// `2 g`. One per output element for `Sqrt`
-    /// and `Div`. For `cross_entropy` over `[n, v]` logits, `n·(4v + 6) + 1`: per element a
-    /// compare, a subtraction, an `exp` and an add of the row softmax, per row a logarithm, an
-    /// add, a subtraction, the fused weighted term and the weight sum's add, and the one
-    /// division; `n·(9v + 3)` for its gradient, which recomputes the row softmax and takes per
-    /// element a subtraction, an `exp`, a division, the subtraction of the one-hot target and
-    /// the product with the row's scale. Each key the attention ops visit counts as unmasked:
+    /// and `Div`. For `cross_entropy` over `[n, v]` logits, `n·(4v + 3)` for its per-row kernel,
+    /// per element a compare, a subtraction, an `exp` and an add of the row softmax and per row a
+    /// logarithm, an add and a subtraction, and `3n + 1` for its loss sum, per row the fused
+    /// weighted term and the weight sum's add and the one division, `n·(4v + 6) + 1` in all;
+    /// for its gradient, `n·(4v + 1)` for the per-row kernel, the row softmax's compare,
+    /// subtraction, `exp` and add per element and per row an add of the weight sum, and `7·n·v`
+    /// for the per-element kernel, a subtraction, an `exp`, a division, the subtraction of the
+    /// one-hot target and the product with the row's scale, and the scale's product and
+    /// division, which each element computes again, `n·(11v + 1)` in all. Each key the attention ops visit counts as unmasked:
     /// with `A` heads of width `d` over `q` of `[n, h]` and `S` keys per sequence, a key costs a
     /// score of `2d` (its dot product and the scale), the softmax's compare, subtraction, `exp`
     /// and add, and the division of its probability, so `n·A·S·(4d + 5)` for `Attention` and
     /// `AttentionGradV` with their fused `2d` per key, `n·A·(S·(6d + 9) + d)` for
     /// `AttentionGradQ` (per key the probability's gradient `2d`, the row dot's fused term, the
     /// score gradient's subtraction and product and its fused `2d`, then the scale of each
-    /// column) and `n·A·S·(6d + 9) + n·h` for `AttentionGradK`. `None` for an op without a rule,
-    /// a shape with a dimension that is not static, or a count past `u64`.
+    /// column) and `n·A·S·(6d + 9) + m·h` for `AttentionGradK`, `m` the rows of `k`. `None` for
+    /// an op without a rule, a shape with a dimension that is not static, or a count past `u64`.
     pub fn flop(&self) -> Option<u64> {
         let elements = |ty: &TensorType| {
             ty.shape.iter().try_fold(1u64, |n, dim| match dim {
@@ -1033,7 +1199,9 @@ impl Kernel {
                 ("Sub", 2) => per_output(1),
                 _ => None,
             },
-            KernelKind::LossSum if self.op == "CrossEntropy" => rows(4, 6)?.checked_add(1),
+            KernelKind::LossSum if self.op == "CrossEntropy" => {
+                elements(operand(0)?)?.checked_mul(3)?.checked_add(1)
+            }
             KernelKind::ReduceStage1 | KernelKind::ReduceStage2 | KernelKind::LossSum => self
                 .operands
                 .iter()
@@ -1044,18 +1212,22 @@ impl Kernel {
             KernelKind::Transpose | KernelKind::Broadcast => Some(0),
             KernelKind::PerElement => match self.op {
                 "Embedding" => Some(0),
+                "EmbeddingGrad" => elements(operand(1)?),
+                "CrossEntropyGrad" => per_output(7),
                 "AddRows" | "Dropout" | "DropoutGrad" => per_output(1),
                 "Gelu" => per_output(10),
                 "GeluGrad" => per_output(24),
                 _ => None,
             },
             KernelKind::PerRow => match self.op {
-                "EmbeddingGrad" => elements(operand(1)?),
+                "EmbeddingGrad" => Some(0),
                 "LayerNorm" => rows(8, 3),
+                "LayerNormGradGamma" => rows(4, 3),
                 "LayerNormGradX" => rows(14, 3),
                 "Softmax" => per_output(5),
                 "SoftmaxGrad" => per_output(4),
-                "CrossEntropyGrad" => rows(9, 3),
+                "CrossEntropy" => rows(4, 3),
+                "CrossEntropyGrad" => rows(4, 1),
                 "Attention" | "AttentionGradQ" | "AttentionGradK" | "AttentionGradV" => {
                     self.attention_flop()
                 }
@@ -1063,7 +1235,7 @@ impl Kernel {
             },
             KernelKind::PerColumn => match self.op {
                 "SumRows" => elements(operand(0)?),
-                "LayerNormGradGamma" => rows(8, 3),
+                "LayerNormGradGamma" => elements(operand(1)?)?.checked_mul(4),
                 "SigregColumns" => sigreg(216, 128),
                 "SigregColumnsGrad" => sigreg(456, 97),
                 _ => None,
@@ -1074,7 +1246,8 @@ impl Kernel {
     /// The text the module id is derived from: every field but the id, and a matmul's
     /// [`MatMulTile`], so that a module the tile changes gets a new id. An operand the kernel
     /// reads transposed is followed by ` transposed`; a kernel that reads none has the text it
-    /// had before the flag existed.
+    /// had before the flag existed, and so has a kernel without [`Kernel::softmax_stats`], which
+    /// adds ` softmax_stats <type>` after its epilogue.
     pub fn signature(&self) -> String {
         self.signature_with(self.matmul_tile())
     }
@@ -1109,6 +1282,9 @@ impl Kernel {
         }
         if let Some(epilogue) = &self.epilogue {
             text.push_str(&format!(" {epilogue}"));
+        }
+        if let Some(stats) = &self.softmax_stats {
+            text.push_str(&format!(" softmax_stats {stats}"));
         }
         let [x, y, z] = self.workgroups;
         text.push_str(&format!(
@@ -1178,33 +1354,49 @@ impl fmt::Display for DispatchCount {
 }
 
 impl ExecutionPlan {
-    /// The positions, in plan order, of the step plan's steps a loss evaluation records (the
-    /// final loss of a run, `infer`): the last step that writes the loss view, every earlier
-    /// Dispatch or Copy that writes the prediction's buffer or a buffer a chosen step reads, and
-    /// each Barrier with a chosen step since the previous chosen Barrier and one after it, so any
-    /// two chosen steps the plan orders with a barrier stay ordered by one. No `Allocate` is
-    /// chosen; empty when no step writes the loss view (DESIGN.md § 3.1).
-    pub fn loss_steps(&self) -> Vec<usize> {
-        let Some(last) = self.step.iter().rposition(|step| {
-            step.writes
-                .iter()
-                .any(|view| view.buffer == self.loss_view.buffer)
-        }) else {
-            return Vec::new();
-        };
-        let mut chosen = vec![false; last + 1];
-        chosen[last] = true;
-        let mut needed: BTreeSet<u32> = self.step[last].reads.iter().map(|v| v.buffer).collect();
-        needed.insert(self.prediction_view.buffer);
-        for at in (0..last).rev() {
-            let step = &self.step[at];
-            if matches!(step.op, PlanOp::Dispatch | PlanOp::Copy)
-                && step.writes.iter().any(|v| needed.contains(&v.buffer))
-            {
+    /// The positions, in plan order, of the step plan's steps a training step records: every
+    /// Dispatch and Copy except those whose written buffers only feed nothing the step keeps,
+    /// and each Barrier with a kept step since the previous kept Barrier and one after it, as
+    /// [`Self::loss_steps`] keeps them. A step is kept when it writes the loss's buffer, a
+    /// parameter's buffer, a buffer that a step at or before it reads (state carried to the next
+    /// step), or a buffer a later kept step reads. What only the prediction reads, such as the
+    /// full head beside a masked-row gather, is not recorded; a plan whose prediction the loss
+    /// reads keeps every step. No `Allocate` is chosen (DESIGN.md § 3.1).
+    pub fn training_steps(&self) -> Vec<usize> {
+        let mut roots: BTreeSet<u32> = self
+            .parameters
+            .iter()
+            .flat_map(|p| p.views.iter().map(|view| view.buffer))
+            .collect();
+        roots.insert(self.loss_view.buffer);
+        let mut first_read: BTreeMap<u32, usize> = BTreeMap::new();
+        for (at, step) in self.step.iter().enumerate() {
+            for view in &step.reads {
+                first_read.entry(view.buffer).or_insert(at);
+            }
+        }
+        let mut chosen = vec![false; self.step.len()];
+        let mut needed: BTreeSet<u32> = BTreeSet::new();
+        for (at, step) in self.step.iter().enumerate().rev() {
+            if !matches!(step.op, PlanOp::Dispatch | PlanOp::Copy) {
+                continue;
+            }
+            let kept = step.writes.iter().any(|view| {
+                roots.contains(&view.buffer)
+                    || needed.contains(&view.buffer)
+                    || first_read.get(&view.buffer).is_some_and(|&read| read <= at)
+            });
+            if kept {
                 chosen[at] = true;
                 needed.extend(step.reads.iter().map(|v| v.buffer));
             }
         }
+        self.with_barriers(&chosen)
+    }
+
+    /// The chosen positions in plan order, each Barrier with a chosen step since the previous
+    /// kept Barrier and one after it included.
+    fn with_barriers(&self, chosen: &[bool]) -> Vec<usize> {
         let mut steps = Vec::new();
         let mut since_barrier = false;
         for (at, &is_chosen) in chosen.iter().enumerate() {
@@ -1219,6 +1411,54 @@ impl ExecutionPlan {
             }
         }
         steps
+    }
+
+    /// The positions, in plan order, of the step plan's steps a loss evaluation records (the
+    /// final loss of a run, `infer`): the last step that writes the loss view, every earlier
+    /// Dispatch or Copy that writes the prediction's buffer or a buffer a chosen step reads, and
+    /// each Barrier with a chosen step since the previous chosen Barrier and one after it, so any
+    /// two chosen steps the plan orders with a barrier stay ordered by one. No `Allocate` is
+    /// chosen; empty when no step writes the loss view (DESIGN.md § 3.1).
+    pub fn loss_steps(&self) -> Vec<usize> {
+        self.steps_up_to_loss(true)
+    }
+
+    /// The positions, in plan order, of the step plan's steps a held-out evaluation records,
+    /// which reads the prediction and not the loss: the steps of [`ExecutionPlan::loss_steps`]
+    /// chosen from the prediction's buffer alone, so neither the last step that writes the loss
+    /// view nor a step only it needs is chosen, with the barriers chosen by the same rule. Empty
+    /// when no step writes the loss view.
+    pub fn prediction_steps(&self) -> Vec<usize> {
+        self.steps_up_to_loss(false)
+    }
+
+    /// The steps before the last step that writes the loss view that the prediction's buffer
+    /// needs, with that step and what it reads when `with_loss`, and their barriers.
+    fn steps_up_to_loss(&self, with_loss: bool) -> Vec<usize> {
+        let Some(last) = self.step.iter().rposition(|step| {
+            step.writes
+                .iter()
+                .any(|view| view.buffer == self.loss_view.buffer)
+        }) else {
+            return Vec::new();
+        };
+        let mut chosen = vec![false; last + 1];
+        let mut needed: BTreeSet<u32> = BTreeSet::new();
+        if with_loss {
+            chosen[last] = true;
+            needed.extend(self.step[last].reads.iter().map(|v| v.buffer));
+        }
+        needed.insert(self.prediction_view.buffer);
+        for at in (0..last).rev() {
+            let step = &self.step[at];
+            if matches!(step.op, PlanOp::Dispatch | PlanOp::Copy)
+                && step.writes.iter().any(|v| needed.contains(&v.buffer))
+            {
+                chosen[at] = true;
+                needed.extend(step.reads.iter().map(|v| v.buffer));
+            }
+        }
+        self.with_barriers(&chosen)
     }
 
     /// The kernel with module id `id`.
@@ -1266,6 +1506,7 @@ mod tests {
             reduces: None,
             epilogue: None,
             transposed: [false, false],
+            softmax_stats: None,
             workgroup_size: tile.workgroup_size,
             workgroups: [tile.workgroups(100, 64) as u32, 1, 1],
         };
@@ -1420,6 +1661,7 @@ mod tests {
             reduces,
             epilogue: None,
             transposed: [false, false],
+            softmax_stats: None,
             workgroup_size: kind.workgroup_size(),
             workgroups: [1, 1, 1],
         };
@@ -1699,5 +1941,57 @@ mod tests {
             "{}",
             kernel.signature()
         );
+    }
+
+    /// Whether `tile` is `block` as [`MatMulTile::of_invocations`] builds it, before its depth
+    /// is fitted.
+    fn is_block(tile: &MatMulTile, block: &MatMulBlock) -> bool {
+        (
+            tile.workgroup_size,
+            tile.cols,
+            tile.rows,
+            tile.cols_per_invocation,
+            tile.ahead,
+            tile.b_pad,
+        ) == (
+            block.workgroup_size,
+            block.cols,
+            block.rows,
+            block.cols_per_invocation,
+            block.ahead,
+            0,
+        )
+    }
+
+    /// Finding LK-1: at 16 rows or fewer the long-`k` tiles ran 1.23 to 1.93 times as long as
+    /// the one-column tile they replaced on an RTX 3090; from 32 rows they are faster (64 by
+    /// 32 at `n` 4096: 0.740 of its time at 32 rows; 32 by 32 at `n` 2048: 1.000 at 16 rows,
+    /// 0.643 at 32).
+    #[test]
+    fn a_long_k_tile_needs_at_least_32_rows() {
+        for limit in [128, 256, 1024] {
+            for (n, block) in [
+                (4096, MATMUL_LONG_K_BLOCK),
+                (2048, MATMUL_LONG_K_NARROW_BLOCK),
+            ] {
+                for k in [16_384, 65_536] {
+                    for m in [1, 16, 31] {
+                        let tile = MatMulTile::of_invocations(m, k, n, limit);
+                        assert!(
+                            !tile.long_k() && tile.cols_per_invocation == 1,
+                            "[{m}, {k}] x [{k}, {n}] at {limit}: {tile}"
+                        );
+                        assert_eq!(tile, MatMulTile::of_invocations(m, 16_383, n, limit));
+                    }
+                    for m in [32, 33] {
+                        let tile = MatMulTile::of_invocations(m, k, n, limit);
+                        assert!(
+                            is_block(&tile, &block),
+                            "[{m}, {k}] x [{k}, {n}] at {limit}: {tile}"
+                        );
+                    }
+                }
+            }
+        }
     }
 }

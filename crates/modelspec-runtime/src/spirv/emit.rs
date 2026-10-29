@@ -2,14 +2,15 @@
 //! the two stages of a reduction, the `mse` loss sum, transpose and matmul, and the row-wise
 //! kernels of the BERT operators (`rowwise`, `per_element`, `per_row` and `per_column`), among
 //! them the attention and cross-entropy kernels and the `Sqrt` and `Div` of the
-//! AdamW update (`emit/attention.rs`).
+//! AdamW update (`emit/attention.rs`), and the two held-out evaluation kernels `HeldOutRows` and
+//! `HeldOutSum` (`emit/heldout.rs`, [`held_out_kernels`]).
 //!
 //! The module is SPIR-V 1.5, the version Vulkan 1.2 consumes, with capability `Shader`, the
 //! `GLSL450` logical memory model and one `GLCompute` entry point `main`, with `LocalSize` the
 //! kernel's workgroup size. [`emit_module`] adds the three float-control execution modes of
 //! DESIGN.md § 5.4 (`RoundingModeRTE`, `DenormPreserve`, `SignedZeroInfNanPreserve`, width 32) and
-//! their capabilities to a loss-sum or matmul module exactly when the device profile reports all
-//! three for f32; no other module declares a float-control mode. A matmul or loss-sum module
+//! their capabilities to a loss-sum, matmul or `HeldOutRows` module exactly when the device
+//! profile reports all three for f32; no other module declares a float-control mode. A matmul or loss-sum module
 //! fuses each product after the first of every sum into the sum, one `GLSL.std.450 Fma` per
 //! product-and-sum, the instruction set imported once by such a module, by a row-wise module
 //! that fuses a sum or takes an `Exp` or a `Sqrt`, and by no other (DESIGN.md § 12 ADR-009).
@@ -51,7 +52,10 @@
 //! workgroup of 64: its invocations stage the differences `a - b` in workgroup memory, as many
 //! at a time as the device profile's `max_shared_memory_bytes` holds, and invocation 0 adds
 //! their squares in ascending element order from the first term, each later square fused into
-//! the sum, chunk after chunk, as the CPU interpreter does.
+//! the sum, chunk after chunk, as the CPU interpreter does. The plan's module divides the sum by
+//! the element count, and also adds the squares of the differences scaled by the reciprocal of
+//! the count, the mean, which it writes instead where the sum overflows (DESIGN.md § 5.4);
+//! [`emit_loss_sum_undivided`] writes the sum.
 
 use std::collections::{BTreeMap, VecDeque};
 
@@ -70,7 +74,10 @@ use rspirv::spirv::{
 };
 
 mod attention;
+mod heldout;
 mod rowwise;
+
+pub use heldout::{COUNT_LIMB, HELD_OUT_STATE, HeldOutKernels, held_out_kernels, held_out_sums};
 
 /// Why a kernel has no module.
 #[derive(Debug, thiserror::Error)]
@@ -146,7 +153,8 @@ impl KernelModule {
 /// Which module of a loss-sum kernel is built.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Variant {
-    /// The plan's module.
+    /// The plan's module: for a loss sum, the sum of the squared differences divided by the
+    /// element count, or where that sum overflows the sum of the scaled ones.
     Plan,
     /// The loss sum before its division, the value of the bit-for-bit class.
     Undivided,
@@ -224,7 +232,12 @@ fn module_for(
     variant: Variant,
     fast_math: bool,
 ) -> Result<KernelModule, EmitError> {
-    let float_controls = matches!(kernel.kind, KernelKind::LossSum | KernelKind::MatMul)
+    // The row losses of `CrossEntropy` keep the float controls of the loss sum they feed.
+    let float_controls = (matches!(kernel.kind, KernelKind::LossSum | KernelKind::MatMul)
+        || matches!(
+            (kernel.kind, kernel.op),
+            (KernelKind::PerRow, "HeldOutRows" | "CrossEntropy")
+        ))
         && reports_float_controls(profile);
     let body = body_of(kernel, variant, profile.max_shared_memory_bytes)?;
     let chunk = match body {
@@ -246,14 +259,11 @@ fn module_for(
         fast_math,
     )?
     .assemble();
-    let mut shapes = Vec::new();
-    for operand in &kernel.operands {
-        if let Operand::Buffer(ty) = operand {
-            shapes.push(static_shape(kernel, ty)?);
-        }
-    }
-    let result = static_shape(kernel, &kernel.result)?;
-    shapes.extend(std::iter::repeat_n(result, kernel.written()));
+    let shapes = kernel
+        .bindings()
+        .into_iter()
+        .map(|ty| static_shape(kernel, ty))
+        .collect::<Result<Vec<_>, _>>()?;
     let mut capabilities = vec!["Shader".to_owned()];
     if float_controls {
         capabilities.extend(
@@ -344,7 +354,9 @@ enum Body {
         divide_by: Option<u32>,
     },
     /// `terms` is the element count of the shape and `chunk` the number of terms staged in
-    /// workgroup memory at a time.
+    /// workgroup memory at a time; `divide_by`, the element count the sum is divided by, whose
+    /// reciprocal scales the terms of the sum written where it overflows ([`Shell::loss_sum`]),
+    /// is `None` for the undivided sum.
     LossSum {
         divide_by: Option<u32>,
         terms: u32,
@@ -370,6 +382,8 @@ enum Body {
     AttentionLoss(attention::AttentionLoss),
     /// A row-wise kernel ([`rowwise::Rowwise`]).
     Rowwise(rowwise::Rowwise),
+    /// A held-out evaluation kernel ([`heldout::HeldOutBody`]).
+    HeldOut(heldout::HeldOutBody),
 }
 
 /// What `kernel` computes, for a device with `shared_bytes` of workgroup memory.
@@ -385,15 +399,22 @@ fn body_of(kernel: &Kernel, variant: Variant, shared_bytes: u32) -> Result<Body,
         }
         (
             KernelKind::PerRow,
-            "Attention" | "AttentionGradQ" | "AttentionGradK" | "AttentionGradV"
+            "Attention" | "AttentionGradQ" | "AttentionGradK" | "AttentionGradV" | "CrossEntropy"
             | "CrossEntropyGrad",
         )
-        | (KernelKind::LossSum, "CrossEntropy") => {
+        | (KernelKind::LossSum, "CrossEntropy")
+        | (KernelKind::PerElement, "CrossEntropyGrad") => {
             // Only the `mse` loss sum has an undivided module (DESIGN.md § 5.4).
             if variant == Variant::Undivided {
                 return Err(unsupported());
             }
             Body::AttentionLoss(attention::AttentionLoss::of(kernel)?)
+        }
+        (KernelKind::PerRow, "HeldOutRows") | (KernelKind::LossSum, "HeldOutSum") => {
+            if variant == Variant::Undivided {
+                return Err(unsupported());
+            }
+            Body::HeldOut(heldout::HeldOutBody::of(kernel)?)
         }
         (KernelKind::PerElement | KernelKind::PerRow | KernelKind::PerColumn, _) => {
             Body::Rowwise(rowwise::Rowwise::of(kernel)?)
@@ -729,7 +750,8 @@ fn build(
     fast_math: bool,
 ) -> Result<dr::Module, EmitError> {
     let body = body_of(kernel, variant, shared_bytes)?;
-    // One flag per read binding: whether it holds `u32` words, an `i32` operand's bits.
+    // One flag per read binding: whether it holds `u32` words, an `i32` operand's bits. The
+    // softmax statistics a backward attention kernel reads follow its buffer operands.
     let reads: Vec<bool> = kernel
         .operands
         .iter()
@@ -737,24 +759,35 @@ fn build(
             Operand::Buffer(ty) => Some(ty.dtype == DType::I32),
             Operand::Immediate(_) => None,
         })
+        .chain(kernel.reads_softmax_stats().then_some(false))
         .collect();
     let shared = match body {
         Body::Stage1 | Body::Stage2 { .. } => Some((TREE, false)),
         Body::LossSum { chunk, .. } => Some((chunk, false)),
         Body::MatMul { layout, tile, .. } => Some((layout.shared_values(), tile.vector_reads())),
-        Body::Rowwise(rowwise) => rowwise.shared().map(|values| (values, false)),
+        Body::Rowwise(rowwise) => rowwise
+            .shared()
+            .map(|values| (values, rowwise.shared_vectors())),
         Body::AttentionLoss(body) => body.shared().map(|values| (values, false)),
+        Body::HeldOut(body) => body.shared().map(|values| (values, false)),
         _ => None,
     };
     let matmul_vars = match body {
         Body::MatMul { k, tile, .. } => matmul_accumulators(&tile) + matmul_carried(k, &tile),
         Body::Rowwise(rowwise) => rowwise.f32_vars(),
         Body::AttentionLoss(body) => body.f32_vars(),
+        Body::HeldOut(body) => body.f32_vars(),
+        // The scaled sum of the plan's loss sum ([`Shell::loss_sum`]).
+        Body::LossSum {
+            divide_by: Some(_), ..
+        } => 1,
         _ => 0,
     };
     let seeded = matches!(body, Body::Rowwise(rowwise) if rowwise.seeded());
     let u32_vars = match body {
         Body::AttentionLoss(body) => body.u32_vars(),
+        Body::HeldOut(body) => body.u32_vars(),
+        Body::Rowwise(rowwise) => rowwise.u32_vars(),
         _ => 0,
     };
     if kernel.epilogue.is_some() && !matches!(body, Body::MatMul { .. }) {
@@ -808,6 +841,7 @@ fn build(
         } => m.matmul([rows, k, n], epilogue, tile, transposed, layout)?,
         Body::Rowwise(rowwise) => m.rowwise(rowwise)?,
         Body::AttentionLoss(body) => m.attention_loss(body)?,
+        Body::HeldOut(body) => m.held_out(body)?,
     }
     m.finish()
 }
@@ -1379,11 +1413,16 @@ impl Shell {
 
     /// Element `at` of the result, the last written binding, as this invocation wrote it.
     fn read_result(&mut self, at: Word) -> Result<Word, EmitError> {
+        self.read_out(self.outs.len() - 1, at)
+    }
+
+    /// Element `at` of written binding `output`, as this invocation or an earlier dispatch
+    /// wrote it.
+    fn read_out(&mut self, output: usize, at: Word) -> Result<Word, EmitError> {
         let zero = self.uint(0);
-        let out = self.outs[self.outs.len() - 1];
         let ptr = self
             .b
-            .access_chain(self.element_ptr, None, out, [zero, at])?;
+            .access_chain(self.element_ptr, None, self.outs[output], [zero, at])?;
         Ok(self.b.load(self.f32_ty, None, ptr, None, [])?)
     }
 
@@ -1756,9 +1795,14 @@ impl Shell {
     /// term of element 0 in the first chunk starting the sum as a product and every later one
     /// fused into it, `fma(d, d, acc)` (DESIGN.md § 12 ADR-009); a second barrier frees the
     /// memory for the next chunk. The order of additions is the one-invocation order: the first
-    /// term, then each next one. `divide_by` divides the sum by the element count. The counts
-    /// are constants of the shape, so the driver sees every trip count; no term is added for an
-    /// empty shape.
+    /// term, then each next one. With `divide_by` the element count `n`, in the plan's module, the
+    /// same invocation also adds the scaled terms `(d * s) * d`, `fma(d * s, d, acc)` after the
+    /// first, with `s = 1/n` rounded to `f32`, into a second accumulator, and writes the sum
+    /// divided by `n` where that sum is finite or NaN and the scaled sum where it is infinite: the
+    /// scaled sum is the mean, which passes `f32::MAX` where the CPU interpreter's `f64` mean does
+    /// up to its rounding, and a finite sum keeps the bits it had (DESIGN.md § 5.4, revision
+    /// 0.75). The counts are constants of the shape, so the driver sees every trip count; no term
+    /// is added for an empty shape.
     fn loss_sum(
         &mut self,
         divide_by: Option<u32>,
@@ -1768,40 +1812,46 @@ impl Shell {
         if terms == 0 {
             return Ok(());
         }
+        let scaled =
+            divide_by.map(|n| (self.float((1.0 / f64::from(n)) as f32), self.matmul_vars[0]));
         let chunk_var = self.u32_vars[0];
         let (full, tail) = (terms / chunk, terms % chunk);
         let zero = self.uint(0);
-        self.loss_chunk(zero, chunk, true, full == 1 && tail == 0)?;
+        self.loss_chunk(zero, chunk, scaled, true, full == 1 && tail == 0)?;
         if full > 1 {
             let (one, end, size) = (self.uint(1), self.uint(full), self.uint(chunk));
             self.counted(chunk_var, one, end, one, |m, c| {
                 let base = m.mul(c, size)?;
-                m.loss_chunk(base, chunk, false, false)
+                m.loss_chunk(base, chunk, scaled, false, false)
             })?;
         }
         if tail > 0 {
             let base = self.uint(full * chunk);
-            self.loss_chunk(base, tail, false, true)?;
+            self.loss_chunk(base, tail, scaled, false, true)?;
         }
         let local = self.local.expect("a module with workgroup memory");
         let first_invocation = self.equal(local, zero)?;
         self.when(first_invocation, |m| {
             let mut sum = m.b.load(m.f32_ty, None, m.f32_var, None, [])?;
-            if let Some(n) = divide_by {
+            if let (Some(n), Some((_, var))) = (divide_by, scaled) {
                 let n = m.float(n as f32);
-                sum = m.b.f_div(m.f32_ty, None, sum, n)?;
+                let divided = m.b.f_div(m.f32_ty, None, sum, n)?;
+                let mean = m.b.load(m.f32_ty, None, var, None, [])?;
+                let overflowed = m.b.is_inf(m.bool_ty, None, sum)?;
+                sum = m.pick(m.f32_ty, overflowed, mean, divided)?;
             }
             m.write(zero, sum)
         })
     }
 
-    /// One chunk of [`Shell::loss_sum`]: the `len` terms from element `base`. The `opening` chunk
-    /// starts the sum with the square of its first difference; the `closing` one needs no barrier
-    /// after it.
+    /// One chunk of [`Shell::loss_sum`]: the `len` terms from element `base`, and with `scaled`,
+    /// the constant `s` and the second accumulator, their scaled terms too. The `opening` chunk
+    /// starts each sum with its first term; the `closing` one needs no barrier after it.
     fn loss_chunk(
         &mut self,
         base: Word,
         len: u32,
+        scaled: Option<(Word, Word)>,
         opening: bool,
         closing: bool,
     ) -> Result<(), EmitError> {
@@ -1840,12 +1890,24 @@ impl Shell {
                 let d = m.load_shared(zero)?;
                 let first = m.f_mul(d, d)?;
                 m.b.store(m.f32_var, first, None, [])?;
+                if let Some((s, var)) = scaled {
+                    let e = m.f_mul(d, s)?;
+                    let first = m.f_mul(e, d)?;
+                    m.b.store(var, first, None, [])?;
+                }
             }
             let start = m.uint(start);
             m.repeat(term_var, len - u32::from(opening), UNROLL, |m, t| {
                 let j = m.add(t, start)?;
                 let d = m.load_shared(j)?;
-                m.accumulate_square(d)
+                m.accumulate_square(d)?;
+                if let Some((s, var)) = scaled {
+                    let e = m.f_mul(d, s)?;
+                    let acc = m.b.load(m.f32_ty, None, var, None, [])?;
+                    let sum = m.f_fma(e, d, acc)?;
+                    m.b.store(var, sum, None, [])?;
+                }
+                Ok(())
             })
         })?;
         if !closing {
@@ -1907,12 +1969,14 @@ impl Shell {
     /// values as for the operand bound as is; every product and sum is that of the operand bound
     /// as is, and the instructions for an operand bound as is are unchanged.
     ///
-    /// A tile with [`MatMulTile::vector_reads`] (the block of 256 invocations) gives each
-    /// invocation runs of 4 adjacent columns and rows, stages both blocks `k`-major
-    /// ([`MatMulTile::vector_layout`]) in workgroup memory declared as `vec4`s, and per `k` reads
-    /// each run of 4 values of `b` and of `a` with one vector load, then fuses the products of
-    /// that `k` in the order of the scalar reads, row by row and column by column: every
-    /// product and sum is the one the scalar tile computes for that output element.
+    /// A tile with [`MatMulTile::vector_reads`] (the block of 256 invocations and the long-`k`
+    /// tiles) gives each invocation runs of [`MatMulTile::vector_runs`] adjacent columns and
+    /// rows, stages both blocks `k`-major ([`MatMulTile::vector_layout`]) in workgroup memory
+    /// declared as `vec4`s, and per `k` reads each run of 4 values of `b` and of `a` with one
+    /// vector load and each run of 1 with one scalar load, then fuses the products of that `k`
+    /// in the order of the scalar reads, row by row and column by column: every product and
+    /// sum is the one the scalar tile computes for that output element. A long-`k` tile
+    /// ([`MatMulTile::long_k`]) stages its operands by the rule that method states.
     fn matmul(
         &mut self,
         [m, k, n]: [u32; 3],
@@ -1955,12 +2019,17 @@ impl Shell {
         let b_stride_c = self.uint(layout.b_stride);
         // Per column `c` of the invocation's block: its output column `j`, and where its `b`
         // values start in a buffer, at `k` 0 of the tile.
-        // A tile with vector reads (`MatMulTile::vector_reads`) gives each invocation runs of 4
-        // adjacent columns and rows, both blocks staged `k`-major.
+        // A tile with vector reads (`MatMulTile::vector_reads`) gives each invocation runs of
+        // adjacent columns and rows (`MatMulTile::vector_runs`), both blocks staged `k`-major.
         let vectors = tile.vector_reads();
+        let (row_run, col_run) = tile.vector_runs();
         let (thread_col4, thread_row4) = if vectors {
-            let four = self.uint(4);
-            (self.mul(thread_col, four)?, self.mul(thread_row, four)?)
+            let col_run_c = self.uint(col_run);
+            let row_run_c = self.uint(row_run);
+            (
+                self.mul(thread_col, col_run_c)?,
+                self.mul(thread_row, row_run_c)?,
+            )
         } else {
             (thread_col, thread_row)
         };
@@ -1968,7 +2037,7 @@ impl Shell {
         let mut b_cols = Vec::new();
         for c in 0..per {
             let col = if vectors {
-                let offset = self.uint(c / 4 * lanes * 4 + c % 4);
+                let offset = self.uint(c / col_run * lanes * col_run + c % col_run);
                 self.add(thread_col4, offset)?
             } else {
                 let offset = self.uint(c * lanes);
@@ -1985,7 +2054,7 @@ impl Shell {
         let mut local_rows = Vec::new();
         for q in 0..tile.rows {
             if vectors {
-                let offset = self.uint(q / 4 * thread_rows * 4 + q % 4);
+                let offset = self.uint(q / row_run * thread_rows * row_run + q % row_run);
                 local_rows.push(self.add(thread_row4, offset)?);
             } else {
                 let offset = self.uint(q * thread_rows);
@@ -2007,10 +2076,10 @@ impl Shell {
         let mut a_vectors = Vec::new();
         if vectors {
             let two = self.uint(2);
-            for &at in b_cols.iter().step_by(4) {
+            for &at in b_cols.iter().step_by(4).filter(|_| col_run == 4) {
                 b_vectors.push(self.b.shift_right_logical(u32_ty, None, at, two)?);
             }
-            for &at in a_rows.iter().step_by(4) {
+            for &at in a_rows.iter().step_by(4).filter(|_| row_run == 4) {
                 a_vectors.push(self.b.shift_right_logical(u32_ty, None, at, two)?);
             }
         }
@@ -2038,6 +2107,70 @@ impl Shell {
         let mut slots = Vec::new();
         let zero = self.uint(0);
         for (total, is_a) in [(block_rows * depth, true), (depth * cols, false)] {
+            let staging = Staging::of(
+                &tile,
+                m,
+                k,
+                n,
+                is_a,
+                if is_a { a_transposed } else { b_transposed },
+            );
+            // A long-`k` tile (`MatMulTile::long_k`) stages an operand read with its rows or
+            // columns contiguous by fixed rows or columns: invocation `local` takes row or
+            // column `local % across` at `k` index `local / across` plus `size / across` per
+            // step, its places in the binding and in workgroup memory those of step 0 plus a
+            // constant.
+            if tile.long_k()
+                && !staging.along_first
+                && size.is_multiple_of(staging.across)
+                && total.is_multiple_of(size)
+            {
+                let w_c = self.uint(staging.across);
+                let across = self.b.u_mod(u32_ty, None, local, w_c)?;
+                let along0 = self.b.u_div(u32_ty, None, local, w_c)?;
+                let (origin, limit) = if is_a { (row0, m_c) } else { (col0, n_c) };
+                let line = self.add(origin, across)?;
+                let valid = self.less(line, limit)?;
+                let along_stride_c = self.uint(staging.along_stride);
+                let along_at = self.mul(along0, along_stride_c)?;
+                let line_at = self.add(along_at, line)?;
+                let base = self.pick(u32_ty, valid, line_at, along_at)?;
+                let line_stride = if is_a { a_stride } else { layout.b_stride };
+                let line_stride_c = self.uint(line_stride);
+                let to_along = self.mul(along0, line_stride_c)?;
+                let to_base = self.add(to_along, across)?;
+                let to_base = if is_a {
+                    to_base
+                } else {
+                    self.add(b_offset_c, to_base)?
+                };
+                let step_along = size / staging.across;
+                for step in 0..total / size {
+                    let d = step * step_along;
+                    let (along, at, to) = if step == 0 {
+                        (along0, base, to_base)
+                    } else {
+                        let d_c = self.uint(d);
+                        let at_c = self.uint(d * staging.along_stride);
+                        let to_c = self.uint(d * line_stride);
+                        (
+                            self.add(along0, d_c)?,
+                            self.add(base, at_c)?,
+                            self.add(to_base, to_c)?,
+                        )
+                    };
+                    slots.push(Slot {
+                        is_a,
+                        at,
+                        to,
+                        along,
+                        along_stride: staging.along_stride,
+                        valid,
+                        taken: None,
+                    });
+                }
+                continue;
+            }
             let total_c = self.uint(total);
             for step in 0..total.div_ceil(size) {
                 let offset = self.uint(step * size);
@@ -2202,18 +2335,34 @@ impl Shell {
             for p in 0..len {
                 if vectors {
                     // Per `k`, one vector load per run of 4 columns of `b` and of 4 rows
-                    // of `a`, then the products in the order of the scalar reads.
+                    // of `a`, or one scalar load per column or row where the runs are of 1
+                    // (`MatMulTile::vector_runs`), then the products in the order of the
+                    // scalar reads.
                     let mut bs = Vec::new();
                     for &at in &b_vectors {
                         let offset = s.uint((buffer_value + p * b_line) / 4);
                         let at = s.add(at, offset)?;
                         bs.extend(s.load_shared_vector(at)?);
                     }
+                    if col_run == 1 {
+                        for &at in &b_cols {
+                            let offset = s.uint(buffer_value + p * b_line);
+                            let at = s.add(at, offset)?;
+                            bs.push(s.load_shared(at)?);
+                        }
+                    }
                     let mut a_values = Vec::new();
                     for &at in &a_vectors {
                         let offset = s.uint((buffer_value + p * a_stride) / 4);
                         let at = s.add(at, offset)?;
                         a_values.extend(s.load_shared_vector(at)?);
+                    }
+                    if row_run == 1 {
+                        for &at in &a_rows {
+                            let offset = s.uint(buffer_value + p * a_stride);
+                            let at = s.add(at, offset)?;
+                            a_values.push(s.load_shared(at)?);
+                        }
                     }
                     for (row_sums, &a) in sums.chunks_mut(per as usize).zip(&a_values) {
                         for (sum, &b) in row_sums.iter_mut().zip(&bs) {

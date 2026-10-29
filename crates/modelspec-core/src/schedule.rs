@@ -9,15 +9,39 @@
 //! an `Allocate` of its partials buffer, a stage-1 Dispatch that writes one partial per workgroup
 //! into it, a `Barrier`, and a stage-2 Dispatch of one workgroup that reads the partials.
 //! Each row-wise op is one Dispatch of workgroups of 64 ([`rowwise_kernel`]): `Embedding`,
-//! `AddRows`, `Gelu`, `GeluGrad`, `Dropout` and `DropoutGrad` one invocation per output element,
-//! `EmbeddingGrad`, `LayerNorm`, `LayerNormGradX`, `Softmax` and `SoftmaxGrad` one per output row,
-//! and the column reductions `SumRows`, `LayerNormGradGamma`, `SigregColumns` and
-//! `SigregColumnsGrad` one per output column.
+//! `EmbeddingGrad`, `AddRows`, `Gelu`, `GeluGrad`, `Dropout` and `DropoutGrad` one invocation per
+//! output element, `LayerNorm`, `LayerNormGradX`, `Softmax` and `SoftmaxGrad` one per output row,
+//! `SigregColumns` and `SigregColumnsGrad` one per output column, and the column sums `SumRows`
+//! and `LayerNormGradGamma` one workgroup per [`column_sum_columns`] columns. `EmbeddingGrad`
+//! and `LayerNormGradGamma` are two Dispatches each. `EmbeddingGrad`
+//! ([`embedding_grad_kernels`], story:vulkan-embedding-grad-sorted-ids): an `Allocate` of an
+//! `i32[n, 2]` buffer, numbered after every other buffer, a sort of the `n` ids by id and
+//! position that writes it, one invocation per id, a `Barrier`, and the gradient over the sorted
+//! ids, one invocation per element of the table gradient. `LayerNormGradGamma`
+//! ([`layer_norm_grad_gamma_kernels`], story:vulkan-layer-norm-grad-gamma-row-moments): an
+//! `Allocate` of an `f32[n, 2]` buffer, numbered after every other buffer, the mean and `rstd`
+//! of each of the `n` rows written into it, one invocation per row, a `Barrier`, and the column
+//! sum that reads them.
 //! `Attention`, `AttentionGradQ`, `AttentionGradK` and `AttentionGradV` are one Dispatch each of
-//! workgroups of 64, one invocation per row and head, the head count a last immediate operand;
-//! `CrossEntropy` is a loss sum of one workgroup, `CrossEntropyGrad` one invocation per row, and
-//! `Sqrt` and `Div` elementwise kernels of one invocation per output element that no elementwise
-//! chain extends ([`attention_loss_kernel`], coordinator decision D73).
+//! workgroups of [`ATTENTION_WORKGROUP`], one per sequence, head and tile of [`attention_tile`]
+//! rows ([`attention_workgroups`], story:vulkan-attention-workgroup-per-head): query rows for
+//! `Attention` and `AttentionGradQ` and key rows for the other two, which differ where `q` has
+//! fewer rows per sequence than `k` (story:attention-fewer-query-rows). Over an `i32 [U, 2]` spans
+//! operand (story:attention-event-spans) a sequence is a span of at most [`MAX_SPAN_KEYS`] keys,
+//! [`span_rows`] its rows, and a workgroup whose tile holds no row of its span writes only the
+//! `+0` of the rows between spans; the head count a
+//! last immediate operand; `CrossEntropy` is two Dispatches, one invocation per row that writes
+//! the row's loss into a partials buffer, then a loss sum of one workgroup that adds the weighted
+//! losses in row order ([`cross_entropy_kernels`]), and `CrossEntropyGrad` is two Dispatches, one
+//! invocation per row and one more that write the row maxima and exponential sums and the weight
+//! sum, then one invocation per gradient element ([`cross_entropy_grad_kernels`]), and `Sqrt` and
+//! `Div` elementwise kernels of one invocation per output element that no elementwise chain
+//! extends ([`attention_loss_kernel`], coordinator decision D73). The kernels of an attention
+//! call share its softmax statistics ([`softmax_stats_sites`],
+//! story:vulkan-attention-softmax-stats-reused): an `Allocate` of a `[rows · heads, 3]` buffer,
+//! numbered after every other buffer, right before the `Attention` Dispatch, which writes it
+//! before its result, as `AttentionGradQ` does, and `AttentionGradK` and `AttentionGradV` read it
+//! after their operands.
 //! `Input`, `ParamRead` and `Scalar` dispatch nothing: inputs and parameters are bound views, and a scalar
 //! is compiled into the kernels that read it.
 //!
@@ -85,7 +109,8 @@ use thiserror::Error;
 use crate::artifact::{DataRole, DataSpec, ParameterSpec, canonical_parameter_id};
 use crate::ir::kernel::{
     BufferView, ChainLink, ElementwiseChain, Epilogue, ExecutionPlan, Kernel, KernelKind,
-    MatMulLimits, MatMulTile, Operand, PlanOp, PlanStep,
+    MIN_SHARED_MEMORY_BYTES, MatMulLimits, MatMulTile, Operand, PlanOp, PlanStep,
+    SOFTMAX_STATS_PER_QUERY,
 };
 use crate::ir::tensor::{DType, Dim, ParamId, TensorNode, TensorOp, TensorType, ValueId};
 use crate::ir::training::{TrainConfig, TrainingStep, sigreg_projection_inputs};
@@ -159,13 +184,17 @@ struct Work {
     value: ValueId,
     /// Every value the work computes, `value` first.
     values: Vec<ValueId>,
-    /// One kernel, or stage 1 and stage 2 of a reduce.
+    /// One kernel, or stage 1 and stage 2 of a reduce or of the `CrossEntropy` loss.
     kernels: Vec<Kernel>,
     reads: Vec<BufferView>,
-    /// In binding order; one view but for an epilogue that keeps its pre-activation.
+    /// In binding order; one view but for an epilogue that keeps its pre-activation and an
+    /// attention kernel that writes softmax statistics before its result.
     writes: Vec<BufferView>,
-    /// The partials buffer of a two-stage reduce.
+    /// The partials buffer of a two-stage reduce, or the row losses of `CrossEntropy`.
     partials: Option<BufferView>,
+    /// The softmax statistics buffer an `Attention` work allocates before its dispatch and
+    /// writes first ([`Kernel::softmax_stats`]).
+    allocates: Option<BufferView>,
 }
 
 /// The fusions and folded constants of a step (the module documentation).
@@ -640,10 +669,14 @@ fn schedule_with(
         .filter_map(|n| ops::token_operand(&n.op).and_then(|i| n.operands.get(i).copied()))
         .chain(step.optimizer.host_inputs())
         .chain(sigreg_projection_inputs(program))
+        .chain(crate::passes::masked_rows::site_inputs(program))
         .collect();
     let mut host_inputs = Vec::new();
     let mut places: BTreeMap<ValueId, Place> = BTreeMap::new();
     let mut works: Vec<Work> = Vec::new();
+    // The works of each `EmbeddingGrad` and `LayerNormGradGamma`, whose sorted ids or row
+    // moments get a buffer after every other.
+    let mut between: Vec<usize> = Vec::new();
     let mut prediction_view = None;
     for node in &program.nodes {
         let shape_error = || ScheduleError::Shape {
@@ -678,6 +711,7 @@ fn schedule_with(
                         reads: Vec::new(),
                         writes: vec![own],
                         partials: None,
+                        allocates: None,
                     }
                 }
                 _ => Work {
@@ -687,14 +721,15 @@ fn schedule_with(
                     reads: vec![bound_view(&data, &parameters, node)?],
                     writes: vec![own],
                     partials: None,
+                    allocates: None,
                 },
             });
         }
         match &node.op {
             TensorOp::Input { name } if tokens.contains(&node.id) => {
-                // The RNG token of a dropout site, the projection of a sigreg site and the AdamW
-                // scalars and moments, supplied by the host each step, are no data of the train
-                // block: each takes its own buffer.
+                // The RNG token of a dropout site, the projection of a sigreg site, the AdamW
+                // scalars and moments and the inputs of the masked-row gather, supplied by the host
+                // each step, are no data of the train block: each takes its own buffer.
                 let view = allocate(&mut buffers, &node.ty).ok_or_else(shape_error)?;
                 places.insert(node.id, Place::View(view));
                 host_inputs.push(HostInput {
@@ -912,15 +947,46 @@ fn schedule_with(
                 );
                 (vec![stage1, stage2], Some(partials))
             }
+            TensorOp::EmbeddingGrad { .. } => match built {
+                Kernels::None => continue,
+                Kernels::Vulkan => {
+                    let no_kernel = || ScheduleError::NoKernel {
+                        value: node.id,
+                        op: node.op.name(),
+                    };
+                    let (_, invocations) =
+                        rowwise_shape(&node.op, &operands, &node.ty).ok_or_else(no_kernel)?;
+                    spread(node, invocations.div_ceil(ROWWISE_WORKGROUP))?;
+                    let [sort, gather] =
+                        embedding_grad_kernels(operands, node.ty.clone()).ok_or_else(no_kernel)?;
+                    between.push(works.len());
+                    (vec![sort, gather], None)
+                }
+            },
+            TensorOp::LayerNormGradGamma => match built {
+                Kernels::None => continue,
+                Kernels::Vulkan => {
+                    let no_kernel = || ScheduleError::NoKernel {
+                        value: node.id,
+                        op: node.op.name(),
+                    };
+                    let (_, invocations) =
+                        rowwise_shape(&node.op, &operands, &node.ty).ok_or_else(no_kernel)?;
+                    spread(node, invocations.div_ceil(ROWWISE_WORKGROUP))?;
+                    let [moments, column] =
+                        layer_norm_grad_gamma_kernels(operands, node.ty.clone())
+                            .ok_or_else(no_kernel)?;
+                    between.push(works.len());
+                    (vec![moments, column], None)
+                }
+            },
             TensorOp::Embedding
-            | TensorOp::EmbeddingGrad { .. }
             | TensorOp::AddRows
             | TensorOp::SumRows
             | TensorOp::Gelu
             | TensorOp::GeluGrad
             | TensorOp::LayerNorm
             | TensorOp::LayerNormGradX
-            | TensorOp::LayerNormGradGamma
             | TensorOp::Softmax
             | TensorOp::SoftmaxGrad
             | TensorOp::Dropout { .. }
@@ -942,12 +1008,55 @@ fn schedule_with(
                     (vec![built], None)
                 }
             },
+            TensorOp::CrossEntropy | TensorOp::CrossEntropyGrad => {
+                let no_kernel = || ScheduleError::NoKernel {
+                    value: node.id,
+                    op: node.op.name(),
+                };
+                let grad = node.op == TensorOp::CrossEntropyGrad;
+                // The buffer between the two stages, the row losses or the row statistics, is
+                // allocated with or without kernels, so the views of the host inputs after it
+                // are the same in both schedules.
+                let shape = match operands.first() {
+                    Some(Operand::Buffer(logits)) => match logits.shape[..] {
+                        [Dim::Static(rows), Dim::Static(classes)] => Some((rows, classes)),
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                let partials = match shape {
+                    Some((rows, _)) => {
+                        let between = if grad {
+                            TensorType::f32(&[rows.checked_add(1).ok_or_else(shape_error)?, 2])
+                        } else {
+                            TensorType::f32(&[rows])
+                        };
+                        Some(allocate(&mut buffers, &between).ok_or_else(shape_error)?)
+                    }
+                    None => None,
+                };
+                match (built, shape, partials) {
+                    (Kernels::None, _, _) => continue,
+                    (Kernels::Vulkan, Some((rows, classes)), Some(partials)) => {
+                        let (invocations, kernels) = if grad {
+                            (
+                                rows.checked_mul(classes).ok_or_else(no_kernel)?,
+                                cross_entropy_grad_kernels(operands, node.ty.clone()),
+                            )
+                        } else {
+                            (rows, cross_entropy_kernels(operands, node.ty.clone()))
+                        };
+                        spread(node, invocations.div_ceil(ROWWISE_WORKGROUP))?;
+                        let [first, second] = kernels.ok_or_else(no_kernel)?;
+                        (vec![first, second], Some(partials))
+                    }
+                    (Kernels::Vulkan, _, _) => return Err(no_kernel()),
+                }
+            }
             TensorOp::Attention { .. }
             | TensorOp::AttentionGradQ { .. }
             | TensorOp::AttentionGradK { .. }
             | TensorOp::AttentionGradV { .. }
-            | TensorOp::CrossEntropy
-            | TensorOp::CrossEntropyGrad
             | TensorOp::Sqrt
             | TensorOp::Div => match built {
                 Kernels::None => continue,
@@ -956,9 +1065,9 @@ fn schedule_with(
                         value: node.id,
                         op: node.op.name(),
                     };
-                    let (_, invocations) = attention_loss_shape(&node.op, &operands, &node.ty)
+                    let (_, groups, _) = attention_loss_groups(&node.op, &operands, &node.ty)
                         .ok_or_else(no_kernel)?;
-                    spread(node, invocations.div_ceil(ROWWISE_WORKGROUP))?;
+                    spread(node, groups)?;
                     let built = attention_loss_kernel(&node.op, operands, node.ty.clone())
                         .ok_or_else(no_kernel)?;
                     (vec![built], None)
@@ -988,7 +1097,69 @@ fn schedule_with(
             reads,
             writes,
             partials,
+            allocates: None,
         });
+    }
+
+    // The softmax statistics of each attention call that shares them: one buffer each, numbered
+    // after every other, which the `Attention` work allocates and writes before its result,
+    // `AttentionGradQ` writes before its result and the other gradients read after their
+    // operands (story:vulkan-attention-softmax-stats-reused).
+    if built == Kernels::Vulkan {
+        let sites: Vec<[Option<usize>; 4]> = softmax_stats_sites(&program.nodes)
+            .into_iter()
+            .map(|site| {
+                site.map(|value| {
+                    value.and_then(|value| works.iter().position(|w| w.value == value))
+                })
+            })
+            .collect();
+        for [forward, grad_q, grad_k, grad_v] in sites {
+            let (Some(forward), Some(grad_q), Some(grad_k)) = (forward, grad_q, grad_k) else {
+                continue;
+            };
+            let Some(ty) = works[forward].kernels.first().and_then(softmax_stats_type) else {
+                continue;
+            };
+            let Some(view) = allocate(&mut buffers, &ty) else {
+                return Err(ScheduleError::Shape {
+                    value: works[forward].value,
+                    ty,
+                });
+            };
+            for at in [Some(forward), Some(grad_q), Some(grad_k), grad_v]
+                .into_iter()
+                .flatten()
+            {
+                let work = &mut works[at];
+                let Some(kernel) = work.kernels.first().cloned().and_then(with_softmax_stats)
+                else {
+                    continue;
+                };
+                if kernel.writes_softmax_stats() {
+                    work.writes.insert(0, view);
+                } else {
+                    work.reads.push(view);
+                }
+                work.kernels = vec![kernel];
+            }
+            works[forward].allocates = Some(view);
+        }
+    }
+
+    // The sorted ids of each `EmbeddingGrad` and the row moments of each `LayerNormGradGamma`:
+    // one buffer each, numbered after every other, the row moments first so the sorted ids stay
+    // the last buffers, which its work allocates before its first kernel writes it
+    // (story:vulkan-embedding-grad-sorted-ids, story:vulkan-layer-norm-grad-gamma-row-moments).
+    between.sort_by_key(|&at| works[at].kernels[0].op != TensorOp::LayerNormGradGamma.name());
+    for at in between {
+        let work = &mut works[at];
+        let ty = work.kernels[0].result.clone();
+        let view = allocate(&mut buffers, &ty).ok_or_else(|| ScheduleError::Shape {
+            value: work.value,
+            ty: ty.clone(),
+        })?;
+        work.partials = Some(view);
     }
 
     let view_of = |value: ValueId| match places.get(&value) {
@@ -1129,12 +1300,141 @@ fn spread_groups(groups: u64) -> Option<[u32; 3]> {
 /// The workgroup size of every row-wise kernel ([`KernelKind::workgroup_size`]).
 const ROWWISE_WORKGROUP: u64 = 64;
 
+/// The columns one workgroup of the column sum `op` over rows of `h` columns adds
+/// (story:vulkan-column-sums-coalesced, DESIGN.md § 5.2): the largest power of two of at most
+/// `h / 128`, within 2 and 64, for `SumRows` and for the column kernel of `LayerNormGradGamma`,
+/// which reads the row moments its first kernel wrote
+/// (story:vulkan-layer-norm-grad-gamma-row-moments). Its 64 invocations stage tiles of rows of
+/// these columns in workgroup memory, and invocation `c` adds column `c` in ascending row order.
+/// On the RTX 3090 2 columns take the `[4096, 128]` `SumRows` of BERT-tiny to 13.4 µs against
+/// 14.5 for 4, 17.5 for 8 and 42.7 for the 64 of one column per invocation, and 64 take its
+/// `[832, 8192]` one to 39 µs against 61 for 8. `None` for another op.
+pub fn column_sum_columns(op: &TensorOp, h: u64) -> Option<u64> {
+    let (per, least, most) = match op {
+        TensorOp::SumRows | TensorOp::LayerNormGradGamma => (128, 2, 64),
+        _ => return None,
+    };
+    let columns = (h / per).clamp(least, most);
+    Some(1 << columns.ilog2())
+}
+
+/// The invocations of the column sum `op` over `h` columns: a workgroup of 64 per
+/// [`column_sum_columns`] columns.
+fn column_groups(op: &TensorOp, h: u64) -> Option<u64> {
+    h.div_ceil(column_sum_columns(op, h)?)
+        .checked_mul(ROWWISE_WORKGROUP)
+}
+
+/// The fewest rows a workgroup of the staged row kernel of `LayerNorm`, `LayerNormGradX` or the
+/// row moments of `LayerNormGradGamma` stages ([`layer_norm_rows`]). Under it the 64 - `rows`
+/// invocations that own no row idle while the others add theirs, and the kernel of one
+/// invocation per row is faster: on the RTX 3090 over 16384 rows (medians of 3 alternating
+/// pairs, each a command buffer of at least 400 ms) the staged kernel takes up to 1.35 times
+/// the time of the per-row kernel at the same width with 1 row per workgroup (`LayerNormGradX`
+/// of 2047 columns), and the moments with 2 take 0.51 to 0.59 times in some runs and 1.43 to 1.61
+/// times in others (2046 and 2047 columns); with 3 to 16 at most 0.61 times at every width
+/// measured.
+pub const LAYER_NORM_MIN_ROWS: u64 = 3;
+
+/// The values one staged row of `h` columns takes in workgroup memory
+/// ([`layer_norm_rows`]): `h` for an odd width, `h + 1` for an even one. The invocations that
+/// add rows `0, 1, …` at one column then read values an odd number of banks apart, 32 distinct
+/// banks, and the place of element `c` of row `r` is `r * stride + c`, which the staging loop
+/// computes without a remainder.
+pub fn layer_norm_row_stride(h: u64) -> u64 {
+    h + 1 - h % 2
+}
+
+/// The rows one workgroup of 64 of the `per_row` kernel of `LayerNorm`, `LayerNormGradX` or
+/// the row moments of `LayerNormGradGamma` over rows of `h` columns stages whole in workgroup
+/// memory (story:vulkan-layer-norm-coalesced-rows, DESIGN.md § 5.2): as many as the 16 KiB
+/// every device has ([`MIN_SHARED_MEMORY_BYTES`]) holds of the rows it stages, `x` or, for
+/// `LayerNormGradX`, `x` and `g`, each [`layer_norm_row_stride`] values, at most 64, and for the
+/// moments at most [`LAYER_NORM_MOMENTS_MAX_ROWS`]. 15 rows for a `LayerNorm` of width 256, 7
+/// for its gradient. Its 64 invocations load the rows as
+/// consecutive values and invocation `r` adds row `r` in ascending order. `Some(0)` when 16 KiB
+/// holds fewer than [`LAYER_NORM_MIN_ROWS`] rows, at a width past 1365 for `LayerNorm` and the
+/// moments and past 681 for `LayerNormGradX`: the kernel then keeps one invocation per row,
+/// which reads its row from the binding, as it does on this thread inside
+/// [`layer_norm_per_row::with`]. `None` for another op.
+pub fn layer_norm_rows(op: &TensorOp, h: u64) -> Option<u64> {
+    let staged = match op {
+        TensorOp::LayerNorm | TensorOp::LayerNormGradGamma => 1,
+        TensorOp::LayerNormGradX => 2,
+        _ => return None,
+    };
+    if layer_norm_per_row::forced() {
+        return Some(0);
+    }
+    let most = match op {
+        TensorOp::LayerNormGradGamma => LAYER_NORM_MOMENTS_MAX_ROWS,
+        _ => ROWWISE_WORKGROUP,
+    };
+    let values = u64::from(MIN_SHARED_MEMORY_BYTES) / 4;
+    let rows = (values / (staged * layer_norm_row_stride(h.max(1)))).min(most);
+    Some(if rows < LAYER_NORM_MIN_ROWS { 0 } else { rows })
+}
+
+/// The most rows a workgroup of the row moments of `LayerNormGradGamma` stages
+/// ([`layer_norm_rows`]). Each row's two passes are short at a narrow width, and more rows only
+/// add idle invocations' waits on the barriers: on the RTX 3090 over 16384 rows (medians of 3
+/// alternating triples, each a command buffer of at least 400 ms, timestamps in steps of about
+/// 1 µs) the moments of widths 120 to 130 take 15.4 µs with 31 to 33 rows, 14.3 with 24 and
+/// 13.3 with 16, against 12.3 µs for one invocation per row at widths 120 to 127, 19.5 at 128
+/// and 13.3 at 130: 16 rows is 1.08 to 1.17 times the per-row kernel (one timestamp step) and
+/// 0.65 to 0.68 times it at 128, where 31 to 33 rows were up to 1.25 times it, and 1.33 in an
+/// earlier run.
+pub const LAYER_NORM_MOMENTS_MAX_ROWS: u64 = 16;
+
+/// A per-thread switch that makes [`layer_norm_rows`] stage no rows, so a timing test can build
+/// and emit the per-row kernel at a width that stages rows and compare the two
+/// (story:vulkan-layer-norm-coalesced-rows, ADV-LNROWS-1).
+#[doc(hidden)]
+pub mod layer_norm_per_row {
+    use std::cell::Cell;
+
+    thread_local! {
+        static FORCED: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// Whether [`with`] is running on this thread.
+    pub fn forced() -> bool {
+        FORCED.get()
+    }
+
+    /// Runs `body` with [`super::layer_norm_rows`] staging no rows on this thread; the switch is
+    /// off again after `body`, also when it panics.
+    pub fn with<T>(body: impl FnOnce() -> T) -> T {
+        struct Reset(bool);
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                FORCED.set(self.0);
+            }
+        }
+        let _reset = Reset(FORCED.replace(true));
+        body()
+    }
+}
+
+/// The invocations of the row kernel of `op` over `n` rows of `h` columns: a workgroup of 64 per
+/// [`layer_norm_rows`] rows, or one invocation per row where it stages none (fewer than
+/// [`LAYER_NORM_MIN_ROWS`] fit).
+pub fn layer_norm_invocations(op: &TensorOp, n: u64, h: u64) -> Option<u64> {
+    match layer_norm_rows(op, h)? {
+        0 => Some(n),
+        rows => n.div_ceil(rows).checked_mul(ROWWISE_WORKGROUP),
+    }
+}
+
 /// The kernel kind of the row-wise op `op` over `operands` into `result`, and the invocations
 /// its dispatch runs: one per output element of a [`KernelKind::PerElement`] kernel, one per
-/// output row of a [`KernelKind::PerRow`] kernel and one per output column of a
-/// [`KernelKind::PerColumn`] kernel. `None` for another op, an immediate operand, a shape that
-/// is not static or a zero dimension, or operands that are not the op's: an `i32` buffer of ids
-/// or an `i32[2]` RNG token where the op reads one, `f32` elsewhere.
+/// output row of a [`KernelKind::PerRow`] kernel but a workgroup of 64 per [`layer_norm_rows`]
+/// rows of `LayerNorm` and `LayerNormGradX` ([`layer_norm_invocations`]), one per output column
+/// of a `sigreg` [`KernelKind::PerColumn`] kernel and a workgroup of 64 per
+/// [`column_sum_columns`] columns of the column sums `SumRows` and `LayerNormGradGamma`. `None`
+/// for another op, an immediate operand, a shape that is not static or a zero dimension, or
+/// operands that are not the op's: an `i32` buffer of ids or an `i32[2]` RNG token where the op
+/// reads one, `f32` elsewhere.
 fn rowwise_shape(
     op: &TensorOp,
     operands: &[Operand],
@@ -1165,13 +1465,13 @@ fn rowwise_shape(
         (TensorOp::EmbeddingGrad { rows }, [[n], [gn, h]], [v, rh])
             if n == gn && h == rh && *rows == Dim::Static(*v) =>
         {
-            f32s(&[1]).then_some((KernelKind::PerRow, *v))?
+            f32s(&[1]).then_some((KernelKind::PerElement, out_elements))?
         }
         (TensorOp::AddRows, [[n, h], [bh]], [rn, rh]) if h == bh && (n, h) == (rn, rh) => {
             f32s(&[0, 1]).then_some((KernelKind::PerElement, out_elements))?
         }
         (TensorOp::SumRows, [[_, h]], [rh]) if h == rh => {
-            f32s(&[0]).then_some((KernelKind::PerColumn, *h))?
+            f32s(&[0]).then_some((KernelKind::PerColumn, column_groups(op, *h)?))?
         }
         (TensorOp::Gelu, [x], _) if *x == out.as_slice() => {
             f32s(&[0]).then_some((KernelKind::PerElement, out_elements))?
@@ -1188,15 +1488,15 @@ fn rowwise_shape(
         (TensorOp::LayerNorm, [[n, h], [gh], [bh]], [rn, rh])
             if h == gh && h == bh && (n, h) == (rn, rh) =>
         {
-            f32s(&[0, 1, 2]).then_some((KernelKind::PerRow, *n))?
+            f32s(&[0, 1, 2]).then_some((KernelKind::PerRow, layer_norm_invocations(op, *n, *h)?))?
         }
         (TensorOp::LayerNormGradX, [[n, h], [gh], g], [rn, rh])
             if h == gh && *g == [*n, *h] && (n, h) == (rn, rh) =>
         {
-            f32s(&[0, 1, 2]).then_some((KernelKind::PerRow, *n))?
+            f32s(&[0, 1, 2]).then_some((KernelKind::PerRow, layer_norm_invocations(op, *n, *h)?))?
         }
         (TensorOp::LayerNormGradGamma, [[n, h], g], [rh]) if h == rh && *g == [*n, *h] => {
-            f32s(&[0, 1]).then_some((KernelKind::PerColumn, *h))?
+            f32s(&[0, 1]).then_some((KernelKind::PerColumn, column_groups(op, *h)?))?
         }
         (TensorOp::Softmax, [[n, h]], [rn, rh]) if (n, h) == (rn, rh) => {
             f32s(&[0]).then_some((KernelKind::PerRow, *n))?
@@ -1234,17 +1534,109 @@ fn static_dims(ty: &TensorType) -> Option<Vec<u64>> {
 /// workgroups of 64 over its invocations, and its module id. A `Dropout` or `DropoutGrad`
 /// carries its drop probability `p` as a last, immediate operand, so it is in the module id;
 /// the run key is not, the pipeline supplies it. `None` where [`rowwise_shape`] is: another
-/// op, or operands that are not the op's.
+/// op, or operands that are not the op's; and for `EmbeddingGrad` and `LayerNormGradGamma`,
+/// which are two kernels each ([`embedding_grad_kernels`], [`layer_norm_grad_gamma_kernels`]).
 pub fn rowwise_kernel(
     op: &TensorOp,
     mut operands: Vec<Operand>,
     result: TensorType,
 ) -> Option<Kernel> {
+    if matches!(
+        op,
+        TensorOp::EmbeddingGrad { .. } | TensorOp::LayerNormGradGamma
+    ) {
+        return None;
+    }
     let (kind, invocations) = rowwise_shape(op, &operands, &result)?;
-    let workgroups = spread_groups(invocations.div_ceil(ROWWISE_WORKGROUP))?;
     if let Some(p) = op.dropout_rate() {
         operands.push(Operand::Immediate(p));
     }
+    rowwise_record(kind, op, operands, result, invocations)
+}
+
+/// The two kernels of `EmbeddingGrad` over its operands `ids: i32[N]` and `g: f32[N, H]` into
+/// its `result: f32[V, H]`, as [`schedule`] builds them (story:vulkan-embedding-grad-sorted-ids):
+/// the sort, [`KernelKind::PerRow`] over `(ids)` into `i32[N, 2]`, invocation `n` writing the id
+/// and position `n` to the row of its rank by id, then position, so the rows hold the ids in
+/// ascending order and each id's positions in ascending order; and the gradient,
+/// [`KernelKind::PerElement`] over `(sorted, g)` into `result`, one invocation per element, which
+/// adds the gradient rows of its table row's positions in ascending order. `None` for operands
+/// or a result that are not the op's.
+pub fn embedding_grad_kernels(operands: Vec<Operand>, result: TensorType) -> Option<[Kernel; 2]> {
+    let op = TensorOp::EmbeddingGrad {
+        rows: *result.shape.first()?,
+    };
+    let (kind, invocations) = rowwise_shape(&op, &operands, &result)?;
+    let [ids, g] = <[Operand; 2]>::try_from(operands).ok()?;
+    let rows = match &ids {
+        Operand::Buffer(ty) => match ty.shape[..] {
+            [Dim::Static(rows)] => rows,
+            _ => return None,
+        },
+        Operand::Immediate(_) => return None,
+    };
+    let sorted = TensorType::i32(&[rows, 2]);
+    let sort = rowwise_record(KernelKind::PerRow, &op, vec![ids], sorted.clone(), rows)?;
+    let gather = rowwise_record(
+        kind,
+        &op,
+        vec![Operand::Buffer(sorted), g],
+        result,
+        invocations,
+    )?;
+    Some([sort, gather])
+}
+
+/// The two kernels of `LayerNormGradGamma` over its operands `x: f32[N, H]` and `g: f32[N, H]`
+/// into its `result: f32[H]`, as [`schedule`] builds them
+/// (story:vulkan-layer-norm-grad-gamma-row-moments): the moments, [`KernelKind::PerRow`] over
+/// `(x)` into `f32[N, 2]`, the mean and `rstd` of each row as `LayerNorm` computes them, over
+/// [`layer_norm_invocations`]; and the column sum, [`KernelKind::PerColumn`] over
+/// `(moments, x, g)` into `result`, a workgroup of 64 per [`column_sum_columns`] columns, which
+/// adds `g · x̂` of each column over the rows in ascending order. `None` for operands or a
+/// result that are not the op's.
+pub fn layer_norm_grad_gamma_kernels(
+    operands: Vec<Operand>,
+    result: TensorType,
+) -> Option<[Kernel; 2]> {
+    let op = TensorOp::LayerNormGradGamma;
+    let (kind, invocations) = rowwise_shape(&op, &operands, &result)?;
+    let [x, g] = <[Operand; 2]>::try_from(operands).ok()?;
+    let (rows, h) = match &x {
+        Operand::Buffer(ty) => match ty.shape[..] {
+            [Dim::Static(rows), Dim::Static(h)] => (rows, h),
+            _ => return None,
+        },
+        Operand::Immediate(_) => return None,
+    };
+    let moments_ty = TensorType::f32(&[rows, 2]);
+    let moments = rowwise_record(
+        KernelKind::PerRow,
+        &op,
+        vec![x.clone()],
+        moments_ty.clone(),
+        layer_norm_invocations(&op, rows, h)?,
+    )?;
+    let column = rowwise_record(
+        kind,
+        &op,
+        vec![Operand::Buffer(moments_ty), x, g],
+        result,
+        invocations,
+    )?;
+    Some([moments, column])
+}
+
+/// The record of a row-wise kernel of `op`: `kind`, workgroups of 64 over `invocations`, and its
+/// module id.
+fn rowwise_record(
+    kind: KernelKind,
+    op: &TensorOp,
+    operands: Vec<Operand>,
+    result: TensorType,
+    invocations: u64,
+) -> Option<Kernel> {
+    let workgroups = spread_groups(invocations.div_ceil(ROWWISE_WORKGROUP))?;
     let mut kernel = Kernel {
         id: crate::ir::kernel::KernelModuleId([0; 16]),
         kind,
@@ -1255,6 +1647,7 @@ pub fn rowwise_kernel(
         reduces: None,
         epilogue: None,
         transposed: [false, false],
+        softmax_stats: None,
         workgroup_size: kind.workgroup_size(),
         workgroups,
     };
@@ -1262,25 +1655,116 @@ pub fn rowwise_kernel(
     Some(kernel)
 }
 
-/// The most keys of one sequence an attention kernel reads: each invocation recomputes the
-/// softmax of a query row over them, and a gradient of `k` or `v` does so for every query of
-/// its sequence (coordinator decision D73).
+/// The most keys of one sequence an attention kernel reads: a workgroup stages the weights of
+/// its rows over them in workgroup memory ([`attention_tile`]), and a gradient of `k` or `v`
+/// computes them for every query of its sequence (coordinator decision D73).
 pub const MAX_ATTENTION_KEYS: u64 = 512;
+
+/// The workgroup size of an attention kernel (story:vulkan-attention-workgroup-per-head).
+pub const ATTENTION_WORKGROUP: u32 = 128;
+
+/// The most rows of one sequence's head an attention workgroup computes.
+pub const MAX_ATTENTION_TILE: u64 = 32;
+
+/// The values of the rows of one chunk an attention workgroup stages in workgroup memory for
+/// its dot products, before the padding of [`attention_stage_values`]: the
+/// `ATTENTION_WORKGROUP / tile` rows of a chunk times at most `8 · tile` columns of a head
+/// (story:vulkan-attention-tiled-decider-shapes).
+pub const ATTENTION_STAGE_VALUES: u64 = 1024;
+
+/// The `f32` values of workgroup memory one staged operand of an attention workgroup of `tile`
+/// rows takes: `8 · tile` columns, at most, of `ATTENTION_WORKGROUP / tile` rows, each column
+/// padded by one value against bank conflicts.
+pub fn attention_stage_values(tile: u64) -> u64 {
+    ATTENTION_STAGE_VALUES + ATTENTION_STAGE_VALUES * tile / u64::from(ATTENTION_WORKGROUP)
+}
+
+/// The `f32` values of workgroup memory an attention workgroup of `tile` rows over `keys` keys
+/// may stage: two `[tile, keys]` arrays of scores, three statistics per row, the two values of
+/// a prefix mask and one staged operand, or one array and two staged operands.
+pub fn attention_workgroup_values(tile: u64, keys: u64) -> u64 {
+    let stage = attention_stage_values(tile);
+    let rows = 2 * tile * keys + 3 * tile + 2 + stage;
+    let columns = tile * keys + 2 * stage;
+    rows.max(columns)
+}
+
+/// The rows of one sequence's head each workgroup of an attention kernel that computes `rows`
+/// rows per sequence over `keys` keys per sequence takes: the largest power of two of at most
+/// [`MAX_ATTENTION_TILE`], `rows` and `keys` whose [`attention_workgroup_values`] fit the
+/// workgroup memory of every device ([`MIN_SHARED_MEMORY_BYTES`]); 1 past
+/// [`MAX_ATTENTION_KEYS`]. `rows` is the query rows per sequence for `Attention` and
+/// `AttentionGradQ`, at most `keys`, and `keys` for `AttentionGradK` and `AttentionGradV`
+/// (story:attention-fewer-query-rows); with `rows = keys` it is the tile every attention kernel
+/// took before.
+pub fn attention_tile(rows: u64, keys: u64) -> u64 {
+    let budget = u64::from(MIN_SHARED_MEMORY_BYTES) / 4;
+    let mut tile = MAX_ATTENTION_TILE;
+    while tile > 1
+        && (tile > keys || tile > rows || attention_workgroup_values(tile, keys) > budget)
+    {
+        tile /= 2;
+    }
+    tile
+}
+
+/// The workgroups of an attention kernel that computes `rows` rows of each of `sequences`
+/// sequences of `keys` keys and `heads` heads: one per sequence, head and tile of
+/// [`attention_tile`] rows, the tiles of a head consecutive, the heads of a sequence consecutive.
+pub fn attention_workgroups(sequences: u64, rows: u64, keys: u64, heads: u64) -> Option<u64> {
+    sequences
+        .checked_mul(heads)?
+        .checked_mul(rows.div_ceil(attention_tile(rows, keys)))
+}
+
+/// The rows per sequence an attention kernel of `op` computes, the operands `q` of `[n, h]` and
+/// the key mask of `[b, s]`: the query rows `n / b` for `Attention` and `AttentionGradQ`, the
+/// keys `s` for `AttentionGradK` and `AttentionGradV`.
+pub fn attention_rows(op: &TensorOp, n: u64, b: u64, s: u64) -> u64 {
+    match op {
+        TensorOp::AttentionGradK { .. } | TensorOp::AttentionGradV { .. } => s,
+        _ => n / b,
+    }
+}
+
+/// The most keys of one span an attention kernel over spans reads
+/// (story:attention-event-spans): its workgroups stage the weights of their rows over this many
+/// keys, whatever the lengths the spans hold when it runs. A longer span is read as its first
+/// `MAX_SPAN_KEYS` keys and its other rows are `+0`; the CPU interpreter reads it whole.
+pub const MAX_SPAN_KEYS: u64 = MAX_ATTENTION_KEYS;
+
+/// The rows per span an attention kernel of `op` over spans computes, `q` of `n` rows and `k`
+/// of `m` (story:attention-event-spans): [`MAX_SPAN_KEYS`] key rows for `AttentionGradK` and
+/// `AttentionGradV`; as many query rows for `Attention` and `AttentionGradQ` with `q` of the
+/// rows of `k`, else 1, the one query of the span.
+pub fn span_rows(op: &TensorOp, n: u64, m: u64) -> u64 {
+    match op {
+        TensorOp::AttentionGradK { .. } | TensorOp::AttentionGradV { .. } => MAX_SPAN_KEYS,
+        _ if n == m => MAX_SPAN_KEYS,
+        _ => 1,
+    }
+}
 
 /// The kernel kind of `Attention`, its three gradients, `CrossEntropy`, `CrossEntropyGrad`,
 /// `Sqrt` or `Div` over `operands` into `result`, and the invocations its dispatch runs: one per
-/// row and head of an attention kernel ([`KernelKind::PerRow`]), one workgroup for the
-/// cross-entropy loss ([`KernelKind::LossSum`], 1), one per row of its gradient
-/// ([`KernelKind::PerRow`]), one per output element of `Sqrt` and `Div`
-/// ([`KernelKind::Elementwise`]). `None` for another op, a shape that is not static or has a
-/// zero dimension, or operands that are not the op's:
+/// row and head of an attention kernel ([`KernelKind::PerRow`]), one per row for the
+/// cross-entropy row losses ([`KernelKind::PerRow`]) and one workgroup for their sum
+/// ([`KernelKind::LossSum`], 1), the two stages of [`cross_entropy_kernels`], one per row and
+/// one more for the gradient's row statistics ([`KernelKind::PerRow`]) and one per element of
+/// the gradient ([`KernelKind::PerElement`]), the two stages of [`cross_entropy_grad_kernels`],
+/// one per output element of `Sqrt` and `Div` ([`KernelKind::Elementwise`]). `None` for another
+/// op, a shape that is not static or has a zero dimension, or operands that are not the op's:
 ///
-/// - attention: `q`, `k`, `v` (and the gradient `g` of a gradient op) `f32` buffers `[N, H]`, a
-///   key mask `f32` `[B, S]` with `B·S = N` and `S` at most [`MAX_ATTENTION_KEYS`], and `heads`
-///   dividing `H`;
-/// - cross-entropy: logits `f32` `[N, V]`, labels `i32` `[N]`, weights `f32` `[N]`, a rank-0
-///   result, and for the gradient a seed that is an immediate or a rank-0 `f32` buffer, into
-///   `[N, V]`;
+/// - attention: `q` (and the gradient `g` of a gradient op) `f32` buffers `[B·L, H]`, `k` and `v`
+///   `f32` buffers `[B·S, H]`, a key mask `f32` `[B, S]` with `1 <= L <= S` and `S` at most
+///   [`MAX_ATTENTION_KEYS`], and `heads` dividing `H`, into `q`'s shape for `Attention` and
+///   `AttentionGradQ` and `k`'s for `AttentionGradK` and `AttentionGradV`, one invocation per
+///   row and head of the result;
+/// - cross-entropy row losses: logits `f32` `[N, V]` and labels `i32` `[N]` into `f32` `[N]`;
+///   their sum: the row losses and the weights, `f32` `[N]` each, into a rank-0 result;
+/// - cross-entropy gradient: its row statistics, logits `f32` `[N, V]`, labels `i32` `[N]` and
+///   weights `f32` `[N]` into `f32` `[N + 1, 2]`; its elements: the row statistics, the same
+///   three and a seed that is an immediate or a rank-0 `f32` buffer, into `[N, V]`;
 /// - `Sqrt` of one operand and `Div` of two, each an immediate, a rank-0 `f32` buffer or an `f32`
 ///   buffer of the result's shape.
 fn attention_loss_shape(
@@ -1317,38 +1801,69 @@ fn attention_loss_shape(
             let [n, h] = rows[..] else {
                 return None;
             };
-            let same = [1, 2].into_iter().chain((arity == 5).then_some(4));
-            for at in same {
-                if f32s(at)? != rows {
-                    return None;
-                }
-            }
-            let [b, s] = f32s(3)?[..] else {
+            let keys = f32s(1)?;
+            let [m, kh] = keys[..] else {
                 return None;
             };
-            let fits = out == rows
-                && h % heads == 0
-                && b.checked_mul(s) == Some(n)
-                && s <= MAX_ATTENTION_KEYS
-                && *heads <= 1 << 24;
-            fits.then_some((KernelKind::PerRow, n.checked_mul(*heads)?))
+            if kh != h || f32s(2)? != keys || (arity == 5 && f32s(4)? != rows) {
+                return None;
+            }
+            let sequences = if let Some(spans) = buffer(3, DType::I32) {
+                let [u, 2] = spans[..] else {
+                    return None;
+                };
+                n == m || n == u
+            } else {
+                let [b, s] = f32s(3)?[..] else {
+                    return None;
+                };
+                b.checked_mul(s) == Some(m)
+                    && n % b == 0
+                    && (1..=s).contains(&(n / b))
+                    && s <= MAX_ATTENTION_KEYS
+            };
+            let written = match op {
+                TensorOp::AttentionGradK { .. } | TensorOp::AttentionGradV { .. } => &keys,
+                _ => &rows,
+            };
+            let fits = out == *written && h % heads == 0 && sequences && *heads <= 1 << 24;
+            fits.then_some((KernelKind::PerRow, written[0].checked_mul(*heads)?))
         }
-        TensorOp::CrossEntropy | TensorOp::CrossEntropyGrad => {
-            let logits = f32s(0)?;
+        TensorOp::CrossEntropy => {
+            if operands.len() != 2 {
+                return None;
+            }
+            match f32s(0)?[..] {
+                [n, _] => {
+                    (buffer(1, DType::I32)? == [n] && out == [n]).then_some((KernelKind::PerRow, n))
+                }
+                [n] => (f32s(1)? == [n] && out.is_empty()).then_some((KernelKind::LossSum, 1)),
+                _ => None,
+            }
+        }
+        TensorOp::CrossEntropyGrad => {
+            // Stage 2 reads the row statistics first, then the op's operands.
+            let at = match operands.len() {
+                3 => 0,
+                5 => 1,
+                _ => return None,
+            };
+            let logits = f32s(at)?;
             let [n, v] = logits[..] else {
                 return None;
             };
-            if buffer(1, DType::I32)? != [n] || f32s(2)? != [n] {
+            if buffer(at + 1, DType::I32)? != [n] || f32s(at + 2)? != [n] {
                 return None;
             }
-            if *op == TensorOp::CrossEntropy {
-                return (operands.len() == 3 && out.is_empty()).then_some((KernelKind::LossSum, 1));
+            if at == 0 {
+                return (out == [n.checked_add(1)?, 2]).then_some((KernelKind::PerRow, n + 1));
             }
-            let seed = match operands.get(3)? {
+            let seed = match operands.get(4)? {
                 Operand::Immediate(_) => true,
                 Operand::Buffer(ty) => ty.dtype == DType::F32 && ty.rank() == 0,
             };
-            (operands.len() == 4 && seed && out == [n, v]).then_some((KernelKind::PerRow, n))
+            (f32s(0)? == [n.checked_add(1)?, 2] && seed && out == [n, v])
+                .then_some((KernelKind::PerElement, n.checked_mul(v)?))
         }
         TensorOp::Sqrt | TensorOp::Div => {
             let arity = if *op == TensorOp::Sqrt { 1 } else { 2 };
@@ -1370,22 +1885,20 @@ fn attention_loss_shape(
 }
 
 /// The kernel record of `Attention`, `AttentionGradQ`, `AttentionGradK`, `AttentionGradV`,
-/// `CrossEntropy`, `CrossEntropyGrad`, `Sqrt` or `Div` over `operands`, in the op's operand
-/// order, into `result`, as [`schedule`] builds it (DESIGN.md § 5.2, coordinator decision D73):
-/// its kind and invocations by [`attention_loss_shape`], workgroups of 64 over the invocations
-/// (one workgroup for the cross-entropy loss), and its module id. An attention kernel carries
-/// its head count as a last, immediate operand ([`Kernel::heads`]), so it is in the module id.
-/// `None` for another op or for operands that are not the op's.
+/// `Sqrt` or `Div` over `operands`, in the op's operand order, or of one stage of
+/// `CrossEntropy` or `CrossEntropyGrad` over its stage's operands ([`cross_entropy_kernels`],
+/// [`cross_entropy_grad_kernels`]), into `result`, as [`schedule`] builds it (DESIGN.md § 5.2,
+/// coordinator decision D73): its kind, workgroups and workgroup size by
+/// [`attention_loss_groups`], and its module id. An
+/// attention kernel carries its head count as a last, immediate operand ([`Kernel::heads`]), so
+/// it is in the module id. `None` for another op or for operands that are not the op's.
 pub fn attention_loss_kernel(
     op: &TensorOp,
     mut operands: Vec<Operand>,
     result: TensorType,
 ) -> Option<Kernel> {
-    let (kind, invocations) = attention_loss_shape(op, &operands, &result)?;
-    let workgroups = match kind {
-        KernelKind::LossSum => [1, 1, 1],
-        _ => spread_groups(invocations.div_ceil(ROWWISE_WORKGROUP))?,
-    };
+    let (kind, groups, workgroup_size) = attention_loss_groups(op, &operands, &result)?;
+    let workgroups = spread_groups(groups)?;
     if let Some(heads) = op.attention_heads() {
         operands.push(Operand::Immediate(heads as f32));
     }
@@ -1399,11 +1912,185 @@ pub fn attention_loss_kernel(
         reduces: None,
         epilogue: None,
         transposed: [false, false],
-        workgroup_size: kind.workgroup_size(),
+        softmax_stats: None,
+        workgroup_size,
         workgroups,
     };
     kernel.id = Kernel::module_id(&kernel.signature());
     Some(kernel)
+}
+
+/// The kind of the kernel of [`attention_loss_shape`], its workgroups and their size: for an
+/// attention kernel [`attention_workgroups`] of [`ATTENTION_WORKGROUP`], for the cross-entropy
+/// loss sum one of 64, for any other workgroups of 64 over its invocations.
+fn attention_loss_groups(
+    op: &TensorOp,
+    operands: &[Operand],
+    result: &TensorType,
+) -> Option<(KernelKind, u64, u32)> {
+    let (kind, invocations) = attention_loss_shape(op, operands, result)?;
+    let size = kind.workgroup_size();
+    match (kind, op.attention_heads()) {
+        (_, Some(heads)) => {
+            let Some(Operand::Buffer(mask)) = operands.get(3) else {
+                return None;
+            };
+            let [b, s] = static_dims(mask)?[..] else {
+                return None;
+            };
+            let Some(Operand::Buffer(q)) = operands.first() else {
+                return None;
+            };
+            let n = *static_dims(q)?.first()?;
+            let (keys, rows) = if mask.dtype == DType::I32 {
+                let Some(Operand::Buffer(k)) = operands.get(1) else {
+                    return None;
+                };
+                let m = *static_dims(k)?.first()?;
+                (MAX_SPAN_KEYS, span_rows(op, n, m))
+            } else {
+                (s, attention_rows(op, n, b, s))
+            };
+            Some((
+                kind,
+                attention_workgroups(b, rows, keys, heads)?,
+                ATTENTION_WORKGROUP,
+            ))
+        }
+        (KernelKind::LossSum, None) => Some((kind, 1, size)),
+        _ => Some((kind, invocations.div_ceil(u64::from(size)), size)),
+    }
+}
+
+/// The type of the softmax statistics an attention kernel of [`attention_loss_kernel`] shares
+/// with the other kernels of its call ([`Kernel::softmax_stats`]): `[rows · heads, 3]` `f32`,
+/// one maximum, sum and row dot per query head. `None` for another kernel or a shape that is not
+/// static.
+pub fn softmax_stats_type(kernel: &Kernel) -> Option<TensorType> {
+    let heads = kernel.heads()?;
+    let Some(Operand::Buffer(q)) = kernel.operands.first() else {
+        return None;
+    };
+    let [Dim::Static(rows), _] = q.shape[..] else {
+        return None;
+    };
+    Some(TensorType::f32(&[
+        rows.checked_mul(heads)?,
+        SOFTMAX_STATS_PER_QUERY,
+    ]))
+}
+
+/// `kernel`, an attention kernel of [`attention_loss_kernel`], made to share its softmax
+/// statistics ([`Kernel::softmax_stats`] of [`softmax_stats_type`]) with its new module id:
+/// an `Attention` kernel writes them, `AttentionGradQ` reads them and writes the row dots, and
+/// `AttentionGradK` and `AttentionGradV` read them. `None` for another kernel.
+pub fn with_softmax_stats(mut kernel: Kernel) -> Option<Kernel> {
+    kernel.softmax_stats = Some(softmax_stats_type(&kernel)?);
+    kernel.id = Kernel::module_id(&kernel.signature());
+    Some(kernel)
+}
+
+/// The attention calls of `nodes` whose kernels share softmax statistics
+/// (story:vulkan-attention-softmax-stats-reused): by the value of each call's `Attention`, its
+/// `AttentionGradQ`, `AttentionGradK` and, when there is one, `AttentionGradV`. A call shares
+/// them when its `q`, `k`, `v`, key mask and head count are those of exactly one `Attention`, one
+/// `AttentionGradQ`, one `AttentionGradK` and at most one `AttentionGradV`, the gradients read
+/// one `G`, and the forward comes before `AttentionGradQ` and that before every other gradient;
+/// the kernels of any other call recompute the statistics where they use them.
+fn softmax_stats_sites(nodes: &[TensorNode]) -> Vec<[Option<ValueId>; 4]> {
+    type Call = (Vec<ValueId>, u64);
+    let mut calls: BTreeMap<Call, [Vec<(usize, &TensorNode)>; 4]> = BTreeMap::new();
+    for (at, node) in nodes.iter().enumerate() {
+        let role = match node.op {
+            TensorOp::Attention { .. } => 0,
+            TensorOp::AttentionGradQ { .. } => 1,
+            TensorOp::AttentionGradK { .. } => 2,
+            TensorOp::AttentionGradV { .. } => 3,
+            _ => continue,
+        };
+        let (Some(heads), Some(operands)) = (node.op.attention_heads(), node.operands.get(..4))
+        else {
+            continue;
+        };
+        calls.entry((operands.to_vec(), heads)).or_default()[role].push((at, node));
+    }
+    calls
+        .into_values()
+        .filter_map(|[forward, q, k, v]| {
+            let ([forward], [q], [k]) = (&forward[..], &q[..], &k[..]) else {
+                return None;
+            };
+            let v = match &v[..] {
+                [] => None,
+                [v] => Some(*v),
+                _ => return None,
+            };
+            let grads = [Some(*q), Some(*k), v];
+            let gradient = |(_, node): &(usize, &TensorNode)| node.operands.get(4).copied();
+            let one_g = grads.iter().flatten().all(|g| gradient(g) == gradient(q));
+            let ordered = forward.0 < q.0 && k.0 > q.0 && v.is_none_or(|v| v.0 > q.0);
+            (one_g && gradient(q).is_some() && ordered).then(|| {
+                [
+                    Some(forward.1.id),
+                    Some(q.1.id),
+                    Some(k.1.id),
+                    v.map(|(_, node)| node.id),
+                ]
+            })
+        })
+        .collect()
+}
+
+/// The two kernels of `CrossEntropy` over its operands `logits: f32[N, V]`, `labels: i32[N]`
+/// and `weights: f32[N]` into its rank-0 `result`, as [`schedule`] builds them
+/// (story:vulkan-cross-entropy-sum-per-row): the row losses, [`KernelKind::PerRow`] over
+/// `(logits, labels)` into `f32[N]`, one invocation per row; and their sum,
+/// [`KernelKind::LossSum`] over `(row losses, weights)` into `result`, one workgroup that adds
+/// the weighted row losses and the weights in ascending row order. `None` for operands or a
+/// result that are not the op's.
+pub fn cross_entropy_kernels(operands: Vec<Operand>, result: TensorType) -> Option<[Kernel; 2]> {
+    let [logits, labels, weights] = <[Operand; 3]>::try_from(operands).ok()?;
+    let rows = match &logits {
+        Operand::Buffer(ty) => match ty.shape[..] {
+            [Dim::Static(rows), _] => rows,
+            _ => return None,
+        },
+        Operand::Immediate(_) => return None,
+    };
+    let losses = TensorType::f32(&[rows]);
+    let op = TensorOp::CrossEntropy;
+    let per_row = attention_loss_kernel(&op, vec![logits, labels], losses.clone())?;
+    let sum = attention_loss_kernel(&op, vec![Operand::Buffer(losses), weights], result)?;
+    Some([per_row, sum])
+}
+
+/// The two kernels of `CrossEntropyGrad` over its operands `logits: f32[N, V]`,
+/// `labels: i32[N]`, `weights: f32[N]` and a seed, an immediate or a rank-0 `f32` buffer, into
+/// its `result: f32[N, V]`, as [`schedule`] builds them: the row statistics,
+/// [`KernelKind::PerRow`] over `(logits, labels, weights)` into `f32[N + 1, 2]`, invocation `n`
+/// of the first `N` writing the maximum and the sum of `exp(x - max)` of row `n` and invocation
+/// `N` the sum of the weights; and the gradient, [`KernelKind::PerElement`] over `(statistics,
+/// logits, labels, weights, seed)` into `result`, one invocation per element. `None` for
+/// operands or a result that are not the op's.
+pub fn cross_entropy_grad_kernels(
+    operands: Vec<Operand>,
+    result: TensorType,
+) -> Option<[Kernel; 2]> {
+    let [logits, labels, weights, seed] = <[Operand; 4]>::try_from(operands).ok()?;
+    let rows = match &logits {
+        Operand::Buffer(ty) => match ty.shape[..] {
+            [Dim::Static(rows), _] => rows,
+            _ => return None,
+        },
+        Operand::Immediate(_) => return None,
+    };
+    let stats = TensorType::f32(&[rows.checked_add(1)?, 2]);
+    let op = TensorOp::CrossEntropyGrad;
+    let first = vec![logits.clone(), labels.clone(), weights.clone()];
+    let per_row = attention_loss_kernel(&op, first, stats.clone())?;
+    let second = vec![Operand::Buffer(stats), logits, labels, weights, seed];
+    let per_element = attention_loss_kernel(&op, second, result)?;
+    Some([per_row, per_element])
 }
 
 /// The tile of a matmul over `operands` `[m, k]` and `[k, n]`, reading the operands marked in
@@ -1440,6 +2127,7 @@ fn kernel(
         reduces,
         epilogue: None,
         transposed: [false, false],
+        softmax_stats: None,
         workgroup_size: kind.workgroup_size(),
         workgroups,
     };
@@ -1507,15 +2195,43 @@ fn record<'a>(works: impl Iterator<Item = &'a Work>) -> Vec<PlanStep> {
         match (&work.kernels[..], work.partials) {
             ([], None) => recorder.copy(work.value, work.reads.clone(), work.writes.clone()),
             ([single], None) => {
+                let allocate = work.allocates.map(|stats| {
+                    recorder.sync_for(&work.reads, &work.writes);
+                    recorder.push(PlanStep {
+                        op: PlanOp::Allocate,
+                        kernel_module_id: None,
+                        workgroups: None,
+                        reads: Vec::new(),
+                        writes: vec![stats],
+                        depends_on: Vec::new(),
+                        value: Some(work.value),
+                    })
+                });
                 recorder.dispatch(
                     single,
                     work.value,
                     work.reads.clone(),
                     work.writes.clone(),
-                    None,
+                    allocate,
                 );
             }
             ([stage1, stage2], Some(partials)) => {
+                // Stage 1 reads the work's first views, one per buffer operand of its kernel;
+                // stage 2 reads the partials, then the work's last views, one per further buffer
+                // operand of its kernel: none for a reduce, the weights for the cross-entropy
+                // loss sum, every view for the cross-entropy gradient.
+                let buffers = |kernel: &Kernel| {
+                    kernel
+                        .operands
+                        .iter()
+                        .filter(|operand| matches!(operand, Operand::Buffer(_)))
+                        .count()
+                };
+                let reads = work.reads.len();
+                let head = &work.reads[..buffers(stage1).min(reads)];
+                let tail = &work.reads[reads - buffers(stage2).saturating_sub(1).min(reads)..];
+                let mut second = vec![partials];
+                second.extend_from_slice(tail);
                 recorder.sync_for(&work.reads, &[partials]);
                 let allocate = recorder.push(PlanStep {
                     op: PlanOp::Allocate,
@@ -1529,17 +2245,11 @@ fn record<'a>(works: impl Iterator<Item = &'a Work>) -> Vec<PlanStep> {
                 recorder.dispatch(
                     stage1,
                     work.value,
-                    work.reads.clone(),
+                    head.to_vec(),
                     vec![partials],
                     Some(allocate),
                 );
-                recorder.dispatch(
-                    stage2,
-                    work.value,
-                    vec![partials],
-                    work.writes.clone(),
-                    None,
-                );
+                recorder.dispatch(stage2, work.value, second, work.writes.clone(), None);
             }
             _ => unreachable!("a work item is a copy, one kernel, or two stages with partials"),
         }

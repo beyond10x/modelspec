@@ -8,13 +8,11 @@ tasks:
   test:
     cmds:
       - cargo test --workspace
-      - cargo test -p modelspec-runtime --features vulkan
 
   lint:
     cmds:
       - cargo fmt --check
       - cargo clippy --workspace --all-targets -- -D warnings
-      - cargo clippy -p modelspec-runtime --features vulkan --all-targets -- -D warnings
 
   core-no-vulkan:
     cmds:

@@ -1,0 +1,13 @@
+{
+  "at": "2026-10-28T12:58:38Z",
+  "actor": "human:timo",
+  "artifact": "story:north-star-public-claim",
+  "kind": "story",
+  "revision": 4,
+  "change": {
+    "change": "evidence",
+    "kind": "test_result",
+    "source": "CI check (task ci) on main 4ddb3290",
+    "reference": "https://github.com/beyond10x/modelspec/actions/runs/40687745267"
+  }
+}

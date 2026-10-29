@@ -158,7 +158,8 @@ fn block_section_figures_are_recomputed_from_the_entry() {
     assert!(row.contains("| 1,365,333.333 |"), "{tokens} {row}");
     assert!(row.contains("| 3,623.9 |"), "{gflops} {row}");
     let page = fs::read_to_string(root.join("website/docs/benchmarks.md")).unwrap();
-    let not_measured = &page[page.find("## Not measured").unwrap()..];
+    // No "Not measured" section at all once every declared workload has a run.
+    let not_measured = page.find("## Not measured").map_or("", |at| &page[at..]);
     assert!(
         !not_measured.contains("Transformer block"),
         "{not_measured}"

@@ -6,5 +6,6 @@ pub mod checkpoint;
 pub mod data;
 pub mod eval;
 pub mod init;
+pub mod masked;
 pub mod optimizer;
 pub mod runner;

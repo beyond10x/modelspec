@@ -1,11 +1,14 @@
 //! `modelspec train --backend vulkan --data <packed-dir> --eval-every 5` on the hidden-32 twin of
 //! BERT-tiny over a `HeldOut` split of at least 64 full batches (story:vulkan-eval-download-per-batch,
-//! coordinator decision D76, 2026-10-26): the stepwise run evaluates each held-out batch in a
-//! command buffer of its own, one submit and one host wait per batch, through a download buffer of
-//! one batch's prediction, so its `eval` lines are within the run tolerance of DESIGN.md § 9 gate
-//! 5 of the CPU run's, `|g - c| <= GPU_RUN_ATOL + GPU_RUN_RTOL * |c|` for each loss and `1 / M`
-//! for each accuracy, `M` the selected `HeldOut` rows, and `--stats` counts `steps + 1` host
-//! waits and submits plus one of each per batch per evaluated step.
+//! coordinator decision D76, 2026-10-26; story:vulkan-eval-metrics-on-device, 2026-10-28): the
+//! stepwise run evaluates every held-out batch in one command buffer before the evaluated step's
+//! and reduces its logits on the device, so its `eval` lines are within the run tolerance of
+//! DESIGN.md § 9 gate 5 of the CPU run's, `|g - c| <= GPU_RUN_ATOL + GPU_RUN_RTOL * |c|` for each
+//! loss and `1 / M` for each accuracy, `M` the selected `HeldOut` rows, and `--stats` counts one
+//! host wait and submit per segment of steps and one per evaluation, none for the batches
+//! (story:vulkan-stepwise-multi-step-submit). The per-batch host waits of D76 remain the
+//! host reduction of `HeldOutReduction::Host`, which `modelspec-runtime`'s
+//! `tests/adversary_eval_download.rs` holds.
 //!
 //! The run is the twin with `steps = 10` and `warmup_steps = 2`, written beside the packed data,
 //! as `vulkan_bert_cpu_steps.rs` writes it: the fixture's warm-up of 80 steps is refused by a run
@@ -208,10 +211,10 @@ fn bound(c: f32) -> f64 {
 /// Scenario 2: over at least 64 full `HeldOut` batches, `--eval-every 5 --steps 10` on the
 /// device exits 0, prints `eval` lines for steps 0, 5 and 10, each loss within the run tolerance
 /// of the CPU's and each accuracy within `1 / M`, and its `--stats` count one host wait and one
-/// submit per step, one for the final loss and one per batch of each evaluated step.
+/// submit per step and one for the final loss, none per batch of an evaluated step.
 #[test]
 #[ignore = "needs a Vulkan device"]
-fn every_heldout_batch_is_one_host_wait() {
+fn every_evaluation_rides_its_steps_host_wait() {
     let case = scratch("eval");
     let data = packed(&case);
     let file = twin10(&case);
@@ -291,7 +294,8 @@ fn every_heldout_batch_is_one_host_wait() {
 
     let stats = stderr(&gpu);
     eprintln!("{stats}");
-    let expected = STEPS + 1 + EVALUATED.len() as u64 * batches as u64;
+    // The segments 0 to 4, 5 to 9 and 10, and the evaluations at 0, 5 and 10.
+    let expected = 3 + EVALUATED.len() as u64;
     assert_eq!(counter(&stats, "steps"), STEPS, "{stats}");
     assert_eq!(counter(&stats, "host waits"), expected, "{stats}");
     assert_eq!(counter(&stats, "submits"), expected, "{stats}");

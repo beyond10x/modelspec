@@ -8,7 +8,8 @@
 //! The prediction is read as the intermediate value `prediction` of the forward program, run on
 //! the CPU interpreter with a zero target. An `input` the forward program reads only as the key
 //! mask of `attention` ([`key_masks`]) is all ones, draws nothing and is not counted as the one
-//! input (story:transformer-block-benchmark).
+//! input (story:transformer-block-benchmark); an `i32` spans operand of `attention` is no key
+//! mask, so a block that declares one has two inputs and is refused ([`E_DATA_001`]).
 //!
 //! Dense data ([`dense`], [`dense_eval`]; story:decider-dense-named-data): every `input` and
 //! `target` declaration of the `train` block, however many there are, reads `<dir>/<name>.f32`
@@ -25,6 +26,13 @@
 //! before the first step on either backend, a value that is negative or not below the rows of an
 //! `embedding` table or the classes of `cross_entropy` logits that read it is [`E_DATA_011`]
 //! ([`refuse_out_of_range`]), so the device never receives an id it would read out of bounds.
+//! An `i32` value read as the spans of an `attention` (story:attention-event-spans) is held to
+//! the rule the CPU interpreter checks at the step that reads it, in every batch a step, an eval
+//! batch or a block of the run can assemble, before the first step on either backend: a span
+//! with a negative start or length, an empty span, a span past the key rows, or one that starts
+//! before the end of the span before is [`E_DATA_011`] too ([`DenseData::refuse_spans`]). The
+//! Vulkan backend refuses a span longer than its kernels read
+//! ([`DenseData::span_longer_than`]).
 //! `infer --data <dir> --function <name>` reads the same layout with the arguments of the model
 //! function in place of the declarations ([`dense_function`]; story:decider-infer-on-data), its
 //! `i32` arguments held to the bounds of the function's program by the same [`E_DATA_011`], and
@@ -71,6 +79,7 @@ use thiserror::Error;
 use super::init::{
     InitError, Stream, initialize, sigreg_projections, standard_normal, with_projections,
 };
+use crate::cpu::interpreter::check_key_spans;
 use crate::cpu::{HostTensor, RuntimeError, evaluate_all};
 use crate::dataset::SplitRole;
 use crate::dataset::mlm::{
@@ -121,10 +130,18 @@ pub const E_DATA_009: Code = Code::new("E-DATA-009");
 pub const E_DATA_010: Code = Code::new("E-DATA-010");
 /// A value of a dense `i32` file of `--data` or `--eval`, or of an argument's file of
 /// `infer --data --function`, is negative or not below the rows of an `embedding` table that
-/// reads it as ids, or the classes of `cross_entropy` logits that read it as labels; refused
-/// once the files are read and before the first step or block, on either backend, naming the
-/// file, the element position and the bound.
+/// reads it as ids, or the classes of `cross_entropy` logits that read it as labels; or a span
+/// `(start, length)` of such a file that an `attention` reads as its spans, in a batch a step,
+/// an eval batch or a block can assemble, that the CPU interpreter refuses: a negative start or
+/// length, a length of 0, an end past the key rows, or a start before the end of the span
+/// before it. Refused once the files are read and before the first step or block, on either
+/// backend, naming the file, the element position and the bound.
 pub const E_DATA_011: Code = Code::new("E-DATA-011");
+/// A batch of a run whose step gathers the rows of non-zero weight (`train --masked-rows`,
+/// DESIGN.md § 3.3) has more such rows than the gather holds; refused before the step that
+/// would read it, on either backend, naming the step, the weights' declaration, the count and
+/// the capacity. No row is dropped.
+pub const E_DATA_012: Code = Code::new("E-DATA-012");
 
 /// The data of a synthetic run.
 #[derive(Clone, Debug, PartialEq)]
@@ -194,16 +211,21 @@ pub fn synthetic(
     Ok(SyntheticData { inputs, teacher })
 }
 
-/// The names of the `Input` nodes of `lowered`'s forward program that are read, and read only,
-/// as the key mask of an `attention` (its fourth operand), however many attentions read them.
+/// The names of the `f32` `Input` nodes of `lowered`'s forward program that are read, and read
+/// only, as the key mask of an `attention` (its fourth operand), however many attentions read
+/// them. An `i32` fourth operand is the spans of the keys (story:attention-event-spans), no key
+/// mask: synthetic data cannot supply it, so it stays a drawn input and [`synthetic`] refuses it.
 pub fn key_masks(lowered: &LoweredProgram) -> BTreeSet<String> {
     let forward = &lowered.program;
     forward
         .inputs
         .iter()
-        .filter_map(|&value| match &forward.node(value)?.op {
-            TensorOp::Input { name } => Some((value, name)),
-            _ => None,
+        .filter_map(|&value| {
+            let node = forward.node(value)?;
+            match &node.op {
+                TensorOp::Input { name } if node.ty.dtype == DType::F32 => Some((value, name)),
+                _ => None,
+            }
         })
         .filter(|&(value, _)| {
             let mut uses = forward.nodes.iter().flat_map(|node| {
@@ -485,17 +507,23 @@ fn fill_one<T: Copy>(
 
 /// The training data of `--data <dir>`: the file of every `input` and `target` declaration of
 /// `config` and the optional `order.u32`, which must hold at least `config.steps · B` indices,
-/// each below `N` ([`E_DATA_008`]). Refused first as [`read_dense`] refuses.
+/// each below `N` ([`E_DATA_008`]). Refused first as [`read_dense`] refuses, last with
+/// [`E_DATA_011`] at a span of a step's batch the CPU interpreter refuses
+/// ([`DenseData::refuse_spans`]).
 pub fn dense(
     dir: &Path,
     config: &TrainConfig,
     lowered: &LoweredProgram,
 ) -> Result<DenseData, DataError> {
     let mut data = read_dense(dir, config, lowered)?;
+    let decls = in_source_order(config);
     let path = dir.join("order.u32");
     let bytes = match std::fs::read(&path) {
         Ok(bytes) => bytes,
-        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(data),
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            data.refuse_spans(dir, &decls, lowered, Reads::Steps)?;
+            return Ok(data);
+        }
         Err(error) => return Err(unreadable("the order file", &path, &error)),
     };
     if bytes.len() % 4 != 0 {
@@ -543,12 +571,14 @@ pub fn dense(
         ));
     }
     data.order = Some(order);
+    data.refuse_spans(dir, &decls, lowered, Reads::Steps)?;
     Ok(data)
 }
 
 /// The eval data of `--eval <dir>`: the file of every `input` and `target` declaration of
 /// `config`, whose sample count must be a multiple of `B` ([`E_DATA_009`]); `order.u32` is not
-/// read.
+/// read. Refused last with [`E_DATA_011`] at a span of an eval batch the CPU interpreter
+/// refuses ([`DenseData::refuse_spans`]).
 pub fn dense_eval(
     dir: &Path,
     config: &TrainConfig,
@@ -563,6 +593,7 @@ pub fn dense_eval(
                 .with("batch", data.batch.to_string()),
         ));
     }
+    data.refuse_spans(dir, &in_source_order(config), lowered, Reads::Batches)?;
     Ok(data)
 }
 
@@ -648,8 +679,9 @@ fn read_dense(
 /// `functions`, when it takes no argument, so no file binds a sample to it; with
 /// [`E_DATA_007`] as [`read_tensor`] refuses an argument's file and when the files differ in
 /// sample count; with [`E_DATA_011`] at the first `i32` value outside a bound of `lowered`
-/// that reads it ([`refuse_out_of_range`]); and with [`E_DATA_009`] when the sample count is
-/// not a multiple of `B`.
+/// that reads it ([`refuse_out_of_range`]); with [`E_DATA_009`] when the sample count is
+/// not a multiple of `B`; and with [`E_DATA_011`] at a span of a block the CPU interpreter
+/// refuses ([`DenseData::refuse_spans`]).
 pub fn dense_function(
     dir: &Path,
     name: &str,
@@ -680,6 +712,7 @@ pub fn dense_function(
                 .with("batch", data.batch.to_string()),
         ));
     }
+    data.refuse_spans(dir, &decls, lowered, Reads::Batches)?;
     Ok(data)
 }
 
@@ -857,10 +890,12 @@ struct IndexBound {
 }
 
 /// Every index bound of `lowered`'s forward program, in program order. An `i32` value is only
-/// a program input (DESIGN.md § 2.2), and the only operands that read one are the ids of
-/// `embedding`, below the rows of its table, and the labels of `cross_entropy`, below the classes
-/// of its logits; the internal `EmbeddingGrad` and `CrossEntropyGrad` read the same inputs with
-/// the same bounds, and the RNG token of `Dropout` is no declaration.
+/// a program input (DESIGN.md § 2.2), and the operands that read one are the ids of
+/// `embedding`, below the rows of its table, the labels of `cross_entropy`, below the classes
+/// of its logits, and the spans of `attention`, whose rule is no single bound and which
+/// [`span_bounds`] collects; the internal `EmbeddingGrad` and `CrossEntropyGrad` read the same
+/// inputs with the same bounds, the three attention gradients the same spans, and the RNG token
+/// of `Dropout` is no declaration.
 fn index_bounds(lowered: &LoweredProgram) -> Vec<IndexBound> {
     let forward = &lowered.program;
     let mut bounds = Vec::new();
@@ -965,6 +1000,230 @@ fn refuse_out_of_range(
         return Err(DataError::Refused(diagnostic));
     }
     Ok(())
+}
+
+/// The spans operand of an `attention` (story:attention-event-spans): an `i32` input the op
+/// reads as its fourth operand, `(start, length)` pairs over the rows of its keys.
+struct SpanBound {
+    /// The name of the `Input` the op reads.
+    input: String,
+    /// The op, as the CPU interpreter names it in its span errors.
+    node: ValueId,
+    /// The rows of the op's keys, its second operand.
+    rows: u64,
+    /// Where the op is, when the lowering kept it.
+    span: Option<SourceSpan>,
+}
+
+/// Every spans operand of `lowered`'s forward program that is a program input, in program order.
+fn span_bounds(lowered: &LoweredProgram) -> Vec<SpanBound> {
+    let forward = &lowered.program;
+    let mut bounds = Vec::new();
+    for node in &forward.nodes {
+        if node.op.attention_heads().is_none() {
+            continue;
+        }
+        let (Some(&keys), Some(&spans)) = (node.operands.get(1), node.operands.get(3)) else {
+            continue;
+        };
+        let Some(spans) = forward.node(spans) else {
+            continue;
+        };
+        let TensorOp::Input { name } = &spans.op else {
+            continue;
+        };
+        if spans.ty.dtype != DType::I32 {
+            continue;
+        }
+        let Some(&Dim::Static(rows)) = forward.node(keys).and_then(|k| k.ty.shape.first()) else {
+            continue;
+        };
+        bounds.push(SpanBound {
+            input: name.clone(),
+            node: node.id,
+            rows,
+            span: node.source_span.clone(),
+        });
+    }
+    bounds
+}
+
+/// Which batches of a [`DenseData`] a run reads: those of its training steps, or its eval
+/// batches and the blocks of `infer --data --function`.
+#[derive(Clone, Copy, Debug)]
+enum Reads {
+    Steps,
+    Batches,
+}
+
+/// A span of dense data longer than a backend reads ([`DenseData::span_longer_than`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct LongSpan {
+    /// The declaration whose file holds the span.
+    pub input: String,
+    /// The element position of the span's length in that file.
+    pub position: usize,
+    /// The span's length.
+    pub length: i32,
+    /// Where the `attention` that reads it is, when the lowering kept it.
+    pub read_at: Option<SourceSpan>,
+}
+
+impl DenseData {
+    /// The batches a run of `reads` can assemble, each the sample of every position `0..B`.
+    /// Without a batch dimension above 1 every sample is a batch, read or not, as
+    /// [`refuse_out_of_range`] checks every value. With one, a training step `k` reads
+    /// [`Self::fill_step`]'s samples, which repeat after `len / gcd(len, B)` steps, `len` the
+    /// order's length or `N`, and an eval batch or a block `b` the samples `b·B .. (b+1)·B`.
+    fn batches(&self, reads: Reads) -> Vec<Vec<usize>> {
+        if self.batch == 1 {
+            return (0..self.samples).map(|s| vec![s]).collect();
+        }
+        match reads {
+            Reads::Steps => {
+                let len = self.order.as_ref().map_or(self.samples, Vec::len);
+                let cycle = len / gcd(len, self.batch);
+                (0..cycle)
+                    .map(|k| {
+                        (0..self.batch)
+                            .map(|i| {
+                                let at = (k * self.batch + i) % len;
+                                self.order.as_ref().map_or(at, |o| o[at] as usize)
+                            })
+                            .collect()
+                    })
+                    .collect()
+            }
+            Reads::Batches => (0..self.samples / self.batch)
+                .map(|b| (b * self.batch..(b + 1) * self.batch).collect())
+                .collect(),
+        }
+    }
+
+    /// [`E_DATA_011`] at the first span, in declaration order and then batch order, of an `i32`
+    /// file an `attention` reads as its spans ([`span_bounds`]) that the CPU interpreter's span
+    /// check refuses in a batch the run of `reads` assembles ([`Self::batches`]): a negative
+    /// start or length, an empty span, an end past the fewest key rows of an `attention` that
+    /// reads the file, or a start before the end of the span before. Naming the file, the element
+    /// position of the span's start in it, the span and the rule; with a batch dimension above 1
+    /// also the step or batch. So neither backend reaches a step with a span the CPU would refuse
+    /// at it (story:attention-event-spans).
+    fn refuse_spans(
+        &self,
+        dir: &Path,
+        decls: &[(&DataDecl, &'static str)],
+        lowered: &LoweredProgram,
+        reads: Reads,
+    ) -> Result<(), DataError> {
+        let bounds = span_bounds(lowered);
+        if bounds.is_empty() {
+            return Ok(());
+        }
+        let batches = self.batches(reads);
+        for (&(decl, role), t) in decls.iter().zip(&self.tensors) {
+            let DenseValues::I32(values) = &t.values else {
+                continue;
+            };
+            let Some(bound) = bounds
+                .iter()
+                .filter(|b| b.input == t.name)
+                .min_by_key(|b| b.rows)
+            else {
+                continue;
+            };
+            let mut spans = Vec::with_capacity(self.batch * t.sample);
+            for (index, samples) in batches.iter().enumerate() {
+                spans.clear();
+                for &s in samples {
+                    spans.extend_from_slice(&values[s * t.sample..(s + 1) * t.sample]);
+                }
+                let Err(error) = check_key_spans(bound.node, &spans, bound.rows) else {
+                    continue;
+                };
+                let span = match &error {
+                    RuntimeError::SpanNegative { span, .. }
+                    | RuntimeError::SpanEmpty { span, .. }
+                    | RuntimeError::SpanOutOfRange { span, .. }
+                    | RuntimeError::SpanOverlap { span, .. } => *span,
+                    _ => 0,
+                };
+                let at = 2 * span;
+                let position = samples[at / t.sample] * t.sample + at % t.sample;
+                let path = dir.join(format!("{}.i32", t.name));
+                let mut diagnostic = Diagnostic::new(
+                    E_DATA_011,
+                    format!(
+                        "the data file of the {role} `{}` holds a span the CPU interpreter \
+                         refuses: {error}",
+                        t.name
+                    ),
+                )
+                .at(decl.span.clone())
+                .with("file", path.display().to_string())
+                .with("position", position.to_string())
+                .with("span", format!("({}, {})", spans[at], spans[at + 1]))
+                .with(
+                    "bound",
+                    format!(
+                        "ascending, disjoint spans, each 0 <= start, 1 <= length, \
+                         start + length <= {}",
+                        bound.rows
+                    ),
+                );
+                if self.batch > 1 {
+                    let what = match reads {
+                        Reads::Steps => "step",
+                        Reads::Batches => "batch",
+                    };
+                    diagnostic = diagnostic.with(what, index.to_string());
+                }
+                if let Some(span) = &bound.span {
+                    diagnostic = diagnostic.with("read at", span.to_string());
+                }
+                return Err(DataError::Refused(diagnostic));
+            }
+        }
+        Ok(())
+    }
+
+    /// The first span, in declaration order and then file order, of an `i32` file an
+    /// `attention` of `lowered` reads as its spans whose length is above `limit`: what a backend
+    /// whose kernels read at most `limit` keys of a span refuses before the first step
+    /// (`crate::vulkan::stepwise`, story:attention-event-spans). `None` when every span is at
+    /// most `limit` keys long. Every span of the file is checked, read by a step or not.
+    pub fn span_longer_than(&self, lowered: &LoweredProgram, limit: u64) -> Option<LongSpan> {
+        let bounds = span_bounds(lowered);
+        for t in &self.tensors {
+            let DenseValues::I32(values) = &t.values else {
+                continue;
+            };
+            let Some(bound) = bounds.iter().find(|b| b.input == t.name) else {
+                continue;
+            };
+            let found = values
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .position(|&[_, length]| u64::try_from(length).is_ok_and(|l| l > limit));
+            if let Some(at) = found {
+                return Some(LongSpan {
+                    input: t.name.clone(),
+                    position: 2 * at + 1,
+                    length: values[2 * at + 1],
+                    read_at: bound.span.clone(),
+                });
+            }
+        }
+        None
+    }
+}
+
+/// The greatest common divisor of `a` and `b`, `b` when `a` is 0.
+fn gcd(mut a: usize, mut b: usize) -> usize {
+    while a != 0 {
+        (a, b) = (b % a, a);
+    }
+    b
 }
 
 /// The samples of `decl`, of shape `shape` and `sample` values a sample, in `<dir>/<name>.f32`

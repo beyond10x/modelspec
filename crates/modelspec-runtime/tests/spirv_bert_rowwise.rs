@@ -1,11 +1,13 @@
 //! story:bert-vulkan-kernels-rowwise, DESIGN.md § 9 gate 6, no Vulkan instance: the thirteen
 //! row-wise kernels (`Embedding`, `EmbeddingGrad`, `AddRows`, `SumRows`, `Gelu`, `GeluGrad`,
 //! `Dropout`, `DropoutGrad`, `LayerNorm`, `LayerNormGradX`, `LayerNormGradGamma`, `Softmax`,
-//! `SoftmaxGrad`) are scheduled as one dispatch each, with a kernel record, a workgroup size and
-//! a module id, printed by `ir --stage kernel` with a FLOP and byte count; each module
-//! passes `spirv-val --target-env vulkan1.2`, on the shapes of a compiled program and on shapes
-//! whose edges do not fill a workgroup, and decorates every float add, subtract, multiply and
-//! `Fma` it computes `NoContraction` in the deterministic mode and none under `fast_math`.
+//! `SoftmaxGrad`) are scheduled as one dispatch each, `EmbeddingGrad` as two (a sort and a
+//! gradient) and `LayerNormGradGamma` as two (row moments and a column sum), with a kernel
+//! record, a workgroup size and a module id, printed by `ir --stage kernel` with a FLOP and
+//! byte count; each module passes `spirv-val --target-env vulkan1.2`, on the shapes of a compiled
+//! program and on shapes whose edges do not fill a workgroup, and decorates every float add,
+//! subtract, multiply and `Fma` it computes `NoContraction` in the deterministic mode and none
+//! under `fast_math`.
 //! Needs `spirv-val` on the path and fails, not skips, without it.
 #![cfg(feature = "vulkan")]
 
@@ -21,12 +23,17 @@ use common::words::{
 use modelspec_core::artifact::{Backend, CompiledArtifact};
 use modelspec_core::compile::{compile_artifact, compile_training};
 use modelspec_core::device::DeviceProfile;
-use modelspec_core::ir::kernel::{DispatchCount, Kernel, KernelKind, Operand, PlanOp};
+use modelspec_core::ir::kernel::{
+    DispatchCount, ExecutionPlan, Kernel, KernelKind, Operand, PlanOp,
+};
 use modelspec_core::ir::print::print_kernel;
 use modelspec_core::ir::tensor::{Dim, TensorOp, TensorType};
-use modelspec_core::schedule::rowwise_kernel;
+use modelspec_core::schedule::{
+    embedding_grad_kernels, layer_norm_grad_gamma_kernels, rowwise_kernel,
+};
 use modelspec_runtime::spirv::emit::{emit, emit_kernels};
 use modelspec_runtime::spirv::validate::validate;
+use modelspec_runtime::vulkan::dispatch::kernel_bindings;
 use modelspec_runtime::vulkan::runner::{DeviceRunError, infer_on_device};
 
 const FIXTURE: &str = include_str!(concat!(
@@ -173,7 +180,8 @@ fn i32s(shape: &[u64]) -> Operand {
     Operand::Buffer(TensorType::i32(shape))
 }
 
-/// The row-wise kernels of one `[n, h]` shape and a `v`-row table.
+/// The row-wise kernels of one `[n, h]` shape and a `v`-row table, in the order of [`ROWWISE`]:
+/// one per op, and the sort and the gradient of `EmbeddingGrad`.
 fn kernels_of_shape(n: u64, h: u64, v: u64) -> Vec<Kernel> {
     let rows = TensorType::f32(&[n, h]);
     let row = TensorType::f32(&[h]);
@@ -236,9 +244,17 @@ fn kernels_of_shape(n: u64, h: u64, v: u64) -> Vec<Kernel> {
     ];
     cases
         .into_iter()
-        .map(|(op, operands, result)| {
-            rowwise_kernel(&op, operands, result)
-                .unwrap_or_else(|| panic!("{} has a row-wise kernel", op.name()))
+        .flat_map(|(op, operands, result)| {
+            let missing = format!("{} has a row-wise kernel", op.name());
+            match op {
+                TensorOp::EmbeddingGrad { .. } => {
+                    Vec::from(embedding_grad_kernels(operands, result).expect(&missing))
+                }
+                TensorOp::LayerNormGradGamma => {
+                    Vec::from(layer_norm_grad_gamma_kernels(operands, result).expect(&missing))
+                }
+                _ => vec![rowwise_kernel(&op, operands, result).expect(&missing)],
+            }
         })
         .collect()
 }
@@ -260,13 +276,23 @@ fn every_rowwise_kernel_on_unaligned_shapes_passes_spirv_val() {
     for (n, h, v) in SHAPES {
         let kernels = kernels_of_shape(n, h, v);
         let ops: Vec<&str> = kernels.iter().map(|k| k.op).collect();
-        assert_eq!(ops, ROWWISE, "one kernel per op");
+        let mut expected = ROWWISE.to_vec();
+        expected.insert(1, "EmbeddingGrad");
+        let gamma = expected
+            .iter()
+            .position(|op| *op == "LayerNormGradGamma")
+            .expect("LayerNormGradGamma is row-wise");
+        expected.insert(gamma, "LayerNormGradGamma");
+        assert_eq!(
+            ops, expected,
+            "one kernel per op, two for EmbeddingGrad and LayerNormGradGamma"
+        );
         for kernel in &kernels {
             assert_valid(kernel);
             modules += 1;
         }
     }
-    assert_eq!(modules, 13 * SHAPES.len());
+    assert_eq!(modules, 15 * SHAPES.len());
 }
 
 /// The float adds, subtracts, multiplies and `Fma`s of a module, and how many of them are
@@ -356,4 +382,229 @@ fn device_inference_with_dropout_is_refused_before_vulkan_is_loaded() {
     );
     let span = refused.span.as_ref().expect("a span");
     assert_eq!((span.line, span.column), (10, 24), "{refused}");
+}
+
+/// The sort and the gradient of each `EmbeddingGrad` of `plan`, then of tables whose elements do
+/// not fill a workgroup, each with its `(n, h, v)`.
+fn embedding_grad_pairs(plan: &ExecutionPlan) -> Vec<([Kernel; 2], u64, u64, u64)> {
+    let of_kind = |kind: KernelKind| -> Vec<Kernel> {
+        plan.kernels
+            .iter()
+            .filter(|k| k.op == "EmbeddingGrad" && k.kind == kind)
+            .cloned()
+            .collect()
+    };
+    let (sorts, grads) = (of_kind(KernelKind::PerRow), of_kind(KernelKind::PerElement));
+    assert_eq!((sorts.len(), grads.len()), (1, 1), "{sorts:#?} {grads:#?}");
+    let mut pairs = vec![([sorts[0].clone(), grads[0].clone()], 5, 13, 11)];
+    for (n, h, v) in [(1, 1, 1), (63, 65, 3), (65, 7, 129), (130, 33, 2)] {
+        let built: Vec<Kernel> = kernels_of_shape(n, h, v)
+            .into_iter()
+            .filter(|k| k.op == "EmbeddingGrad")
+            .collect();
+        let pair = <[Kernel; 2]>::try_from(built).expect("a sort and a gradient");
+        pairs.push((pair, n, h, v));
+    }
+    pairs
+}
+
+/// story:vulkan-embedding-grad-per-element and story:vulkan-embedding-grad-sorted-ids:
+/// `EmbeddingGrad` is two kernels. The sort is one invocation per id, `n` of them in workgroups
+/// of 64, writing `i32[n, 2]` and counting no FLOP; the gradient is one invocation per element of
+/// the `[v, h]` table gradient, `v·h` of them in workgroups of 64, over the sorted ids and the
+/// gradient rows, each adding the gradient column of every position of its row in ascending
+/// order, so it still counts one FLOP per element of the gradient it reads: on the block's 11 by
+/// 13 table and on tables whose elements do not fill a workgroup. The step plan dispatches the
+/// sort, then after a barrier the gradient.
+#[test]
+fn embedding_grad_is_one_invocation_per_table_element() {
+    let artifact = block();
+    let plan = &artifact.execution;
+    let pairs = embedding_grad_pairs(plan);
+    for ([sort, grad], n, h, v) in &pairs {
+        let signature = sort.signature();
+        assert_eq!(sort.kind, KernelKind::PerRow, "{signature}");
+        assert_eq!(sort.workgroup_size, 64, "{signature}");
+        assert_eq!(
+            sort.workgroups,
+            [n.div_ceil(64) as u32, 1, 1],
+            "{signature}"
+        );
+        assert_eq!(sort.result, TensorType::i32(&[*n, 2]), "{signature}");
+        assert_eq!(sort.flop(), Some(0), "{signature}");
+        let bindings = kernel_bindings(sort).expect("the sort binds");
+        assert_eq!(u64::from(bindings.count), *n, "{signature}");
+        assert_eq!(bindings.invocations, *n, "{signature}");
+        assert_valid(sort);
+        let signature = grad.signature();
+        assert_eq!(grad.kind, KernelKind::PerElement, "{signature}");
+        assert_eq!(grad.workgroup_size, 64, "{signature}");
+        assert_eq!(
+            grad.workgroups,
+            [(v * h).div_ceil(64) as u32, 1, 1],
+            "{signature}"
+        );
+        assert_eq!(
+            grad.operands,
+            [
+                Operand::Buffer(TensorType::i32(&[*n, 2])),
+                Operand::Buffer(TensorType::f32(&[*n, *h]))
+            ],
+            "{signature}"
+        );
+        assert_eq!(grad.flop(), Some(n * h), "{signature}");
+        let bindings = kernel_bindings(grad).expect("the gradient binds");
+        assert_eq!(u64::from(bindings.count), v * h, "{signature}");
+        assert_eq!(bindings.invocations, v * h, "{signature}");
+        assert_valid(grad);
+    }
+    let [sort, grad] = &pairs[0].0;
+    let printed = print_kernel(plan);
+    for (id, kind) in [(sort.id, "per_row"), (grad.id, "per_element")] {
+        assert!(
+            printed
+                .lines()
+                .any(|l| l.starts_with("kernel ")
+                    && l.contains(&format!(" {id} {kind} EmbeddingGrad "))),
+            "{printed}"
+        );
+    }
+    let at = |id| {
+        plan.step
+            .iter()
+            .position(|s| s.op == PlanOp::Dispatch && s.kernel_module_id == Some(id))
+            .expect("dispatched")
+    };
+    let (first, second) = (at(sort.id), at(grad.id));
+    assert!(first < second, "the sort before the gradient");
+    assert!(
+        plan.step[first..second]
+            .iter()
+            .any(|s| s.op == PlanOp::Barrier),
+        "a barrier between the sort and the gradient"
+    );
+}
+
+/// `OpVariable`, its storage class `Workgroup`, and `OpControlBarrier`.
+const OP_VARIABLE: u32 = 59;
+const STORAGE_WORKGROUP: u32 = 4;
+const OP_CONTROL_BARRIER: u32 = 224;
+
+/// The sort of `EmbeddingGrad` stages the ids in workgroup memory, 64 at a time, between
+/// barriers, so each invocation compares its id with ids it reads from there: one `Workgroup`
+/// variable and a barrier; the gradient reads the sorted ids and needs neither. On the block's
+/// table and on tables whose elements do not fill a workgroup.
+#[test]
+fn embedding_grad_stages_the_ids_in_workgroup_memory() {
+    let artifact = block();
+    let pairs = embedding_grad_pairs(&artifact.execution);
+    assert_eq!(pairs.len(), 5);
+    for ([sort, grad], ..) in &pairs {
+        for (kernel, stages) in [(sort, true), (grad, false)] {
+            let words = emit(kernel).expect("the kernel emits");
+            let module = instructions(&words);
+            let workgroup = module
+                .iter()
+                .filter(|(op, w)| *op == OP_VARIABLE && w[3] == STORAGE_WORKGROUP)
+                .count();
+            let barriers = module
+                .iter()
+                .filter(|(op, _)| *op == OP_CONTROL_BARRIER)
+                .count();
+            assert_eq!(workgroup, usize::from(stages), "{}", kernel.signature());
+            assert_eq!(barriers > 0, stages, "{}", kernel.signature());
+            assert_valid(kernel);
+        }
+    }
+}
+
+/// The one kernel of `op` among the row-wise kernels of `[n, h]` and a `v`-row table.
+fn kernel_of_shape(op: &str, n: u64, h: u64, v: u64) -> Kernel {
+    let mut found: Vec<Kernel> = kernels_of_shape(n, h, v)
+        .into_iter()
+        .filter(|k| k.op == op)
+        .collect();
+    assert_eq!(found.len(), 1, "one {op} kernel of [{n}, {h}] and {v} rows");
+    found.remove(0)
+}
+
+/// The `(flop, bytes)` of every dispatch of `op` in the block's step plan, in plan order.
+fn block_counts(op: &str) -> Vec<(u64, u64)> {
+    let artifact = block();
+    let plan = &artifact.execution;
+    plan.step
+        .iter()
+        .filter(|s| {
+            s.op == PlanOp::Dispatch
+                && plan
+                    .kernels
+                    .iter()
+                    .any(|k| k.op == op && s.kernel_module_id == Some(k.id))
+        })
+        .map(|s| match plan.dispatch_count(s) {
+            Some(DispatchCount::Counted { flop, bytes }) => (flop, bytes),
+            other => panic!("{op}: {other:?}"),
+        })
+        .collect()
+}
+
+/// story:bert-tiny-vs-pytorch-cuda, acceptance of the counts: `Embedding` against values
+/// computed by hand from DESIGN.md § 3.1 "Counting rule" ("`per_element` `Embedding` none";
+/// bytes "the `size_bytes` of the step's read views plus those of its write views"). A row
+/// copy counts 0 FLOP, a count, not `uncounted`, on every shape. The block's one embedding
+/// reads its f32[11, 13] table (572 B) and i32[5] ids (20 B) and writes f32[5, 13] (260 B):
+/// 852 B.
+#[test]
+fn embedding_counts_no_flop_by_hand() {
+    for (n, h, v) in [(1, 1, 1), (3, 5, 7), (65, 63, 3), (130, 512, 129)] {
+        let kernel = kernel_of_shape("Embedding", n, h, v);
+        assert_eq!(
+            kernel.kind,
+            KernelKind::PerElement,
+            "{}",
+            kernel.signature()
+        );
+        assert_eq!(kernel.flop(), Some(0), "{}", kernel.signature());
+    }
+    assert_eq!(block_counts("Embedding"), [(0, 852)]);
+}
+
+/// story:bert-tiny-vs-pytorch-cuda, acceptance of the counts: `Dropout` against values computed
+/// by hand from DESIGN.md § 3.1 "Counting rule" ("`per_element` ... `Dropout` and `DropoutGrad`
+/// one per output element"): `[1, 1]` 1, `[3, 5]` 15, `[65, 63]` 4,095 and `[130, 512]` 66,560
+/// FLOP. The block's one dropout of f32[5, 13] counts 65 FLOP and reads 260 B and its i32[2] RNG
+/// tokens (8 B) and writes 260 B: 528 B.
+#[test]
+fn dropout_counts_one_flop_per_element_by_hand() {
+    for (n, h, flop) in [(1, 1, 1), (3, 5, 15), (65, 63, 4_095), (130, 512, 66_560)] {
+        let kernel = kernel_of_shape("Dropout", n, h, 3);
+        assert_eq!(
+            kernel.kind,
+            KernelKind::PerElement,
+            "{}",
+            kernel.signature()
+        );
+        assert_eq!(kernel.flop(), Some(flop), "{}", kernel.signature());
+    }
+    assert_eq!(block_counts("Dropout"), [(65, 528)]);
+}
+
+/// story:bert-tiny-vs-pytorch-cuda, acceptance of the counts: `DropoutGrad` against values
+/// computed by hand from DESIGN.md § 3.1 "Counting rule" ("`per_element` ... `Dropout` and
+/// `DropoutGrad` one per output element"): `[1, 1]` 1, `[3, 5]` 15, `[65, 63]` 4,095 and
+/// `[130, 512]` 66,560 FLOP. The block's one dropout gradient of f32[5, 13] counts 65 FLOP and
+/// reads the i32[2] RNG tokens (8 B) and the 260 B gradient and writes 260 B: 528 B.
+#[test]
+fn dropout_grad_counts_one_flop_per_element_by_hand() {
+    for (n, h, flop) in [(1, 1, 1), (3, 5, 15), (65, 63, 4_095), (130, 512, 66_560)] {
+        let kernel = kernel_of_shape("DropoutGrad", n, h, 3);
+        assert_eq!(
+            kernel.kind,
+            KernelKind::PerElement,
+            "{}",
+            kernel.signature()
+        );
+        assert_eq!(kernel.flop(), Some(flop), "{}", kernel.signature());
+    }
+    assert_eq!(block_counts("DropoutGrad"), [(65, 528)]);
 }

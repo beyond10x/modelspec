@@ -1,0 +1,4 @@
+Python 3.14.7
+Name: torch
+Version: 2.14.1
+torch 2.14.1+cu130 cuda 13.0

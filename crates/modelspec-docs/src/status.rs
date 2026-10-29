@@ -16,7 +16,7 @@ use serde_json::{Value, json};
 pub const FILE: &str = "status.json";
 
 /// The date [`CAPABILITIES`] was last checked against `main` and the planning store.
-pub const AS_OF: &str = "2026-10-28";
+pub const AS_OF: &str = "2026-10-29";
 
 /// What holds a shipped capability.
 #[derive(Clone, Copy)]
@@ -584,8 +584,17 @@ pub const CAPABILITIES: &[Capability] = &[
     shipped(
         "Training",
         "The hidden-32 BERT twin trained on the GPU",
-        "Since 0.17.0: modelspec train --backend vulkan --data <dir> --eval-every <n> trains the twin with dropout and AdamW, one command buffer and one host wait per step, and since 0.18.0 each held-out batch of an evaluated step in a command buffer of its own with one host wait; every step and eval line and every final parameter lies within the GPU tolerance of the CPU run, and --serve and --record stream them from the device.",
+        "Since 0.17.0: modelspec train --backend vulkan --data <dir> --eval-every <n> trains the twin with dropout and AdamW, through 0.23.0 one command buffer and one host wait per step, and since 0.23.0 reduces each held-out evaluation on the device, in 0.23.0 in the evaluated step's command buffer; since 0.24.0 one host wait per segment of up to eight steps and one per evaluation, in a command buffer of its own; every step and eval line and every final parameter lies within the GPU tolerance of the CPU run, and --serve and --record stream them from the device.",
         Evidence::Test("crates/modelspec-cli/tests/vulkan_bert_cpu_steps.rs::steps"),
+        "/docs/reference/cli",
+    ),
+    shipped(
+        "Training",
+        "Stepwise GPU runs submit up to eight steps per command buffer",
+        "Since 0.24.0: a stepwise modelspec train --backend vulkan run records up to eight steps into one command buffer, one host wait each, and records the next while the device runs it, with the step and eval lines, events and checkpoints of one step per command buffer; each held-out evaluation the device reduces is a command buffer and host wait of its own, and --clock times it into eval_seconds.",
+        Evidence::Test(
+            "crates/modelspec-cli/tests/train_vulkan_submit_steps.rs::device_adamw_dropout_and_held_out_print_the_lines_of_one_step_per_submit",
+        ),
         "/docs/reference/cli",
     ),
     shipped(
@@ -597,11 +606,20 @@ pub const CAPABILITIES: &[Capability] = &[
         ),
         "/docs/runs/bert-tiny-gpu-pretraining",
     ),
-    planned(
+    shipped(
         "Training",
         "BERT-tiny time to held-out loss against PyTorch CUDA",
-        "The same model, data and target loss trained on PyTorch CUDA and on modelspec Vulkan, and the wall time each takes to reach the target compared.",
-        "story:bert-tiny-vs-pytorch-cuda",
+        "Since 0.23.0: the Benchmarks page times BERT-tiny pre-training to the held-out unigram baseline on modelspec Vulkan, PyTorch CUDA eager and torch.compile, from the same initial weights, batches, optimizer and schedule on one RTX 3090: µs per step, tokens per second, GFLOP/s, and steps and training seconds to the target, each the median of 3 runs and linked to its report; in the runs of 2026-10-29 ModelSpec's training clock holds its held-out evaluations and PyTorch's does not.",
+        Evidence::Test(
+            "crates/modelspec-docs/src/benchmarks.rs::the_published_page_has_the_bert_tiny_pretrain_figures_of_the_report",
+        ),
+        "/docs/benchmarks",
+    ),
+    planned(
+        "Training",
+        "BERT-tiny at parity with PyTorch CUDA eager per step",
+        "`examples/bert_tiny.mspec` trained through Vulkan at batch 32 with a median µs per step at most PyTorch CUDA eager's, timed the same day on the same RTX 3090 and driver.",
+        "epic:bert-tiny-parity-with-eager",
         "/docs/roadmap",
     ),
 ];

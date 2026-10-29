@@ -7,13 +7,15 @@
 //! offsets, `m`, the pre-loop and loop-body offsets of `b`); at a large `k` they do not, and the
 //! trip count of the loop is a new constant too. Pass 2 found a fixed slack of 4 constants too
 //! small at `[176|208, k] x [k, 2]` (5 constants, `review-result:m1-f-forward-adversary-2`). Same
-//! measure as that test, every remainder of `k` modulo 4 tiles, at more shapes.
+//! measure as that test, every remainder of `k` modulo 4 tiles, at more shapes. A `k` that takes a
+//! long-`k` tile is bounded by that tile's modules over the 16 tiles from the first `k` that
+//! takes it.
 #![cfg(feature = "vulkan")]
 
 #[allow(dead_code)]
 mod common;
 
-use modelspec_core::ir::kernel::MatMulTile;
+use modelspec_core::ir::kernel::{MATMUL_LONG_K_BLOCK, MatMulTile};
 use modelspec_runtime::spirv::emit::emit;
 
 #[test]
@@ -34,11 +36,21 @@ fn a_large_k_matmul_module_stays_within_its_k_dependent_constants_of_the_sixteen
             let module = emit(&common::matmul_kernel(m, k, n)).expect("the matmul emits");
             (module.len(), module[3])
         };
-        let mut small = (0, 0);
-        for at in 1..=16 * depth {
-            let (len, bound) = words(at);
-            small = (small.0.max(len), small.1.max(bound));
-        }
+        let largest = |ks: std::ops::RangeInclusive<u64>| {
+            let mut small = (0, 0);
+            for at in ks {
+                let (len, bound) = words(at);
+                small = (small.0.max(len), small.1.max(bound));
+            }
+            small
+        };
+        let short = largest(1..=16 * depth);
+        // A `k` that takes a long-`k` tile (story:vulkan-long-k-weight-grad-matmul) is bounded
+        // by that tile's modules over 16 tiles from the first `k` that takes it.
+        let from = MATMUL_LONG_K_BLOCK.from_k;
+        let long = MatMulTile::of(m, 1 << 20, n)
+            .long_k()
+            .then(|| largest(from..=from + 16 * depth - 1));
         let limit = u64::from(u32::MAX) / n.max(m);
         let mut worst = (0usize, 0u32, 0u64, 0usize);
         for base in [10_000, 100_000, 1_000_000] {
@@ -46,6 +58,10 @@ fn a_large_k_matmul_module_stays_within_its_k_dependent_constants_of_the_sixteen
                 if at > limit {
                     continue;
                 }
+                let small = match long {
+                    Some(long) if MatMulTile::of(m, at, n).long_k() => long,
+                    _ => short,
+                };
                 let (len, bound) = words(at);
                 let spare = common::matmul_k_constants(at, &MatMulTile::of(m, at, n));
                 if bound > worst.1 {
@@ -60,6 +76,7 @@ fn a_large_k_matmul_module_stays_within_its_k_dependent_constants_of_the_sixteen
                 }
             }
         }
+        let small = long.unwrap_or(short);
         eprintln!(
             "[{m}, k] x [k, {n}] depth {depth}: up to 16 tiles {small:?}, worst large k {} gives {} words, id bound {} (+{} ids, +{} words, {} k-dependent constants)",
             worst.2,

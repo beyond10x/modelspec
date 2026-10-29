@@ -3,12 +3,25 @@
 //! boundaries of `CHUNK_STEPS = 256`, resumed runs, the final loss, and the `--serve` stream.
 //!
 //! Every case runs one file on `--backend cpu` and on `--backend vulkan` and compares the exit
-//! status, stdout, stderr and the names of the checkpoint files written. The fixtures are the
-//! linear regression example, whose device run is bit for bit the CPU run's, at learning rates
-//! whose divergence the device can name at the CPU's step: the loss overflows while every
-//! parameter is finite (`lr = 100.0` at step 8, `lr = 0.6` at step 372), or the parameter
-//! overflows in the update of a step whose parameters the device reads back (`lr = 1e38` with one
-//! step, or a checkpoint after every step).
+//! status, stdout, stderr and the names of the checkpoint files written, each finite printed loss
+//! within the run tolerance of DESIGN.md § 9 gate 5 and the rest byte for byte. The fixtures are
+//! the linear regression example, whose device run updates the parameters bit for bit as the CPU
+//! run does, at learning rates whose divergence the device can name at the CPU's step: the loss
+//! overflows while every parameter is finite (`lr = 100.0` at step 8, [`PAST_CHUNK`] at step
+//! 372, [`PAST_CHUNK_8`] at step 382), or the parameter overflows in the update of a step whose
+//! parameters the device reads back (`lr = 1e38` with one step, or a checkpoint after every
+//! step).
+//!
+//! Since release 0.21.0 the CPU sums an `mse` loss in `f64` and divides it there, while the
+//! device sums in `f32` (DESIGN.md § 5.4, coordinator decision D84, commit a123c1a5), so the
+//! printed losses differ in their last bits. Until story:vulkan-loss-sum-overflow-parity the
+//! device divided its `f32` sum by the element count afterwards, so over the example's 8 rows the
+//! sum overflowed before the CPU's mean did: at `lr = 0.6`, which overflowed at step 372 on both
+//! before 0.21.0, the CPU named step 382 and the device 372 (RTX 3090). The device now also sums
+//! each difference times the reciprocal of the count times the difference, the mean, and writes
+//! it where its plain sum overflows, so its loss overflows where the CPU's does; divergence past
+//! the first chunk is tested on the 8 rows at `lr = 0.6` ([`PAST_CHUNK_8`]) and on one row,
+//! whose sum is its mean ([`PAST_CHUNK`]).
 //!
 //! `MODELSPEC_VK_VALIDATION=1 cargo test --release -p modelspec-cli --test train_vulkan_non_finite_adversary -- --ignored`
 #![cfg(feature = "vulkan")]
@@ -21,7 +34,48 @@ use std::time::Duration;
 
 use serde_json::Value;
 
+#[allow(dead_code)]
+#[path = "../../modelspec-runtime/tests/common/mod.rs"]
+mod common;
+
+use common::{GPU_RUN_ATOL, GPU_RUN_RTOL, within};
+
 const EXAMPLE: &str = "examples/linear_regression.mspec";
+
+/// A fixture: the example at learning rate `lr` with `rows` rows in its input and target.
+#[derive(Clone, Copy, Debug)]
+struct Fit {
+    lr: &'static str,
+    rows: u32,
+}
+
+/// The example's 8 rows at `lr = 100.0`: the loss of step 8 overflows.
+const LR_100: Fit = Fit {
+    lr: "100.0",
+    rows: 8,
+};
+
+/// The example's 8 rows at `lr = 1e38`: the update of step 0 overflows `LinearReg.w`.
+const LR_1E38: Fit = Fit {
+    lr: "1e38",
+    rows: 8,
+};
+
+/// One row at `lr = 0.17723`: the loss of step 372 overflows on the CPU and the RTX 3090, past
+/// the first chunk of 256 steps, as the 8 rows at `lr = 0.6` did before release 0.21.0 (module
+/// docs). The rate is the one in `0.1772` to `0.1773` whose loss overflows at step 372, so the
+/// windows below keep their steps; with one row the CPU's `f64` mean is the `f32` sum the
+/// device makes, up to the rounding of the difference.
+const PAST_CHUNK: Fit = Fit {
+    lr: "0.17723",
+    rows: 1,
+};
+
+/// The example's 8 rows at `lr = 0.6`: the CPU's `f64` mean of the squared differences passes
+/// `f32::MAX` at step 382, past the first chunk of 256 steps, and the device's sum of the
+/// squared differences scaled by `1/8`, which it writes where its plain sum overflows, with it
+/// (story:vulkan-loss-sum-overflow-parity).
+const PAST_CHUNK_8: Fit = Fit { lr: "0.6", rows: 8 };
 
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -35,19 +89,31 @@ fn text(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
 }
 
-/// The example with its learning rate replaced by `lr`, written once per `lr`.
-fn with_lr(lr: &str) -> String {
+/// The example with its learning rate replaced by `fit.lr` and its 8 rows by `fit.rows`, written
+/// once per fixture.
+fn with_lr(fit: Fit) -> String {
+    let Fit { lr, rows } = fit;
     let source = std::fs::read_to_string(repo_root().join(EXAMPLE)).expect("the example exists");
-    let changed = source.replace("sgd(lr = 0.1)", &format!("sgd(lr = {lr})"));
+    let mut changed = source.replace("sgd(lr = 0.1)", &format!("sgd(lr = {lr})"));
     assert_ne!(
         changed, source,
         "the example's optimizer is `sgd(lr = 0.1)`"
     );
+    if rows != 8 {
+        let before = changed.clone();
+        changed = changed
+            .replace("[8, 4]", &format!("[{rows}, 4]"))
+            .replace("[8, 1]", &format!("[{rows}, 1]"));
+        assert_ne!(changed, before, "the example has 8 rows of `x` and `y`");
+    }
     std::fs::create_dir_all(scratch()).expect("the temp dir is writable");
-    let path = scratch().join(format!("lr-{lr}.mspec"));
-    // Tests run in parallel and two write the same `lr`: write a file of this thread's own and
+    let path = scratch().join(format!("r{rows}-lr-{lr}.mspec"));
+    // Tests run in parallel and two write the same fixture: write a file of this thread's own and
     // rename it, so no reader sees the truncated file.
-    let staged = scratch().join(format!("lr-{lr}.{:?}.tmp", std::thread::current().id()));
+    let staged = scratch().join(format!(
+        "r{rows}-lr-{lr}.{:?}.tmp",
+        std::thread::current().id()
+    ));
     std::fs::write(&staged, changed).expect("the source is written");
     std::fs::rename(&staged, &path).expect("the source is moved into place");
     path.display().to_string()
@@ -93,6 +159,71 @@ fn run(label: &str, file: &str, backend: &str, checkpoint: bool, extra: &[String
     }
 }
 
+/// Whether `g` passes against the CPU's `c` with the run tolerance
+/// `GPU_RUN_ATOL + GPU_RUN_RTOL·|c|` of DESIGN.md § 9 gate 5, a non-finite `c` only by `g`'s
+/// own bits.
+fn loss_as_the_cpu(g: f32, c: f32) -> bool {
+    if c.is_finite() {
+        within(g, c, c.abs(), GPU_RUN_ATOL, GPU_RUN_RTOL)
+    } else {
+        g.to_bits() == c.to_bits()
+    }
+}
+
+/// A `step <k> loss <v>` line split at its loss: the text before it, the value, and the text
+/// after it.
+fn loss_line(line: &str) -> Option<(&str, f32, &str)> {
+    let (head, tail) = line.split_once(" loss ")?;
+    if !head.starts_with("step ") {
+        return None;
+    }
+    let (value, rest) = tail.split_once(' ').unwrap_or((tail, ""));
+    Some((head, value.parse().ok()?, rest))
+}
+
+/// Whether the device run's stdout `g` is the CPU run's `c` as DESIGN.md § 8 holds it: the same
+/// lines, each loss of a `step` line by [`loss_as_the_cpu`] and every other line, and the rest of
+/// a `step` line, byte for byte (coordinator decisions D84, D88).
+fn stdout_as_the_cpu(g: &str, c: &str) -> bool {
+    let (g, c): (Vec<&str>, Vec<&str>) = (g.lines().collect(), c.lines().collect());
+    g.len() == c.len()
+        && g.iter()
+            .zip(&c)
+            .all(|(g, c)| match (loss_line(g), loss_line(c)) {
+                (Some((g_head, g_loss, g_rest)), Some((c_head, c_loss, c_rest))) => {
+                    (g_head, g_rest) == (c_head, c_rest) && loss_as_the_cpu(g_loss, c_loss)
+                }
+                _ => g == c,
+            })
+}
+
+/// Whether the device run's [`Outcome`] is the CPU run's: status, stderr and checkpoint files
+/// equal, stdout by [`stdout_as_the_cpu`].
+fn outcome_as_the_cpu(g: &Outcome, c: &Outcome) -> bool {
+    (g.status, &g.stderr, &g.files) == (c.status, &c.stderr, &c.files)
+        && stdout_as_the_cpu(&g.stdout, &c.stdout)
+}
+
+/// Whether the device run's event body `g` is the CPU run's `c`: every field equal except the
+/// loss of a `StepCompleted`, which is `null` where the CPU's is and otherwise passes
+/// [`loss_as_the_cpu`].
+fn body_as_the_cpu(g: &Value, c: &Value) -> bool {
+    if g["kind"] != "StepCompleted" || c["kind"] != "StepCompleted" {
+        return g == c;
+    }
+    let (mut g_rest, mut c_rest) = (g.clone(), c.clone());
+    g_rest["value"]["loss"] = Value::Null;
+    c_rest["value"]["loss"] = Value::Null;
+    if g_rest != c_rest {
+        return false;
+    }
+    match (g["value"]["loss"].as_f64(), c["value"]["loss"].as_f64()) {
+        (Some(g), Some(c)) => loss_as_the_cpu(g as f32, c as f32),
+        (None, None) => g["value"]["loss"] == c["value"]["loss"],
+        _ => false,
+    }
+}
+
 /// The E-TRAIN-001 line of a stderr, or the first line.
 fn headline(stderr: &str) -> &str {
     stderr
@@ -104,10 +235,10 @@ fn headline(stderr: &str) -> &str {
 
 /// Runs each case on both backends and returns one line per case whose device run differs from
 /// the CPU run, after checking the CPU run is the divergence the case was built for.
-fn mismatches(cases: &[(&str, &str, bool, Vec<String>, &str)]) -> Vec<String> {
+fn mismatches(cases: &[(&str, Fit, bool, Vec<String>, &str)]) -> Vec<String> {
     let mut found = Vec::new();
-    for (label, lr, checkpoint, extra, cpu_names) in cases {
-        let file = with_lr(lr);
+    for (label, fit, checkpoint, extra, cpu_names) in cases {
+        let file = with_lr(*fit);
         let cpu = run(label, &file, "cpu", *checkpoint, extra);
         assert_eq!(
             cpu.status,
@@ -121,9 +252,9 @@ fn mismatches(cases: &[(&str, &str, bool, Vec<String>, &str)]) -> Vec<String> {
             cpu.stderr
         );
         let gpu = run(label, &file, "vulkan", *checkpoint, extra);
-        if gpu != cpu {
+        if !outcome_as_the_cpu(&gpu, &cpu) {
             found.push(format!(
-                "{label} (lr {lr}, {extra:?}): cpu [{:?}, {}, files {:?}] vulkan [{:?}, {}, \
+                "{label} ({fit:?}, {extra:?}): cpu [{:?}, {}, files {:?}] vulkan [{:?}, {}, \
                  files {:?}], stdout equal: {}",
                 cpu.status,
                 headline(&cpu.stderr),
@@ -144,6 +275,7 @@ fn args(list: &[&str]) -> Vec<String> {
 
 const LOSS_8: &str = "E-TRAIN-001: the loss of step 8 is not finite";
 const LOSS_372: &str = "E-TRAIN-001: the loss of step 372 is not finite";
+const LOSS_382: &str = "E-TRAIN-001: the loss of step 382 is not finite";
 const UPDATE_0: &str = "E-TRAIN-001: the update of step 0 leaves a parameter not finite";
 
 /// The windows of losses each `--checkpoint-every` stop checks, around the failing step 8 of
@@ -155,57 +287,57 @@ fn the_windows_around_a_divergent_loss_name_the_cpu_step_and_write_the_cpu_check
     let cases = vec![
         (
             "every-1",
-            "100.0",
+            LR_100,
             true,
             args(&["--checkpoint-every", "1"]),
             LOSS_8,
         ),
         (
             "every-2",
-            "100.0",
+            LR_100,
             true,
             args(&["--checkpoint-every", "2"]),
             LOSS_8,
         ),
         (
             "every-7",
-            "100.0",
+            LR_100,
             true,
             args(&["--checkpoint-every", "7"]),
             LOSS_8,
         ),
         (
             "every-8",
-            "100.0",
+            LR_100,
             true,
             args(&["--checkpoint-every", "8"]),
             LOSS_8,
         ),
         (
             "every-9",
-            "100.0",
+            LR_100,
             true,
             args(&["--checkpoint-every", "9"]),
             LOSS_8,
         ),
-        ("steps-8", "100.0", false, args(&["--steps", "8"]), LOSS_8),
+        ("steps-8", LR_100, false, args(&["--steps", "8"]), LOSS_8),
         (
             "steps-8-every-4",
-            "100.0",
+            LR_100,
             true,
             args(&["--steps", "8", "--checkpoint-every", "4"]),
             LOSS_8,
         ),
         (
             "steps-9-every-8",
-            "100.0",
+            LR_100,
             true,
             args(&["--steps", "9", "--checkpoint-every", "8"]),
             LOSS_8,
         ),
         (
             "steps-8-every-7",
-            "100.0",
+            LR_100,
             true,
             args(&["--steps", "8", "--checkpoint-every", "7"]),
             LOSS_8,
@@ -224,21 +356,21 @@ fn a_parameter_read_back_at_its_own_step_is_named_as_the_cpu_names_it() {
     let cases = vec![
         (
             "p-steps-1",
-            "1e38",
+            LR_1E38,
             false,
             args(&["--steps", "1"]),
             UPDATE_0,
         ),
         (
             "p-every-1",
-            "1e38",
+            LR_1E38,
             true,
             args(&["--checkpoint-every", "1"]),
             UPDATE_0,
         ),
         (
             "p-steps-1-every-1",
-            "1e38",
+            LR_1E38,
             true,
             args(&["--steps", "1", "--checkpoint-every", "1"]),
             UPDATE_0,
@@ -248,87 +380,87 @@ fn a_parameter_read_back_at_its_own_step_is_named_as_the_cpu_names_it() {
     assert!(found.is_empty(), "{}", found.join("\n"));
 }
 
-/// `lr = 0.6` overflows its loss at step 372, past the first command buffer of 256 steps: no
+/// [`PAST_CHUNK`] overflows its loss at step 372, past the first command buffer of 256 steps: no
 /// stop, a stop at the chunk boundary, windows that cross it, a stop at the failing step and one
 /// after it, and the failing loss as the run's final loss.
 #[test]
 #[ignore = "needs a Vulkan device"]
 fn a_divergence_past_the_first_chunk_names_the_cpu_step() {
     let cases = vec![
-        ("c-plain", "0.6", false, args(&[]), LOSS_372),
+        ("c-plain", PAST_CHUNK, false, args(&[]), LOSS_372),
         (
             "c-every-100",
-            "0.6",
+            PAST_CHUNK,
             true,
             args(&["--checkpoint-every", "100"]),
             LOSS_372,
         ),
         (
             "c-every-124",
-            "0.6",
+            PAST_CHUNK,
             true,
             args(&["--checkpoint-every", "124"]),
             LOSS_372,
         ),
         (
             "c-every-128",
-            "0.6",
+            PAST_CHUNK,
             true,
             args(&["--checkpoint-every", "128"]),
             LOSS_372,
         ),
         (
             "c-every-186",
-            "0.6",
+            PAST_CHUNK,
             true,
             args(&["--checkpoint-every", "186"]),
             LOSS_372,
         ),
         (
             "c-every-255",
-            "0.6",
+            PAST_CHUNK,
             true,
             args(&["--checkpoint-every", "255"]),
             LOSS_372,
         ),
         (
             "c-every-256",
-            "0.6",
+            PAST_CHUNK,
             true,
             args(&["--checkpoint-every", "256"]),
             LOSS_372,
         ),
         (
             "c-every-257",
-            "0.6",
+            PAST_CHUNK,
             true,
             args(&["--checkpoint-every", "257"]),
             LOSS_372,
         ),
         (
             "c-every-372",
-            "0.6",
+            PAST_CHUNK,
             true,
             args(&["--checkpoint-every", "372"]),
             LOSS_372,
         ),
         (
             "c-every-373",
-            "0.6",
+            PAST_CHUNK,
             true,
             args(&["--checkpoint-every", "373"]),
             LOSS_372,
         ),
         (
             "c-steps-372",
-            "0.6",
+            PAST_CHUNK,
             false,
             args(&["--steps", "372"]),
             LOSS_372,
         ),
         (
             "c-steps-372-every-256",
-            "0.6",
+            PAST_CHUNK,
             true,
             args(&["--steps", "372", "--checkpoint-every", "256"]),
             LOSS_372,
@@ -338,13 +470,59 @@ fn a_divergence_past_the_first_chunk_names_the_cpu_step() {
     assert!(found.is_empty(), "{}", found.join("\n"));
 }
 
-/// A run resumed from the CPU's checkpoint of step 256 of `lr = 0.6` numbers its steps from 256
+/// [`PAST_CHUNK_8`] overflows its loss at step 382, the windows of
+/// [`a_divergence_past_the_first_chunk_names_the_cpu_step`] around that step: no stop, the
+/// chunk boundary, windows that cross it, a stop the step before the failing one (`127`), at it
+/// (`191`, `382`) and after it, and the failing loss as the run's final loss.
+#[test]
+#[ignore = "needs a Vulkan device"]
+fn an_eight_row_divergence_past_the_first_chunk_names_the_cpu_step() {
+    let every = |label, steps| {
+        (
+            label,
+            PAST_CHUNK_8,
+            true,
+            args(&["--checkpoint-every", steps]),
+            LOSS_382,
+        )
+    };
+    let cases = vec![
+        ("c8-plain", PAST_CHUNK_8, false, args(&[]), LOSS_382),
+        every("c8-every-100", "100"),
+        every("c8-every-127", "127"),
+        every("c8-every-128", "128"),
+        every("c8-every-191", "191"),
+        every("c8-every-255", "255"),
+        every("c8-every-256", "256"),
+        every("c8-every-257", "257"),
+        every("c8-every-382", "382"),
+        every("c8-every-383", "383"),
+        (
+            "c8-steps-382",
+            PAST_CHUNK_8,
+            false,
+            args(&["--steps", "382"]),
+            LOSS_382,
+        ),
+        (
+            "c8-steps-382-every-256",
+            PAST_CHUNK_8,
+            true,
+            args(&["--steps", "382", "--checkpoint-every", "256"]),
+            LOSS_382,
+        ),
+    ];
+    let found = mismatches(&cases);
+    assert!(found.is_empty(), "{}", found.join("\n"));
+}
+
+/// A run resumed from the CPU's checkpoint of step 256 of [`PAST_CHUNK`] numbers its steps from 256
 /// and its stops from the absolute step: `--checkpoint-every 100` stops at 300 and 400, and the
 /// loss of step 372 lies in the window the stop at 400 reads.
 #[test]
 #[ignore = "needs a Vulkan device"]
 fn a_resumed_divergent_run_names_the_cpu_step() {
-    let file = with_lr("0.6");
+    let file = with_lr(PAST_CHUNK);
     let seed = run(
         "r-seed",
         &file,
@@ -360,31 +538,84 @@ fn a_resumed_divergent_run_names_the_cpu_step() {
     let cases = vec![
         (
             "r-plain",
-            "0.6",
+            PAST_CHUNK,
             false,
             args(&["--resume", &kept]),
             LOSS_372,
         ),
         (
             "r-every-100",
-            "0.6",
+            PAST_CHUNK,
             true,
             args(&["--resume", &kept, "--checkpoint-every", "100"]),
             LOSS_372,
         ),
         (
             "r-every-58",
-            "0.6",
+            PAST_CHUNK,
             true,
             args(&["--resume", &kept, "--checkpoint-every", "58"]),
             LOSS_372,
         ),
         (
             "r-steps-116",
-            "0.6",
+            PAST_CHUNK,
             false,
             args(&["--resume", &kept, "--steps", "116"]),
             LOSS_372,
+        ),
+    ];
+    let found = mismatches(&cases);
+    assert!(found.is_empty(), "{}", found.join("\n"));
+}
+
+/// [`a_resumed_divergent_run_names_the_cpu_step`] on [`PAST_CHUNK_8`], whose loss of step 382
+/// lies in the window the stop at 400 reads; `--checkpoint-every 191` stops at the failing
+/// step, and `--steps 126` ends the resumed run there.
+#[test]
+#[ignore = "needs a Vulkan device"]
+fn an_eight_row_resumed_divergent_run_names_the_cpu_step() {
+    let file = with_lr(PAST_CHUNK_8);
+    let seed = run(
+        "r8-seed",
+        &file,
+        "cpu",
+        true,
+        &args(&["--checkpoint-every", "256"]),
+    );
+    assert_eq!(seed.files, ["run-256.msckpt"], "{}", seed.stderr);
+    let from = scratch().join("r8-seed-cpu").join("run-256.msckpt");
+    let kept = scratch().join("resume8-from-256.msckpt");
+    std::fs::copy(&from, &kept).expect("the checkpoint is copied");
+    let kept = kept.display().to_string();
+    let cases = vec![
+        (
+            "r8-plain",
+            PAST_CHUNK_8,
+            false,
+            args(&["--resume", &kept]),
+            LOSS_382,
+        ),
+        (
+            "r8-every-100",
+            PAST_CHUNK_8,
+            true,
+            args(&["--resume", &kept, "--checkpoint-every", "100"]),
+            LOSS_382,
+        ),
+        (
+            "r8-every-191",
+            PAST_CHUNK_8,
+            true,
+            args(&["--resume", &kept, "--checkpoint-every", "191"]),
+            LOSS_382,
+        ),
+        (
+            "r8-steps-126",
+            PAST_CHUNK_8,
+            false,
+            args(&["--resume", &kept, "--steps", "126"]),
+            LOSS_382,
         ),
     ];
     let found = mismatches(&cases);
@@ -450,23 +681,30 @@ fn served_bodies(file: &str, backend: &str, extra: &[String]) -> Vec<Value> {
 
 /// Under `--serve`, a divergence the device names at a checkpoint stop, past the first chunk,
 /// and in a resumed-style numbering ends the stream as the CPU's does, event for event, each
-/// `parameters` list the CPU's as a device run carries it ([`as_on_device`]).
+/// `parameters` list the CPU's as a device run carries it ([`as_on_device`]) and each finite loss
+/// within the run tolerance of the CPU's ([`body_as_the_cpu`]).
 #[test]
 #[ignore = "needs a Vulkan device"]
 fn a_divergent_stream_with_checkpoint_stops_is_the_cpu_stream() {
     let mut found = Vec::new();
-    for (label, lr, extra) in [
-        ("s-every-4", "100.0", args(&["--checkpoint-every", "4"])),
-        ("s-every-9", "100.0", args(&["--checkpoint-every", "9"])),
-        ("s-chunk", "0.6", args(&[])),
+    for (label, fit, extra) in [
+        ("s-every-4", LR_100, args(&["--checkpoint-every", "4"])),
+        ("s-every-9", LR_100, args(&["--checkpoint-every", "9"])),
+        ("s-chunk", PAST_CHUNK, args(&[])),
         (
             "s-chunk-every-128",
-            "0.6",
+            PAST_CHUNK,
             args(&["--checkpoint-every", "128"]),
         ),
-        ("s-p-every-1", "1e38", args(&["--checkpoint-every", "1"])),
+        ("s8-chunk", PAST_CHUNK_8, args(&[])),
+        (
+            "s8-chunk-every-191",
+            PAST_CHUNK_8,
+            args(&["--checkpoint-every", "191"]),
+        ),
+        ("s-p-every-1", LR_1E38, args(&["--checkpoint-every", "1"])),
     ] {
-        let file = with_lr(lr);
+        let file = with_lr(fit);
         let dir = scratch().join(format!("{label}-serve"));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("the temp dir is writable");
@@ -477,11 +715,11 @@ fn a_divergent_stream_with_checkpoint_stops_is_the_cpu_stream() {
         }
         let cpu = as_on_device(&served_bodies(&file, "cpu", &extra));
         let gpu = served_bodies(&file, "vulkan", &extra);
-        if gpu != cpu {
+        if gpu.len() != cpu.len() || gpu.iter().zip(&cpu).any(|(g, c)| !body_as_the_cpu(g, c)) {
             let first = cpu
                 .iter()
                 .zip(&gpu)
-                .position(|(c, g)| c != g)
+                .position(|(c, g)| !body_as_the_cpu(g, c))
                 .unwrap_or(cpu.len().min(gpu.len()));
             found.push(format!(
                 "{label}: {} cpu events, {} vulkan events, first difference at {first}: cpu {:?} \
@@ -528,7 +766,7 @@ fn a_finite_checked_run_waits_as_the_base_did() {
 #[test]
 #[ignore = "needs a Vulkan device"]
 fn a_diverged_run_with_stats_still_prints_its_counters() {
-    let file = with_lr("100.0");
+    let file = with_lr(LR_100);
     let out = run(
         "stats-diverged",
         &file,

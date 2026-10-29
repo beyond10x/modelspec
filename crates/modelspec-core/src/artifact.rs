@@ -1195,6 +1195,9 @@ struct WireKernel {
     /// [`Kernel::transposed`], absent when neither operand is bound transposed.
     #[serde(default, skip_serializing_if = "neither_transposed")]
     transposed: [bool; 2],
+    /// [`Kernel::softmax_stats`], absent on every kernel without softmax statistics.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    softmax_stats: Option<WireType>,
     workgroup_size: u32,
     workgroups: [u32; 3],
 }
@@ -1361,6 +1364,11 @@ impl WireKernel {
                 Epilogue::ReluGrad => WireEpilogue::ReluGrad,
             }),
             transposed: kernel.transposed,
+            softmax_stats: kernel
+                .softmax_stats
+                .as_ref()
+                .map(WireType::of)
+                .transpose()?,
             workgroup_size: kernel.workgroup_size,
             workgroups: kernel.workgroups,
         })
@@ -1413,6 +1421,7 @@ impl WireKernel {
                 WireEpilogue::ReluGrad => Epilogue::ReluGrad,
             }),
             transposed: self.transposed,
+            softmax_stats: self.softmax_stats.as_ref().map(WireType::ty),
             workgroup_size: self.workgroup_size,
             workgroups: self.workgroups,
         };

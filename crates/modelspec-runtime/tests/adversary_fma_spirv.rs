@@ -7,9 +7,13 @@
 //!    profile, is its deterministic module with exactly its `OpDecorate … NoContraction`
 //!    instructions removed: the same header, the same instructions in the same order, the same
 //!    `Fma` instructions. The unit's own check compares counts and lengths only.
-//! 2. The `mse` loss sum at 1 to 9 terms (no unrolled pass) holds exactly `count - 1` `Fma`,
-//!    each squaring one staged difference (`Fma(d, d, acc)`, both factors the same id), and one
-//!    `OpFMul` of one difference by itself; every `OpFSub` is decorated `NoContraction`.
+//! 2. The `mse` loss sum at 1 to 9 terms (no unrolled pass) holds exactly `count - 1` `Fma`
+//!    that square one staged difference (`Fma(d, d, acc)`, both factors the same id), and one
+//!    `OpFMul` multiplies one difference by itself. The undivided module holds nothing else. The
+//!    plan's module (DESIGN.md § 5.4, revision 0.75) also holds the scaled sum: `count - 1`
+//!    `Fma(d * s, d, acc)`, each first factor the `OpFMul` of its second by the constant
+//!    `s = 1/count`, the `count` products `d * s`, one per term, `(d * s) * d` of the first term,
+//!    and the one `OpIsInf` that picks it. Every `OpFSub` is decorated `NoContraction`.
 
 #![cfg(feature = "vulkan")]
 
@@ -36,6 +40,12 @@ const RTX3090: &str = include_str!(concat!(
 
 /// The words of the SPIR-V header before the first instruction.
 const HEADER_WORDS: usize = 5;
+
+/// `OpConstant`.
+const OP_CONSTANT: u32 = 43;
+
+/// `OpIsInf`.
+const OP_IS_INF: u32 = 157;
 
 fn rtx3090() -> DeviceProfile {
     DeviceProfile::from_json(RTX3090).expect("the fixture is a valid profile")
@@ -191,20 +201,77 @@ fn the_loss_sum_squares_each_staged_difference_once_and_fuses_every_later_square
                 .map(|(_, w)| *w)
                 .collect();
             let what = format!("mse over {count} terms {variant}");
-            if fmas.len() != count as usize - 1 {
-                wrong.push(format!("{what}: {} Fma, wanted {}", fmas.len(), count - 1));
+            let squares: Vec<&&[u32]> = fmas.iter().filter(|w| w[5] == w[6]).collect();
+            if squares.len() != count as usize - 1 {
+                wrong.push(format!(
+                    "{what}: {} Fma(d, d), wanted {}",
+                    squares.len(),
+                    count - 1
+                ));
             }
-            for w in &fmas {
-                if w[5] != w[6] {
+            match muls.iter().filter(|w| w[3] == w[4]).count() {
+                1 => {}
+                other => wrong.push(format!("{what}: {other} OpFMul squares, not one")),
+            }
+            let is_inf = all.iter().filter(|(op, _)| *op == OP_IS_INF).count();
+            if variant == "undivided" {
+                if fmas.len() != squares.len() {
                     wrong.push(format!(
-                        "{what}: Fma %{} multiplies %{} by %{}",
-                        w[2], w[5], w[6]
+                        "{what}: {} Fma, {} of them not a square",
+                        fmas.len(),
+                        fmas.len() - squares.len()
                     ));
                 }
-            }
-            match muls.as_slice() {
-                [w] if w[3] == w[4] => {}
-                other => wrong.push(format!("{what}: {} OpFMul, not one square", other.len())),
+                if muls.len() != 1 {
+                    wrong.push(format!("{what}: {} OpFMul, not one square", muls.len()));
+                }
+                if is_inf != 0 {
+                    wrong.push(format!("{what}: {is_inf} OpIsInf, wanted none"));
+                }
+            } else {
+                let s = ((1.0 / f64::from(count)) as f32).to_bits();
+                let scales: BTreeSet<u32> = all
+                    .iter()
+                    .filter(|(op, w)| *op == OP_CONSTANT && w[3] == s)
+                    .map(|(_, w)| w[2])
+                    .collect();
+                // Each `d * s`: its result and its `d`.
+                let scaled: Vec<(u32, u32)> = muls
+                    .iter()
+                    .filter(|w| scales.contains(&w[4]))
+                    .map(|w| (w[2], w[3]))
+                    .collect();
+                if scaled.len() != count as usize || muls.len() != count as usize + 2 {
+                    wrong.push(format!(
+                        "{what}: {} OpFMul, {} of them by 1/{count}; wanted {count} by 1/{count}, \
+                         the first square and the first scaled term",
+                        muls.len(),
+                        scaled.len()
+                    ));
+                }
+                let fused = fmas
+                    .iter()
+                    .filter(|w| scaled.contains(&(w[5], w[6])))
+                    .count();
+                if fused != count as usize - 1 || fmas.len() != 2 * (count as usize - 1) {
+                    wrong.push(format!(
+                        "{what}: {} Fma, {fused} of them d * (1/{count}) by d; wanted {} of each",
+                        fmas.len(),
+                        count - 1
+                    ));
+                }
+                let first = muls
+                    .iter()
+                    .filter(|w| scaled.contains(&(w[3], w[4])))
+                    .count();
+                if first != 1 {
+                    wrong.push(format!(
+                        "{what}: {first} OpFMul of d * (1/{count}) by d, wanted the first term"
+                    ));
+                }
+                if is_inf != 1 {
+                    wrong.push(format!("{what}: {is_inf} OpIsInf, wanted one"));
+                }
             }
             if subs.iter().any(|w| !decorated.contains(&w[2])) {
                 wrong.push(format!("{what}: an OpFSub without NoContraction"));

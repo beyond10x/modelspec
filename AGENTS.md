@@ -17,7 +17,7 @@ A Rust compiler and runtime for `.mspec` tensor-program specifications. Humans s
 ## State
 
 Milestone M0 implemented (DESIGN.md revision 0.6, § 1 and § 11, iteration 1; wave `m0` closed);
-M1 (`epic:m1-vulkan-execution`) is in progress, latest release 0.22.0. The active milestone is
+M1 (`epic:m1-vulkan-execution`) is in progress, latest release 0.25.0. The active milestone is
 `epic:bert-from-scratch`, M3's BERT proof model: the operators `embedding` (with `i32` row ids),
 `add_rows`, `gelu`, `layer_norm`, `softmax` and `attention` (0.10.0), `cross_entropy` and
 `dropout` (0.11.0) run on the CPU interpreter, as do packed `--data` training and
@@ -103,11 +103,11 @@ Development paused after release 0.20.0 (Timo, 2026-10-26) and resumed on 2026-1
 Entry points are the `Taskfile.yml` tasks (go-task):
 
 - `task build`: `cargo build --workspace`.
-- `task test`: `cargo test --workspace`, then `cargo test -p modelspec-runtime --features vulkan`,
-  whose `spirv_val` test runs `spirv-val --target-env vulkan1.2` (SPIRV-Tools) on every emitted
+- `task test`: `cargo test --workspace`, which builds `modelspec-runtime` with `vulkan` through the CLI's default feature;
+  its `spirv_val` test runs `spirv-val --target-env vulkan1.2` (SPIRV-Tools) on every emitted
   elementwise, broadcast and SGD module and fails, not skips, without it.
-- `task lint`: `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings` and
-  the same clippy run of `modelspec-runtime` with `--features vulkan`.
+- `task lint`: `cargo fmt --check` and `cargo clippy --workspace --all-targets -- -D warnings`,
+  which checks `modelspec-runtime` with `--features vulkan` through the same default.
 - The device tests need a Vulkan device and are ignored by default:
   `MODELSPEC_VK_VALIDATION=1 cargo test -p modelspec-runtime --features vulkan --test vulkan_elementwise -- --ignored`.
   `MODELSPEC_VK_VALIDATION=1` creates the instance with the Khronos validation layer; each
@@ -271,7 +271,7 @@ workspace version and nothing is on a registry.
 - The files in `examples/` are target syntax. Keep them in step with DESIGN.md § 2 until a parser
   can check them, then make `modelspec check` on every example part of the gate once the parser
   supports its constructs: `linear_regression.mspec` from M0, `mnist_mlp.mspec`, `bert_tiny.mspec`
-  since the BERT operators, `transformer_block.mspec` (the benchmark `transformer_block` and its
+  since the BERT operators (its opponent `opponents/bert_tiny_pretrain/` trains the same program), `transformer_block.mspec` (the benchmark `transformer_block` and its
   opponent `opponents/transformer_block/` run it), `jepa_tiny.mspec` (`stop_gradient` and `sigreg`,
   the model view of a joint-embedding model), `tiny_mlp.mspec` (modules, generics, `vulkan(0)`) from DESIGN.md § 11
   iteration 3.
@@ -292,3 +292,20 @@ workspace version and nothing is on a registry.
   before a GPU run; a bench's own warm-up steps outside its timed span stay. A timed run gets the
   GPU alone, and nobody locks its clocks. The operator said so on 2026-10-23
   (approval-record:benchmark-wave-scope D14).
+- A Vulkan timing needs the display awake. With the screen blanked (DPMS or the X screen saver),
+  the NVIDIA driver keeps the GPU in P3 for Vulkan clients (RTX 3090: SM about 780 to 915 MHz,
+  memory 5001 MHz, about 2.2x slower steps) while CUDA clients still boost to P0/P2, so a
+  ModelSpec-against-PyTorch run is unfair. Before a timed run or an A/B run:
+  `DISPLAY=:0 xset dpms force on`, `DISPLAY=:0 xset -dpms` and `DISPLAY=:0 xset s off`, and
+  `xset s reset` before each run (`xset +dpms` and `xset s on` after). Something on the desktop
+  re-enables DPMS, so check `xset q` between runs. Sample
+  `nvidia-smi --query-gpu=pstate,clocks.sm,clocks.mem` during each run; a record whose ModelSpec
+  side ran outside P0/P2 is re-run, not published. Found 2026-10-29 when that day's timings ran at
+  P3 after the screen blanked at about 04:50, and two later runs ran at P3 with DPMS off while the
+  screen saver blanked the screen.
+- Performance work is proved by a small experiment first: a probe that shows the idea moves the
+  measured figure, then the accurate implementation. Each change runs only the tests of the crates
+  and test targets it touches (and its own device tests when it changes a kernel). Changes collect
+  on one integration branch; the full gate (`task ci` with the device tests) runs once there, then
+  one PR carries every change to `main` and one release follows. The operator said so on
+  2026-10-28.

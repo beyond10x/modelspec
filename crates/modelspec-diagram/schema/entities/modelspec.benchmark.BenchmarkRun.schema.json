@@ -14,7 +14,7 @@
       "type": "string"
     },
     "workload": {
-      "description": "What was trained, `mnist-784-64-10` (examples/mnist_mlp.mspec on MNIST, batch 100), `mlp-784-H-10` (the `mlp_sweep` bench, 784 → H ReLU → 10 at the batch and hidden width of the run) or `transformer-block` (the `transformer_block` bench, examples/transformer_block.mspec at the batch of the run, in sequences of 128).",
+      "description": "What was trained, `mnist-784-64-10` (examples/mnist_mlp.mspec on MNIST, batch 100), `mlp-784-H-10` (the `mlp_sweep` bench, 784 → H ReLU → 10 at the batch and hidden width of the run), `transformer-block` (the `transformer_block` bench, examples/transformer_block.mspec at the batch of the run, in sequences of 128) or `bert-tiny-pretrain` (examples/bert_tiny.mspec, MLM pre-training on the packed corpus, 32 sequences of 128, timed to a held-out loss target).",
       "type": "string"
     },
     "side": {
@@ -85,6 +85,30 @@
       "description": "The median µs per step of the repeats, as the source states it, or computed from its median seconds as seconds · 10⁶ / timed_steps.",
       "type": "number"
     },
+    "target_loss": {
+      "description": "The held-out loss a time-to-target run trains to; for `bert-tiny-pretrain` the held-out unigram baseline of its packed corpus, `heldout_unigram_baseline_nats` `6.926537926202018` of `packed.json`, which the reference run passed on its way to a final held-out loss of 6.7674994; with steps_to_target, seconds_to_target and eval_every, required on a `bert-tiny-pretrain` run.",
+      "type": "number"
+    },
+    "steps_to_target": {
+      "$ref": "#/$defs/modelspec.benchmark.PositiveInteger",
+      "description": "The first evaluated step whose held-out loss is at most target_loss, a multiple of eval_every, where the source states it."
+    },
+    "seconds_to_target": {
+      "description": "The training seconds up to steps_to_target, the cumulative `train_seconds` of that step's eval line, without the held-out evaluations, checkpoint writes or events (`modelspec train --clock`, and the opponent's eval lines).",
+      "type": "number"
+    },
+    "train_seconds": {
+      "description": "The training seconds of the whole run, as seconds_to_target counts them.",
+      "type": "number"
+    },
+    "eval_every": {
+      "$ref": "#/$defs/modelspec.benchmark.PositiveInteger",
+      "description": "The steps between held-out evaluations of a time-to-target run, which bound how finely steps_to_target is resolved."
+    },
+    "final_heldout_loss": {
+      "description": "The held-out loss at the run's last step, where the source states it.",
+      "type": "number"
+    },
     "gpu": {
       "description": "The GPU of a GPU side, as the source names it.",
       "type": "string"
@@ -125,8 +149,8 @@
   "x-ess-provenance": {
     "system": "modelspec",
     "specification_version": "v1",
-    "source_digest": "7d03bf393d79772454e877a209d3155de13311676d772d160bc4ada6f4808f1b",
-    "contract_digest": "slice-sha256/2:024da07c4850c02c7520d3fcb9a45969867490ceccdb0d725db2faa0dc8d7cd7",
+    "source_digest": "d4f49d8e57a5ea2f2fd67553d3369b683f69b8522cebd66fbc3039de7f8d4828",
+    "contract_digest": "slice-sha256/2:1ee317850ca41b6345529e30f9c43ed4e726a5e69a482361ea819ff85a4c3424",
     "regenerate": "ess generate"
   },
   "$defs": {
@@ -148,7 +172,7 @@
     },
     "modelspec.benchmark.FlopRule": {
       "title": "FlopRule",
-      "description": "What flop_per_step counts. MatmulOnly counts the matrix products of a step, forward and backward, by workload, `3196·B·H` for `mlp-784-H-10`, the matmuls of a 784 → H → 10 step at batch B, and `N·(42·H² + 24·H·F + 24·S·H)` with `N = B·S`, `H = 128`, `F = 512` and `S = 128`, that is `339,738,624·B`, for `transformer-block` at a batch of B sequences (benches/transformer_block/block.rs); AllSites is the `profile step_total` count over every dispatch site of the step (DESIGN.md § 3.1 counting rule).",
+      "description": "What flop_per_step counts. MatmulOnly counts the matrix products of a step, forward and backward, by workload, `3196·B·H` for `mlp-784-H-10`, the matmuls of a 784 → H → 10 step at batch B, and `N·(42·H² + 24·H·F + 24·S·H)` with `N = B·S`, `H = 128`, `F = 512` and `S = 128`, that is `339,738,624·B`, for `transformer-block` at a batch of B sequences (benches/transformer_block/block.rs), and `N·(54·H² + 24·H·F + 6·H·V + 24·S·H)` with `V = 8,192`, that is `1,170,210,816·B`, for `bert-tiny-pretrain` (benches/bert_tiny/flop.rs); AllSites is the `profile step_total` count over every dispatch site of the step (DESIGN.md § 3.1 counting rule).",
       "x-ess-name": "modelspec.benchmark.FlopRule",
       "x-ess-kind": "enum",
       "type": "string",

@@ -2,7 +2,7 @@
 format: aep.planning-md/3
 id: story:north-star-public-claim
 kind: story
-status: active
+status: implemented
 title: 'ModelSpec''s north star is its public claim: faster training through a runtime compiled for one target'
 relations:
 - serves: vision:modelspec
@@ -25,10 +25,11 @@ scope:
   path: website/product.json
 - confidence: cited
   path: website/sidebars.ts
-revision: 4
+revision: 5
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-28T11:30:33Z", actor: "human:timo", revision: 3}
 - {from: "proposed", to: "active", at: "2026-10-28T11:30:34Z", actor: "human:timo", revision: 4}
+- {from: "active", to: "implemented", at: "2026-10-29T08:26:20Z", actor: "human:timo", revision: 5, decided_on: {"recorded":{"test_result":1}}}
 ---
 # ModelSpec's north star is its public claim
 

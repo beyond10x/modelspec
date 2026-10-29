@@ -9,7 +9,28 @@
 //! - `init @<path>: <type> = [v, ...]` for every parameter before the first step;
 //! - `step <k> loss <v>` at step 0, every 50 steps and the last step, where step `k` is the loss
 //!   after `k` updates;
+//! - with `--clock`, `train_seconds <s> eval_seconds <s> steps <n>`, the run's training clock:
+//!   the training-loop time of its `n` updates and the time of its held-out evaluations, in
+//!   seconds;
 //! - `param @<path>: <type> = [v, ...]` for every parameter after the last step.
+//!
+//! Without `--clock` stdout holds no time, so two runs of one seed print the same bytes. The
+//! training clock (story:bert-tiny-vs-pytorch-cuda, coordinator decision D87) leaves out
+//! the compile, the plan build and pipeline creation, the held-out evaluations of `--eval-every`
+//! (counted apart as `eval_seconds`), the final loss evaluation after the last update,
+//! checkpoint files and the events of `--serve` and `--record`. A stepwise Vulkan run sums the
+//! spans in which a segment of its steps is in flight on the device, from recording the first
+//! segment after a pause to the host wait that leaves none in flight
+//! ([`modelspec_runtime::vulkan::stepwise`]), and times each held-out evaluation, on the device
+//! or on the host, into `eval_seconds` (story:vulkan-stepwise-multi-step-submit); a chunked
+//! Vulkan run sums, per stop, the time from recording its first command buffer to the end of
+//! the wait for its steps, and records the read-back, the final loss evaluation and
+//! the checkpoint after them in a command buffer of their own, one more host wait per stop
+//! (story:bert-tiny-vs-pytorch-cuda, ADV-BP-3);
+//! a CPU run counts the time of its loop of updates from the first step's batch to the
+//! last update, without the time its observer and its checkpoints take. With `--clock` each
+//! `eval <k>` line carries the clock through the updates before step `k`, so the time at which
+//! the held-out loss first falls below a target reads from stdout alone.
 //!
 //! Parameters are listed by canonical path, values in row-major order, each `f32` in its shortest
 //! round-trip decimal form. A file that does not compile, or data the file's declarations
@@ -31,15 +52,24 @@
 //! reads back then and no other step. A run whose step plan has a `dropout` kernel or reads
 //! optimizer inputs (`adamw`'s rate, bias corrections and moments), and every run with `--data`,
 //! `--eval` or `--eval-every`, runs stepwise instead ([`modelspec_runtime::vulkan::stepwise`]; coordinator
-//! decision D73, 2026-10-25, `.engineering/waves/bert-1.md`): one command buffer and one host
-//! wait per step and one for the final loss, the step's batch, RNG tokens and AdamW scalars
-//! uploaded before it and the moments kept on the device. An evaluated step first runs each
-//! held-out batch without dropout in a command buffer of its own, one host wait per batch
-//! (coordinator decision D76, story:vulkan-eval-download-per-batch); with `--eval` the last step
-//! first runs each batch of the eval directory the same way (story:decider-dense-named-data), and
-//! `--profile` refuses a stepwise run on one line (exit 1). `--stats` prints the run's counters on stderr after it
+//! decision D73, 2026-10-25, `.engineering/waves/bert-1.md`): its steps run in segments of up to
+//! 8 steps, one command buffer and one host wait each, and one for the final loss, each step's
+//! batch, RNG tokens and AdamW scalars uploaded before its segment and the moments kept on the
+//! device; the next segment is recorded while the device runs the one in flight, and the lines
+//! are those of one step per command buffer (story:vulkan-stepwise-multi-step-submit). An
+//! evaluated step first runs its held-out batches without dropout in a command buffer of their
+//! own, one host wait, or one per batch where the host reduces them (coordinator decision D76,
+//! story:vulkan-eval-metrics-on-device); with `--eval` the last step first runs each batch of the
+//! eval directory in a command buffer of its own (story:decider-dense-named-data). A stepwise
+//! run's `--profile` writes the timestamps of each segment's command buffer into one query pool
+//! and reads them back after that segment's host wait, adding none
+//! (story:bert-tiny-vs-pytorch-cuda); its held-out and eval batches are not timed. `--stats`
+//! prints the run's counters on stderr after it
 //! (host waits, submits, dispatches, dispatches and barriers per step, bytes up and down, device
-//! allocations, peak device bytes, the numerics class, microseconds per step). `--profile` times
+//! allocations, peak device bytes, the numerics class, microseconds per step, the pipelines made and
+//! the microseconds spent making them, through the pipeline cache on disk that
+//! `MODELSPEC_PIPELINE_CACHE` names or the user cache directory holds, story:vulkan-pipeline-startup).
+//! `--profile` times
 //! every dispatch with GPU timestamp queries, read back after the one host wait, and prints on
 //! stderr after it one `profile dispatch <plan> <position> <kernel_module_id> <entry> calls <n>
 //! total_us <t> mean_us <m> flop <f> bytes <b> gflop_per_s <g> gb_per_s <h>` line per dispatch
@@ -99,7 +129,8 @@
 //! runs on the parameters after `k` updates, the ones the loss of step `k` is of, over every full
 //! batch of `B` sequences of the `HeldOut` split drawn with the run seed, so the last
 //! `count mod B` held-out sequences are never evaluated, and stdout has
-//! `eval <k> loss <v> accuracy <a>` after the `step <k>` line, which an evaluated step always
+//! `eval <k> loss <v> accuracy <a>` (with `--clock` followed by ` train_seconds <s>`) after the
+//! `step <k>` line, which an evaluated step always
 //! gets; the `StepCompleted` of step `k` carries the metric samples `heldout_mlm_loss` and
 //! `heldout_mlm_accuracy` with those values, every other one an empty `metrics` list.
 //! `--eval-every` without `--data`,
@@ -125,7 +156,10 @@
 //! checkpoint that cannot be written fails the run on one line. A file whose optimizer is
 //! `adamw(...)` or `muon(...)` takes neither `--checkpoint` nor `--resume`, a usage error, since a
 //! checkpoint does not hold its moments or momentum buffers yet (DESIGN.md § 6, coordinator
-//! decisions D50 and D67).
+//! decisions D50 and D67), except `--checkpoint` on a run of `--steps 0` without
+//! `--checkpoint-every`, whose moments and buffers are still 0: it writes the step-0 checkpoint
+//! of the initial parameters, from which another implementation starts
+//! (story:bert-tiny-vs-pytorch-cuda).
 //!
 //! `--serve <addr>` also streams the run as `text/event-stream` at `http://<addr>/events`
 //! (`spec/domains/observatory.yaml`, `ServeAddress` and `StreamFrame`; [`modelspec_observatory`]).
@@ -164,17 +198,18 @@
 //! event is written to the file after the first failed write; a run that finished then ends its
 //! stream with `RunFailed` instead of `RunFinished`.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::io::Write;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
+use std::time::{Duration, Instant};
 
 use modelspec_core::compile::{self, CompiledTraining};
 use modelspec_core::diag::{Code, Diagnostic};
-use modelspec_core::ir::tensor::ParamId;
+use modelspec_core::ir::tensor::{Dim, ParamId, TensorOp};
 use modelspec_core::ir::training::OptimizerRule;
 use modelspec_observatory::{
     EVENTS_PATH, EventSequence, MetricSample, ParameterStatistics, Recorder, RunEventBody,
@@ -244,21 +279,37 @@ pub struct Args {
     #[arg(long, value_name = "DIR")]
     pub eval: Option<PathBuf>,
     /// With a packed --data directory, run the forward program without dropout over every full
-    /// batch of the HeldOut split and print `eval <k> loss <v> accuracy <a>` after the
-    /// `step <k>` line; the step's StepCompleted carries them as the metric samples
+    /// batch of the HeldOut split and print `eval <k> loss <v> accuracy <a>` after the `step <k>`
+    /// line (with --clock followed by ` train_seconds <s>`); the
+    /// step's StepCompleted carries the loss and accuracy as the metric samples
     /// heldout_mlm_loss and heldout_mlm_accuracy. Evaluation happens at every multiple of N
     /// among the run's steps and at the run's last step, so a resumed run evaluates no step 0 of
     /// its own and starts at the first multiple of N at or after the step it resumes at. The
     /// last (count mod B) HeldOut sequences are never evaluated, count the split's sequences and
-    /// B the batch. With --backend vulkan each HeldOut batch is evaluated on the device in its
-    /// own command buffer, one host wait per batch.
+    /// B the batch. With --backend vulkan the HeldOut batches are evaluated on the device in a
+    /// command buffer of their own, one host wait per evaluation.
     #[arg(long, value_name = "N")]
     pub eval_every: Option<u64>,
     /// Run N steps instead of the steps of the file's train block; a resumed run ends at its
     /// checkpoint's step plus N.
     #[arg(long, value_name = "N")]
     pub steps: Option<u64>,
-    /// After the last step, write the parameters, step and optimizer to the .msckpt file PATH.
+    /// Print the training clock: `train_seconds <s> eval_seconds <s> steps <n>` after the step
+    /// lines of a finished run, the training-loop time of its N updates without compilation, plan
+    /// build, held-out evaluation, the final loss, checkpoints and events, and the time of its
+    /// held-out evaluations; and ` train_seconds <s>` at the end of each `eval <k>` line, the
+    /// clock through the updates before step K. A chunked Vulkan run waits once more per
+    /// checkpoint and at the end, so that its clock leaves out the read-back and the final loss.
+    #[arg(long)]
+    pub clock: bool,
+    /// The most steps a stepwise Vulkan run records into one command buffer, instead of the
+    /// runner's choice, at most the run's steps: the lines and losses are those of any other N
+    /// (for tests).
+    #[arg(long, value_name = "N", hide = true, value_parser = clap::value_parser!(u64).range(1..))]
+    pub submit_steps: Option<u64>,
+    /// After the last step, write the parameters, step and optimizer to the .msckpt file PATH. A
+    /// file trained with adamw or muon takes it only with --steps 0 and without
+    /// --checkpoint-every: the checkpoint of the initial parameters.
     #[arg(long, value_name = "PATH")]
     pub checkpoint: Option<PathBuf>,
     /// Also write STEM-K.msckpt beside the --checkpoint file at every step K after the start that
@@ -287,7 +338,8 @@ pub struct Args {
     pub device: Option<usize>,
     /// With --backend vulkan, print the run's host waits, submits, dispatches, dispatches and
     /// barriers per step, bytes copied up and down, device allocations, peak device bytes,
-    /// numerics class and microseconds per step on stderr after it.
+    /// numerics class, microseconds per step, pipelines made and microseconds spent making them on
+    /// stderr after it.
     #[arg(long)]
     pub stats: bool,
     /// With --backend vulkan, time every dispatch with GPU timestamp queries and print one
@@ -299,8 +351,9 @@ pub struct Args {
     /// query fails, then the run's counters (dispatches, submits, host waits, barriers per step, bytes
     /// copied up and down, device allocations, peak device bytes), compile and pipeline creation
     /// time, steady-state microseconds per step and the step's total FLOP, bytes, GFLOP/s and
-    /// GB/s on stderr after it. A stepwise run (a model with dropout or AdamW, or --data or
-    /// --eval-every on Vulkan) refuses --profile on one line, exit 1.
+    /// GB/s on stderr after it. A stepwise run (a model with dropout, sigreg or AdamW, or --data,
+    /// --eval or --eval-every on Vulkan) reads each step's timestamps back after that step's host
+    /// wait and does not time its held-out or eval batches.
     #[arg(long)]
     pub profile: bool,
     /// With --backend vulkan, compile with fast_math (DESIGN.md ADR-008): the float multiplies,
@@ -309,6 +362,45 @@ pub struct Args {
     /// for bit; two runs of it on one device and driver give the same bits.
     #[arg(long)]
     pub fast_math: bool,
+    /// Compute the loss's row-local head, the vocabulary projection, its bias, the cross-entropy
+    /// and its gradient on the rows of non-zero weight only, gathered at N rows per batch
+    /// (DESIGN.md § 3.3), with the bits of the step that computes every row; for a loss
+    /// `cross_entropy(logits, labels, weights)` of declared labels and weights. A batch with more
+    /// such rows than N is refused (E-DATA-012), never truncated; 0, or N of at least the
+    /// loss's rows, trains on every row. With --backend vulkan and a packed --data directory the
+    /// gather is on without the flag, N the multiple of 64 at or above the batch's expected
+    /// selected rows plus 8 standard deviations under the binding's selection rate. Beside
+    /// --eval it is a usage error.
+    #[arg(long, value_name = "N")]
+    pub masked_rows: Option<u64>,
+}
+
+/// The capacity of the masked-row gather for a batch of `rows` rows each selected with
+/// probability `rate`: the expected count plus 8 standard deviations, rounded up to a multiple
+/// of 64 and at most `rows`; 832 for BERT-tiny's 4096 rows at BERT's 0.15.
+fn default_masked_rows(rows: u64, rate: f64) -> u64 {
+    let n = rows as f64;
+    let rate = rate.clamp(0.0, 1.0);
+    let bound = n * rate + 8.0 * (n * rate * (1.0 - rate)).sqrt();
+    let capacity = (bound.ceil() as u64).div_ceil(64).saturating_mul(64);
+    capacity.min(rows)
+}
+
+/// The rows of the loss of `compiled` when it is a `cross_entropy`: its logits' leading
+/// dimension.
+fn loss_rows(compiled: &CompiledTraining) -> Option<u64> {
+    let program = &compiled.forward.program;
+    let [loss] = program.outputs[..] else {
+        return None;
+    };
+    let node = program.node(loss)?;
+    if node.op != TensorOp::CrossEntropy {
+        return None;
+    }
+    match program.node(*node.operands.first()?)?.ty.shape[..] {
+        [Dim::Static(rows), _] => Some(rows),
+        _ => None,
+    }
 }
 
 /// The flag of `args` the backend cannot take, if one is given.
@@ -364,6 +456,18 @@ enum Failure {
     Diverged(Box<Diverged>, String),
 }
 
+/// The training clock of a finished run (the module documentation): its training-loop time
+/// and the time of its held-out evaluations.
+#[derive(Clone, Copy, Debug, Default)]
+struct Clock {
+    train: Duration,
+    eval: Duration,
+}
+
+/// The held-out metrics of an evaluated step and the training clock through the updates before
+/// it.
+type Evaluated = (HeldOutMetrics, Duration);
+
 impl From<RunError> for Failure {
     fn from(error: RunError) -> Self {
         match error {
@@ -394,6 +498,10 @@ struct Files {
     checkpoint_every: Option<u64>,
     /// The step and parameters of `--resume`, read and matched before the server binds.
     resume: Option<(u64, BTreeMap<ParamId, HostTensor<f32>>)>,
+    /// `--clock`: stdout carries the training clock.
+    clock: bool,
+    /// The hidden `--submit-steps`: the steps of one stepwise command buffer at most.
+    submit_steps: Option<u64>,
 }
 
 /// The files of a run, read before its first step.
@@ -474,7 +582,8 @@ pub enum Backend {
     Vulkan,
 }
 
-/// The artifact a Vulkan run of `source` executes, with the `fast_math` of `--fast-math`: its
+/// The artifact a Vulkan run of `source` executes, with the `fast_math` of `--fast-math` and the
+/// step gathered at `masked_rows` ([`compile::compile_artifact_with`]): its
 /// plan scheduled within the limits of the device the run selects
 /// ([`modelspec_runtime::vulkan::runner::device_profile`]), or for every Vulkan device when the
 /// loader reports no such device, whose run is then refused as it opens the device.
@@ -483,13 +592,15 @@ fn vulkan_artifact(
     file: &str,
     source: &str,
     args: &Args,
+    masked_rows: Option<u64>,
 ) -> Result<modelspec_core::artifact::CompiledArtifact, Vec<Diagnostic>> {
     let profile = modelspec_runtime::vulkan::runner::device_profile(args.device).ok();
-    let mut artifact = compile::compile_artifact_for(
+    let mut artifact = compile::compile_artifact_with(
         file,
         source,
         modelspec_core::artifact::Backend::Vulkan,
         profile.as_ref(),
+        masked_rows,
     )?;
     artifact.fast_math = args.fast_math;
     Ok(artifact)
@@ -587,7 +698,11 @@ pub fn run(args: Args, stdout: &mut dyn Write, stderr: &mut dyn Write) -> u8 {
         OptimizerRule::Muon(_) => Some(("muon", "its momentum buffers and moments")),
     };
     if let Some((optimizer, state)) = unsaved {
+        // A run of no step from step 0 holds its moments and buffers at 0: its checkpoint drops
+        // nothing.
+        let initial = compiled.config.steps == 0 && args.checkpoint_every.is_none();
         let flag = match (&args.checkpoint, &args.resume) {
+            (Some(_), None) if initial => None,
             (Some(_), _) => Some("--checkpoint"),
             (None, Some(_)) => Some("--resume"),
             (None, None) => None,
@@ -601,6 +716,93 @@ pub fn run(args: Args, stdout: &mut dyn Write, stderr: &mut dyn Write) -> u8 {
             return crate::EXIT_USAGE;
         }
     }
+    let binding = match &args.data {
+        None => None,
+        Some(dir) => match data::source(dir, &compiled.config) {
+            Ok(DataSource::Dense) => None,
+            Ok(DataSource::Packed(binding)) => Some(binding),
+            Err(error) => {
+                let _ = writeln!(stderr, "modelspec train {file}: {error}");
+                return crate::EXIT_FAILURE;
+            }
+        },
+    };
+    if let (Some(dir), Some(_), Some(_)) = (&args.data, &binding, &args.eval) {
+        let _ = writeln!(
+            stderr,
+            "error: the argument '--eval' reads dense evaluation tensors, and the '--data' \
+             directory {} is a packed MLM directory",
+            dir.display()
+        );
+        return crate::EXIT_USAGE;
+    }
+    if let (Some(dir), None, Some(_)) = (&args.data, &binding, args.eval_every) {
+        let _ = writeln!(
+            stderr,
+            "error: the argument '--eval-every' evaluates the HeldOut split of a packed MLM \
+             directory, and the '--data' directory {} holds no binding.json",
+            dir.display()
+        );
+        return crate::EXIT_USAGE;
+    }
+    // The capacity of the masked-row gather: the flag's, or on Vulkan the one a packed
+    // directory's selection rate bounds; none beside `--eval`, whose dense batches the step's
+    // loss computes.
+    let rows = loss_rows(&compiled);
+    let masked_rows = match (args.masked_rows, &binding) {
+        (Some(_), _) if args.eval.is_some() => {
+            let _ = writeln!(
+                stderr,
+                "error: the argument '--masked-rows' cannot be used with '--eval': the step's loss \
+                 computes every dense eval batch on all its rows"
+            );
+            return crate::EXIT_USAGE;
+        }
+        (Some(0), _) => None,
+        (Some(capacity), _) => {
+            if rows.is_none() {
+                let _ = writeln!(
+                    stderr,
+                    "error: the argument '--masked-rows' gathers the rows of a loss \
+                     `cross_entropy(logits, labels, weights)`, and the loss of {file} is no \
+                     cross_entropy"
+                );
+                return crate::EXIT_USAGE;
+            }
+            Some(capacity)
+        }
+        (None, Some(binding)) if args.backend == Backend::Vulkan && args.eval.is_none() => {
+            rows.map(|rows| default_masked_rows(rows, binding.masking_policy.selection_rate))
+        }
+        (None, _) => None,
+    };
+    if let Some(capacity) = masked_rows {
+        match compile::compile_training_with(&file, &source, Some(capacity)) {
+            Ok(gathered) => {
+                let gathers =
+                    modelspec_core::passes::masked_rows::site(&gathered.training.training.program)
+                        .is_some();
+                let explicit = args.masked_rows.is_some();
+                if explicit && !gathers && rows.is_some_and(|rows| capacity < rows) {
+                    let _ = writeln!(
+                        stderr,
+                        "error: the argument '--masked-rows' gathers the rows of a loss \
+                         `cross_entropy(logits, labels, weights)` whose labels and weights are \
+                         declared inputs and whose logits come from a row-local head, and the \
+                         loss of {file} is no such cross_entropy"
+                    );
+                    return crate::EXIT_USAGE;
+                }
+                compiled.training = gathered.training;
+            }
+            Err(diagnostics) => {
+                for diagnostic in &diagnostics {
+                    let _ = writeln!(stderr, "{diagnostic}");
+                }
+                return crate::EXIT_FAILURE;
+            }
+        }
+    }
     let engine = match args.backend {
         Backend::Cpu => Engine::Cpu {
             statistics_every: args.statistics_every.unwrap_or(STATISTICS_EVERY),
@@ -608,7 +810,7 @@ pub fn run(args: Args, stdout: &mut dyn Write, stderr: &mut dyn Write) -> u8 {
         #[cfg(not(feature = "vulkan"))]
         Backend::Vulkan => unreachable!("refused above in a build without the vulkan feature"),
         #[cfg(feature = "vulkan")]
-        Backend::Vulkan => match vulkan_artifact(&file, &source, &args) {
+        Backend::Vulkan => match vulkan_artifact(&file, &source, &args, masked_rows) {
             Ok(artifact) => Engine::Vulkan {
                 artifact: Box::new(artifact),
                 device: args.device,
@@ -640,35 +842,6 @@ pub fn run(args: Args, stdout: &mut dyn Write, stderr: &mut dyn Write) -> u8 {
     {
         let _ = writeln!(stderr, "modelspec train {file}: {message}");
         return crate::EXIT_FAILURE;
-    }
-    let binding = match &args.data {
-        None => None,
-        Some(dir) => match data::source(dir, &compiled.config) {
-            Ok(DataSource::Dense) => None,
-            Ok(DataSource::Packed(binding)) => Some(binding),
-            Err(error) => {
-                let _ = writeln!(stderr, "modelspec train {file}: {error}");
-                return crate::EXIT_FAILURE;
-            }
-        },
-    };
-    if let (Some(dir), Some(_), Some(_)) = (&args.data, &binding, &args.eval) {
-        let _ = writeln!(
-            stderr,
-            "error: the argument '--eval' reads dense evaluation tensors, and the '--data' \
-             directory {} is a packed MLM directory",
-            dir.display()
-        );
-        return crate::EXIT_USAGE;
-    }
-    if let (Some(dir), None, Some(_)) = (&args.data, &binding, args.eval_every) {
-        let _ = writeln!(
-            stderr,
-            "error: the argument '--eval-every' evaluates the HeldOut split of a packed MLM \
-             directory, and the '--data' directory {} holds no binding.json",
-            dir.display()
-        );
-        return crate::EXIT_USAGE;
     }
     let read_as_dense = match (&args.data, &binding) {
         (Some(dir), None) => data::read_as_dense(dir, &compiled.config),
@@ -766,6 +939,8 @@ pub fn run(args: Args, stdout: &mut dyn Write, stderr: &mut dyn Write) -> u8 {
         checkpoint: args.checkpoint,
         checkpoint_every: args.checkpoint_every,
         resume,
+        clock: args.clock,
+        submit_steps: args.submit_steps,
     };
     emit(RunEventBody::RunStarted(RunStarted {
         steps: compiled.config.steps,
@@ -863,9 +1038,10 @@ fn train(
     };
     let params = paths(compiled);
     // The held-out metrics of each evaluated step (`--eval-every`), filled as the run goes on, so
-    // a run that stops prints those of the steps before it stopped.
-    let mut evals: BTreeMap<u64, HeldOutMetrics> = BTreeMap::new();
-    let observed: Result<(Run, Option<Eval>), Failure> = 'run: {
+    // a run that stops prints those of the steps before it stopped, each with the training clock
+    // through the updates before it.
+    let mut evals: BTreeMap<u64, Evaluated> = BTreeMap::new();
+    let observed: Result<(Run, Option<Eval>, Clock), Failure> = 'run: {
         #[cfg(feature = "vulkan")]
         if let Engine::Vulkan {
             artifact,
@@ -899,15 +1075,13 @@ fn train(
                 None => Ok(()),
             };
             // A run the host feeds before each step: one command buffer and one host wait per
-            // step, each step streamed after its wait (coordinator decision D73).
+            // segment of steps, each step streamed after its segment's wait (coordinator decision
+            // D73, story:vulkan-stepwise-multi-step-submit).
             if stepwise::needed(compiled, artifact)
                 || files.data.is_some()
                 || files.eval.is_some()
                 || files.eval_every.is_some()
             {
-                if profile.is_some() {
-                    break 'run Err(Failure::Failed(stepwise::NOT_PROFILED.to_owned()));
-                }
                 let loaded = match files.load(compiled) {
                     Ok(loaded) => loaded,
                     Err(failed) => {
@@ -935,13 +1109,18 @@ fn train(
                     eval: held_out
                         .as_ref()
                         .zip(files.eval_every)
-                        .map(|(held_out, every)| stepwise::Evaluation { held_out, every }),
+                        .map(|(held_out, every)| stepwise::Evaluation {
+                            held_out,
+                            every,
+                            reduction: stepwise::HeldOutReduction::Device,
+                        }),
                     dense_eval: loaded.eval.as_ref(),
                     dense_predictions: None,
                     checkpoints: files.checkpoint_every.map(|every| Checkpoints {
                         every,
                         write: &mut write,
                     }),
+                    submit_steps: files.submit_steps,
                 };
                 // The `--eval` result, which the last step carries.
                 let mut dense_eval: Option<Eval> = None;
@@ -951,7 +1130,7 @@ fn train(
                     }
                     let metrics = match seen.held_out {
                         Some(measured) => {
-                            evals.insert(seen.step, measured);
+                            evals.insert(seen.step, (measured, seen.trained));
                             metric_samples(measured)
                         }
                         None => Vec::new(),
@@ -965,22 +1144,27 @@ fn train(
                 };
                 break 'run match stepwise::train_stepwise_on_device(
                     *device,
+                    profile.is_some(),
                     compiled,
                     artifact,
                     options,
                     &mut observe,
                 ) {
-                    Ok((run, counted)) => {
-                        let _ = write!(stderr, "{}", counters(&counted, None));
+                    Ok((run, counted, profiled)) => {
+                        let _ = write!(stderr, "{}", counters(&counted, profiled));
                         let end = run.start_step + counted.steps;
+                        let clock = Clock {
+                            train: counted.training,
+                            eval: counted.evaluation,
+                        };
                         match &files.checkpoint {
                             Some(path) => checkpoint::write(
                                 path,
                                 &Checkpoint::of_state(compiled, end, &run.state.values),
                             )
-                            .map(|()| (run, dense_eval))
+                            .map(|()| (run, dense_eval, clock))
                             .map_err(|error| RunError::from(error).into()),
-                            None => Ok((run, dense_eval)),
+                            None => Ok((run, dense_eval, clock)),
                         }
                     }
                     Err(DeviceRunError::Refused(diagnostic)) => Err(Failure::Refused(diagnostic)),
@@ -989,11 +1173,11 @@ fn train(
                         let DivergedOnDevice {
                             diverged,
                             stats: counted,
-                            profile: _,
+                            profile: profiled,
                         } = *stopped;
                         Err(Failure::Diverged(
                             Box::new(diverged),
-                            counters(&counted, None),
+                            counters(&counted, profiled),
                         ))
                     }
                     Err(DeviceRunError::Failed(VulkanRunError::Run(error))) => Err((*error).into()),
@@ -1012,6 +1196,7 @@ fn train(
                     write: &mut write,
                 }),
                 data: None,
+                clock: files.clock,
             };
             // The post-loop step; the runner refuses a run whose end is past `u64::MAX`.
             let last = files.start().saturating_add(compiled.config.steps);
@@ -1029,14 +1214,18 @@ fn train(
                     }
                     let _ = write!(stderr, "{}", counters(&counted, profiled));
                     let end = run.start_step + counted.steps;
+                    let clock = Clock {
+                        train: counted.training,
+                        eval: counted.evaluation,
+                    };
                     match &files.checkpoint {
                         Some(path) => checkpoint::write(
                             path,
                             &Checkpoint::of_state(compiled, end, &run.state.values),
                         )
-                        .map(|()| (run, None))
+                        .map(|()| (run, None, clock))
                         .map_err(|error| RunError::from(error).into()),
-                        None => Ok((run, None)),
+                        None => Ok((run, None, clock)),
                     }
                 }
                 Err(DeviceRunError::Refused(diagnostic)) => Err(Failure::Refused(diagnostic)),
@@ -1081,12 +1270,23 @@ fn train(
         };
         let start = files.start();
         let end = start.saturating_add(compiled.config.steps);
-        let after = |k: u64, state: &ParamState| match (files.checkpoint_every, files.every_path(k))
-        {
-            (Some(n), Some(path)) if k.is_multiple_of(n) && k < end => {
-                checkpoint::write(&path, &Checkpoint::of_state(compiled, k, &state.values))
-            }
-            _ => Ok(()),
+        // The training clock (the module documentation): the run's time since `started` less the
+        // time its observer and its checkpoints took, read as each update ends.
+        let started = Cell::new(Instant::now());
+        let left_out = Cell::new(Duration::ZERO);
+        let trained = Cell::new(Duration::ZERO);
+        let evaluating = Cell::new(Duration::ZERO);
+        let after = |k: u64, state: &ParamState| {
+            trained.set(started.get().elapsed().saturating_sub(left_out.get()));
+            let writing = Instant::now();
+            let written = match (files.checkpoint_every, files.every_path(k)) {
+                (Some(n), Some(path)) if k.is_multiple_of(n) && k < end => {
+                    checkpoint::write(&path, &Checkpoint::of_state(compiled, k, &state.values))
+                }
+                _ => Ok(()),
+            };
+            left_out.set(left_out.get() + writing.elapsed());
+            written
         };
         // Drawn once, before the first step, so a split too small for a batch is refused then.
         let held_out = match (files.eval_every, &loaded.data) {
@@ -1097,12 +1297,14 @@ fn train(
             _ => None,
         };
         let observe = |o: &Observed<'_>| {
+            let observing = Instant::now();
             let metrics = match (&held_out, files.eval_every) {
                 (Some(held_out), Some(n)) if o.step.is_multiple_of(n) || o.step == end => {
                     let measured = held_out
                         .evaluate_at(compiled, o.values, o.step)
                         .map_err(Box::new)?;
-                    evals.insert(o.step, measured);
+                    evaluating.set(evaluating.get() + observing.elapsed());
+                    evals.insert(o.step, (measured, trained.get()));
                     metric_samples(measured)
                 }
                 _ => Vec::new(),
@@ -1115,8 +1317,10 @@ fn train(
                 Vec::new()
             };
             step_completed(o.step, o.loss, metrics, parameters);
+            left_out.set(left_out.get() + observing.elapsed());
             Ok(())
         };
+        started.set(Instant::now());
         let run = match runner::run_checked(
             compiled,
             loaded.data.as_ref().map(TrainData::as_data),
@@ -1127,6 +1331,10 @@ fn train(
         ) {
             Ok(run) => run,
             Err(error) => break 'run Err(error.into()),
+        };
+        let clock = Clock {
+            train: trained.get(),
+            eval: evaluating.get(),
         };
         let eval = match &loaded.eval {
             None => None,
@@ -1141,9 +1349,9 @@ fn train(
                 break 'run Err(RunError::from(error).into());
             }
         }
-        Ok((run, eval))
+        Ok((run, eval, clock))
     };
-    let (run, eval) = match observed {
+    let (run, eval, clock) = match observed {
         Ok(done) => done,
         Err(Failure::Refused(diagnostic)) => {
             end();
@@ -1155,7 +1363,15 @@ fn train(
         }
         Err(Failure::Diverged(diverged, counters)) => {
             let Diverged { diagnostic, run } = *diverged;
-            let printed = report(compiled, files.binding.as_ref(), &run, &evals, None, false);
+            let printed = report(
+                compiled,
+                files.binding.as_ref(),
+                &run,
+                &evals,
+                None,
+                None,
+                files.clock,
+            );
             let _ = stdout
                 .write_all(printed.as_bytes())
                 .and_then(|()| stdout.flush());
@@ -1176,7 +1392,15 @@ fn train(
             });
         }
     };
-    let printed = report(compiled, files.binding.as_ref(), &run, &evals, eval, true);
+    let printed = report(
+        compiled,
+        files.binding.as_ref(),
+        &run,
+        &evals,
+        eval,
+        Some(clock),
+        files.clock,
+    );
     let body = printed.trim_end_matches('\n');
     let (head, last) = printed.split_at(body.rfind('\n').map_or(0, |i| i + 1));
     let written = stdout
@@ -1262,14 +1486,18 @@ fn device_parameters(
 
 /// The stdout of a run: of a finished one, or without its `param` lines of one that stopped at
 /// its last loss (E-TRAIN-001); a run on a packed directory starts with the `data` line of its
-/// `binding`. Each step of `evals` gets its `step` line and, after it, its `eval` line.
+/// `binding`. Each step of `evals` gets its `step` line and, after it, its `eval` line. A run is
+/// finished when it has its `clock`. When `clocked` (`--clock`) each `eval` line ends in the
+/// training clock through the updates before its step, and a finished run prints its clock line
+/// after its `step` and `eval` lines and before its `param` lines.
 fn report(
     compiled: &CompiledTraining,
     binding: Option<&TrainingDataBinding>,
     run: &Run,
-    evals: &BTreeMap<u64, HeldOutMetrics>,
+    evals: &BTreeMap<u64, Evaluated>,
     eval: Option<Eval>,
-    finished: bool,
+    clock: Option<Clock>,
+    clocked: bool,
 ) -> String {
     let params = paths(compiled);
     let mut out = String::new();
@@ -1301,11 +1529,24 @@ fn report(
         if k == run.start_step || k.is_multiple_of(LOSS_EVERY) || k == last || evaluated.is_some() {
             let _ = writeln!(out, "step {k} loss {loss}");
         }
-        if let Some(HeldOutMetrics { loss, accuracy }) = evaluated {
-            let _ = writeln!(out, "eval {k} loss {loss} accuracy {accuracy}");
+        if let Some((HeldOutMetrics { loss, accuracy }, trained)) = evaluated {
+            let _ = write!(out, "eval {k} loss {loss} accuracy {accuracy}");
+            if clocked {
+                let _ = write!(out, " train_seconds {:.6}", trained.as_secs_f64());
+            }
+            out.push('\n');
         }
     }
-    if finished {
+    if let Some(Clock { train, eval }) = clock {
+        if clocked {
+            let _ = writeln!(
+                out,
+                "train_seconds {:.6} eval_seconds {:.6} steps {}",
+                train.as_secs_f64(),
+                eval.as_secs_f64(),
+                last - run.start_step
+            );
+        }
         tensors(&mut out, "param", &run.state.values);
     }
     if let Some(Eval { loss, accuracy }) = eval {
@@ -1369,10 +1610,26 @@ mod fast_math_tests {
         let off = args(&[]);
         let on = args(&["--fast-math"]);
         assert_eq!(on.backend, Backend::Vulkan);
-        let off = vulkan_artifact("mnist_mlp.mspec", EXAMPLE, &off).expect("compiles");
-        let on = vulkan_artifact("mnist_mlp.mspec", EXAMPLE, &on).expect("compiles");
+        let off = vulkan_artifact("mnist_mlp.mspec", EXAMPLE, &off, None).expect("compiles");
+        let on = vulkan_artifact("mnist_mlp.mspec", EXAMPLE, &on, None).expect("compiles");
         assert!(!off.fast_math, "without --fast-math");
         assert!(on.fast_math, "with --fast-math");
         assert_eq!(off.execution, on.execution, "the same plan");
+    }
+}
+
+/// story:vulkan-mlm-masked-row-gather: the capacity a packed directory gives the gather.
+#[cfg(test)]
+mod masked_rows_tests {
+    use super::default_masked_rows;
+
+    /// BERT-tiny's 4096 rows at 0.15: 614.4 expected, 22.85 standard deviation, 797.2 bound,
+    /// 832 rounded up to 64; a small batch is bounded by its rows.
+    #[test]
+    fn the_capacity_is_eight_deviations_above_the_expected_count() {
+        assert_eq!(default_masked_rows(4096, 0.15), 832);
+        assert_eq!(default_masked_rows(32, 0.15), 32);
+        assert_eq!(default_masked_rows(4096, 0.0), 0);
+        assert_eq!(default_masked_rows(4096, 1.0), 4096);
     }
 }

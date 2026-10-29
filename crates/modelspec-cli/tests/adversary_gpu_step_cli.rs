@@ -284,6 +284,7 @@ fn adv_gpu_step_bert_tiny_schedules_the_eight_kernels() {
         " per_row AttentionGradV ",
         " loss_sum CrossEntropy ",
         " per_row CrossEntropyGrad ",
+        " per_element CrossEntropyGrad ",
         " elementwise Sqrt ",
         " elementwise Div ",
     ] {
@@ -296,12 +297,14 @@ fn adv_gpu_step_bert_tiny_schedules_the_eight_kernels() {
     }
 }
 
-/// Finding f3 (hypothesis 9): DESIGN.md § 8 says `--profile` refuses a stepwise run (one with
+/// Finding f3 (hypothesis 9): DESIGN.md § 8 said `--profile` refuses a stepwise run (one with
 /// dropout, AdamW, `--data` or `--eval-every`), but `train --help`, from which the generated CLI
-/// reference page is built, describes `--profile` without that limit. Red on the unit; fix pass
-/// 1 names the refusal in the help (coordinator decision D74).
+/// reference page is built, described `--profile` without that limit. Red on the unit; fix pass
+/// 1 named the refusal in the help (coordinator decision D74). Since
+/// story:bert-tiny-vs-pytorch-cuda a stepwise run is profiled, one query pool per step's command
+/// buffer, and the help names the stepwise run's profile instead.
 #[test]
-fn adv_gpu_step_f3_help_names_the_stepwise_profile_refusal() {
+fn adv_gpu_step_f3_help_names_the_stepwise_profile() {
     let output = modelspec(&["train", "--help"]);
     assert_exit(&output, 0);
     let help = text(&output.stdout);
@@ -314,22 +317,56 @@ fn adv_gpu_step_f3_help_names_the_stepwise_profile_refusal() {
         .unwrap_or_default()
         .to_owned();
     assert!(
-        paragraph.contains("dropout") || paragraph.contains("stepwise"),
-        "the --profile help names no refusal:\n{paragraph}"
+        paragraph.contains("stepwise") && !paragraph.contains("refuses"),
+        "the --profile help names no stepwise profile:\n{paragraph}"
     );
 }
 
-/// Hypothesis 9: on a stepwise run `--profile` is one line on stderr, exit 1, nothing on stdout,
-/// and `--stats` prints its twelve counters, `host waits` one per step plus one.
+/// Hypothesis 9: on a stepwise run `--profile` prints the profile of every step's command buffer
+/// on stderr, exit 0, the unprofiled run's stdout (story:bert-tiny-vs-pytorch-cuda,
+/// which replaced the one-line refusal): each `step` site called once per step, each `final` site
+/// once, one host wait per segment of at most `SUBMIT_STEPS` steps and one for the final loss
+/// (story:vulkan-stepwise-multi-step-submit: 30 steps are 4 segments, 5 waits, where one per
+/// step and one more were 31), and `step_total` with no uncounted site; and `--stats` prints its
+/// twelve counters, `host waits` as many.
 #[test]
 #[ignore = "needs a Vulkan device"]
-fn adv_gpu_step_device_profile_refusal_and_stats_on_a_stepwise_run() {
+fn adv_gpu_step_device_profile_and_stats_on_a_stepwise_run() {
     let output = modelspec(&["train", DROPOUT, "--backend", "vulkan", "--profile"]);
-    assert_exit(&output, 1);
-    assert!(output.stdout.is_empty(), "{}", text(&output.stdout));
+    assert_exit(&output, 0);
+    let plain = modelspec(&["train", DROPOUT, "--backend", "vulkan"]);
+    assert_exit(&plain, 0);
+    assert_eq!(text(&output.stdout), text(&plain.stdout));
     let stderr = text(&output.stderr);
-    assert_eq!(stderr.lines().count(), 1, "{stderr}");
-    assert!(stderr.contains("--profile"), "{stderr}");
+    let dispatches: Vec<&str> = stderr
+        .lines()
+        .filter(|line| line.starts_with("profile dispatch "))
+        .collect();
+    assert!(
+        dispatches
+            .iter()
+            .any(|line| line.starts_with("profile dispatch step ")),
+        "{stderr}"
+    );
+    for line in &dispatches {
+        let calls = if line.starts_with("profile dispatch step ") {
+            " calls 30 "
+        } else {
+            " calls 1 "
+        };
+        assert!(line.contains(calls), "{line}");
+    }
+    assert!(stderr.contains("profile host_waits 5\n"), "{stderr}");
+    assert!(
+        stderr.contains("profile steady_us_per_step ")
+            && !stderr.contains("profile steady_us_per_step unavailable"),
+        "30 steps are past the 20-step warm-up:\n{stderr}"
+    );
+    let total = stderr.lines().last().expect("a step_total line").to_owned();
+    assert!(
+        total.starts_with("profile step_total flop ") && total.ends_with(" uncounted_sites 0"),
+        "{stderr}"
+    );
 
     let output = modelspec(&["train", DROPOUT, "--backend", "vulkan", "--stats"]);
     assert_exit(&output, 0);
@@ -356,13 +393,56 @@ fn adv_gpu_step_device_profile_refusal_and_stats_on_a_stepwise_run() {
         );
     }
     assert!(stderr.contains("steps: 30\n"), "{stderr}");
-    assert!(stderr.contains("host waits: 31\n"), "{stderr}");
+    assert!(stderr.contains("host waits: 5\n"), "{stderr}");
 }
 
-/// Hypothesis 5: the SGD dropout fixture on Vulkan prints the CPU's stdout byte for byte, a
-/// resume on Vulkan from a CPU checkpoint at step 10 prints the CPU resume's stdout, and a
-/// diverging learning rate gives the CPU's status, stdout and stderr. The unit claims the first
-/// in its report and has no test for it.
+/// A `step <k> loss <v> …` or `eval <k> loss <v> …` line split at its loss: the text before it,
+/// the value, and the text after it.
+fn loss_line(line: &str) -> Option<(&str, f32, &str)> {
+    let (head, tail) = line.split_once(" loss ")?;
+    if !(head.starts_with("step ") || head.starts_with("eval ")) {
+        return None;
+    }
+    let (value, rest) = tail.split_once(' ').unwrap_or((tail, ""));
+    Some((head, value.parse().ok()?, rest))
+}
+
+/// The stdout of a Vulkan run against the CPU's (coordinator decision D88): the same lines, each
+/// finite loss within the run tolerance `GPU_RUN_ATOL + GPU_RUN_RTOL·|c|` of DESIGN.md § 9, every
+/// non-finite one, every other line and the rest of a loss line byte for byte.
+fn assert_stdout_as_the_cpu(gpu: &str, cpu: &str, label: &str) {
+    let g: Vec<&str> = gpu.lines().collect();
+    let c: Vec<&str> = cpu.lines().collect();
+    assert_eq!(g.len(), c.len(), "{label}: lines\n{gpu}\n---\n{cpu}");
+    let mut losses = 0;
+    for (g_line, c_line) in g.iter().zip(&c) {
+        match (loss_line(g_line), loss_line(c_line)) {
+            (Some((g_head, g_loss, g_rest)), Some((c_head, c_loss, c_rest))) => {
+                assert_eq!((g_head, g_rest), (c_head, c_rest), "{label}");
+                if !c_loss.is_finite() {
+                    assert_eq!(g_line, c_line, "{label}: a non-finite loss");
+                    continue;
+                }
+                assert!(
+                    within(g_loss, c_loss, c_loss.abs(), GPU_RUN_ATOL, GPU_RUN_RTOL),
+                    "{label}: `{g_line}` against the CPU's `{c_line}`"
+                );
+                losses += 1;
+            }
+            _ => assert_eq!(g_line, c_line, "{label}"),
+        }
+    }
+    assert!(losses > 0, "{label}: no loss line in\n{cpu}");
+}
+
+/// Hypothesis 5: the SGD dropout fixture on Vulkan prints the CPU's stdout, a resume on Vulkan
+/// from a CPU checkpoint at step 10 prints the CPU resume's stdout, and a diverging learning rate
+/// gives the CPU's status, stdout and stderr. The unit claims the first in its report and has no
+/// test for it. Since story:bert-tiny-vs-pytorch-cuda (coordinator decision D88) every finite
+/// loss is compared within the run tolerance of DESIGN.md § 9 and every other stdout line byte
+/// for byte: release 0.21.0 sums the CPU's whole-tensor reductions in `f64` (D84), which moved
+/// the CPU's step-0 loss by one ULP (`2.426727` against the Vulkan run's `2.4267268` on the RTX
+/// 3090).
 #[test]
 #[ignore = "needs a Vulkan device"]
 fn adv_gpu_step_device_dropout_sgd_matches_the_cpu_run_resume_and_divergence() {
@@ -371,10 +451,10 @@ fn adv_gpu_step_device_dropout_sgd_matches_the_cpu_run_resume_and_divergence() {
     assert_exit(&cpu, 0);
     let gpu = modelspec(&["train", DROPOUT, "--backend", "vulkan"]);
     assert_exit(&gpu, 0);
-    assert_eq!(
-        text(&gpu.stdout),
-        text(&cpu.stdout),
-        "a 30-step dropout run"
+    assert_stdout_as_the_cpu(
+        &text(&gpu.stdout),
+        &text(&cpu.stdout),
+        "a 30-step dropout run",
     );
 
     let checkpoint = case.join("cpu10.msckpt");
@@ -408,10 +488,10 @@ fn adv_gpu_step_device_dropout_sgd_matches_the_cpu_run_resume_and_divergence() {
         .collect();
     assert_exit(&resumed[0], 0);
     assert_exit(&resumed[1], 0);
-    assert_eq!(
-        text(&resumed[1].stdout),
-        text(&resumed[0].stdout),
-        "a resumed dropout run"
+    assert_stdout_as_the_cpu(
+        &text(&resumed[1].stdout),
+        &text(&resumed[0].stdout),
+        "a resumed dropout run",
     );
 
     let diverging = variant(
@@ -424,7 +504,11 @@ fn adv_gpu_step_device_dropout_sgd_matches_the_cpu_run_resume_and_divergence() {
     let gpu = modelspec(&["train", &diverging, "--backend", "vulkan"]);
     assert_exit(&cpu, 1);
     assert_eq!(gpu.status.code(), cpu.status.code());
-    assert_eq!(text(&gpu.stdout), text(&cpu.stdout));
+    assert_stdout_as_the_cpu(
+        &text(&gpu.stdout),
+        &text(&cpu.stdout),
+        "a diverging dropout run",
+    );
     assert_eq!(text(&gpu.stderr), text(&cpu.stderr));
 }
 

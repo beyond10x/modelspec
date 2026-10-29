@@ -1,6 +1,8 @@
 //! Adversary pass 1 on story:vulkan-eval-download-per-batch (coordinator decision D76): the
 //! held-out reduction fed one batch at a time (`HeldOut::tallying`) and the stepwise Vulkan run
-//! that feeds it, one command buffer and one host wait per `HeldOut` batch.
+//! that feeds it, one command buffer and one host wait per `HeldOut` batch. The stepwise runs
+//! ask for that reduction by name (`HeldOutReduction::Host`), since the default reduces on the
+//! device (story:vulkan-eval-metrics-on-device, `tests/vulkan_heldout_metrics.rs`).
 //!
 //! The cases without a device hold `Tallying` to the bits of `HeldOut::evaluate`, batch by batch
 //! in batch order, and to its refusals: a partial evaluation, a batch past the last and logits
@@ -308,7 +310,7 @@ mod device {
     use modelspec_runtime::vulkan::negotiate::{Negotiated, negotiate};
     use modelspec_runtime::vulkan::runner::RunStats;
     use modelspec_runtime::vulkan::stepwise::{
-        Evaluation, StepSeen, StepwiseOptions, train_stepwise,
+        Evaluation, HeldOutReduction, StepSeen, StepwiseOptions, train_stepwise,
     };
     use modelspec_runtime::vulkan::{Device, VALIDATION_ENV, Vulkan};
 
@@ -397,7 +399,11 @@ mod device {
         let mut seen = Vec::new();
         let options = StepwiseOptions {
             data: Some(Data::Packed(data)),
-            eval: eval.map(|(held_out, every)| Evaluation { held_out, every }),
+            eval: eval.map(|(held_out, every)| Evaluation {
+                held_out,
+                every,
+                reduction: HeldOutReduction::Host,
+            }),
             ..StepwiseOptions::default()
         };
         let (run, stats) = train_stepwise(
@@ -531,7 +537,9 @@ mod device {
         assert!(wrong.is_empty(), "{wrong:#?}");
         assert_eq!(stats.host_waits, 4 + evaluations * batches, "{stats}");
         assert_eq!(stats.submits, 4 + evaluations * batches, "{stats}");
-        assert_eq!(plain_stats.host_waits, 4, "{plain_stats}");
+        // Without evaluation the steps 0 to 2 are one segment and the last step another
+        // (story:vulkan-stepwise-multi-step-submit).
+        assert_eq!(plain_stats.host_waits, 2, "{plain_stats}");
         assert_eq!(
             stats.bytes_downloaded - plain_stats.bytes_downloaded,
             evaluations * batches * prediction,
@@ -622,6 +630,7 @@ mod device {
         assert_eq!(loss_bits(&first), loss_bits(&second));
         assert_eq!(loss_bits(&first), loss_bits(&plain), "training losses");
         assert_eq!(param_bits(&first), param_bits(&plain), "final parameters");
-        assert_eq!(first_stats.host_waits, 5 + 3 * 4, "{first_stats}");
+        // The segments 0 to 1, 2 to 3 and 4, and 4 batches at each of 3 evaluations.
+        assert_eq!(first_stats.host_waits, 3 + 3 * 4, "{first_stats}");
     }
 }

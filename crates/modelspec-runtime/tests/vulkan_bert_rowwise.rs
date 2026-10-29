@@ -3,7 +3,9 @@
 //! `GPU_ATOL + GPU_RTOL * |c|` of the CPU interpreter's `c` (`tests/common/mod.rs`), on shapes
 //! whose edges do not fill a workgroup and reductions of at most 512 terms, with the guard words
 //! after the output unchanged. The dropout masks are the CPU's bit for bit for three seeds and
-//! two steps, and the embedding gradient of repeated ids gives the same bits in two runs.
+//! two steps, the embedding gradient of repeated ids gives the same bits in two runs, and the
+//! scheduled sort and gradient of `EmbeddingGrad` over repeated, absent and boundary ids of a
+//! word table of BERT-tiny's shape give the CPU's bits.
 //!
 //! Ignored by default: they create a Vulkan instance, which `task ci` never does. Run them with
 //! `MODELSPEC_VK_VALIDATION=1 cargo test -p modelspec-runtime --features vulkan --test vulkan_bert_rowwise -- --ignored`.
@@ -12,14 +14,16 @@
 #[allow(dead_code)]
 mod common;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use common::{Draw, GPU_ATOL, GPU_RTOL, GUARD_WORDS, guard, guarded, run_within, within};
 use modelspec_core::artifact::Backend;
-use modelspec_core::compile::{compile_artifact_for, compile_training};
+use modelspec_core::compile::{compile_artifact, compile_artifact_for, compile_training};
 use modelspec_core::ir::kernel::{Kernel, Operand};
 use modelspec_core::ir::tensor::{Dim, TensorOp, TensorProgramBuilder, TensorType, ValueId};
-use modelspec_core::schedule::rowwise_kernel;
+use modelspec_core::schedule::{
+    embedding_grad_kernels, layer_norm_grad_gamma_kernels, rowwise_kernel,
+};
 use modelspec_runtime::cpu::interpreter::evaluate_seeded;
 use modelspec_runtime::cpu::tensor::HostTensor;
 use modelspec_runtime::spirv::emit::emit;
@@ -240,36 +244,59 @@ fn cpu(case: &Case) -> Vec<f32> {
         .to_vec()
 }
 
-/// The kernel of `case`, as the schedule builds it.
-fn kernel_of(case: &Case) -> Kernel {
+/// The kernels of `case`, as the schedule builds them: one for every op but `EmbeddingGrad`,
+/// which is a sort and a gradient, and `LayerNormGradGamma`, which is the row moments and the
+/// column sum.
+fn kernels_of(case: &Case) -> Vec<Kernel> {
     let operands = case
         .operands
         .iter()
         .map(|(_, ty, _)| Operand::Buffer(ty.clone()))
         .collect();
-    rowwise_kernel(&case.op, operands, case.result.clone())
-        .unwrap_or_else(|| panic!("{} has a row-wise kernel", case.op.name()))
+    if matches!(case.op, TensorOp::EmbeddingGrad { .. }) {
+        let kernels = embedding_grad_kernels(operands, case.result.clone());
+        return Vec::from(kernels.expect("EmbeddingGrad has its two kernels"));
+    }
+    if case.op == TensorOp::LayerNormGradGamma {
+        let kernels = layer_norm_grad_gamma_kernels(operands, case.result.clone());
+        return Vec::from(kernels.expect("LayerNormGradGamma has its two kernels"));
+    }
+    vec![
+        rowwise_kernel(&case.op, operands, case.result.clone())
+            .unwrap_or_else(|| panic!("{} has a row-wise kernel", case.op.name())),
+    ]
 }
 
 fn bytes_of(words: usize) -> u64 {
     (words * 4) as u64
 }
 
-/// Runs the kernel of `case` once on `device`: uploads its operands and the guarded output,
-/// dispatches, reads back, in one command buffer with one host wait. Returns the output with
-/// its guard words.
+/// Runs the kernels of `case` once on `device` ([`run`]).
 fn gpu(device: &Device<'_>, case: &Case) -> Vec<f32> {
-    let kernel = kernel_of(case);
-    let words = emit(&kernel).expect("the kernel emits");
-    let pipeline = if matches!(
-        case.op,
-        TensorOp::Dropout { .. } | TensorOp::DropoutGrad { .. }
-    ) {
-        device.kernel_pipeline_seeded(&kernel, &words, case.seed)
-    } else {
-        device.kernel_pipeline(&kernel, &words)
-    }
-    .expect("the pipeline is created");
+    run(device, case, &kernels_of(case))
+}
+
+/// Runs `kernels` over the operands of `case` once on `device`: uploads its operands and the
+/// guarded output, dispatches, reads back, in one command buffer with one host wait. Returns the
+/// output with its guard words. Two kernels run as the step plan runs a two-stage work: stage 1
+/// reads the first operands and writes an intermediate buffer, and after a barrier stage 2 reads
+/// it, then the last operands its kernel names.
+fn run(device: &Device<'_>, case: &Case, kernels: &[Kernel]) -> Vec<f32> {
+    let pipelines: Vec<_> = kernels
+        .iter()
+        .map(|kernel| {
+            let words = emit(kernel).expect("the kernel emits");
+            if matches!(
+                case.op,
+                TensorOp::Dropout { .. } | TensorOp::DropoutGrad { .. }
+            ) {
+                device.kernel_pipeline_seeded(kernel, &words, case.seed)
+            } else {
+                device.kernel_pipeline(kernel, &words)
+            }
+            .expect("the pipeline is created")
+        })
+        .collect();
     let result: u64 = shape_of(&case.result).iter().product();
     let mut uploads: Vec<Data> = case.operands.iter().map(|(_, _, d)| d.clone()).collect();
     uploads.push(Data::F32(guarded(&vec![
@@ -303,15 +330,55 @@ fn gpu(device: &Device<'_>, case: &Case) -> Vec<f32> {
         })
         .collect();
     let output = buffers.len() - 1;
-    let bound: Vec<&Buffer<'_>> = buffers.iter().collect();
+    let buffer_operands = |kernel: &Kernel| {
+        kernel
+            .operands
+            .iter()
+            .filter(|o| matches!(o, Operand::Buffer(_)))
+            .count()
+    };
+    let between = match kernels {
+        [_] => None,
+        [first, _] => {
+            let n: u64 = shape_of(&first.result).iter().product();
+            Some(
+                device
+                    .device_local_buffer(bytes_of(n as usize))
+                    .expect("a buffer"),
+            )
+        }
+        _ => panic!("one kernel or two stages"),
+    };
     let mut recording = device.record().expect("a recording starts");
     for (from, to) in staging.iter().zip(&buffers) {
         recording.copy(from, to).expect("the upload is recorded");
     }
     recording.barrier(Barrier::TransferToCompute);
-    recording
-        .dispatch_kernel(&pipeline, &kernel, &bound)
-        .expect("the dispatch is recorded");
+    match (kernels, &between) {
+        ([kernel], None) => {
+            let bound: Vec<&Buffer<'_>> = buffers.iter().collect();
+            recording
+                .dispatch_kernel(&pipelines[0], kernel, &bound)
+                .expect("the dispatch is recorded");
+        }
+        ([first, second], Some(between)) => {
+            let reads = buffer_operands(first);
+            let bound: Vec<&Buffer<'_>> = buffers[..reads].iter().chain([between]).collect();
+            recording
+                .dispatch_kernel(&pipelines[0], first, &bound)
+                .expect("stage 1 is recorded");
+            recording.barrier(Barrier::ComputeToCompute);
+            let rest = buffer_operands(second) - 1;
+            let bound: Vec<&Buffer<'_>> = [between]
+                .into_iter()
+                .chain(&buffers[output - rest..])
+                .collect();
+            recording
+                .dispatch_kernel(&pipelines[1], second, &bound)
+                .expect("stage 2 is recorded");
+        }
+        _ => unreachable!("an intermediate buffer exactly for two stages"),
+    }
     recording.barrier(Barrier::ComputeToTransfer);
     recording
         .copy(&buffers[output], &staging[output])
@@ -363,7 +430,7 @@ fn vulkan_rowwise_kernels_match_the_cpu_interpreter_within_tolerance_with_guard_
     for (n, h, v) in SHAPES {
         for case in cases(n, h, v, &mut draw) {
             let name = case.op.name().to_owned();
-            let kernel = kernel_of(&case);
+            let kernel = kernels_of(&case).pop().expect("a kernel writes the result");
             let expected = cpu(&case);
             let got = gpu(&device, &case);
             let at = match observed.iter().position(|(op, _)| *op == name) {
@@ -561,6 +628,144 @@ fn vulkan_embedding_grad_of_repeated_ids_gives_the_same_bits_in_two_runs() {
     let messages = vulkan.take_validation_messages();
     eprintln!("vulkan embedding_grad: {n} ids into {v} rows of {h}, two runs bit-equal");
     assert!(messages.is_empty(), "{messages:#?}");
+}
+
+/// A word table of BERT-tiny's shape, 8,192 rows of 128, and a batch of 4,096 ids.
+const WORDS: &str = "model Words {
+    param table: Tensor<f32, [8192, 128]> = xavier_uniform();
+
+    fn forward(ids: Tensor<i32, [4096]>) -> Tensor<f32, [4096, 128]> {
+        return embedding(table, ids);
+    }
+}
+
+train Fit {
+    model = Words;
+    input ids: Tensor<i32, [4096]>;
+    target y: Tensor<f32, [4096, 128]>;
+    loss = mse(model.forward(ids), y);
+    optimizer = sgd(lr = 0.1);
+    steps = 1;
+    seed = 7;
+    device = cpu;
+}
+";
+
+/// `n` ids into a `v`-row table with repeated, absent and boundary ids: every 16th position
+/// holds id 0, every 16th from 5 the last id `v - 1` and every 16th from 9 id `v / 2`; position
+/// 1 holds `v / 2 + 1` and position `n - 1` holds `v - 2`, each once; the rest cycle through
+/// ids 1 to 97 in a descending order, so equal ids sit at positions far apart and ids fall as
+/// positions rise. Every other row is absent.
+fn boundary_ids(n: u64, v: u64) -> Vec<i32> {
+    (0..n)
+        .map(|i| {
+            let id = match (i, i % 16) {
+                (1, _) => v / 2 + 1,
+                (i, _) if i == n - 1 => v - 2,
+                (_, 0) => 0,
+                (_, 5) => v - 1,
+                (_, 9) => v / 2,
+                _ => 1 + ((n - i) * 37) % 97,
+            };
+            id as i32
+        })
+        .collect()
+}
+
+/// story:vulkan-embedding-grad-sorted-ids: the step plan computes `EmbeddingGrad` of BERT-tiny's
+/// word table as two kernels, a sort of the batch's ids by id and position (`per_row`, into
+/// `i32[4096, 2]`) and the gradient over the sorted ids (`per_element`), and their result over
+/// repeated, absent and boundary ids (0 and 8,191) is the CPU interpreter's bit for bit, every
+/// absent row `+0.0`, with the guard words after it unchanged.
+#[test]
+#[ignore = "needs a Vulkan device"]
+fn vulkan_embedding_grad_sorts_the_ids_and_gives_the_cpu_bits_on_repeated_absent_and_boundary_ids()
+{
+    let (n, h, v) = (4096_u64, 128_u64, 8192_u64);
+    let artifact = compile_artifact("words.mspec", WORDS, Backend::Vulkan)
+        .unwrap_or_else(|errors| panic!("the word table compiles for Vulkan: {errors:#?}"));
+    let kernels: Vec<Kernel> = artifact
+        .execution
+        .kernels
+        .iter()
+        .filter(|k| k.op == "EmbeddingGrad")
+        .cloned()
+        .collect();
+    let vulkan = open();
+    let candidates = vulkan.candidates().expect("the devices are probed");
+    let negotiated = negotiate(&candidates[0].profile).expect("device 0 negotiates");
+    let device = vulkan
+        .create_device(0, &negotiated)
+        .expect("device 0 opens");
+    let ids = boundary_ids(n, v);
+    let mut draw = Draw::new(0x736f_7274_6564_2121);
+    let case = Case {
+        op: TensorOp::EmbeddingGrad {
+            rows: Dim::Static(v),
+        },
+        operands: vec![
+            (
+                "ids".to_owned(),
+                TensorType::i32(&[n]),
+                Data::I32(ids.clone()),
+            ),
+            (
+                "g".to_owned(),
+                TensorType::f32(&[n, h]),
+                Data::F32(draw.values(n * h)),
+            ),
+        ],
+        result: TensorType::f32(&[v, h]),
+        seed: 0,
+    };
+    let got = run(&device, &case, &kernels);
+    let want = cpu(&case);
+    let count = (v * h) as usize;
+    let differ: Vec<usize> = (0..count)
+        .filter(|&i| got[i].to_bits() != want[i].to_bits())
+        .collect();
+    let present: BTreeSet<i32> = ids.iter().copied().collect();
+    let absent = (0..v as i32).filter(|id| !present.contains(id)).count();
+    let absent_zero = (0..v as usize)
+        .filter(|&r| !present.contains(&(r as i32)))
+        .all(|r| {
+            got[r * h as usize..(r + 1) * h as usize]
+                .iter()
+                .all(|x| x.to_bits() == 0)
+        });
+    let guards = (0..GUARD_WORDS).all(|i| got[count + i].to_bits() == guard(i));
+    let messages = vulkan.take_validation_messages();
+    let kinds: Vec<String> = kernels.iter().map(|k| k.kind.to_string()).collect();
+    eprintln!(
+        "vulkan embedding_grad: {n} ids, {} distinct, {absent} absent rows of {v}, kernels {kinds:?}, \
+         {} elements differ",
+        present.len(),
+        differ.len()
+    );
+    assert!(
+        differ.is_empty(),
+        "{} elements differ, first at {:?}",
+        differ.len(),
+        differ
+            .iter()
+            .take(4)
+            .map(|&i| (i / h as usize, i % h as usize, got[i], want[i]))
+            .collect::<Vec<_>>()
+    );
+    assert!(absent_zero, "every absent row is +0.0");
+    assert!(guards, "the guard words are unchanged");
+    assert!(messages.is_empty(), "{messages:#?}");
+    assert!(present.contains(&0) && present.contains(&(v as i32 - 1)));
+    assert_eq!(
+        kinds,
+        ["per_row", "per_element"],
+        "the sort, then the gradient over the sorted ids"
+    );
+    assert_eq!(kernels[0].result, TensorType::i32(&[n, 2]));
+    assert_eq!(
+        kernels[1].operands[0],
+        Operand::Buffer(TensorType::i32(&[n, 2]))
+    );
 }
 
 /// A model of matmul, `add_rows` and `gelu` trains on the device: `dense_gelu_train.mspec`,

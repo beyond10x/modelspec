@@ -112,8 +112,11 @@ pub mod codes {
         /// `add`, `sub`, `mul` or `mse` operands of different shapes, neither of them rank 0, an
         /// `add_rows(x, b)` whose `b` is not as long as a row of `x`, a
         /// `layer_norm(x, gamma, beta)` whose `gamma` or `beta` is not as long as a row of `x`,
-        /// an `attention(q, k, v, key_mask, heads = A)` whose `k` or `v` differs from `q` in shape
-        /// or whose `key_mask` of shape `[B, S]` has `B * S` other than the rows of `q`, or a
+        /// an `attention(q, k, v, key_mask, heads = A)` whose `k` differs from `q` in width, whose
+        /// `v` differs from `k` in shape, or whose `key_mask` of shape `[B, S]` has `B * S` other
+        /// than the rows of `k` or a `B` that does not divide the rows of `q` into at most `S`, or whose
+        /// `i32` spans operand of shape `[U, 2]` has `U` of 0 or a `q` of other than the rows of `k`
+        /// or `U` rows, or a
         /// `cross_entropy(logits, labels, weights)` whose `labels` or `weights` is not as long as
         /// the rows of `logits`.
         SHAPE_MISMATCH = "E-TYPE-003";
@@ -159,7 +162,9 @@ pub mod codes {
         /// An `i32` tensor used other than as the ids of `embedding` or the labels of
         /// `cross_entropy`: an operand of any other operator, the table of `embedding`, the
         /// `logits` or `weights` of `cross_entropy`, an `f32` where those ids or labels go, a
-        /// `param` of type `i32`, or a function declared to return `i32` (DESIGN.md § 2.2). The
+        /// `param` of type `i32`, or a function declared to return `i32` (DESIGN.md § 2.2). An
+        /// `i32` fourth operand of `attention` is its key spans only at rank 2 and width 2
+        /// (`[U, 2]`); of any other shape it is a key mask of the wrong element type. The
         /// RNG token of `dropout`, the third use of `i32`, is supplied by the compiler, never by
         /// a source value.
         DTYPE = "E-TYPE-018";
@@ -1702,8 +1707,10 @@ fn op_diagnostic(
             } else if name == "add_rows" {
                 "`add_rows(x, b)` needs `b` of shape [H] for `x` of shape [N, H]".to_owned()
             } else if name == "attention" {
-                "`attention(q, k, v, key_mask, heads = A)` needs `q`, `k` and `v` of one shape \
-                 [N, H] and `key_mask` of shape [B, S] with B * S = N"
+                "`attention(q, k, v, key_mask, heads = A)` needs `k` and `v` of one shape \
+                 [B * S, H], `key_mask` of shape [B, S] and `q` of shape [B * L, H] with \
+                 1 <= L <= S, or an `i32` spans operand of shape [U, 2] with `q` of the rows of `k` \
+                 or of U rows"
                     .to_owned()
             } else if name == "cross_entropy" {
                 let rule = "`cross_entropy(logits, labels, weights)` needs `labels` and `weights` \
@@ -1798,8 +1805,8 @@ fn op_diagnostic(
         )
         .with("got", got.to_string())
         .note(
-            "`i32` tensors are row ids or class labels; only `embedding` and `cross_entropy` read \
-             them, each as its second operand",
+            "`i32` tensors are row ids, class labels or key spans: `embedding` and `cross_entropy` read \
+             them as their second operand, `attention` as its fourth, of shape [U, 2]",
         ),
         error @ (OpError::DTypeMismatch { .. }
         | OpError::MissingDeclaredType { .. }

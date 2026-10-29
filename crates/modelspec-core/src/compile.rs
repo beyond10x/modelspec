@@ -19,7 +19,7 @@ use crate::ir::tensor::{TensorOp, TensorProgram, TensorType, ValueId};
 use crate::ir::training::{OptimizerRule, TrainConfig, TrainingStep, attach};
 use crate::ir::verify::{verify, verify_plan_for, verify_step};
 use crate::lower::{self, LoweredProgram};
-use crate::passes::{dce, stop_gradient};
+use crate::passes::{dce, masked_rows, stop_gradient};
 use crate::resolve::OPERATORS;
 use crate::schedule::{self, ScheduleError};
 
@@ -45,7 +45,11 @@ pub mod codes {
     /// `attention` over more than 512 keys per sequence, or the optimizer `muon`, whose
     /// step runs on the CPU interpreter only and is reported at the `train` block; and, refused by
     /// `infer --backend vulkan` rather than the schedule, `dropout`, whose inference runs the
-    /// step plan with its dropouts (DESIGN.md § 8.1). The file checks; use `--backend cpu`.
+    /// step plan with its dropouts (DESIGN.md § 8.1); and, refused by `train --backend vulkan`
+    /// and `infer --backend vulkan` once the dense data is read and before the first step or
+    /// block, an `attention` over `i32` spans whose `--data`, `--eval` or function data holds a
+    /// span longer than 512 keys, which the CPU interpreter reads whole (DESIGN.md § 5.2). The
+    /// file checks; use `--backend cpu`.
     pub const NO_KERNEL: Code = Code::new("E-TARGET-011");
 }
 
@@ -75,10 +79,33 @@ pub struct CompiledTraining {
 /// `adamw` or `muon`, and [`verify_step`]. The step keeps every dropout; the forward program is
 /// the same Tensor IR with each dropout the identity and no `StopGradient`, verified.
 pub fn compile_training(path: &str, source: &str) -> Result<CompiledTraining, Vec<Diagnostic>> {
+    compile_training_with(path, source, None)
+}
+
+/// [`compile_training`] whose step, with `masked_rows` a capacity, computes its weighted
+/// `cross_entropy` loss on that many gathered rows ([`masked_rows::gather`], DESIGN.md § 3.3):
+/// the step reads the inputs of [`masked_rows::site`], which the host fills at every step. The
+/// forward program is [`compile_training`]'s. A model whose loss has no such site, or a
+/// capacity of at least its row count, gives [`compile_training`]'s step.
+pub fn compile_training_with(
+    path: &str,
+    source: &str,
+    masked_rows: Option<u64>,
+) -> Result<CompiledTraining, Vec<Diagnostic>> {
     let hir = compile_hir(path, source)?;
     let config = TrainConfig::from_hir(&hir.train);
     let lowered = tensor_stage(&hir, dce::eliminate)?;
-    let training = training_stage(&lowered.program, config.lr, hir.train.optimizer)?;
+    let differentiated = match masked_rows {
+        Some(capacity) => masked_rows::gather(lowered.program.clone(), capacity),
+        None => lowered.program.clone(),
+    };
+    if let Err(error) = verify(&differentiated) {
+        return Err(vec![compiler_bug(
+            "the Tensor IR with the masked-row gather does not verify",
+            &error,
+        )]);
+    }
+    let training = training_stage(&differentiated, config.lr, hir.train.optimizer)?;
     let tensor = lowered.clone();
     let forward = without_stop_gradient(lower::without_dropout(lowered));
     if let Err(error) = verify(&forward.program) {
@@ -122,7 +149,18 @@ pub fn compile_artifact_for(
     backend: Backend,
     profile: Option<&DeviceProfile>,
 ) -> Result<CompiledArtifact, Vec<Diagnostic>> {
-    let compiled = compile_training(path, source)?;
+    compile_artifact_with(path, source, backend, profile, None)
+}
+
+/// [`compile_artifact_for`] of [`compile_training_with`] at `masked_rows`.
+pub fn compile_artifact_with(
+    path: &str,
+    source: &str,
+    backend: Backend,
+    profile: Option<&DeviceProfile>,
+    masked_rows: Option<u64>,
+) -> Result<CompiledArtifact, Vec<Diagnostic>> {
+    let compiled = compile_training_with(path, source, masked_rows)?;
     artifact_of(&compiled, source, backend, profile)
 }
 
