@@ -53,17 +53,17 @@ train Fit {
 ## What works today
 
 ModelSpec is in milestone M1 (GPU execution), and its current goal is a small BERT pre-trained
-from scratch; the latest release is [0.23.0](https://github.com/beyond10x/modelspec/releases/tag/0.23.0).
+from scratch; the latest release is [0.24.0](https://github.com/beyond10x/modelspec/releases/tag/0.24.0).
 BERT-tiny pre-trained on one RTX 3090 for 10,000 steps reached a held-out loss of 6.7674994 nats,
 0.159 below the unigram baseline of 6.9265379 ([the run record](./runs/bert-tiny-gpu-pretraining.md)).
 
-| Works in 0.23.0 | Not built yet |
+| Works in 0.24.0 | Not built yet |
 |---|---|
 | `modelspec check`: parse and check names, types and shapes | `bench` |
 | `modelspec ir --stage tensor`, `--stage training` and `--stage kernel`: print the verified IR and the kernel plan | more than one device |
 | `modelspec train --backend cpu`: train on the CPU reference with seeded synthetic data or dense `f32` and `i32` tensor files (`--data`) | modules, layers, generics and `f16` |
 | `modelspec train --backend vulkan [--stats] [--profile]`: train on one Vulkan device with one host wait per run | |
-| `modelspec train --backend vulkan --data <packed-dir> [--eval-every <n>]`: train the hidden-32 BERT twin with dropout and AdamW on one Vulkan device, one host wait per step, and evaluate the held-out split on the device in the evaluated step's command buffer (not yet released: one host wait per segment of up to 8 steps and one more per evaluation) | |
+| `modelspec train --backend vulkan --data <packed-dir> [--eval-every <n>]`: train the hidden-32 BERT twin with dropout and AdamW on one Vulkan device, one host wait per segment of up to 8 steps, and evaluate the held-out split on the device in a command buffer of its own, one more host wait per evaluation | |
 | `embedding`, `add_rows`, `gelu`, `layer_norm`, `softmax`, `attention`, `cross_entropy` and `dropout`, with `i32` row ids, on the CPU reference; all eight also have Vulkan kernels | |
 | `modelspec data prepare`, `data tokenizer` and `data pack`: split a corpus, train a WordPiece tokenizer and pack token sequences | |
 | `modelspec train --backend cpu --data <packed-dir> [--eval-every <n>]`: train a masked-language model on packed sequences and evaluate the held-out split during the run | |
@@ -111,7 +111,7 @@ capability with the test that holds it, and [Roadmap](./roadmap.md) says what M1
 
 - [Why ModelSpec](./concepts/north-star.md): the north star, the BERT-tiny ladder against PyTorch,
   and what is shipped and what is planned.
-- [Getting started](./getting-started.md): download the 0.23.0 binary and train the examples on the CPU or a GPU.
+- [Getting started](./getting-started.md): download the 0.24.0 binary and train the examples on the CPU or a GPU.
 - [The language](./concepts/language.md): what a file may contain.
 - [Write a model](./guides/write-a-model.md): build a two-layer model step by step.
 - [Pitch deck](pathname:///modelspec/pitch/): the case for ModelSpec in slides.

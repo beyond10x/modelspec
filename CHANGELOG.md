@@ -9,6 +9,10 @@ history.
 
 ## [Unreleased]
 
+## [0.24.0] - 2026-10-29
+
+This release takes the profiled steady Vulkan training step of `examples/bert_tiny.mspec` to 0.55 of its time: on an RTX 3090, `train --profile` over 200 steps of the packed corpus measures a median of 8,098.4 µs per step against 14,702.7 µs for the build before these changes, in 5 alternating pairs on a loaded host. The step got there through an `EmbeddingGrad` that sorts the batch's ids once, column sums that read coalesced tiles of rows, `LayerNormGradGamma` row moments computed once per row, and a stepwise run that submits up to 8 steps per command buffer, one host wait per segment, which also times each held-out evaluation into `train --clock`'s `eval_seconds`. Each change keeps the training step's bits, except that the `rstd` of `LayerNorm` and its gradients on Vulkan is now the CPU's bits. Three defects are fixed: a Vulkan `mse` loss that overflows names the step the CPU names, a device test expects the held-out losses that runs have printed since 0.21.0, and validation mode refuses a loader without debug utils instead of aborting. No run against PyTorch CUDA was timed with this build; the Benchmarks page's comparison is still that of 2026-10-29, made with the 0.22.0 build.
+
 ### Added
 
 - A stepwise Vulkan run records up to 8 steps into one command buffer, one submit and one host wait per segment, and records the next segment while the device runs the last, with the bits, printed lines, events and checkpoints of one step per command buffer; held-out evaluations reduced on the device run in a command buffer of their own and are now timed, so `train --clock` no longer prints `eval_seconds 0.000000` after evaluations ran (story:vulkan-stepwise-multi-step-submit).
@@ -391,7 +395,8 @@ with `E-TARGET-001`.
 - `examples/linear_regression.mspec` checks and trains; `task check-examples` runs `modelspec check` on it
 - ESS contracts for the compiled artifact, checkpoint, device profile and training run in `spec/`
 
-[Unreleased]: https://github.com/beyond10x/modelspec/compare/0.23.0...HEAD
+[Unreleased]: https://github.com/beyond10x/modelspec/compare/0.24.0...HEAD
+[0.24.0]: https://github.com/beyond10x/modelspec/compare/0.23.0...0.24.0
 [0.23.0]: https://github.com/beyond10x/modelspec/compare/0.22.0...0.23.0
 [0.22.0]: https://github.com/beyond10x/modelspec/compare/0.21.0...0.22.0
 [0.21.0]: https://github.com/beyond10x/modelspec/compare/0.20.0...0.21.0
