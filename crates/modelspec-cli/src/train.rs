@@ -935,7 +935,11 @@ fn train(
                     eval: held_out
                         .as_ref()
                         .zip(files.eval_every)
-                        .map(|(held_out, every)| stepwise::Evaluation { held_out, every }),
+                        .map(|(held_out, every)| stepwise::Evaluation {
+                            held_out,
+                            every,
+                            reduction: stepwise::HeldOutReduction::Device,
+                        }),
                     dense_eval: loaded.eval.as_ref(),
                     dense_predictions: None,
                     checkpoints: files.checkpoint_every.map(|every| Checkpoints {

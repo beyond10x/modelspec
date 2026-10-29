@@ -2,14 +2,15 @@
 //! the two stages of a reduction, the `mse` loss sum, transpose and matmul, and the row-wise
 //! kernels of the BERT operators (`rowwise`, `per_element`, `per_row` and `per_column`), among
 //! them the attention and cross-entropy kernels and the `Sqrt` and `Div` of the
-//! AdamW update (`emit/attention.rs`).
+//! AdamW update (`emit/attention.rs`), and the two held-out evaluation kernels `HeldOutRows` and
+//! `HeldOutSum` (`emit/heldout.rs`, [`held_out_kernels`]).
 //!
 //! The module is SPIR-V 1.5, the version Vulkan 1.2 consumes, with capability `Shader`, the
 //! `GLSL450` logical memory model and one `GLCompute` entry point `main`, with `LocalSize` the
 //! kernel's workgroup size. [`emit_module`] adds the three float-control execution modes of
 //! DESIGN.md § 5.4 (`RoundingModeRTE`, `DenormPreserve`, `SignedZeroInfNanPreserve`, width 32) and
-//! their capabilities to a loss-sum or matmul module exactly when the device profile reports all
-//! three for f32; no other module declares a float-control mode. A matmul or loss-sum module
+//! their capabilities to a loss-sum, matmul or `HeldOutRows` module exactly when the device
+//! profile reports all three for f32; no other module declares a float-control mode. A matmul or loss-sum module
 //! fuses each product after the first of every sum into the sum, one `GLSL.std.450 Fma` per
 //! product-and-sum, the instruction set imported once by such a module, by a row-wise module
 //! that fuses a sum or takes an `Exp` or a `Sqrt`, and by no other (DESIGN.md § 12 ADR-009).
@@ -70,7 +71,10 @@ use rspirv::spirv::{
 };
 
 mod attention;
+mod heldout;
 mod rowwise;
+
+pub use heldout::{COUNT_LIMB, HELD_OUT_STATE, HeldOutKernels, held_out_kernels, held_out_sums};
 
 /// Why a kernel has no module.
 #[derive(Debug, thiserror::Error)]
@@ -224,7 +228,8 @@ fn module_for(
     variant: Variant,
     fast_math: bool,
 ) -> Result<KernelModule, EmitError> {
-    let float_controls = matches!(kernel.kind, KernelKind::LossSum | KernelKind::MatMul)
+    let float_controls = (matches!(kernel.kind, KernelKind::LossSum | KernelKind::MatMul)
+        || (kernel.kind, kernel.op) == (KernelKind::PerRow, "HeldOutRows"))
         && reports_float_controls(profile);
     let body = body_of(kernel, variant, profile.max_shared_memory_bytes)?;
     let chunk = match body {
@@ -370,6 +375,8 @@ enum Body {
     AttentionLoss(attention::AttentionLoss),
     /// A row-wise kernel ([`rowwise::Rowwise`]).
     Rowwise(rowwise::Rowwise),
+    /// A held-out evaluation kernel ([`heldout::HeldOutBody`]).
+    HeldOut(heldout::HeldOutBody),
 }
 
 /// What `kernel` computes, for a device with `shared_bytes` of workgroup memory.
@@ -394,6 +401,12 @@ fn body_of(kernel: &Kernel, variant: Variant, shared_bytes: u32) -> Result<Body,
                 return Err(unsupported());
             }
             Body::AttentionLoss(attention::AttentionLoss::of(kernel)?)
+        }
+        (KernelKind::PerRow, "HeldOutRows") | (KernelKind::LossSum, "HeldOutSum") => {
+            if variant == Variant::Undivided {
+                return Err(unsupported());
+            }
+            Body::HeldOut(heldout::HeldOutBody::of(kernel)?)
         }
         (KernelKind::PerElement | KernelKind::PerRow | KernelKind::PerColumn, _) => {
             Body::Rowwise(rowwise::Rowwise::of(kernel)?)
@@ -744,17 +757,20 @@ fn build(
         Body::MatMul { layout, tile, .. } => Some((layout.shared_values(), tile.vector_reads())),
         Body::Rowwise(rowwise) => rowwise.shared().map(|values| (values, false)),
         Body::AttentionLoss(body) => body.shared().map(|values| (values, false)),
+        Body::HeldOut(body) => body.shared().map(|values| (values, false)),
         _ => None,
     };
     let matmul_vars = match body {
         Body::MatMul { k, tile, .. } => matmul_accumulators(&tile) + matmul_carried(k, &tile),
         Body::Rowwise(rowwise) => rowwise.f32_vars(),
         Body::AttentionLoss(body) => body.f32_vars(),
+        Body::HeldOut(body) => body.f32_vars(),
         _ => 0,
     };
     let seeded = matches!(body, Body::Rowwise(rowwise) if rowwise.seeded());
     let u32_vars = match body {
         Body::AttentionLoss(body) => body.u32_vars(),
+        Body::HeldOut(body) => body.u32_vars(),
         _ => 0,
     };
     if kernel.epilogue.is_some() && !matches!(body, Body::MatMul { .. }) {
@@ -808,6 +824,7 @@ fn build(
         } => m.matmul([rows, k, n], epilogue, tile, transposed, layout)?,
         Body::Rowwise(rowwise) => m.rowwise(rowwise)?,
         Body::AttentionLoss(body) => m.attention_loss(body)?,
+        Body::HeldOut(body) => m.held_out(body)?,
     }
     m.finish()
 }

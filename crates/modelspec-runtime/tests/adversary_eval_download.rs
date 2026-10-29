@@ -1,6 +1,8 @@
 //! Adversary pass 1 on story:vulkan-eval-download-per-batch (coordinator decision D76): the
 //! held-out reduction fed one batch at a time (`HeldOut::tallying`) and the stepwise Vulkan run
-//! that feeds it, one command buffer and one host wait per `HeldOut` batch.
+//! that feeds it, one command buffer and one host wait per `HeldOut` batch. The stepwise runs
+//! ask for that reduction by name (`HeldOutReduction::Host`), since the default reduces on the
+//! device (story:vulkan-eval-metrics-on-device, `tests/vulkan_heldout_metrics.rs`).
 //!
 //! The cases without a device hold `Tallying` to the bits of `HeldOut::evaluate`, batch by batch
 //! in batch order, and to its refusals: a partial evaluation, a batch past the last and logits
@@ -308,7 +310,7 @@ mod device {
     use modelspec_runtime::vulkan::negotiate::{Negotiated, negotiate};
     use modelspec_runtime::vulkan::runner::RunStats;
     use modelspec_runtime::vulkan::stepwise::{
-        Evaluation, StepSeen, StepwiseOptions, train_stepwise,
+        Evaluation, HeldOutReduction, StepSeen, StepwiseOptions, train_stepwise,
     };
     use modelspec_runtime::vulkan::{Device, VALIDATION_ENV, Vulkan};
 
@@ -397,7 +399,11 @@ mod device {
         let mut seen = Vec::new();
         let options = StepwiseOptions {
             data: Some(Data::Packed(data)),
-            eval: eval.map(|(held_out, every)| Evaluation { held_out, every }),
+            eval: eval.map(|(held_out, every)| Evaluation {
+                held_out,
+                every,
+                reduction: HeldOutReduction::Host,
+            }),
             ..StepwiseOptions::default()
         };
         let (run, stats) = train_stepwise(

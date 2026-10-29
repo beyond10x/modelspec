@@ -34,7 +34,10 @@
 //! A Vulkan run computes the logits of each batch on the device, from the tensors
 //! [`HeldOut::batch`] gives, and [`HeldOut::metrics_of`] reduces them as above
 //! (coordinator decision D73), or [`HeldOut::tallying`] one batch at a time in batch order, to
-//! the same bits (coordinator decision D76).
+//! the same bits (coordinator decision D76), or reduces them on the device to the weighted sum
+//! of the row losses and the count of correct rows, which [`HeldOut::metrics_of_sums`] divides by
+//! the sums of the weights and of the selected rows it takes from the batches' targets
+//! (story:vulkan-eval-metrics-on-device).
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -280,6 +283,54 @@ impl<'p> HeldOut<'p> {
         self.batches.get(b).map(|batch| &batch.tensors)
     }
 
+    /// The labels and weights of the rows of batch `b`, `b` below [`HeldOut::batches`]: what a
+    /// device run that reduces the logits on the device uploads beside the batch
+    /// ([`HeldOut::metrics_of_sums`]).
+    pub fn targets(&self, b: usize) -> Option<(&[i32], &[f32])> {
+        self.batches
+            .get(b)
+            .map(|batch| (batch.labels.as_slice(), batch.weights.as_slice()))
+    }
+
+    /// The held-out loss and accuracy of logits reduced elsewhere to `numerator`, the sum of
+    /// `weight · nll` over every row of every batch, and `correct`, the rows of positive weight
+    /// whose first largest logit is their label in a row without a NaN: the denominator and the
+    /// selected rows are the split's own weights, summed as [`HeldOut::metrics_of`] sums them,
+    /// and the quotient and the accuracy are `metrics_of`'s. A label outside the classes is the
+    /// error `metrics_of` gives for it, the first in batch and row order.
+    pub fn metrics_of_sums(
+        &self,
+        numerator: f64,
+        correct: u64,
+    ) -> Result<HeldOutMetrics, RunError> {
+        let mut tally = Tally::default();
+        for (b, batch) in self.batches.iter().enumerate() {
+            for (n, (&label, &weight)) in batch.labels.iter().zip(&batch.weights).enumerate() {
+                if usize::try_from(label)
+                    .ok()
+                    .filter(|&l| l < self.classes)
+                    .is_none()
+                {
+                    return Err(EvalError::Label {
+                        batch: b,
+                        row: n,
+                        label,
+                        classes: self.classes,
+                    }
+                    .into());
+                }
+                let wide = f64::from(weight);
+                tally.denominator = Some(tally.denominator.map_or(wide, |sum| sum + wide));
+                if weight > 0.0 {
+                    tally.selected += 1;
+                }
+            }
+        }
+        tally.numerator = Some(numerator);
+        tally.correct = correct;
+        Ok(tally.metrics())
+    }
+
     /// The held-out loss and accuracy of the logits `logits[b]` of every batch `b`, each
     /// `[B·S, V]` row-major, reduced as [`HeldOut::evaluate`] reduces the logits of the CPU
     /// interpreter: what a device run that computed the logits reports.
@@ -363,6 +414,8 @@ struct Tally {
     denominator: Option<f64>,
     correct: u64,
     selected: u64,
+    /// The rows whose `row_nll` the tally computed.
+    softmaxes: u64,
 }
 
 impl Tally {
@@ -380,6 +433,14 @@ impl Tally {
                 }
                 .into());
             };
+            if weight.to_bits() == 0 && nll_is_finite(row) {
+                // `+0 · nll` with `nll` finite and not negative is `+0`, so the fused term
+                // leaves each sum `s` at `s + 0`, the first one at `+0`: no softmax needed.
+                self.numerator = Some(self.numerator.map_or(0.0, |sum| sum + 0.0));
+                self.denominator = Some(self.denominator.map_or(0.0, |sum| sum + 0.0));
+                continue;
+            }
+            self.softmaxes += 1;
             let (wide, nll) = (f64::from(weight), f64::from(row_nll(row, target)));
             self.numerator = Some(match self.numerator {
                 None => wide * nll,
@@ -414,6 +475,18 @@ impl Tally {
     }
 }
 
+/// Whether [`row_nll`] of `row` is finite and not negative for every label, known without its
+/// softmax: every logit's magnitude is below `5e37` (false for a NaN or an infinity), so the
+/// largest exceeds the label's by less than `1e38`. Then the sum of `exp(x - max)` holds the
+/// term `exp(0) = 1` and at most `row.len()` terms of at most 1, so its logarithm is at least
+/// `+0` and small, `max + ln(sum)` rounds to at least `max`, and the difference from
+/// `row[label] <= max` is at least `+0` and below `f32::MAX`. Any other row may have a NaN or
+/// infinite nll, which the reduction must see. One pass without a branch, so it vectorizes.
+fn nll_is_finite(row: &[f32]) -> bool {
+    row.iter()
+        .fold(true, |small, &x| small & (x.abs() < 5.0e37))
+}
+
 /// `max + ln(Σ exp(x - max)) - row[label]`: the maximum the first element replaced by each later
 /// greater one, the sum in ascending order from its first term, as `cross_entropy` computes a
 /// row (DESIGN.md § 2.2, coordinator decision D43).
@@ -435,6 +508,122 @@ mod tests {
     fn a_row_of_equal_logits_has_the_nll_ln_v() {
         let row = [0.0f32; 4];
         assert_eq!(row_nll(&row, 2), 4.0f32.ln());
+    }
+
+    /// The reduction of the module documentation over every row, each row's `row_nll` computed:
+    /// the tally as it was before it skipped rows (story:bert-tiny-vs-pytorch-cuda).
+    fn every_row(batches: &[(Vec<f32>, Vec<i32>, Vec<f32>)], v: usize) -> HeldOutMetrics {
+        let (mut numerator, mut denominator) = (None::<f64>, None::<f64>);
+        let (mut correct, mut selected) = (0u64, 0u64);
+        for (logits, labels, weights) in batches {
+            for ((row, &label), &weight) in logits.chunks_exact(v).zip(labels).zip(weights) {
+                let target = label as usize;
+                let (wide, nll) = (f64::from(weight), f64::from(row_nll(row, target)));
+                numerator = Some(match numerator {
+                    None => wide * nll,
+                    Some(sum) => wide.mul_add(nll, sum),
+                });
+                denominator = Some(denominator.map_or(wide, |sum| sum + wide));
+                if weight > 0.0 {
+                    selected += 1;
+                    if argmax(row) == Some(target) {
+                        correct += 1;
+                    }
+                }
+            }
+        }
+        let (numerator, denominator) = (numerator.unwrap_or(0.0), denominator.unwrap_or(0.0));
+        HeldOutMetrics {
+            loss: if denominator == 0.0 {
+                0.0
+            } else {
+                (numerator / denominator) as f32
+            },
+            accuracy: if selected == 0 {
+                0.0
+            } else {
+                correct as f32 / selected as f32
+            },
+        }
+    }
+
+    fn tallied(batches: &[(Vec<f32>, Vec<i32>, Vec<f32>)], v: usize) -> (HeldOutMetrics, u64) {
+        let mut tally = Tally::default();
+        for (b, (logits, labels, weights)) in batches.iter().enumerate() {
+            let batch = Batch {
+                tensors: PackedBatch::default(),
+                labels: labels.clone(),
+                weights: weights.clone(),
+            };
+            tally.add(b, &batch, logits, v).expect("valid labels");
+        }
+        (tally.metrics(), tally.softmaxes)
+    }
+
+    /// A batch of `weights.len()` rows of `v` logits, row `n`'s logits `logits(n, c)`, label
+    /// `n % v`.
+    fn batch(
+        v: usize,
+        weights: &[f32],
+        logits: impl Fn(usize, usize) -> f32,
+    ) -> (Vec<f32>, Vec<i32>, Vec<f32>) {
+        let rows = weights.len();
+        let values = (0..rows * v).map(|i| logits(i / v, i % v)).collect();
+        let labels = (0..rows).map(|n| (n % v) as i32).collect();
+        (values, labels, weights.to_vec())
+    }
+
+    #[test]
+    fn the_tally_takes_the_softmax_of_only_the_rows_that_can_change_its_sums() {
+        let v = 8;
+        let smooth = |n: usize, c: usize| ((n * 31 + c * 17) % 23) as f32 * 0.37 - 4.0;
+        // Rows of weight 0 with finite logits add `+0 · nll`, which changes neither sum: their
+        // softmax is skipped. Rows of positive weight, and rows of weight 0 whose nll may not be
+        // finite (a NaN or an infinity among the logits, or logits so far apart that the nll may
+        // overflow), are computed as before.
+        let mut odd = batch(v, &[0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0], smooth);
+        odd.0[2 * v + 3] = f32::NAN;
+        odd.0[3 * v + 1] = f32::INFINITY;
+        odd.0[5 * v] = 3.0e38;
+        odd.0[5 * v + 5] = -3.0e38;
+        let batches = vec![
+            batch(v, &[0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0], smooth),
+            odd,
+            batch(v, &[0.0; 8], smooth),
+        ];
+        let (metrics, softmaxes) = tallied(&batches, v);
+        assert_eq!(softmaxes, 2 + 2 + 3);
+        let expected = every_row(&batches, v);
+        assert_eq!(metrics.loss.to_bits(), expected.loss.to_bits());
+        assert_eq!(metrics.accuracy.to_bits(), expected.accuracy.to_bits());
+    }
+
+    #[test]
+    fn skipping_a_row_keeps_the_bits_of_every_sum() {
+        let v = 8;
+        let smooth = |n: usize, c: usize| ((n * 13 + c * 7) % 19) as f32 * 0.81 - 6.0;
+        // A first row of weight 0; a sum of -0 (a weight of -1 on a row whose nll is +0) before
+        // a row of weight 0; a batch of no selected row; and random weights.
+        let peaked = |_: usize, c: usize| if c == 0 { 0.0 } else { -1000.0 };
+        let cases = vec![
+            vec![batch(v, &[0.0, 1.0, 0.0, 1.0], smooth)],
+            vec![batch(v, &[-1.0, 0.0, 0.0], peaked)],
+            vec![batch(v, &[0.0, 0.0, 0.0], smooth)],
+            vec![
+                batch(v, &[0.5, 0.0, 2.0, 0.0, 0.0, 1.0], smooth),
+                batch(v, &[0.0, 0.0, 1.0, 0.0, 3.0, 0.0], peaked),
+            ],
+        ];
+        for batches in cases {
+            let (metrics, _) = tallied(&batches, v);
+            let expected = every_row(&batches, v);
+            assert_eq!(
+                metrics.loss.to_bits(),
+                expected.loss.to_bits(),
+                "{batches:?}"
+            );
+            assert_eq!(metrics.accuracy.to_bits(), expected.accuracy.to_bits());
+        }
     }
 
     #[test]

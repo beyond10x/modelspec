@@ -205,12 +205,25 @@ impl Buffer<'_> {
     ///
     /// [`Submitted::wait`]: super::dispatch::Submitted::wait
     pub fn read_f32(&mut self) -> Result<Vec<f32>, ExecError> {
+        self.mapped_f32().map(<[f32]>::to_vec)
+    }
+
+    /// The words of a host-visible buffer where they are mapped, without copying them, as
+    /// [`Buffer::read_f32`] reads them: after the host wait of the work that wrote them, and
+    /// before any work that writes them again is submitted, which the borrow prevents. A
+    /// held-out batch's logits are 134 MB on `examples/bert_tiny.mspec`, and copying them took
+    /// about 50 ms per batch on the RTX 3090 host (story:bert-tiny-vs-pytorch-cuda).
+    pub fn mapped_f32(&self) -> Result<&[f32], ExecError> {
         let at = self.mapped.ok_or(ExecError::NotHostVisible)?;
         let count = (self.bytes / 4) as usize;
-        let mut values = vec![0f32; count];
-        // SAFETY: the mapping covers `bytes` bytes, at least `4 * count`.
-        unsafe { std::ptr::copy_nonoverlapping(at, values.as_mut_ptr().cast::<u8>(), count * 4) };
-        Ok(values)
+        // A mapping starts at `minMemoryMapAlignment`, at least 64 bytes, and the buffer at its
+        // memory's offset 0, so the words are aligned; anything else is refused, never read.
+        if at.align_offset(std::mem::align_of::<f32>()) != 0 {
+            return Err(ExecError::NotHostVisible);
+        }
+        // SAFETY: the mapping covers `bytes` bytes, at least `4 * count`, is aligned for `f32`
+        // (checked above) and stays mapped while `self` lives; every bit pattern is an `f32`.
+        Ok(unsafe { std::slice::from_raw_parts(at.cast::<f32>(), count) })
     }
 }
 
