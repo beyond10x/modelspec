@@ -147,7 +147,8 @@ pub enum KernelKind {
     SgdUpdate,
     /// A row-wise op computed one output element per invocation: `Embedding`, `EmbeddingGrad`
     /// (each element of the table gradient adds its column of the gradient rows of every id equal
-    /// to its row, in ascending id position), `AddRows`, `Gelu`, `GeluGrad`, `Dropout`,
+    /// to its row, in ascending id position, found in the ids its sort wrote), `AddRows`, `Gelu`,
+    /// `GeluGrad`, `Dropout`,
     /// `DropoutGrad` and `CrossEntropyGrad` (each gradient element from the row statistics the
     /// per-row stage wrote) (DESIGN.md § 5.2).
     PerElement,
@@ -155,9 +156,10 @@ pub enum KernelKind {
     /// ascending column order: `LayerNorm`, `LayerNormGradX`, `Softmax`, `SoftmaxGrad`,
     /// `CrossEntropy` (the unweighted loss of each row, which the loss sum then adds) and
     /// `CrossEntropyGrad` (the maximum and exponential sum of each row, and from one more
-    /// invocation the weight sum, which the per-element stage then reads); and one invocation per
-    /// row and head of `Attention` and its three gradients, the head count a last, immediate
-    /// operand ([`Kernel::heads`]).
+    /// invocation the weight sum, which the per-element stage then reads); one invocation per id
+    /// for the sort of `EmbeddingGrad`, which writes each id and its position into the row of its
+    /// rank by id and position, as `i32`; and one invocation per row and head of `Attention` and
+    /// its three gradients, the head count a last, immediate operand ([`Kernel::heads`]).
     PerRow,
     /// A column reduction over the rows of its operands in ascending row order, one output
     /// column per invocation: `SumRows`, `LayerNormGradGamma`, `SigregColumns` and
@@ -1021,7 +1023,8 @@ impl Kernel {
     /// `p - (lr * g)`; one per element of the buffer operands of a reduction stage or a loss
     /// sum; none for a transpose or a broadcast. A row-wise kernel counts the operations of the
     /// CPU interpreter's definition of its op, each add, subtract, multiply, compare, division,
-    /// square root and `exp` one and each fused multiply-add two: none for `Embedding`; one per
+    /// square root and `exp` one and each fused multiply-add two: none for `Embedding` and the
+    /// integer sort of `EmbeddingGrad`; one per
     /// output element for `AddRows`, `Dropout` and `DropoutGrad`; one per element of the
     /// gradient for `EmbeddingGrad` and of the operand for `SumRows`; 10 per element for `Gelu`
     /// and 24 for `GeluGrad`; 5 per element for `Softmax` and 4 for `SoftmaxGrad`; for an
@@ -1116,6 +1119,7 @@ impl Kernel {
                 _ => None,
             },
             KernelKind::PerRow => match self.op {
+                "EmbeddingGrad" => Some(0),
                 "LayerNorm" => rows(8, 3),
                 "LayerNormGradX" => rows(14, 3),
                 "Softmax" => per_output(5),

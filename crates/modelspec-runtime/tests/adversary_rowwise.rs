@@ -18,7 +18,7 @@ use modelspec_core::compile::compile_artifact;
 use modelspec_core::device::DeviceProfile;
 use modelspec_core::ir::kernel::{DispatchCount, Kernel, KernelKind, Operand, PlanOp};
 use modelspec_core::ir::tensor::{Dim, TensorOp, TensorType};
-use modelspec_core::schedule::rowwise_kernel;
+use modelspec_core::schedule::{embedding_grad_kernels, rowwise_kernel};
 use modelspec_runtime::spirv::emit::{emit, emit_kernels};
 use modelspec_runtime::spirv::validate::validate;
 
@@ -41,8 +41,8 @@ fn i32s(shape: &[u64]) -> Operand {
     Operand::Buffer(TensorType::i32(shape))
 }
 
-/// The thirteen row-wise kernels of one `[n, h]` shape, a `v`-row table and drop
-/// probability `p`.
+/// The fourteen kernels of the thirteen row-wise ops of one `[n, h]` shape, a `v`-row table and
+/// drop probability `p`: `EmbeddingGrad` is a sort and a gradient.
 fn kernels_of_shape(n: u64, h: u64, v: u64, p: f32) -> Vec<Kernel> {
     let rows = TensorType::f32(&[n, h]);
     let row = TensorType::f32(&[h]);
@@ -105,9 +105,14 @@ fn kernels_of_shape(n: u64, h: u64, v: u64, p: f32) -> Vec<Kernel> {
     ];
     cases
         .into_iter()
-        .map(|(op, operands, result)| {
-            rowwise_kernel(&op, operands, result)
-                .unwrap_or_else(|| panic!("{} [{n}, {h}] v {v} has a kernel", op.name()))
+        .flat_map(|(op, operands, result)| {
+            let missing = format!("{} [{n}, {h}] v {v} has a kernel", op.name());
+            match op {
+                TensorOp::EmbeddingGrad { .. } => {
+                    Vec::from(embedding_grad_kernels(operands, result).expect(&missing))
+                }
+                _ => vec![rowwise_kernel(&op, operands, result).expect(&missing)],
+            }
         })
         .collect()
 }
@@ -138,7 +143,7 @@ fn adv_rowwise_every_module_of_the_extended_grid_passes_spirv_val() {
         }
     }
     eprintln!("{modules} row-wise modules pass spirv-val");
-    assert_eq!(modules, 4 * 5 * 2 * 13);
+    assert_eq!(modules, 4 * 5 * 2 * 14);
 }
 
 const BLOCK: &str = "model Block {

@@ -775,6 +775,7 @@ fn build(
     let u32_vars = match body {
         Body::AttentionLoss(body) => body.u32_vars(),
         Body::HeldOut(body) => body.u32_vars(),
+        Body::Rowwise(rowwise) => rowwise.u32_vars(),
         _ => 0,
     };
     if kernel.epilogue.is_some() && !matches!(body, Body::MatMul { .. }) {
