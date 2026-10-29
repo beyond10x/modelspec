@@ -517,3 +517,94 @@ fn embedding_grad_stages_the_ids_in_workgroup_memory() {
         }
     }
 }
+
+/// The one kernel of `op` among the row-wise kernels of `[n, h]` and a `v`-row table.
+fn kernel_of_shape(op: &str, n: u64, h: u64, v: u64) -> Kernel {
+    let mut found: Vec<Kernel> = kernels_of_shape(n, h, v)
+        .into_iter()
+        .filter(|k| k.op == op)
+        .collect();
+    assert_eq!(found.len(), 1, "one {op} kernel of [{n}, {h}] and {v} rows");
+    found.remove(0)
+}
+
+/// The `(flop, bytes)` of every dispatch of `op` in the block's step plan, in plan order.
+fn block_counts(op: &str) -> Vec<(u64, u64)> {
+    let artifact = block();
+    let plan = &artifact.execution;
+    plan.step
+        .iter()
+        .filter(|s| {
+            s.op == PlanOp::Dispatch
+                && plan
+                    .kernels
+                    .iter()
+                    .any(|k| k.op == op && s.kernel_module_id == Some(k.id))
+        })
+        .map(|s| match plan.dispatch_count(s) {
+            Some(DispatchCount::Counted { flop, bytes }) => (flop, bytes),
+            other => panic!("{op}: {other:?}"),
+        })
+        .collect()
+}
+
+/// story:bert-tiny-vs-pytorch-cuda, acceptance of the counts: `Embedding` against values
+/// computed by hand from DESIGN.md § 3.1 "Counting rule" ("`per_element` `Embedding` none";
+/// bytes "the `size_bytes` of the step's read views plus those of its write views"). A row
+/// copy counts 0 FLOP, a count, not `uncounted`, on every shape. The block's one embedding
+/// reads its f32[11, 13] table (572 B) and i32[5] ids (20 B) and writes f32[5, 13] (260 B):
+/// 852 B.
+#[test]
+fn embedding_counts_no_flop_by_hand() {
+    for (n, h, v) in [(1, 1, 1), (3, 5, 7), (65, 63, 3), (130, 512, 129)] {
+        let kernel = kernel_of_shape("Embedding", n, h, v);
+        assert_eq!(
+            kernel.kind,
+            KernelKind::PerElement,
+            "{}",
+            kernel.signature()
+        );
+        assert_eq!(kernel.flop(), Some(0), "{}", kernel.signature());
+    }
+    assert_eq!(block_counts("Embedding"), [(0, 852)]);
+}
+
+/// story:bert-tiny-vs-pytorch-cuda, acceptance of the counts: `Dropout` against values computed
+/// by hand from DESIGN.md § 3.1 "Counting rule" ("`per_element` ... `Dropout` and `DropoutGrad`
+/// one per output element"): `[1, 1]` 1, `[3, 5]` 15, `[65, 63]` 4,095 and `[130, 512]` 66,560
+/// FLOP. The block's one dropout of f32[5, 13] counts 65 FLOP and reads 260 B and its i32[2] RNG
+/// tokens (8 B) and writes 260 B: 528 B.
+#[test]
+fn dropout_counts_one_flop_per_element_by_hand() {
+    for (n, h, flop) in [(1, 1, 1), (3, 5, 15), (65, 63, 4_095), (130, 512, 66_560)] {
+        let kernel = kernel_of_shape("Dropout", n, h, 3);
+        assert_eq!(
+            kernel.kind,
+            KernelKind::PerElement,
+            "{}",
+            kernel.signature()
+        );
+        assert_eq!(kernel.flop(), Some(flop), "{}", kernel.signature());
+    }
+    assert_eq!(block_counts("Dropout"), [(65, 528)]);
+}
+
+/// story:bert-tiny-vs-pytorch-cuda, acceptance of the counts: `DropoutGrad` against values
+/// computed by hand from DESIGN.md § 3.1 "Counting rule" ("`per_element` ... `Dropout` and
+/// `DropoutGrad` one per output element"): `[1, 1]` 1, `[3, 5]` 15, `[65, 63]` 4,095 and
+/// `[130, 512]` 66,560 FLOP. The block's one dropout gradient of f32[5, 13] counts 65 FLOP and
+/// reads the i32[2] RNG tokens (8 B) and the 260 B gradient and writes 260 B: 528 B.
+#[test]
+fn dropout_grad_counts_one_flop_per_element_by_hand() {
+    for (n, h, flop) in [(1, 1, 1), (3, 5, 15), (65, 63, 4_095), (130, 512, 66_560)] {
+        let kernel = kernel_of_shape("DropoutGrad", n, h, 3);
+        assert_eq!(
+            kernel.kind,
+            KernelKind::PerElement,
+            "{}",
+            kernel.signature()
+        );
+        assert_eq!(kernel.flop(), Some(flop), "{}", kernel.signature());
+    }
+    assert_eq!(block_counts("DropoutGrad"), [(65, 528)]);
+}

@@ -551,3 +551,100 @@ fn cross_entropy_is_a_per_row_kernel_then_one_ordered_sum() {
     );
     verify_plan(&plan).unwrap_or_else(|error| panic!("the twin's plan verifies: {error}"));
 }
+
+/// The optimizer shapes with their element counts, multiplied out by hand: 1, 63, 65, 7·9 = 63
+/// and 300·32 = 9,600.
+const OPTIMIZER_ELEMENTS: [(&[u64], u64); 5] = [
+    (&[1], 1),
+    (&[63], 63),
+    (&[65], 65),
+    (&[7, 9], 63),
+    (&[300, 32], 9_600),
+];
+
+/// story:bert-tiny-vs-pytorch-cuda, acceptance of the counts: AdamW's `Sqrt` against values
+/// computed by hand from DESIGN.md § 3.1 "Counting rule" ("`elementwise` `Sqrt` and `Div` one
+/// per output element"): one FLOP per element of each optimizer shape.
+#[test]
+fn sqrt_counts_one_flop_per_element_by_hand() {
+    for (shape, flop) in OPTIMIZER_ELEMENTS {
+        let kernels: Vec<Kernel> = optimizer_kernels(shape)
+            .into_iter()
+            .filter(|k| k.op == "Sqrt")
+            .collect();
+        assert_eq!(kernels.len(), 1, "{shape:?}");
+        assert_eq!(kernels[0].kind, KernelKind::Elementwise);
+        assert_eq!(kernels[0].flop(), Some(flop), "{}", kernels[0].signature());
+    }
+}
+
+/// story:bert-tiny-vs-pytorch-cuda, acceptance of the counts: AdamW's `Div` against values
+/// computed by hand from DESIGN.md § 3.1 "Counting rule" ("`elementwise` `Sqrt` and `Div` one
+/// per output element"): one FLOP per element of each optimizer shape, whether it divides two
+/// tensors, a tensor by a rank-0 buffer, a rank-0 buffer by a tensor or a tensor by an
+/// immediate.
+#[test]
+fn div_counts_one_flop_per_element_by_hand() {
+    for (shape, flop) in OPTIMIZER_ELEMENTS {
+        let kernels: Vec<Kernel> = optimizer_kernels(shape)
+            .into_iter()
+            .filter(|k| k.op == "Div")
+            .collect();
+        assert_eq!(kernels.len(), 4, "{shape:?}");
+        for kernel in kernels {
+            assert_eq!(kernel.kind, KernelKind::Elementwise);
+            assert_eq!(kernel.flop(), Some(flop), "{}", kernel.signature());
+        }
+    }
+}
+
+/// The `(flop, bytes)` of every dispatch of `op` in the twin's step plan, sorted.
+fn twin_counts(op: &str) -> Vec<(u64, u64)> {
+    let (_, plan) = twin();
+    let mut counts: Vec<(u64, u64)> = plan
+        .step
+        .iter()
+        .filter(|s| {
+            s.op == PlanOp::Dispatch
+                && plan
+                    .kernels
+                    .iter()
+                    .any(|k| k.op == op && s.kernel_module_id == Some(k.id))
+        })
+        .map(|s| match plan.dispatch_count(s) {
+            Some(DispatchCount::Counted { flop, bytes }) => (flop, bytes),
+            other => panic!("{op}: {other:?}"),
+        })
+        .collect();
+    counts.sort_unstable();
+    counts
+}
+
+/// story:bert-tiny-vs-pytorch-cuda, acceptance of the counts, on the hidden-32 twin of
+/// BERT-tiny (H = 32, batches of 2 sequences of 16, so N = 32 rows, a 300 by 32 token table and
+/// a 16 by 32 position table), each figure computed by hand from DESIGN.md § 3.1 "Counting
+/// rule" (FLOP per kind as cited on the tests above; bytes "the `size_bytes` of the step's read
+/// views plus those of its write views", 4 B per f32 or i32 element):
+///
+/// - `Embedding`, two dispatches of 0 FLOP: the token table 38,400 B + ids 128 B read and
+///   f32[32, 32] 4,096 B written, 42,624 B; the position table 2,048 B + 128 B + 4,096 B, 6,272 B.
+/// - `Dropout` and `DropoutGrad`, five sites each on f32[32, 32]: 1,024 FLOP and 4,096 B +
+///   the i32[2] token 8 B + 4,096 B = 8,200 B per dispatch.
+/// - `Sqrt` and `Div`, one each per parameter (41), of the parameter's shape: 28,684 FLOP per
+///   step in all (embeddings 9,600 + 512 + 64; per layer 4·(1,024 + 32) + 64 + 2,048 + 64 +
+///   2,048 + 32 + 64 = 8,544, twice; MLM head 1,024 + 32 + 64 + 300 = 1,420); `Sqrt` reads one
+///   and writes one parameter-shaped view, 2·4·28,684 = 229,472 B, `Div` reads two and writes
+///   one, 3·4·28,684 = 344,208 B.
+#[test]
+fn the_twin_step_counts_its_new_kinds_by_hand() {
+    assert_eq!(twin_counts("Embedding"), [(0, 6_272), (0, 42_624)]);
+    assert_eq!(twin_counts("Dropout"), [(1_024, 8_200); 5]);
+    assert_eq!(twin_counts("DropoutGrad"), [(1_024, 8_200); 5]);
+    for (op, bytes) in [("Sqrt", 229_472), ("Div", 344_208)] {
+        let counts = twin_counts(op);
+        assert_eq!(counts.len(), 41, "{op}: {counts:?}");
+        let flop: u64 = counts.iter().map(|(flop, _)| flop).sum();
+        let total: u64 = counts.iter().map(|(_, bytes)| bytes).sum();
+        assert_eq!((flop, total), (28_684, bytes), "{op}");
+    }
+}

@@ -29,6 +29,7 @@ history.
 
 ### Fixed
 
+- The Benchmarks page's BERT-tiny method text says which report's training clock holds the held-out evaluations (outside it on every side on 2026-10-28, inside it on the ModelSpec side on 2026-10-29), where it said they were excluded throughout; Why ModelSpec links the published full-model figures, where it said the full model was in progress; and unit tests check the FLOP of `Embedding`, `Dropout`, `DropoutGrad`, `Sqrt` and `Div` against values computed by hand from DESIGN.md § 3.1, where they checked only that a count was there (story:bert-tiny-vs-pytorch-cuda).
 - Under `MODELSPEC_VK_VALIDATION=1`, a Vulkan loader whose instance has no `VK_EXT_debug_utils` entry points is refused with E-TARGET-003 naming the validation layer, the extension and the missing entry point, where the process aborted with a panic in a function that cannot unwind; the stand-in loader tests run without the variable (story:vulkan-validation-without-debug-utils).
 
 ## [0.22.0] - 2026-10-28

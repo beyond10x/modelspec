@@ -3,7 +3,7 @@ title: Why ModelSpec
 sidebar_position: 1
 description: What ModelSpec is for. One declared training program lets the compiler build a runtime for one target and train faster than a general-purpose framework; that speed is planned, and BERT-tiny against PyTorch on an RTX 3090 measures the way there.
 lede: "ModelSpec exists to train models faster than a general-purpose framework, by compiling one declared training program into a runtime built for one target, and that speed is the goal, not yet shipped."
-source: "The project's vision (north star, 2026-10-28); DESIGN.md § 0 and § 9; website/docs/benchmarks.md § Transformer block (release 0.21.0); crates/modelspec-core/src/autodiff.rs and schedule.rs; the Vulkan-against-CPU tests listed on the Status page."
+source: "The project's vision (north star, 2026-10-28); DESIGN.md § 0 and § 9; website/docs/benchmarks.md § Transformer block (release 0.21.0) and § BERT-tiny pre-training, time to the held-out baseline; crates/modelspec-core/src/autodiff.rs and schedule.rs; the Vulkan-against-CPU tests listed on the Status page."
 ---
 
 # Why ModelSpec
@@ -94,7 +94,7 @@ The ladder from there:
 
 | Step | Done when | Status |
 |---|---|---|
-| Baseline | Full BERT-tiny timed against PyTorch eager and `torch.compile` on the same RTX 3090, per step and to a held-out loss | block released in 0.21.0; full model in progress |
+| Baseline | Full BERT-tiny timed against PyTorch eager and `torch.compile` on the same RTX 3090, per step and to a held-out loss | block released in 0.21.0; full model timed per step and to the held-out baseline, published on [Benchmarks § BERT-tiny pre-training](/docs/benchmarks#bert-tiny-pre-training-time-to-the-held-out-baseline) |
 | A | The transformer block within 3× of PyTorch eager, same day, same device and driver | planned |
 | E | Full BERT-tiny at parity with PyTorch eager | planned |
 | F | Faster than `torch.compile`, per step and to the held-out target | planned |
