@@ -31,6 +31,7 @@ Generated from the clap definition of the `modelspec` command line in [`crates/m
 | [`modelspec data prepare`](#modelspec-data-prepare) | Copy a WikiText-103 raw release's wiki.train.raw and wiki.valid.raw into the Train and HeldOut splits and write their record, dataset.json |
 | [`modelspec data tokenizer`](#modelspec-data-tokenizer) | Train the WordPiece tokenizer on the Train split of a prepared dataset to an exact vocabulary size and write its record |
 | [`modelspec data pack`](#modelspec-data-pack) | Encode both splits of a prepared dataset with a tokenizer into sequences of an exact length and write them, their binding and their record with the held-out unigram baseline |
+| [`modelspec diagram`](#modelspec-diagram) | Draw one level of a view of a `.mspec` file as SVG or JSON, or write every level |
 | [`modelspec infer`](#modelspec-infer) | Run the forward program of a `.mspec` model with the parameters of a checkpoint |
 | [`modelspec inspect-device`](#modelspec-inspect-device) | Print the profile and negotiation verdict of each Vulkan physical device |
 | [`modelspec ir`](#modelspec-ir) | Print the IR of a `.mspec` file at a stage |
@@ -125,6 +126,24 @@ Every argument is required and has no default.
 | `--tokenizer <FILE>` | The tokenizer record `data tokenizer` wrote. |
 | `--seq-len <S>` | The number of tokens of every sequence; the partial tail of each split is dropped. |
 | `--out <DIR>` | The directory to write train.tokens, heldout.tokens, binding.json and packed.json into; created when missing. |
+
+## `modelspec diagram`
+
+Draw one level of a view of a `.mspec` file as SVG or JSON, or write every level
+
+```text
+Usage: modelspec diagram [OPTIONS] <PATH>
+```
+
+| Argument | Required | Default | Meaning |
+|---|---|---|---|
+| `<PATH>` | yes | none | The .mspec file to draw. |
+| `--view <VIEW>` | no | `model` | The view to draw. One of:<br/>`model`: The architecture: the forward program that reaches the prediction<br/>`train`: The training step as stages: data, parameters, forward, loss, backward, optimizer<br/>`eval`: The held-out evaluation: data, forward and loss without dropout<br/>`infer`: Inference from a checkpoint to a prediction |
+| `--scope <KEY>` | no | none | The scope drawn as the root, by its key; the view's outermost scope when absent. |
+| `--depth <N>` | no | none | How many levels below the root are drawn open; 1 in the model view and 0 in a pipeline view when absent. |
+| `--expand <KEY>` | no | none | A scope drawn open beyond the depth, by its key; repeatable. |
+| `--format <FORMAT>` | no | `svg` | What to print. One of:<br/>`svg`: A standalone SVG<br/>`json`: The DiagramRender JSON: the laid-out level<br/>`graph`: The DiagramGraph JSON: the whole graph of the view |
+| `--out <DIR>` | no | none | Write every scope's level as `<DIR>/<scope-key>.svg` instead of printing the root's. |
 
 ## `modelspec infer`
 
