@@ -2540,3 +2540,93 @@ runs:
     note: torch.compile mode default, tf32 off; loaded host, 1-minute load 14.4–50.7 (median 35.0) over the 3 runs
     source: verification-report:bert-tiny-vs-pytorch-2026-10-28, raw records benchmarks/raw/2026-10-28-bert-tiny-pretrain/pytorch-compile-1.jsonl, pytorch-compile-2.jsonl, pytorch-compile-3.jsonl
     state: Recorded
+  - run_id: bert-tiny-pretrain-modelspec-vulkan-0.22.0
+    date: "2026-10-29"
+    workload: bert-tiny-pretrain
+    side: ModelSpecVulkan
+    modelspec_version: "0.22.0"
+    commit: 3638e82ed376c3fc6145f8f3f223e5834ac77a03
+    mode: Timed
+    batch: 32
+    tokens_per_step: 4096
+    flop_per_step: 37446746112
+    flop_rule: MatmulOnly
+    target_loss: 6.926537926202018
+    steps_to_target: 1100
+    seconds_to_target: 16.568651
+    train_seconds: 152.451904
+    eval_every: 100
+    final_heldout_loss: 6.767498
+    timed_steps: 10000
+    repeat_count: 3
+    repeats_us_per_step:
+      - 15490.9364
+      - 15245.1904
+      - 15168.8617
+    median_us_per_step: 15245.1904
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 210–1980 (median 1905, n=942) over the 3 runs, held-out evaluations included; pstate P0, memory clock median 9751 MHz"
+    note: "step-time wave build (epic:bert-tiny-step-tenth); the training clock includes the 101 held-out evaluations, which run in the evaluated step's command buffer (eval_seconds 0), where the PyTorch clock excludes them; run 2 is the third attempt, its first two ran in P3 at 900 and 915 MHz with the screen blanked and are kept in the raw records; loaded host, 1-minute load 3.7–18.7 (median 6.3) over the 3 runs"
+    source: verification-report:bert-tiny-vs-pytorch-2026-10-29, raw records benchmarks/raw/2026-10-29-bert-tiny-pretrain/modelspec-1.stdout.txt, modelspec-2-r2.stdout.txt, modelspec-3.stdout.txt
+    state: Recorded
+  - run_id: bert-tiny-pretrain-pytorch-cuda-eager-0.22.0
+    date: "2026-10-29"
+    workload: bert-tiny-pretrain
+    side: PyTorchCudaEager
+    commit: 3638e82ed376c3fc6145f8f3f223e5834ac77a03
+    opponent_version: torch 2.14.1+cu130, CUDA 13.0
+    mode: Timed
+    batch: 32
+    tokens_per_step: 4096
+    flop_per_step: 37446746112
+    flop_rule: MatmulOnly
+    target_loss: 6.926537926202018
+    steps_to_target: 1100
+    seconds_to_target: 8.653965043835342
+    train_seconds: 78.06549485214055
+    eval_every: 100
+    final_heldout_loss: 6.767257664845629
+    timed_steps: 10000
+    repeat_count: 3
+    repeats_us_per_step:
+      - 7866.8876693584025
+      - 7675.569545011967
+      - 7806.549485214055
+    median_us_per_step: 7806.549485214055
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 210–1920 (median 1860, n=744) over the 3 runs, held-out evaluations included; pstate P2, memory clock median 9501 MHz"
+    note: "tf32 off; loaded host, 1-minute load 2.6–15.5 (median 9.5) over the 3 runs"
+    source: verification-report:bert-tiny-vs-pytorch-2026-10-29, raw records benchmarks/raw/2026-10-29-bert-tiny-pretrain/pytorch-eager-1.jsonl, pytorch-eager-2.jsonl, pytorch-eager-3.jsonl
+    state: Recorded
+  - run_id: bert-tiny-pretrain-pytorch-cuda-compile-0.22.0
+    date: "2026-10-29"
+    workload: bert-tiny-pretrain
+    side: PyTorchCudaCompile
+    commit: 3638e82ed376c3fc6145f8f3f223e5834ac77a03
+    opponent_version: torch 2.14.1+cu130, CUDA 13.0
+    mode: Timed
+    batch: 32
+    tokens_per_step: 4096
+    flop_per_step: 37446746112
+    flop_rule: MatmulOnly
+    target_loss: 6.926537926202018
+    steps_to_target: 1100
+    seconds_to_target: 4.733909315429628
+    train_seconds: 42.205822193063796
+    eval_every: 100
+    final_heldout_loss: 6.7675071265109255
+    timed_steps: 10000
+    repeat_count: 3
+    repeats_us_per_step:
+      - 4260.400927159935
+      - 4220.58221930638
+      - 4067.8921109065413
+    median_us_per_step: 4220.58221930638
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 610.57.04
+    sm_clock: "SM MHz 210–1920 (median 1860, n=564) over the 3 runs, held-out evaluations included; pstate P2, memory clock median 9501 MHz"
+    note: "torch.compile mode default, tf32 off; loaded host, 1-minute load 10.0–14.3 (median 12.3) over the 3 runs"
+    source: verification-report:bert-tiny-vs-pytorch-2026-10-29, raw records benchmarks/raw/2026-10-29-bert-tiny-pretrain/pytorch-compile-1.jsonl, pytorch-compile-2.jsonl, pytorch-compile-3.jsonl
+    state: Recorded

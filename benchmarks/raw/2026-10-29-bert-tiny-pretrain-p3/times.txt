@@ -1,0 +1,22 @@
+loss-modelspec start 2026-10-29T04:03:40Z
+loss-modelspec rc=0 end 2026-10-29T04:03:44Z
+loss-pytorch start 2026-10-29T04:08:12Z
+loss-pytorch rc=0 end 2026-10-29T04:08:37Z
+modelspec-1 start 2026-10-29T04:11:39Z
+modelspec-1 rc=0 end 2026-10-29T04:17:39Z
+pytorch-eager-1 start 2026-10-29T04:22:12Z
+pytorch-eager-1 rc=0 end 2026-10-29T04:25:55Z
+pytorch-compile-1 start 2026-10-29T04:27:16Z
+pytorch-compile-1 rc=0 end 2026-10-29T04:30:17Z
+modelspec-2 start 2026-10-29T04:30:41Z
+modelspec-2 rc=0 end 2026-10-29T04:36:27Z
+pytorch-eager-2 start 2026-10-29T04:36:52Z
+pytorch-eager-2 rc=0 end 2026-10-29T04:39:54Z
+pytorch-compile-2 start 2026-10-29T04:40:08Z
+pytorch-compile-2 rc=0 end 2026-10-29T04:42:11Z
+modelspec-3 start 2026-10-29T04:42:15Z
+modelspec-3 rc=0 end 2026-10-29T04:47:56Z
+pytorch-eager-3 start 2026-10-29T04:48:28Z
+pytorch-eager-3 rc=0 end 2026-10-29T04:51:52Z
+pytorch-compile-3 start 2026-10-29T04:52:00Z
+pytorch-compile-3 rc=0 end 2026-10-29T04:56:02Z

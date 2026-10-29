@@ -1,0 +1,11 @@
+modelspec-1 SM 1920 P0 n 320
+pytorch-eager-1 SM 1860 P2 n 254
+pytorch-compile-1 SM 1860 P2 n 182
+modelspec-2 SM 900 P3 n 598
+modelspec-2-r SM 915 P3 n 590
+pytorch-eager-2 SM 1860 P2 n 242
+pytorch-compile-2 SM 1890 P2 n 198
+modelspec-3 SM 1905 P0 n 310
+pytorch-eager-3 SM 1890 P2 n 248
+pytorch-compile-3 SM 1860 P2 n 184
+modelspec-2-r2 SM 1890 P0 n 312
