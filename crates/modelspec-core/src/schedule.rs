@@ -1320,13 +1320,42 @@ fn column_groups(op: &TensorOp, h: u64) -> Option<u64> {
         .checked_mul(ROWWISE_WORKGROUP)
 }
 
+/// The rows one workgroup of 64 of the `per_row` kernel of `LayerNorm`, `LayerNormGradX` or
+/// the row moments of `LayerNormGradGamma` over rows of `h` columns stages whole in workgroup
+/// memory (story:vulkan-layer-norm-coalesced-rows, DESIGN.md § 5.2): as many as the 16 KiB
+/// every device has ([`MIN_SHARED_MEMORY_BYTES`]) holds of the rows it stages, `x` or, for
+/// `LayerNormGradX`, `x` and `g`, at most 64. 16 rows for a `LayerNorm` of width 256, 8 for its
+/// gradient. Its 64 invocations load the rows as consecutive values and invocation `r` adds row
+/// `r` in ascending order. `Some(0)` when one row does not fit: the kernel then keeps one
+/// invocation per row, which reads its row from the binding. `None` for another op.
+pub fn layer_norm_rows(op: &TensorOp, h: u64) -> Option<u64> {
+    let staged = match op {
+        TensorOp::LayerNorm | TensorOp::LayerNormGradGamma => 1,
+        TensorOp::LayerNormGradX => 2,
+        _ => return None,
+    };
+    let values = u64::from(MIN_SHARED_MEMORY_BYTES) / 4;
+    Some((values / (staged * h.max(1))).min(ROWWISE_WORKGROUP))
+}
+
+/// The invocations of the row kernel of `op` over `n` rows of `h` columns: a workgroup of 64 per
+/// [`layer_norm_rows`] rows, or one invocation per row when one row does not fit.
+pub fn layer_norm_invocations(op: &TensorOp, n: u64, h: u64) -> Option<u64> {
+    match layer_norm_rows(op, h)? {
+        0 => Some(n),
+        rows => n.div_ceil(rows).checked_mul(ROWWISE_WORKGROUP),
+    }
+}
+
 /// The kernel kind of the row-wise op `op` over `operands` into `result`, and the invocations
 /// its dispatch runs: one per output element of a [`KernelKind::PerElement`] kernel, one per
-/// output row of a [`KernelKind::PerRow`] kernel, one per output column of a `sigreg`
-/// [`KernelKind::PerColumn`] kernel and a workgroup of 64 per [`column_sum_columns`] columns of
-/// the column sums `SumRows` and `LayerNormGradGamma`. `None` for another op, an immediate
-/// operand, a shape that is not static or a zero dimension, or operands that are not the op's:
-/// an `i32` buffer of ids or an `i32[2]` RNG token where the op reads one, `f32` elsewhere.
+/// output row of a [`KernelKind::PerRow`] kernel but a workgroup of 64 per [`layer_norm_rows`]
+/// rows of `LayerNorm` and `LayerNormGradX` ([`layer_norm_invocations`]), one per output column
+/// of a `sigreg` [`KernelKind::PerColumn`] kernel and a workgroup of 64 per
+/// [`column_sum_columns`] columns of the column sums `SumRows` and `LayerNormGradGamma`. `None`
+/// for another op, an immediate operand, a shape that is not static or a zero dimension, or
+/// operands that are not the op's: an `i32` buffer of ids or an `i32[2]` RNG token where the op
+/// reads one, `f32` elsewhere.
 fn rowwise_shape(
     op: &TensorOp,
     operands: &[Operand],
@@ -1380,12 +1409,12 @@ fn rowwise_shape(
         (TensorOp::LayerNorm, [[n, h], [gh], [bh]], [rn, rh])
             if h == gh && h == bh && (n, h) == (rn, rh) =>
         {
-            f32s(&[0, 1, 2]).then_some((KernelKind::PerRow, *n))?
+            f32s(&[0, 1, 2]).then_some((KernelKind::PerRow, layer_norm_invocations(op, *n, *h)?))?
         }
         (TensorOp::LayerNormGradX, [[n, h], [gh], g], [rn, rh])
             if h == gh && *g == [*n, *h] && (n, h) == (rn, rh) =>
         {
-            f32s(&[0, 1, 2]).then_some((KernelKind::PerRow, *n))?
+            f32s(&[0, 1, 2]).then_some((KernelKind::PerRow, layer_norm_invocations(op, *n, *h)?))?
         }
         (TensorOp::LayerNormGradGamma, [[n, h], g], [rh]) if h == rh && *g == [*n, *h] => {
             f32s(&[0, 1]).then_some((KernelKind::PerColumn, column_groups(op, *h)?))?
@@ -1482,11 +1511,11 @@ pub fn embedding_grad_kernels(operands: Vec<Operand>, result: TensorType) -> Opt
 /// The two kernels of `LayerNormGradGamma` over its operands `x: f32[N, H]` and `g: f32[N, H]`
 /// into its `result: f32[H]`, as [`schedule`] builds them
 /// (story:vulkan-layer-norm-grad-gamma-row-moments): the moments, [`KernelKind::PerRow`] over
-/// `(x)` into `f32[N, 2]`, invocation `n` writing the mean and `rstd` of row `n` as `LayerNorm`
-/// computes them; and the column sum, [`KernelKind::PerColumn`] over `(moments, x, g)` into
-/// `result`, a workgroup of 64 per [`column_sum_columns`] columns, which adds `g · x̂` of each
-/// column over the rows in ascending order. `None` for operands or a result that are not the
-/// op's.
+/// `(x)` into `f32[N, 2]`, the mean and `rstd` of each row as `LayerNorm` computes them, over
+/// [`layer_norm_invocations`]; and the column sum, [`KernelKind::PerColumn`] over
+/// `(moments, x, g)` into `result`, a workgroup of 64 per [`column_sum_columns`] columns, which
+/// adds `g · x̂` of each column over the rows in ascending order. `None` for operands or a
+/// result that are not the op's.
 pub fn layer_norm_grad_gamma_kernels(
     operands: Vec<Operand>,
     result: TensorType,
@@ -1494,9 +1523,9 @@ pub fn layer_norm_grad_gamma_kernels(
     let op = TensorOp::LayerNormGradGamma;
     let (kind, invocations) = rowwise_shape(&op, &operands, &result)?;
     let [x, g] = <[Operand; 2]>::try_from(operands).ok()?;
-    let rows = match &x {
+    let (rows, h) = match &x {
         Operand::Buffer(ty) => match ty.shape[..] {
-            [Dim::Static(rows), _] => rows,
+            [Dim::Static(rows), Dim::Static(h)] => (rows, h),
             _ => return None,
         },
         Operand::Immediate(_) => return None,
@@ -1507,7 +1536,7 @@ pub fn layer_norm_grad_gamma_kernels(
         &op,
         vec![x.clone()],
         moments_ty.clone(),
-        rows,
+        layer_norm_invocations(&op, rows, h)?,
     )?;
     let column = rowwise_record(
         kind,
