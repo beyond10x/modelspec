@@ -2,17 +2,18 @@
 format: aep.planning-md/3
 id: story:attention-event-spans
 kind: story
-status: active
+status: implemented
 title: Attention over (start, length) spans, so the decider stores only real token rows
 summary: 'Drops the decider''s 70.5 % padded event rows: about 279 to 160 ms per device step, same bits.'
 relations:
 - decomposes: epic:decider-training-support
 - serves: vision:modelspec
 - depends_on: story:attention-fewer-query-rows
-revision: 3
+revision: 4
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-29T12:36:22Z", actor: "human:timo", revision: 2}
 - {from: "proposed", to: "active", at: "2026-10-29T12:36:22Z", actor: "human:timo", revision: 3}
+- {from: "active", to: "implemented", at: "2026-10-29T19:23:56Z", actor: "human:timo", revision: 4, decided_on: {"recorded":{"test_result":1}}}
 ---
 ## Outcome
 

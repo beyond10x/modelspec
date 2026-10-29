@@ -2,16 +2,17 @@
 format: aep.planning-md/3
 id: story:vulkan-long-k-weight-grad-matmul
 kind: story
-status: active
+status: implemented
 title: Long-reduction weight-gradient matmuls near forward throughput, CPU summation order kept
 summary: '[N,R]x[R,M] with R = 65,536 tokens runs at 4-5 TFLOP/s against 19-22 for forward matmuls: 87 of 440 ms per decider step.'
 relations:
 - decomposes: epic:decider-training-support
 - serves: vision:modelspec
-revision: 3
+revision: 4
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-29T09:24:39Z", actor: "human:timo", revision: 2}
 - {from: "proposed", to: "active", at: "2026-10-29T09:24:39Z", actor: "human:timo", revision: 3}
+- {from: "active", to: "implemented", at: "2026-10-29T19:23:56Z", actor: "human:timo", revision: 4, decided_on: {"recorded":{"test_result":1}}}
 ---
 ## Outcome
 

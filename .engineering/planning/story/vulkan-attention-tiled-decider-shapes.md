@@ -2,16 +2,17 @@
 format: aep.planning-md/3
 id: story:vulkan-attention-tiled-decider-shapes
 kind: story
-status: active
+status: implemented
 title: Decider attention on the tiled Vulkan kernels, same bits
 summary: 'Attention forward and gradients for the decider shapes run workgroup-tiled instead of per_row: 251 of 440 ms per step today.'
 relations:
 - decomposes: epic:decider-training-support
 - serves: vision:modelspec
-revision: 3
+revision: 4
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-29T09:24:39Z", actor: "human:timo", revision: 2}
 - {from: "proposed", to: "active", at: "2026-10-29T09:24:39Z", actor: "human:timo", revision: 3}
+- {from: "active", to: "implemented", at: "2026-10-29T19:23:55Z", actor: "human:timo", revision: 4, decided_on: {"recorded":{"test_result":1}}}
 ---
 ## Outcome
 

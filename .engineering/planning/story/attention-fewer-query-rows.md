@@ -2,16 +2,17 @@
 format: aep.planning-md/3
 id: story:attention-fewer-query-rows
 kind: story
-status: active
+status: implemented
 title: Attention with fewer query rows than key rows
 summary: 'Lets the decider compute its last encoder layer on the one row per block it reads: about 23 % of the step.'
 relations:
 - decomposes: epic:decider-training-support
 - serves: vision:modelspec
-revision: 5
+revision: 6
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-29T11:50:57Z", actor: "human:timo", revision: 2}
 - {from: "proposed", to: "active", at: "2026-10-29T11:50:58Z", actor: "human:timo", revision: 3}
+- {from: "active", to: "implemented", at: "2026-10-29T19:23:56Z", actor: "human:timo", revision: 6, decided_on: {"recorded":{"test_result":1}}}
 ---
 ## Outcome
 

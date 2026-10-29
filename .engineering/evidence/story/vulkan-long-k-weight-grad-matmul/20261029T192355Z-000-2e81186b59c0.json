@@ -1,0 +1,13 @@
+{
+  "at": "2026-10-29T19:23:55Z",
+  "actor": "human:timo",
+  "artifact": "story:vulkan-long-k-weight-grad-matmul",
+  "kind": "story",
+  "revision": 3,
+  "change": {
+    "change": "evidence",
+    "kind": "test_result",
+    "source": "modelspec / task ci on 742062a5 (PR 93, run 40936222148)",
+    "reference": "https://github.com/beyond10x/modelspec/actions/runs/40936222148/job/123667340455"
+  }
+}

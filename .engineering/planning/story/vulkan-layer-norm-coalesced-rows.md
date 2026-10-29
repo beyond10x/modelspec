@@ -2,16 +2,17 @@
 format: aep.planning-md/3
 id: story:vulkan-layer-norm-coalesced-rows
 kind: story
-status: active
+status: implemented
 title: LayerNorm and LayerNormGradX read rows coalesced, same bits
 summary: 'The per_row kernels reach 86-125 GB/s against 491 GB/s for AddRows on [65536,256]: 40 of 440 ms per decider step.'
 relations:
 - decomposes: epic:decider-training-support
 - serves: vision:modelspec
-revision: 3
+revision: 4
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-29T09:24:40Z", actor: "human:timo", revision: 2}
 - {from: "proposed", to: "active", at: "2026-10-29T09:24:40Z", actor: "human:timo", revision: 3}
+- {from: "active", to: "implemented", at: "2026-10-29T19:23:56Z", actor: "human:timo", revision: 4, decided_on: {"recorded":{"test_result":1}}}
 ---
 ## Outcome
 
