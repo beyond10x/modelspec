@@ -2,16 +2,17 @@
 format: aep.planning-md/3
 id: story:vulkan-attention-softmax-stats-reused
 kind: story
-status: active
+status: implemented
 title: Attention backward reads the forward's softmax statistics instead of recomputing them
 summary: AttentionGradK and GradV read each query's max, sum and row dot from a buffer the forward and GradQ write once; bit-identical; about -149 ms per step
 relations:
 - decomposes: epic:bert-tiny-step-tenth
 - serves: vision:modelspec
-revision: 3
+revision: 4
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-28T20:18:23Z", actor: "human:timo", revision: 2}
 - {from: "proposed", to: "active", at: "2026-10-28T20:18:24Z", actor: "human:timo", revision: 3}
+- {from: "active", to: "implemented", at: "2026-10-29T07:18:16Z", actor: "human:timo", revision: 4, decided_on: {"recorded":{"test_result":1}}}
 ---
 # Attention backward reads the forward's softmax statistics instead of recomputing them
 

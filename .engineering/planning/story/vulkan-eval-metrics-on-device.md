@@ -2,7 +2,7 @@
 format: aep.planning-md/3
 id: story:vulkan-eval-metrics-on-device
 kind: story
-status: active
+status: implemented
 title: Held-out evaluation tallied on the device
 summary: The stepwise Vulkan run takes the evaluation loss sum from the CrossEntropy kernel and the accuracy from an argmax-count kernel, two floats per batch, one host wait per evaluated step.
 relations:
@@ -10,10 +10,11 @@ relations:
 - serves: vision:modelspec
 - depends_on: story:vulkan-eval-download-per-batch
 - decomposes: epic:bert-tiny-step-tenth
-revision: 3
+revision: 4
 transitions:
 - {from: "draft", to: "proposed", at: "2026-10-28T21:37:44Z", actor: "human:timo", revision: 2}
 - {from: "proposed", to: "active", at: "2026-10-28T21:37:44Z", actor: "human:timo", revision: 3}
+- {from: "active", to: "implemented", at: "2026-10-29T07:18:17Z", actor: "human:timo", revision: 4, decided_on: {"recorded":{"test_result":1}}}
 ---
 # Held-out evaluation tallied on the device
 
