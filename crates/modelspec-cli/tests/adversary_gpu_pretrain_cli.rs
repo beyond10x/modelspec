@@ -49,6 +49,17 @@ const EVENTS_SHA256: &str = "2336f1e1f0a7375a6702a48defba50dbc5b7218fbdf7ffc8853
 /// [`record_accuracy_is_whole_hits_and_the_loss_beats_the_baseline_of_the_evaluated_rows`].
 const EVALUATED_ROWS: u64 = 41_857;
 const EVALUATED_BASELINE: f64 = 6.904154117063165;
+/// The `eval 0` line of the recorded run, printed by unit 20's binary, whose held-out loss summed
+/// in `f32`.
+const RECORDED_EVAL_0: &str = "eval 0 loss 9.029848 accuracy 0.00019112694";
+/// The evals the short device run prints today. a123c1a5 (coordinator decision D84, DESIGN.md
+/// revision 0.55) sums the held-out loss in `f64`, which moved them from unit 20's 9.029848,
+/// 8.713591 and 8.539593 to 9.029767, 8.713636 and 8.539629, and d2445617 reduces it on the
+/// device within 4 ulps of that sum (coordinator decision D141), which moved eval 0 one ulp to
+/// 9.029766. The accuracy and every `step` line are unit 20's.
+const SHORT_RUN_EVAL_LOSSES: [&str; 3] = ["9.029766", "8.713636", "8.539629"];
+/// [`RECORDED_EVAL_0`] with the loss the short run prints today.
+const SHORT_RUN_EVAL_0: &str = "eval 0 loss 9.029766 accuracy 0.00019112694";
 /// The run's batch of `examples/bert_tiny.mspec` and its seed.
 const BATCH: usize = 32;
 const SEED: u64 = 42;
@@ -777,9 +788,10 @@ fn record_accuracy_is_whole_hits_and_the_loss_beats_the_baseline_of_the_evaluate
 
 /// The probe of hypothesis 8 on the device: the example at `steps = 100; warmup_steps = 10` with
 /// `--eval-every 50 --record`, twice, under the validation layer with its log forced to a file.
-/// Both runs print the same stdout and record the same events but for ids; the step-0 `step`
-/// and `eval` lines and every `init` line equal the full run's; the evals are unit 20's
-/// 9.029848, 8.713591 and 8.539593; the validation log holds no message.
+/// Both runs print the same stdout and record the same events but for ids; the `data`, step-0
+/// `step` and every `init` line equal the full run's, and its `eval 0` line is the full run's
+/// with the loss of [`SHORT_RUN_EVAL_LOSSES`]; the evals are [`SHORT_RUN_EVAL_LOSSES`]; the
+/// validation log holds no message.
 #[test]
 #[ignore = "device: needs a Vulkan device, MODELSPEC_GPU_PRETRAIN_RUN and MODELSPEC_GPU_PRETRAIN_DATA"]
 fn device_short_runs_repeat_and_start_where_the_full_run_started() {
@@ -866,7 +878,7 @@ fn device_short_runs_repeat_and_start_where_the_full_run_started() {
 
     let (_, evals) = parse_lines(&first);
     let losses: Vec<&str> = evals.iter().map(|e| e.loss.as_str()).collect();
-    assert_eq!(losses, ["9.029848", "8.713591", "8.539593"]);
+    assert_eq!(losses, SHORT_RUN_EVAL_LOSSES);
     let full = std::fs::read_to_string(run_dir().join("full.stdout")).unwrap();
     let starts = |text: &str| -> Vec<String> {
         text.lines()
@@ -879,7 +891,22 @@ fn device_short_runs_repeat_and_start_where_the_full_run_started() {
             .map(str::to_owned)
             .collect()
     };
-    let (short, long) = (starts(&first), starts(&full));
+    let recorded = starts(&full);
+    assert!(
+        recorded.iter().any(|l| l == RECORDED_EVAL_0),
+        "the full run's eval 0 is {RECORDED_EVAL_0}"
+    );
+    let long: Vec<String> = recorded
+        .into_iter()
+        .map(|l| {
+            if l == RECORDED_EVAL_0 {
+                SHORT_RUN_EVAL_0.to_owned()
+            } else {
+                l
+            }
+        })
+        .collect();
+    let short = starts(&first);
     assert_eq!(
         long.len(),
         44,
