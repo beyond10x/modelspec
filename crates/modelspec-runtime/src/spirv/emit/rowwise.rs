@@ -29,9 +29,12 @@
 //! kernels (story:vulkan-embedding-grad-sorted-ids). Its sort, `per_row` and `i32`, gives
 //! position `k` of the `n` ids its rank, the number of ids below it, compared as `u32`, plus the
 //! number of equal ids at earlier positions, and writes the id and `k` into row `rank` of an
-//! `i32[n, 2]`: the ids sorted by id, then by position, with no float operation. For each block
-//! of 64 ids, invocation `i` of the workgroup copies id `i` of the block into workgroup memory,
-//! and after a barrier each invocation compares its id with the block's ids. Its gradient,
+//! `i32[n, 2]`: the ids sorted by id, then by position, with no float operation. Each id has
+//! `EMBEDDING_SORT_LANES` = 16 invocations, 4 ids per workgroup (story:vulkan-embedding-sort-lanes).
+//! For each block of 64 ids, invocation `i` of the workgroup copies id `i` of the block into
+//! workgroup memory, and after a barrier lane `l` of an id compares it with the block's ids at
+//! positions `l`, `l + 16`, `l + 32` and `l + 48`; after the last block each lane stages its
+//! count and lane 0 adds the 16 counts in ascending lane order into the rank. Its gradient,
 //! `per_element`, finds the sorted rows of its table row `r` by two binary searches of a fixed
 //! number of steps, so element `(r, j)` starts at `0.0` and adds column `j` of the gradient row
 //! of every id equal to `r` in ascending id position, as the CPU does, then writes once, without
@@ -50,7 +53,8 @@ use crate::cpu::interpreter::{SIGREG_KNOTS, sigreg_knot};
 use crate::cpu::tensor::{COS_P, FRAC_2_PI, PI_2_P1, PI_2_P2, PI_2_P3, SIN_P};
 use modelspec_core::ir::tensor::{DType, TensorOp};
 use modelspec_core::schedule::{
-    column_sum_columns, layer_norm_invocations, layer_norm_row_stride, layer_norm_rows,
+    EMBEDDING_SORT_LANES, column_sum_columns, layer_norm_invocations, layer_norm_row_stride,
+    layer_norm_rows,
 };
 use rspirv::spirv::GlslStd450Op;
 
@@ -291,9 +295,11 @@ impl Rowwise {
                     width: u(*h),
                 },
             ),
-            ("EmbeddingGrad", [I32], [[n]], [rn, 2], []) if n == rn => {
-                (PerRow, u(*n), Rowwise::EmbeddingSort { ids: u(*n) })
-            }
+            ("EmbeddingGrad", [I32], [[n]], [rn, 2], []) if n == rn => (
+                PerRow,
+                u(*n).saturating_mul(EMBEDDING_SORT_LANES as u32),
+                Rowwise::EmbeddingSort { ids: u(*n) },
+            ),
             ("EmbeddingGrad", [I32, F32], [[n, 2], [gn, h]], [_, rh], []) if n == gn && h == rh => {
                 (
                     PerElement,
@@ -1033,13 +1039,16 @@ impl Shell {
         self.write(index, out)
     }
 
-    /// The sort of `EmbeddingGrad`, invocation `index` for id `index`: its rank, the number of ids
-    /// below it and of equal ids at earlier positions, counted over every id in ascending
-    /// position, then its id and position written, as their bits, to row `rank` of the
-    /// `[ids, 2]` result. Each block of 64 ids is staged in workgroup memory, id `i` of the
-    /// block read by invocation `i` and kept as the bits of an `f32`, between two barriers that
-    /// every invocation of the workgroup reaches. Integer compares only, so the rows are the
-    /// stable sort by id on every device.
+    /// The sort of `EmbeddingGrad`, the `EMBEDDING_SORT_LANES` invocations `index` of id
+    /// `index / EMBEDDING_SORT_LANES`: its rank, the number of ids below it and of equal ids at
+    /// earlier positions, counted over every id in ascending position, then its id and position
+    /// written, as their bits, to row `rank` of the `[ids, 2]` result. Each block of 64 ids is
+    /// staged in workgroup memory, id `i` of the block read by invocation `i` and kept as the
+    /// bits of an `f32`, between two barriers that every invocation of the workgroup reaches;
+    /// lane `l` of an id counts the block's positions `l + EMBEDDING_SORT_LANES · u`. After the
+    /// last block each lane stages its count, and after a barrier lane 0 adds the lanes' counts
+    /// in ascending lane order and writes the row. Integer compares and adds only, so the rows
+    /// are the stable sort by id on every device (story:vulkan-embedding-sort-lanes).
     fn embedding_sort(&mut self, ids: u32) -> Result<(), EmitError> {
         let (index, count) = (self.index, self.count);
         let local = self.local.expect("a module with workgroup memory");
@@ -1047,8 +1056,11 @@ impl Shell {
         let rank_var = self.extra_u32_vars[0];
         let (zero, one, two) = (self.uint(0), self.uint(1), self.uint(2));
         let (n_ids, group) = (self.uint(ids), self.uint(GROUP));
-        let inside = self.less(index, count)?;
-        let at = self.b.select(self.u32_ty, None, inside, index, zero)?;
+        let lanes = self.uint(EMBEDDING_SORT_LANES as u32);
+        let own_index = self.div(index, lanes)?;
+        let lane = self.rem(index, lanes)?;
+        let inside = self.less(own_index, count)?;
+        let at = self.b.select(self.u32_ty, None, inside, own_index, zero)?;
         let own = self.read_u32(0, at)?;
         self.b.store(rank_var, zero, None, [])?;
         self.counted(block_var, zero, n_ids, group, |m, block| {
@@ -1063,13 +1075,13 @@ impl Shell {
             m.when(inside, |m| {
                 let left = m.sub(n_ids, block)?;
                 let end = m.min(left, group)?;
-                m.counted(t_var, zero, end, one, |m, t| {
+                m.counted(t_var, lane, end, lanes, |m, t| {
                     let bits = m.load_shared(t)?;
                     let id = m.b.bitcast(m.u32_ty, None, bits)?;
                     let position = m.add(block, t)?;
                     let below = m.less(id, own)?;
                     let equal = m.equal(id, own)?;
-                    let earlier = m.less(position, index)?;
+                    let earlier = m.less(position, own_index)?;
                     let tie = m.and(equal, earlier)?;
                     let before = m.b.logical_or(m.bool_ty, None, below, tie)?;
                     let step = m.b.select(m.u32_ty, None, before, one, zero)?;
@@ -1081,13 +1093,30 @@ impl Shell {
             })?;
             m.barrier()
         })?;
-        self.when(inside, |m| {
+        // The lanes' counts, staged where the last block was, added by lane 0 of each id.
+        let partial = self.b.load(self.u32_ty, None, rank_var, None, [])?;
+        let bits = self.b.bitcast(self.f32_ty, None, partial)?;
+        self.store_shared(local, bits)?;
+        self.barrier()?;
+        let first_lane = self.equal(lane, zero)?;
+        let writes = self.and(inside, first_lane)?;
+        self.when(writes, |m| {
+            m.b.store(rank_var, zero, None, [])?;
+            let end = m.add(local, lanes)?;
+            m.counted(t_var, local, end, one, |m, t| {
+                let bits = m.load_shared(t)?;
+                let part = m.b.bitcast(m.u32_ty, None, bits)?;
+                let rank = m.b.load(m.u32_ty, None, rank_var, None, [])?;
+                let rank = m.add(rank, part)?;
+                m.b.store(rank_var, rank, None, [])?;
+                Ok(())
+            })?;
             let rank = m.b.load(m.u32_ty, None, rank_var, None, [])?;
             let row = m.mul(rank, two)?;
             let id = m.b.bitcast(m.f32_ty, None, own)?;
             m.write(row, id)?;
             let next = m.add(row, one)?;
-            let position = m.b.bitcast(m.f32_ty, None, index)?;
+            let position = m.b.bitcast(m.f32_ty, None, own_index)?;
             m.write(next, position)
         })
     }

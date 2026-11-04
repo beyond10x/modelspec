@@ -8,7 +8,7 @@
 //!    exactly when it has more than one tile.
 //! 3. Literal tiles of the two-row shapes whose depth the memory limit lowers below 16.
 
-use modelspec_core::ir::kernel::{MIN_SHARED_MEMORY_BYTES, MatMulTile};
+use modelspec_core::ir::kernel::{MATMUL_LONG_K_NARROW_BLOCK, MIN_SHARED_MEMORY_BYTES, MatMulTile};
 
 /// `MatMulTile::of` at `2449897`, verbatim but for the name.
 fn base_of(m: u64, k: u64, n: u64) -> MatMulTile {
@@ -80,10 +80,13 @@ fn every_two_row_tile_reads_2_ahead_at_the_deepest_depth_up_to_16_that_fits() {
         let base = base_of(m, k, n);
         let what = format!("[{m}, {k}] x [{k}, {n}]: {tile:?}");
         // story:matmul-shape-aware-tiling: an output of at least 128 blocks of 64 by 64 with
-        // `n` of at least 64 is register-blocked, outside the row rule.
+        // `n` of at least 64 is register-blocked, outside the row rule; so is a long-`k`
+        // output of at least 32 rows (finding LK-1, story:vulkan-long-k-from-4096).
         if tile.cols_per_invocation > 1 {
+            let long_k =
+                k >= MATMUL_LONG_K_NARROW_BLOCK.from_k && m >= MATMUL_LONG_K_NARROW_BLOCK.from_m;
             assert!(
-                n >= 64 && m.div_ceil(64) * n.div_ceil(64) >= 128,
+                (n >= 64 && m.div_ceil(64) * n.div_ceil(64) >= 128) || long_k,
                 "{what}: register-blocked"
             );
             continue;

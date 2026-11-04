@@ -1,0 +1,2 @@
+driver_version, name
+615.71.09, NVIDIA GeForce RTX 3090

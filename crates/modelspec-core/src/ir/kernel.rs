@@ -274,8 +274,11 @@ pub const MATMUL_SQUARE_BLOCK: MatMulBlock = MatMulBlock {
 /// The long-`k` register-blocked tile: 64 invocations of 8 rows by 4 columns, a block of 64
 /// rows by 32 columns, tiles of 16 values of `k` read 4 tiles ahead, workgroup memory read in
 /// vectors ([`MatMulTile::vector_reads`]). It takes the outputs too small for
-/// [`MATMUL_SQUARE_BLOCK`] whose `k` of at least 16,384 makes each element's sum long: on the
-/// RTX 3090 it takes the weight gradient `[256, 65536]ᵀ x [65536, 1024]` from 7,052 µs on the
+/// [`MATMUL_SQUARE_BLOCK`] whose `k` of at least 4,096 makes each element's sum long (16,384
+/// until story:vulkan-long-k-from-4096: at 4,096 the BERT-tiny step's masked-row gradient
+/// `[832, 8192] x [8192, 128]ᵀ` takes 423 µs on the RTX 3090 against 533 on the one-column
+/// tile, and each `[512, 4096]ᵀ x [4096, 128]` and `[128, 4096]ᵀ x [4096, 512]` weight
+/// gradient 86 µs against 128 on the two-row tile): on the RTX 3090 it takes the weight gradient `[256, 65536]ᵀ x [65536, 1024]` from 7,052 µs on the
 /// two-row tile to 2,792 µs and `[256, 16384]ᵀ x [16384, 1024]` from 1,734 to 732 µs, and at
 /// 32 workgroups (`[256, 16384]ᵀ x [16384, 256]`) is slower than
 /// [`MATMUL_LONG_K_NARROW_BLOCK`] (669 against 368 µs), hence `from_workgroups`. With 16
@@ -289,7 +292,7 @@ pub const MATMUL_LONG_K_BLOCK: MatMulBlock = MatMulBlock {
     cols_per_invocation: 4,
     depth: 16,
     ahead: 4,
-    from_k: 16_384,
+    from_k: 4096,
     from_workgroups: 128,
     from_m: 32,
 };
@@ -311,7 +314,7 @@ pub const MATMUL_LONG_K_NARROW_BLOCK: MatMulBlock = MatMulBlock {
     cols_per_invocation: 2,
     depth: 16,
     ahead: 4,
-    from_k: 16_384,
+    from_k: 4096,
     from_workgroups: 64,
     from_m: 32,
 };

@@ -81,7 +81,11 @@ fn cross_entropy_grad_is_row_statistics_then_one_invocation_per_element() {
     };
     assert_eq!(stats.operands, [f32s(&[n, v]), i32s(&[n]), f32s(&[n])]);
     assert_eq!(stats.result, TensorType::f32(&[n + 1, 2]));
-    assert_eq!(stats.workgroups, [(n + 1).div_ceil(64) as u32, 1, 1]);
+    assert_eq!(
+        stats.workgroups,
+        [(n + 1) as u32, 1, 1],
+        "one workgroup per row and one for the weight sum"
+    );
     assert_eq!(stats.flop(), Some(n * (4 * v + 1)));
     assert_eq!(elements.operands.len(), 5, "{}", elements.signature());
     assert_eq!(
@@ -117,7 +121,8 @@ fn cross_entropy_grad_is_row_statistics_then_one_invocation_per_element() {
 }
 
 /// On shapes whose edges do not fill a workgroup, with the seed as an immediate and as a rank-0
-/// buffer: the statistics kernel runs `n + 1` invocations and the gradient `n·v`, each in
+/// buffer: the statistics kernel runs `n + 1` workgroups of 64, one per row and one for the
+/// weight sum (story:vulkan-cross-entropy-row-workgroup), and the gradient `n·v` invocations in
 /// workgroups of 64 that cover them, and each module passes `spirv-val`.
 #[test]
 fn cross_entropy_grad_stages_on_unaligned_shapes_pass_spirv_val() {
@@ -141,11 +146,11 @@ fn cross_entropy_grad_stages_on_unaligned_shapes_pass_spirv_val() {
         for (kernel, invocations) in kernels {
             let signature = kernel.signature();
             assert_eq!(kernel.workgroup_size, 64, "{signature}");
-            assert_eq!(
-                kernel.workgroups,
-                [invocations.div_ceil(64) as u32, 1, 1],
-                "{signature}"
-            );
+            let groups = match kernel.kind {
+                KernelKind::PerRow => invocations,
+                _ => invocations.div_ceil(64),
+            };
+            assert_eq!(kernel.workgroups, [groups as u32, 1, 1], "{signature}");
             let bindings = kernel_bindings(&kernel).expect("the kernel binds");
             assert_eq!(bindings.invocations, invocations, "{signature}");
             let words = emit(&kernel).unwrap_or_else(|error| panic!("{signature}: {error}"));

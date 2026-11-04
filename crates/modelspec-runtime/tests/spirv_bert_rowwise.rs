@@ -29,7 +29,7 @@ use modelspec_core::ir::kernel::{
 use modelspec_core::ir::print::print_kernel;
 use modelspec_core::ir::tensor::{Dim, TensorOp, TensorType};
 use modelspec_core::schedule::{
-    embedding_grad_kernels, layer_norm_grad_gamma_kernels, rowwise_kernel,
+    EMBEDDING_SORT_LANES, embedding_grad_kernels, layer_norm_grad_gamma_kernels, rowwise_kernel,
 };
 use modelspec_runtime::spirv::emit::{emit, emit_kernels};
 use modelspec_runtime::spirv::validate::validate;
@@ -409,8 +409,9 @@ fn embedding_grad_pairs(plan: &ExecutionPlan) -> Vec<([Kernel; 2], u64, u64, u64
 }
 
 /// story:vulkan-embedding-grad-per-element and story:vulkan-embedding-grad-sorted-ids:
-/// `EmbeddingGrad` is two kernels. The sort is one invocation per id, `n` of them in workgroups
-/// of 64, writing `i32[n, 2]` and counting no FLOP; the gradient is one invocation per element of
+/// `EmbeddingGrad` is two kernels. The sort is `EMBEDDING_SORT_LANES` invocations per id, `16·n`
+/// of them in workgroups of 64 (story:vulkan-embedding-sort-lanes), writing `i32[n, 2]` and
+/// counting no FLOP; the gradient is one invocation per element of
 /// the `[v, h]` table gradient, `v·h` of them in workgroups of 64, over the sorted ids and the
 /// gradient rows, each adding the gradient column of every position of its row in ascending
 /// order, so it still counts one FLOP per element of the gradient it reads: on the block's 11 by
@@ -427,7 +428,7 @@ fn embedding_grad_is_one_invocation_per_table_element() {
         assert_eq!(sort.workgroup_size, 64, "{signature}");
         assert_eq!(
             sort.workgroups,
-            [n.div_ceil(64) as u32, 1, 1],
+            [(n * EMBEDDING_SORT_LANES).div_ceil(64) as u32, 1, 1],
             "{signature}"
         );
         assert_eq!(sort.result, TensorType::i32(&[*n, 2]), "{signature}");

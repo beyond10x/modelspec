@@ -1,0 +1,22 @@
+loss-modelspec SM 210 P8 n 8
+loss-modelspec gate off
+loss-pytorch SM 210 P8 n 20
+loss-pytorch gate off
+modelspec-1 SM 1920 P0 n 156
+modelspec-1 gate passed
+pytorch-eager-1 SM 1890 P2 n 284
+pytorch-eager-1 gate passed
+pytorch-compile-1 SM 1890 P2 n 267
+pytorch-compile-1 gate passed
+modelspec-2 SM 1875 P0 n 156
+modelspec-2 gate passed
+pytorch-eager-2 SM 1905 P2 n 375
+pytorch-eager-2 gate passed
+pytorch-compile-2 SM 1890 P2 n 256
+pytorch-compile-2 gate passed
+modelspec-3 SM 1830 P0 n 158
+modelspec-3 gate passed
+pytorch-eager-3 SM 1890 P2 n 303
+pytorch-eager-3 gate passed
+pytorch-compile-3 SM 1860 P2 n 218
+pytorch-compile-3 gate passed

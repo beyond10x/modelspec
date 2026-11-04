@@ -16,8 +16,9 @@
 //! and `LayerNormGradGamma` are two Dispatches each. `EmbeddingGrad`
 //! ([`embedding_grad_kernels`], story:vulkan-embedding-grad-sorted-ids): an `Allocate` of an
 //! `i32[n, 2]` buffer, numbered after every other buffer, a sort of the `n` ids by id and
-//! position that writes it, one invocation per id, a `Barrier`, and the gradient over the sorted
-//! ids, one invocation per element of the table gradient. `LayerNormGradGamma`
+//! position that writes it, [`EMBEDDING_SORT_LANES`] invocations per id that count its rank
+//! over disjoint positions (story:vulkan-embedding-sort-lanes), a `Barrier`, and the gradient
+//! over the sorted ids, one invocation per element of the table gradient. `LayerNormGradGamma`
 //! ([`layer_norm_grad_gamma_kernels`], story:vulkan-layer-norm-grad-gamma-row-moments): an
 //! `Allocate` of an `f32[n, 2]` buffer, numbered after every other buffer, the mean and `rstd`
 //! of each of the `n` rows written into it, one invocation per row, a `Barrier`, and the column
@@ -30,11 +31,12 @@
 //! operand (story:attention-event-spans) a sequence is a span of at most [`MAX_SPAN_KEYS`] keys,
 //! [`span_rows`] its rows, and a workgroup whose tile holds no row of its span writes only the
 //! `+0` of the rows between spans; the head count a
-//! last immediate operand; `CrossEntropy` is two Dispatches, one invocation per row that writes
-//! the row's loss into a partials buffer, then a loss sum of one workgroup that adds the weighted
-//! losses in row order ([`cross_entropy_kernels`]), and `CrossEntropyGrad` is two Dispatches, one
-//! invocation per row and one more that write the row maxima and exponential sums and the weight
-//! sum, then one invocation per gradient element ([`cross_entropy_grad_kernels`]), and `Sqrt` and
+//! last immediate operand; `CrossEntropy` is two Dispatches, one workgroup of 64 per row that
+//! writes the row's loss into a partials buffer, then a loss sum of one workgroup that adds the
+//! weighted losses in row order ([`cross_entropy_kernels`]), and `CrossEntropyGrad` is two
+//! Dispatches, one workgroup per row and one more that write the row maxima and exponential sums
+//! and the weight sum, then one invocation per gradient element ([`cross_entropy_grad_kernels`]),
+//! and `Sqrt` and
 //! `Div` elementwise kernels of one invocation per output element that no elementwise chain
 //! extends ([`attention_loss_kernel`], coordinator decision D73). The kernels of an attention
 //! call share its softmax statistics ([`softmax_stats_sites`],
@@ -1554,11 +1556,17 @@ pub fn rowwise_kernel(
     rowwise_record(kind, op, operands, result, invocations)
 }
 
+/// The lanes of the `EmbeddingGrad` sort per id (story:vulkan-embedding-sort-lanes): lane `l`
+/// of id `n` counts the ids before it at the positions `l + EMBEDDING_SORT_LANES · u` of each
+/// staged block, and the lanes' counts are added in ascending lane order into the rank.
+pub const EMBEDDING_SORT_LANES: u64 = 16;
+
 /// The two kernels of `EmbeddingGrad` over its operands `ids: i32[N]` and `g: f32[N, H]` into
 /// its `result: f32[V, H]`, as [`schedule`] builds them (story:vulkan-embedding-grad-sorted-ids):
-/// the sort, [`KernelKind::PerRow`] over `(ids)` into `i32[N, 2]`, invocation `n` writing the id
-/// and position `n` to the row of its rank by id, then position, so the rows hold the ids in
-/// ascending order and each id's positions in ascending order; and the gradient,
+/// the sort, [`KernelKind::PerRow`] over `(ids)` into `i32[N, 2]`, the [`EMBEDDING_SORT_LANES`]
+/// invocations of id `n` writing the id and position `n` to the row of its rank by id, then
+/// position, so the rows hold the ids in ascending order and each id's positions in ascending
+/// order; and the gradient,
 /// [`KernelKind::PerElement`] over `(sorted, g)` into `result`, one invocation per element, which
 /// adds the gradient rows of its table row's positions in ascending order. `None` for operands
 /// or a result that are not the op's.
@@ -1576,7 +1584,8 @@ pub fn embedding_grad_kernels(operands: Vec<Operand>, result: TensorType) -> Opt
         Operand::Immediate(_) => return None,
     };
     let sorted = TensorType::i32(&[rows, 2]);
-    let sort = rowwise_record(KernelKind::PerRow, &op, vec![ids], sorted.clone(), rows)?;
+    let lanes = rows.checked_mul(EMBEDDING_SORT_LANES)?;
+    let sort = rowwise_record(KernelKind::PerRow, &op, vec![ids], sorted.clone(), lanes)?;
     let gather = rowwise_record(
         kind,
         &op,
@@ -1958,6 +1967,9 @@ fn attention_loss_groups(
             ))
         }
         (KernelKind::LossSum, None) => Some((kind, 1, size)),
+        // One workgroup per row of the cross-entropy row kernels, its invocations sharing the
+        // row's classes (story:vulkan-cross-entropy-row-workgroup).
+        (KernelKind::PerRow, None) => Some((kind, invocations, size)),
         _ => Some((kind, invocations.div_ceil(u64::from(size)), size)),
     }
 }
@@ -2044,7 +2056,8 @@ fn softmax_stats_sites(nodes: &[TensorNode]) -> Vec<[Option<ValueId>; 4]> {
 /// The two kernels of `CrossEntropy` over its operands `logits: f32[N, V]`, `labels: i32[N]`
 /// and `weights: f32[N]` into its rank-0 `result`, as [`schedule`] builds them
 /// (story:vulkan-cross-entropy-sum-per-row): the row losses, [`KernelKind::PerRow`] over
-/// `(logits, labels)` into `f32[N]`, one invocation per row; and their sum,
+/// `(logits, labels)` into `f32[N]`, one workgroup of 64 per row
+/// (story:vulkan-cross-entropy-row-workgroup); and their sum,
 /// [`KernelKind::LossSum`] over `(row losses, weights)` into `result`, one workgroup that adds
 /// the weighted row losses and the weights in ascending row order. `None` for operands or a
 /// result that are not the op's.
@@ -2067,8 +2080,8 @@ pub fn cross_entropy_kernels(operands: Vec<Operand>, result: TensorType) -> Opti
 /// The two kernels of `CrossEntropyGrad` over its operands `logits: f32[N, V]`,
 /// `labels: i32[N]`, `weights: f32[N]` and a seed, an immediate or a rank-0 `f32` buffer, into
 /// its `result: f32[N, V]`, as [`schedule`] builds them: the row statistics,
-/// [`KernelKind::PerRow`] over `(logits, labels, weights)` into `f32[N + 1, 2]`, invocation `n`
-/// of the first `N` writing the maximum and the sum of `exp(x - max)` of row `n` and invocation
+/// [`KernelKind::PerRow`] over `(logits, labels, weights)` into `f32[N + 1, 2]`, workgroup `n`
+/// of the first `N` writing the maximum and the sum of `exp(x - max)` of row `n` and workgroup
 /// `N` the sum of the weights; and the gradient, [`KernelKind::PerElement`] over `(statistics,
 /// logits, labels, weights, seed)` into `result`, one invocation per element. `None` for
 /// operands or a result that are not the op's.

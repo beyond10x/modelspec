@@ -1,9 +1,9 @@
 //! The modules of the attention and cross-entropy kernels (DESIGN.md § 5.2, coordinator
 //! decision D73): `Attention`, `AttentionGradQ`, `AttentionGradK` and `AttentionGradV` one
-//! workgroup per sequence, head and tile of rows, the `CrossEntropy` loss one invocation per
-//! row, then a loss sum of one workgroup of 64, `CrossEntropyGrad` one invocation per row and one
-//! more, then one per gradient element; and the corrected square root and quotient of the `Sqrt`
-//! and `Div` elementwise kernels.
+//! workgroup per sequence, head and tile of rows, the `CrossEntropy` loss one workgroup of 64
+//! per row, then a loss sum of one workgroup of 64, `CrossEntropyGrad` one workgroup per row and
+//! one more, then one invocation per gradient element; and the corrected square root and quotient
+//! of the `Sqrt` and `Div` elementwise kernels.
 //!
 //! Each computes its op as the CPU interpreter does, operation for operation, so the device
 //! differs from the CPU only by its `exp`, `log`, division and square root, which Vulkan does
@@ -42,17 +42,29 @@
 //! their query, `AttentionGradK` and `AttentionGradV` over every query of their key's sequence,
 //! with no atomics; a masked key's row of `AttentionGradK` and `AttentionGradV` is `+0`.
 //!
-//! `CrossEntropy` invocation `n` writes the loss `max + ln(sum) - logits[label]` of row `n`.
+//! `CrossEntropy` workgroup `n` writes the loss `max + ln(sum) - logits[label]` of row `n`
+//! (story:vulkan-cross-entropy-row-workgroup): invocation `i` of its 64 takes the row's classes
+//! `i`, `i + 64`, `i + 128`, ... in ascending order, so the workgroup's reads of a row are
+//! consecutive; it keeps the maximum of its classes, replaced only by a greater one, stages it,
+//! and after a barrier every invocation reads the 64 staged maxima in ascending order into the
+//! row's maximum, starting at invocation 0's and replacing it only by a greater one. After a
+//! barrier each invocation sums `exp(x - max)` over its classes in ascending order, from `-0.0`,
+//! and stages the sum; after a barrier invocation 0 adds the 64 staged sums in ascending
+//! invocation order, from `-0.0`, into the row's sum, and writes the loss. A row of fewer than
+//! 64 classes stages only from the invocations that hold one. Where the CPU adds the row's
+//! `exp` terms in ascending class order, the device adds them in this two-stage order the shape
+//! alone fixes, so the row loss is in the tolerance class of DESIGN.md § 5.4.
 //! The loss sum's workgroup stages those row losses and their weights 64 rows at a time in
 //! workgroup memory, invocation `i` row `i` of the block, and after a barrier invocation 0 adds
 //! the block's weighted losses and weights to the numerator and denominator in ascending row
 //! order; the loss is `+0` when the denominator is 0, else their quotient. A label outside the
 //! classes reads class 0; the CPU refuses one before it runs.
 //! `CrossEntropyGrad` row `n` is `(g · w[n] / sum(w)) · (p - [class == label])` per class, `+0`
-//! where the weight sum is 0. Its first stage's invocation `n` writes the maximum and the sum of
-//! `exp(x - max)` of row `n` by the instructions of the row loss, and invocation `N` the weight
-//! sum in ascending row order; its second stage's invocation `n · V + c` reads them and computes
-//! element `c` of row `n` by the instructions the row's loop ran for it before the split.
+//! where the weight sum is 0. Its first stage's workgroup `n` writes the maximum and the sum of
+//! `exp(x - max)` of row `n` by the instructions of the row loss, and invocation 0 of workgroup
+//! `N` the weight sum in ascending row order; its second stage's invocation `n · V + c` reads
+//! them and computes element `c` of row `n` by the instructions the row's loop ran for it before
+//! the split.
 
 use super::{EmitError, Kernel, KernelKind, Operand, Shell, Word, operands_error, static_shape};
 use modelspec_core::ir::kernel::SOFTMAX_STATS_PER_QUERY;
@@ -315,7 +327,8 @@ impl AttentionLoss {
             ) {
                 ("CrossEntropy", [F32, I32], [[n, v], [ln]], [rn], []) if n == ln && n == rn => (
                     KernelKind::PerRow,
-                    u(*n),
+                    fits(n.saturating_mul(u64::from(GROUP)))
+                        .ok_or_else(|| wrong("more than 2^32 invocations"))?,
                     AttentionLoss::CrossEntropyRows { classes: u(*v) },
                 ),
                 ("CrossEntropy", [F32, F32], [[n], [wn]], [], []) if n == wn => (
@@ -327,7 +340,8 @@ impl AttentionLoss {
                     if n == ln && n == wn && Some(*sn) == n.checked_add(1) =>
                 {
                     fits(sn.saturating_mul(2)).ok_or_else(|| wrong("2^32 row statistics"))?;
-                    let invocations = u(*sn);
+                    let invocations = fits(sn.saturating_mul(u64::from(GROUP)))
+                        .ok_or_else(|| wrong("more than 2^32 invocations"))?;
                     (
                         KernelKind::PerRow,
                         invocations,
@@ -396,12 +410,16 @@ impl AttentionLoss {
     }
 
     /// The `f32` values of workgroup memory the module stages: the row losses of one block and
-    /// their weights; the [`Attend::staged`] values of an attention workgroup.
+    /// their weights; the maxima, then the exponential sums, of the invocations of a row kernel;
+    /// the [`Attend::staged`] values of an attention workgroup.
     pub(super) fn shared(self) -> Option<u32> {
         match self {
             AttentionLoss::CrossEntropy { .. } => Some(2 * GROUP),
+            AttentionLoss::CrossEntropyRows { .. } | AttentionLoss::CrossEntropyGradRows { .. } => {
+                Some(GROUP)
+            }
             AttentionLoss::Attention(at) => Some(at.staged()),
-            _ => None,
+            AttentionLoss::CrossEntropyGrad { .. } => None,
         }
     }
 
@@ -771,7 +789,16 @@ impl Shell {
             guarded => guarded,
         };
         let (index, count) = (self.index, self.count);
-        let inside = self.less(index, count)?;
+        let inside = match guarded {
+            AttentionLoss::CrossEntropyRows { .. } | AttentionLoss::CrossEntropyGradRows { .. } => {
+                // One workgroup per row: every invocation of a workgroup takes the branch, so
+                // the barriers inside stay in uniform control flow.
+                let size = self.uint(GROUP);
+                let group = self.div(index, size)?;
+                self.less(group, count)?
+            }
+            _ => self.less(index, count)?,
+        };
         self.when(inside, |m| match guarded {
             AttentionLoss::CrossEntropyRows { classes } => m.cross_entropy_row(classes),
             AttentionLoss::CrossEntropyGradRows { rows, classes } => {
@@ -2136,44 +2163,6 @@ impl Shell {
         })
     }
 
-    /// The maximum of the `classes` logits of the row at `base`, the first replaced by each
-    /// later greater one, into the shell's `f32` variable, and the sum of `exp(x - max)` in
-    /// ascending order into `total_var`. Uses the shell's second `u32` variable.
-    fn logit_softmax(
-        &mut self,
-        base: Word,
-        classes: u32,
-        total_var: Word,
-    ) -> Result<(Word, Word), EmitError> {
-        let (var, max_var) = (self.u32_vars[1], self.f32_var);
-        let (zero, one, end) = (self.uint(0), self.uint(1), self.uint(classes));
-        let first = self.read(0, base)?;
-        self.b.store(max_var, first, None, [])?;
-        self.counted(var, one, end, one, |m, c| {
-            let at = m.add(base, c)?;
-            let x = m.read(0, at)?;
-            let max = m.b.load(m.f32_ty, None, max_var, None, [])?;
-            let kept = m.greater_of(x, max)?;
-            m.b.store(max_var, kept, None, [])?;
-            Ok(())
-        })?;
-        let max = self.b.load(self.f32_ty, None, max_var, None, [])?;
-        let start = self.float(-0.0);
-        self.b.store(total_var, start, None, [])?;
-        self.counted(var, zero, end, one, |m, c| {
-            let at = m.add(base, c)?;
-            let x = m.read(0, at)?;
-            let d = m.f_sub(x, max)?;
-            let e = m.exp(d)?;
-            let total = m.b.load(m.f32_ty, None, total_var, None, [])?;
-            let sum = m.f_add(total, e)?;
-            m.b.store(total_var, sum, None, [])?;
-            Ok(())
-        })?;
-        let total = self.b.load(self.f32_ty, None, total_var, None, [])?;
-        Ok((max, total))
-    }
-
     /// The sum of the `rows` weights of binding 2 in ascending order, on the shell's `f32`
     /// variable and first `u32` variable.
     fn weight_sum(&mut self, rows: u32) -> Result<Word, EmitError> {
@@ -2192,18 +2181,104 @@ impl Shell {
     /// `max + ln(sum) - logits[label]`.
     fn cross_entropy_row(&mut self, classes: u32) -> Result<(), EmitError> {
         let (index, total_var) = (self.index, self.matmul_vars[0]);
-        let (zero, v) = (self.uint(0), self.uint(classes));
-        let at = self.mul(index, v)?;
-        let (max, total) = self.logit_softmax(at, classes, total_var)?;
-        let label = self.read_u32(1, index)?;
-        let valid = self.less(label, v)?;
-        let label = self.b.select(self.u32_ty, None, valid, label, zero)?;
-        let target_at = self.add(at, label)?;
-        let target = self.read(0, target_at)?;
-        let log = self.ln(total)?;
-        let shifted = self.f_add(max, log)?;
-        let loss = self.f_sub(shifted, target)?;
-        self.write(index, loss)
+        let local = self.local.expect("a module with workgroup memory");
+        let (zero, v, size) = (self.uint(0), self.uint(classes), self.uint(GROUP));
+        let row = self.div(index, size)?;
+        let at = self.mul(row, v)?;
+        let (max, total) = self.logit_softmax_group(at, classes, total_var, local)?;
+        let first = self.equal(local, zero)?;
+        self.when(first, |m| {
+            let label = m.read_u32(1, row)?;
+            let valid = m.less(label, v)?;
+            let label = m.b.select(m.u32_ty, None, valid, label, zero)?;
+            let target_at = m.add(at, label)?;
+            let target = m.read(0, target_at)?;
+            let log = m.ln(total)?;
+            let shifted = m.f_add(max, log)?;
+            let loss = m.f_sub(shifted, target)?;
+            m.write(row, loss)
+        })
+    }
+
+    /// The maximum and the sum of `exp(x - max)` of the `classes` logits of binding 0 from
+    /// `base`, by the workgroup whose invocation `local` this is: invocation `i` takes classes
+    /// `i`, `i + 64`, ... in ascending order, the staged maxima are read in ascending invocation
+    /// order by every invocation and the staged sums by invocation 0, so the sum is its value
+    /// only there. On the shell's `f32` variable, its second `u32` variable and `total_var`.
+    fn logit_softmax_group(
+        &mut self,
+        base: Word,
+        classes: u32,
+        total_var: Word,
+        local: Word,
+    ) -> Result<(Word, Word), EmitError> {
+        let (var, max_var) = (self.u32_vars[1], self.f32_var);
+        let (zero, size, end) = (self.uint(0), self.uint(GROUP), self.uint(classes));
+        let lanes = self.uint(classes.min(GROUP));
+        let holds = self.less(local, end)?;
+        // The invocation's maximum over its classes, staged where it holds one.
+        self.when(holds, |m| {
+            let own = m.add(base, local)?;
+            let first = m.read(0, own)?;
+            m.b.store(max_var, first, None, [])?;
+            let next = m.add(local, size)?;
+            m.counted(var, next, end, size, |m, c| {
+                let at = m.add(base, c)?;
+                let x = m.read(0, at)?;
+                let max = m.b.load(m.f32_ty, None, max_var, None, [])?;
+                let kept = m.greater_of(x, max)?;
+                m.b.store(max_var, kept, None, [])?;
+                Ok(())
+            })?;
+            let max = m.b.load(m.f32_ty, None, max_var, None, [])?;
+            m.store_shared(local, max)
+        })?;
+        self.barrier()?;
+        // The row's maximum from the staged ones, the same instructions in every invocation.
+        let staged = self.load_shared(zero)?;
+        self.b.store(max_var, staged, None, [])?;
+        let one = self.uint(1);
+        self.counted(var, one, lanes, one, |m, l| {
+            let x = m.load_shared(l)?;
+            let max = m.b.load(m.f32_ty, None, max_var, None, [])?;
+            let kept = m.greater_of(x, max)?;
+            m.b.store(max_var, kept, None, [])?;
+            Ok(())
+        })?;
+        let max = self.b.load(self.f32_ty, None, max_var, None, [])?;
+        self.barrier()?;
+        // The invocation's sum of `exp(x - max)` over its classes, staged where it holds one.
+        let start = self.float(-0.0);
+        self.b.store(total_var, start, None, [])?;
+        self.when(holds, |m| {
+            m.counted(var, local, end, size, |m, c| {
+                let at = m.add(base, c)?;
+                let x = m.read(0, at)?;
+                let d = m.f_sub(x, max)?;
+                let e = m.exp(d)?;
+                let total = m.b.load(m.f32_ty, None, total_var, None, [])?;
+                let sum = m.f_add(total, e)?;
+                m.b.store(total_var, sum, None, [])?;
+                Ok(())
+            })?;
+            let total = m.b.load(m.f32_ty, None, total_var, None, [])?;
+            m.store_shared(local, total)
+        })?;
+        self.barrier()?;
+        // The row's sum from the staged ones, in ascending invocation order, by invocation 0.
+        self.b.store(total_var, start, None, [])?;
+        let first = self.equal(local, zero)?;
+        self.when(first, |m| {
+            m.counted(var, zero, lanes, one, |m, l| {
+                let x = m.load_shared(l)?;
+                let total = m.b.load(m.f32_ty, None, total_var, None, [])?;
+                let sum = m.f_add(total, x)?;
+                m.b.store(total_var, sum, None, [])?;
+                Ok(())
+            })
+        })?;
+        let total = self.b.load(self.f32_ty, None, total_var, None, [])?;
+        Ok((max, total))
     }
 
     /// The `CrossEntropy` loss of one workgroup over the `rows` row losses of binding 0 and
@@ -2261,28 +2336,36 @@ impl Shell {
         })
     }
 
-    /// Invocation `index` of the `CrossEntropyGrad` row statistics of `rows` rows of `classes`
-    /// logits: for a row, its maximum and exponential sum at elements `2 · index` and
-    /// `2 · index + 1`; for invocation `rows`, the weight sum at elements `2 · rows` and
-    /// `2 · rows + 1`.
+    /// Workgroup `index / 64` of the `CrossEntropyGrad` row statistics of `rows` rows of
+    /// `classes` logits: for a row `n`, its maximum and exponential sum at elements `2 · n` and
+    /// `2 · n + 1` ([`Shell::logit_softmax_group`]); for workgroup `rows`, the weight sum at
+    /// elements `2 · rows` and `2 · rows + 1`, by its invocation 0.
     fn cross_entropy_grad_rows(&mut self, rows: u32, classes: u32) -> Result<(), EmitError> {
         let (index, total_var) = (self.index, self.matmul_vars[0]);
-        let (one, two, n, v) = (
+        let local = self.local.expect("a module with workgroup memory");
+        let (zero, one, two, n, v, size) = (
+            self.uint(0),
             self.uint(1),
             self.uint(2),
             self.uint(rows),
             self.uint(classes),
+            self.uint(GROUP),
         );
-        let at = self.mul(index, two)?;
+        let group = self.div(index, size)?;
+        let at = self.mul(group, two)?;
         let next = self.add(at, one)?;
-        let row = self.less(index, n)?;
+        let first = self.equal(local, zero)?;
+        let row = self.less(group, n)?;
         self.when(row, |m| {
-            let base = m.mul(index, v)?;
-            let (max, total) = m.logit_softmax(base, classes, total_var)?;
-            m.write(at, max)?;
-            m.write(next, total)
+            let base = m.mul(group, v)?;
+            let (max, total) = m.logit_softmax_group(base, classes, total_var, local)?;
+            m.when(first, |m| {
+                m.write(at, max)?;
+                m.write(next, total)
+            })
         })?;
-        let weights = self.equal(index, n)?;
+        let weights = self.equal(group, n)?;
+        let weights = self.b.logical_and(self.bool_ty, None, weights, first)?;
         self.when(weights, |m| {
             let den = m.weight_sum(rows)?;
             m.write(at, den)?;

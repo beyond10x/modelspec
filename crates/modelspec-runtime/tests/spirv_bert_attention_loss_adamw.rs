@@ -476,7 +476,7 @@ fn logits_of(plan: &ExecutionPlan) -> (u64, u64) {
 }
 
 /// story:vulkan-cross-entropy-sum-per-row: the twin's `CrossEntropy` is two dispatches. A
-/// `per_row` kernel, one invocation per row, writes the `n` row losses into a buffer an
+/// `per_row` kernel, one workgroup of 64 per row, writes the `n` row losses into a buffer an
 /// `Allocate` makes; after a barrier a `loss_sum` kernel of one workgroup reads them and the
 /// weights and writes the loss. The two count the FLOP the one-workgroup kernel counted,
 /// `n·(4v + 3)` and `3n + 1` against `n·(4v + 6) + 1`.
@@ -506,7 +506,7 @@ fn cross_entropy_is_a_per_row_kernel_then_one_ordered_sum() {
         ]
     );
     assert_eq!(rows.result, TensorType::f32(&[n]));
-    assert_eq!(rows.workgroups, [n.div_ceil(64) as u32, 1, 1]);
+    assert_eq!(rows.workgroups, [n as u32, 1, 1], "one workgroup per row");
     assert_eq!(
         sum.operands,
         [
