@@ -3,7 +3,8 @@
 //! 32 block, both depth 16 read 4 tiles ahead) attacked at every selection boundary.
 //!
 //! Host cases (no device):
-//! - the tile of every boundary shape (`k` 16383/16384/16385, `n` 31/32/33, 127/128/129 blocks of
+//! - the tile of every boundary shape (`k` 4095/4096/4097, the bound since
+//!   `story:vulkan-long-k-from-4096`, where it was 16384; `n` 31/32/33, 127/128/129 blocks of
 //!   64 by 32 and 63/64/65 of 32 by 32) is the one the claimed rule names, under every invocation
 //!   limit, workgroup memory and transposed flag, and over sampled shapes;
 //! - every shape that selects a long-`k` tile stages at most 13,312 bytes, and its emitted module
@@ -11,9 +12,10 @@
 //! - the staging stores of a long-`k` tile into workgroup memory, modelled as the emitter
 //!   computes them, take one address per bank per subgroup store: the fixed-line rule
 //!   (`a` transposed, `b` as is), and the other two operands (`a` as is, `b` transposed);
-//! - no matmul module below `k` = 16384 changed: the words `emit` and `emit_module` give for the
-//!   matmul kernels of BERT-tiny, transformer_block, the three `mlp_sweep` sources and MNIST, and
-//!   for sampled synthetic shapes, hash as at the base commit 2fe753ab
+//! - no matmul module of a shape that takes no long-`k` tile changed: the words `emit` and
+//!   `emit_module` give for such matmul kernels of BERT-tiny, transformer_block, the three
+//!   `mlp_sweep` sources and MNIST, and for sampled synthetic shapes, hash as at the base commit
+//!   2fe753ab
 //!   (`tests/fixtures/adversary_long_k_base_modules.txt`, recorded there with
 //!   `MODELSPEC_ADV_LONG_K_RECORD=1`).
 //!
@@ -22,8 +24,8 @@
 //!   transposed combinations and the three epilogues, bit for bit against the CPU AVX2 kernel;
 //! - NaN, infinities, signed zeros, overflow mid-sum and subnormals;
 //! - timing: each long-`k` tile against the tile it replaced, on a shape just past each
-//!   boundary. The replaced tile is that of the same `[m, n]` at `k` = 16383, which is the tile
-//!   the base commit gave every `k` of that `[m, n]` (`adv_lk_the_replaced_tile_is_that_of_k_16383`).
+//!   boundary. The replaced tile is that of the same `[m, n]` at `k` = 4095, which is the tile
+//!   the base commit gave every `k` of that `[m, n]` (`adv_lk_the_replaced_tile_is_that_of_k_4095`).
 //!   A shape of fewer than 32 rows keeps that tile (finding LK-1) and is not timed.
 //!
 //! Finding LK-2 (`adv_lk_a_as_is_and_b_transposed_stage_without_bank_conflicts`) is ignored as
@@ -112,7 +114,7 @@ fn kind(tile: &MatMulTile) -> Tile {
 }
 
 /// The tile the commit message and DESIGN.md § 5.2 name for `[m, k] x [k, n]` at an invocation
-/// limit: large, wide and square first, then the 64 by 32 long-`k` block at `k >= 16384`,
+/// limit: large, wide and square first, then the 64 by 32 long-`k` block at `k >= 4096`,
 /// `n >= 32`, `m >= 32` and at least 128 blocks, then the 32 by 32 one at least 64 blocks.
 /// The `m` floor is finding LK-1's fix: below 32 rows the long-`k` tiles were slower than the
 /// tile they replaced.
@@ -124,9 +126,9 @@ fn claimed(m: u64, k: u64, n: u64, limit: u32) -> Tile {
         Tile::Wide
     } else if n >= 64 && blocks(64, 64) >= 128 {
         Tile::Square
-    } else if k >= 16_384 && n >= 32 && m >= 32 && blocks(64, 32) >= 128 {
+    } else if k >= 4096 && n >= 32 && m >= 32 && blocks(64, 32) >= 128 {
         Tile::LongK
-    } else if k >= 16_384 && n >= 32 && m >= 32 && blocks(32, 32) >= 64 {
+    } else if k >= 4096 && n >= 32 && m >= 32 && blocks(32, 32) >= 64 {
         Tile::Narrow
     } else {
         Tile::Fallback
@@ -135,39 +137,39 @@ fn claimed(m: u64, k: u64, n: u64, limit: u32) -> Tile {
 
 /// Every selection boundary, `(m, k, n)` and the tile the rule names.
 const BOUNDARIES: [((u64, u64, u64), Tile); 27] = [
-    // k 16383 / 16384 / 16385 at the decider's outputs.
-    ((256, 16_383, 1024), Tile::Fallback),
-    ((256, 16_384, 1024), Tile::LongK),
-    ((256, 16_385, 1024), Tile::LongK),
-    ((256, 16_383, 256), Tile::Fallback),
-    ((256, 16_384, 256), Tile::Narrow),
-    ((256, 16_385, 256), Tile::Narrow),
+    // k 4095 / 4096 / 4097 at the decider's outputs.
+    ((256, 4095, 1024), Tile::Fallback),
+    ((256, 4096, 1024), Tile::LongK),
+    ((256, 4097, 1024), Tile::LongK),
+    ((256, 4095, 256), Tile::Fallback),
+    ((256, 4096, 256), Tile::Narrow),
+    ((256, 4097, 256), Tile::Narrow),
     // n 31 / 32 / 33.
-    ((4096, 16_384, 31), Tile::Fallback),
-    ((4096, 16_384, 32), Tile::Narrow),
-    ((4096, 16_384, 33), Tile::LongK),
+    ((4096, 4096, 31), Tile::Fallback),
+    ((4096, 4096, 32), Tile::Narrow),
+    ((4096, 4096, 33), Tile::LongK),
     // 127 / 128 / 129 blocks of 64 by 32, by columns and by rows.
-    ((32, 16_384, 4064), Tile::Narrow),
-    ((32, 16_384, 4096), Tile::LongK),
-    ((32, 16_384, 4128), Tile::LongK),
-    ((8128, 16_384, 32), Tile::Narrow),
-    ((8129, 16_384, 32), Tile::LongK),
-    ((8193, 16_384, 32), Tile::LongK),
+    ((32, 4096, 4064), Tile::Narrow),
+    ((32, 4096, 4096), Tile::LongK),
+    ((32, 4096, 4128), Tile::LongK),
+    ((8128, 4096, 32), Tile::Narrow),
+    ((8129, 4096, 32), Tile::LongK),
+    ((8193, 4096, 32), Tile::LongK),
     // m 31 / 33 beside the 32 above (finding LK-1), and one row, which took a long-`k` tile
     // before it.
-    ((31, 16_384, 4096), Tile::Fallback),
-    ((33, 16_384, 4096), Tile::LongK),
-    ((31, 16_384, 2048), Tile::Fallback),
-    ((33, 16_384, 2048), Tile::Narrow),
-    ((1, 16_384, 4096), Tile::Fallback),
-    ((1, 16_384, 2048), Tile::Fallback),
+    ((31, 4096, 4096), Tile::Fallback),
+    ((33, 4096, 4096), Tile::LongK),
+    ((31, 4096, 2048), Tile::Fallback),
+    ((33, 4096, 2048), Tile::Narrow),
+    ((1, 4096, 4096), Tile::Fallback),
+    ((1, 4096, 2048), Tile::Fallback),
     // 63 / 64 / 65 blocks of 32 by 32, by columns and by rows.
-    ((32, 16_384, 2016), Tile::Fallback),
-    ((32, 16_384, 2048), Tile::Narrow),
-    ((32, 16_384, 2080), Tile::Narrow),
-    ((2016, 16_384, 32), Tile::Fallback),
-    ((2048, 16_384, 32), Tile::Narrow),
-    ((2080, 16_384, 32), Tile::Narrow),
+    ((32, 4096, 2016), Tile::Fallback),
+    ((32, 4096, 2048), Tile::Narrow),
+    ((32, 4096, 2080), Tile::Narrow),
+    ((2016, 4096, 32), Tile::Fallback),
+    ((2048, 4096, 32), Tile::Narrow),
+    ((2080, 4096, 32), Tile::Narrow),
 ];
 
 fn splitmix(state: &mut u64) -> u64 {
@@ -230,9 +232,9 @@ fn adv_lk_selection_is_the_claimed_pure_function_of_the_shape_over_sampled_shape
         let m = dim(&mut state, 14);
         let n = dim(&mut state, 14);
         let k = match i % 3 {
-            0 => 16_384 - 64 + splitmix(&mut state) % 128,
+            0 => 4096 - 64 + splitmix(&mut state) % 128,
             1 => dim(&mut state, 22),
-            _ => 16_384 + splitmix(&mut state) % 300_000,
+            _ => 4096 + splitmix(&mut state) % 300_000,
         };
         for limit in [128, 256, 1024] {
             let tile = MatMulTile::of_invocations(m, k, n, limit);
@@ -256,20 +258,20 @@ fn adv_lk_selection_is_the_claimed_pure_function_of_the_shape_over_sampled_shape
 /// The tile a long-`k` shape replaced: the base commit's `of_invocations` had no long-`k`
 /// block, so every `k >= 64` of an `[m, n]` the large, wide and square tiles decline took the
 /// one-column tile, whose rows and depth depend on `m` and `n` alone. The same `[m, n]` at
-/// `k` = 16383 takes it in this tree: that is the A side of the timing case.
+/// `k` = 4095 takes it in this tree: that is the A side of the timing case.
 #[test]
-fn adv_lk_the_replaced_tile_is_that_of_k_16383() {
+fn adv_lk_the_replaced_tile_is_that_of_k_4095() {
     for ((m, k, n), want) in BOUNDARIES {
         if !matches!(want, Tile::LongK | Tile::Narrow) {
             continue;
         }
-        let before = MatMulTile::of(m, 16_383, n);
+        let before = MatMulTile::of(m, 4095, n);
         assert_eq!(
             kind(&before),
             Tile::Fallback,
             "[{m}, {k}] x [{k}, {n}]: {before}"
         );
-        assert_eq!(claimed(m, 16_383, n, 128), Tile::Fallback);
+        assert_eq!(claimed(m, 4095, n, 128), Tile::Fallback);
         // The one-column tile's fields below the depth do not depend on `k` from 64 on.
         let at_64 = MatMulTile::of(m, 64, n);
         assert_eq!(
@@ -391,7 +393,7 @@ fn adv_lk_every_selected_shape_stages_within_13312_bytes() {
     for _ in 0..40 {
         shapes.push((
             dim(&mut state, 12),
-            16_384 + splitmix(&mut state) % 1_000_000,
+            4096 + splitmix(&mut state) % 1_000_000,
             dim(&mut state, 13),
         ));
     }
@@ -665,6 +667,10 @@ fn module_hashes() -> BTreeMap<String, String> {
                 if kernel.kind != KernelKind::MatMul {
                     continue;
                 }
+                // A long-`k` tile is a new module by design; the base had none.
+                if kernel.matmul_tile().is_some_and(|tile| tile.long_k()) {
+                    continue;
+                }
                 let signature = kernel.signature();
                 if with_profile {
                     for fast in [false, true] {
@@ -682,9 +688,10 @@ fn module_hashes() -> BTreeMap<String, String> {
             }
         }
     }
-    // Synthetic shapes: every `k` below 16384 at sampled `[m, n]`, and `k` at and above 16384
-    // where the rule keeps the old tile (`n` under 32, too few blocks, the square and wide
-    // tiles).
+    // Synthetic shapes: sampled `[m, n]` at every `k` below 16384, the bound of the base
+    // commit, and `k` at and above it where the rule keeps the old tile (`n` under 32, too few
+    // blocks, the square and wide tiles). A shape that takes a long-`k` tile since
+    // story:vulkan-long-k-from-4096 is left out.
     let mut state = 0x0bad_5eed_u64;
     let mut shapes = vec![
         (256, 16_383, 1024),
@@ -717,6 +724,9 @@ fn module_hashes() -> BTreeMap<String, String> {
             2 => Some(Epilogue::ReluGrad),
             _ => None,
         };
+        if MatMulTile::of(m, k, n).long_k() {
+            continue;
+        }
         let kernel = matmul(m, k, n, epilogue, flags);
         let signature = kernel.signature();
         let words = emit(&kernel).unwrap_or_else(|e| panic!("{signature}: {e}"));
@@ -733,10 +743,10 @@ fn module_hashes() -> BTreeMap<String, String> {
     out
 }
 
-/// Acceptance: every shape with `k` < 16384 keeps its tile and its module. The fixture holds
-/// the hashes the base commit 2fe753ab gives for the same labels.
+/// Acceptance: every shape that takes no long-`k` tile keeps its tile and its module. The
+/// fixture holds the hashes the base commit 2fe753ab gives for the same labels.
 #[test]
-fn adv_lk_matmul_modules_below_k_16384_are_the_words_of_the_base_commit() {
+fn adv_lk_matmul_modules_without_a_long_k_tile_are_the_words_of_the_base_commit() {
     let now = module_hashes();
     if std::env::var(RECORD_ENV).as_deref() == Ok("1") {
         let mut lines = String::new();
@@ -770,7 +780,7 @@ fn adv_lk_matmul_modules_below_k_16384_are_the_words_of_the_base_commit() {
         wrong.len(),
         long.len()
     );
-    assert!(same >= 300, "{same} compared");
+    assert!(same >= 200, "{same} compared");
     assert!(long.is_empty(), "labels the base did not have: {long:#?}");
     assert!(wrong.is_empty(), "{wrong:#?}");
 }
@@ -797,7 +807,7 @@ fn adv_lk_probe_long_k_matmuls_of_a_bert_at_vocab_30522() {
         for kernel in &artifact.execution.kernels {
             if let Some(tile) = kernel.matmul_tile() {
                 let (m, k, n) = Kernel::matmul_shape(&kernel.operands).expect("a matmul");
-                if k >= 16_384 {
+                if k >= 4096 {
                     eprintln!(
                         "tokens {tokens}: [{m}, {k}] x [{k}, {n}] {:?} transposed {:?}",
                         kind(&tile),
@@ -1110,9 +1120,9 @@ fn adv_lk_boundary_shapes_and_k_tails_are_the_cpu_bits() {
         };
         cases.push(plain_case(*m, *k, *n, flags, epilogue_cycle(i)));
     }
-    // Tails of 1 to 15 values of `k` after 1024 to 2047 full tiles, every count modulo 4.
+    // Tails of 1 to 15 values of `k` after 256 to 2047 full tiles, every count modulo 4.
     let ks = [
-        16_384, 16_385, 16_399, 16_400, 16_415, 16_431, 16_447, 16_448, 16_463, 32_767,
+        4096, 4097, 4111, 4112, 4127, 4143, 4159, 4160, 4175, 16_384, 16_385, 16_399, 32_767,
     ];
     let mut i = 0;
     for (m, n) in [(128, 2048), (32, 2048)] {
@@ -1227,7 +1237,7 @@ fn adv_lk_subnormal_operands_are_the_cpu_bits_where_the_device_preserves_them() 
 // Timing.
 
 /// Pairs of a shape just past a boundary (a long-`k` tile) and the same `[m, n]` at
-/// `k` = 16383, the tile it replaced.
+/// `k` = 4095, the tile it replaced.
 const TIMED: [((u64, u64), [bool; 2]); 22] = [
     ((256, 1024), [true, false]),
     ((256, 256), [true, false]),
@@ -1351,14 +1361,14 @@ fn adv_lk_each_long_k_tile_is_not_slower_than_the_tile_it_replaced() {
     let period_ns = f64::from(device.clock().expect("timestamps").period_ns);
     let mut slower = Vec::new();
     for ((m, n), flags) in TIMED {
-        let new = prepare(&device, &profile, m, 16_384, n, flags);
-        let old = prepare(&device, &profile, m, 16_383, n, flags);
+        let new = prepare(&device, &profile, m, 4096, n, flags);
+        let old = prepare(&device, &profile, m, 4095, n, flags);
         let new_tile = new.kernel.matmul_tile().expect("tile");
         let old_tile = old.kernel.matmul_tile().expect("tile");
         if m < 32 {
             // Finding LK-1: fewer than 32 rows keep the tile they had, so nothing was replaced.
-            assert_eq!(new_tile, old_tile, "[{m}, 16384] x [16384, {n}]");
-            eprintln!("[{m}, 16384] x [16384, {n}] {flags:?}: keeps {new_tile}");
+            assert_eq!(new_tile, old_tile, "[{m}, 4096] x [4096, {n}]");
+            eprintln!("[{m}, 4096] x [4096, {n}] {flags:?}: keeps {new_tile}");
             continue;
         }
         assert!(
@@ -1385,7 +1395,7 @@ fn adv_lk_each_long_k_tile_is_not_slower_than_the_tile_it_replaced() {
         }
         let (a, b) = (median(a), median(b));
         let line = format!(
-            "[{m}, 16384] x [16384, {n}] {flags:?}: {:?} {a:.1} us, replaced tile (k 16383, rows {} depth {}) {b:.1} us, ratio {:.3}",
+            "[{m}, 4096] x [4096, {n}] {flags:?}: {:?} {a:.1} us, replaced tile (k 4095, rows {} depth {}) {b:.1} us, ratio {:.3}",
             kind(&new_tile),
             old_tile.rows,
             old_tile.depth,

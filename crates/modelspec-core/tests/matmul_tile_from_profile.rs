@@ -115,7 +115,9 @@ fn plans(
 
 /// The rule of `MatMulTile::of` at the base commit (6203b9b,
 /// `crates/modelspec-core/src/ir/kernel.rs`), verbatim but for the names: the wide and square
-/// register-blocked tiles, then one or two rows of one column per invocation.
+/// register-blocked tiles, then one or two rows of one column per invocation. Between them
+/// stand the two long-`k` tiles of story:vulkan-long-k-weight-grad-matmul, which the shapes of
+/// `1..=10_000` reach since story:vulkan-long-k-from-4096 lowered their `k` to 4,096.
 fn base_of(m: u64, k: u64, n: u64) -> MatMulTile {
     let fitted = |mut tile: MatMulTile| {
         tile.depth = k.clamp(1, u64::from(tile.depth)) as u32;
@@ -127,21 +129,30 @@ fn base_of(m: u64, k: u64, n: u64) -> MatMulTile {
             tile.depth /= 2;
         }
     };
-    // (workgroup_size, cols, rows, cols_per_invocation, depth, from_k, from_workgroups)
-    for (workgroup_size, cols, rows, cols_per_invocation, depth, from_k, from_workgroups) in
-        [(128, 128, 8, 8, 8, 64, 128), (128, 64, 8, 4, 16, 1, 128)]
-    {
+    // (workgroup_size, cols, rows, cols_per_invocation, depth, ahead), then
+    // (from_k, from_workgroups, from_m)
+    for ((workgroup_size, cols, rows, cols_per_invocation, depth, ahead), from) in [
+        ((128, 128, 8, 8, 8, 1), (64, 128, 1)),
+        ((128, 64, 8, 4, 16, 1), (1, 128, 1)),
+        ((64, 32, 8, 4, 16, 4), (4096, 128, 32)),
+        ((128, 32, 4, 2, 16, 4), (4096, 64, 32)),
+    ] {
+        let (from_k, from_workgroups, from_m) = from;
         let tile = MatMulTile {
             workgroup_size,
             cols,
             rows,
             cols_per_invocation,
             depth,
-            ahead: 1,
+            ahead,
             buffers: 1,
             b_pad: 0,
         };
-        if n >= u64::from(cols) && k >= from_k && tile.workgroups(m, n) >= from_workgroups {
+        if n >= u64::from(cols)
+            && k >= from_k
+            && m >= from_m
+            && tile.workgroups(m, n) >= from_workgroups
+        {
             return fitted(tile);
         }
     }

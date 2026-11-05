@@ -66,12 +66,13 @@
 //! them and computes element `c` of row `n` by the instructions the row's loop ran for it before
 //! the split.
 
+use super::attention_block::{Blocked, block_f32_vars, block_shared_values};
 use super::{EmitError, Kernel, KernelKind, Operand, Shell, Word, operands_error, static_shape};
 use modelspec_core::ir::kernel::SOFTMAX_STATS_PER_QUERY;
 use modelspec_core::ir::tensor::DType;
 use modelspec_core::schedule::{
-    ATTENTION_STAGE_VALUES, ATTENTION_WORKGROUP, MAX_ATTENTION_KEYS, MAX_SPAN_KEYS, attention_tile,
-    attention_workgroups,
+    ATTENTION_STAGE_VALUES, ATTENTION_WORKGROUP, MAX_ATTENTION_KEYS, MAX_SPAN_KEYS,
+    attention_block_tile, attention_tile, attention_workgroups,
 };
 use rspirv::spirv::GlslStd450Op;
 
@@ -121,6 +122,10 @@ pub(super) struct Attend {
     /// The spans the kernel reads in place of a key mask, `None` for a key mask
     /// (story:attention-event-spans).
     spans: Option<Spans>,
+    /// Whether the kernel is a blocked key-side gradient (`attention_block.rs`,
+    /// story:vulkan-attention-blocked-key-tiles): `tile` is then
+    /// `modelspec_core::schedule::ATTENTION_BLOCK_TILE` and `lanes` and `stage_columns` unused.
+    blocked: bool,
 }
 
 /// The spans of an attention kernel over spans (story:attention-event-spans): its fourth
@@ -286,14 +291,25 @@ impl AttentionLoss {
                         true
                     }
                 };
-                let groups = attention_workgroups(b, rows, s, heads)
-                    .and_then(fits)
-                    .filter(|&groups| {
-                        u64::from(groups) * u64::from(ATTENTION_WORKGROUP) <= u32::MAX.into()
-                    })
-                    .ok_or_else(|| wrong("more than 2^32 invocations"))?;
-                let tile = attention_tile(rows, s);
                 let d = h / heads;
+                let blocked = matches!(op, AttentionOp::GradK | AttentionOp::GradV)
+                    && stats
+                    && attention_block_tile(l, s, d).is_some();
+                let tile = if blocked {
+                    attention_block_tile(l, s, d).unwrap_or(1)
+                } else {
+                    attention_tile(rows, s)
+                };
+                let groups = if blocked {
+                    b.checked_mul(heads).and_then(|g| g.checked_mul(s / tile))
+                } else {
+                    attention_workgroups(b, rows, s, heads)
+                }
+                .and_then(fits)
+                .filter(|&groups| {
+                    u64::from(groups) * u64::from(ATTENTION_WORKGROUP) <= u32::MAX.into()
+                })
+                .ok_or_else(|| wrong("more than 2^32 invocations"))?;
                 (
                     KernelKind::PerRow,
                     groups * ATTENTION_WORKGROUP,
@@ -314,6 +330,7 @@ impl AttentionLoss {
                             d.min(ATTENTION_STAGE_VALUES * tile / u64::from(ATTENTION_WORKGROUP))
                         ),
                         spans: None,
+                        blocked,
                     }),
                 )
             }
@@ -418,6 +435,9 @@ impl AttentionLoss {
             AttentionLoss::CrossEntropyRows { .. } | AttentionLoss::CrossEntropyGradRows { .. } => {
                 Some(GROUP)
             }
+            AttentionLoss::Attention(at) if at.blocked => {
+                Some(block_shared_values(at.op == AttentionOp::GradK, at.d))
+            }
             AttentionLoss::Attention(at) => Some(at.staged()),
             AttentionLoss::CrossEntropyGrad { .. } => None,
         }
@@ -428,6 +448,7 @@ impl AttentionLoss {
     /// row loss; the numerator and denominator of the loss sum; the row sum of the gradient.
     pub(super) fn f32_vars(self) -> usize {
         match self {
+            AttentionLoss::Attention(at) if at.blocked => block_f32_vars(at.d),
             AttentionLoss::Attention(at) => OUTPUT_SUMS + at.columns() as usize,
             AttentionLoss::CrossEntropy { .. } => 2,
             AttentionLoss::CrossEntropyRows { .. }
@@ -532,6 +553,7 @@ impl Attend {
                 u: u as u32,
                 per_span,
             }),
+            blocked: false,
         };
         Ok((
             KernelKind::PerRow,
@@ -1599,6 +1621,18 @@ impl Shell {
     /// tile, every phase in workgroup memory between barriers; the workgroups past the kernel's
     /// do nothing.
     fn attention(&mut self, at: Attend) -> Result<(), EmitError> {
+        if at.blocked {
+            return self.attention_blocked(Blocked {
+                grad_k: at.op == AttentionOp::GradK,
+                s: at.s,
+                l: at.l,
+                h: at.h,
+                d: at.d,
+                heads: at.heads,
+                scale: at.scale,
+                groups: at.groups,
+            });
+        }
         let local = self
             .local
             .ok_or_else(|| EmitError::Build("an attention module stages its rows".to_owned()))?;

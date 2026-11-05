@@ -143,7 +143,9 @@ pub enum KernelKind {
     MatMul,
     /// The SGD update, written in place into the parameter's view: with operands `(p, lr, g)`
     /// (or `(p, g, lr)`) it is `p - (lr * g)`, the product rounded before the subtraction and
-    /// neither contracted; with operands `(p, d)` it is `p - d`.
+    /// neither contracted; with operands `(p, d)` it is `p - d`. With the op [`ADAMW_OP`] it is
+    /// the whole AdamW update of one parameter ([`ADAMW_OPERANDS`]), which also writes the next
+    /// moments in place.
     SgdUpdate,
     /// A row-wise op computed one output element per invocation: `Embedding`, `EmbeddingGrad`
     /// (each element of the table gradient adds its column of the gradient rows of every id equal
@@ -844,6 +846,33 @@ impl fmt::Display for Epilogue {
     }
 }
 
+/// The op of the `sgd_update` kernel that computes the AdamW update of one parameter in one
+/// dispatch (story:vulkan-adamw-one-dispatch-per-parameter): per element, the sixteen rounded
+/// `f32` operations of [`crate::ir::training::attach_adamw`] in its order, none contracted,
+///
+/// ```text
+/// m' = beta1 * m + rest1 * g
+/// v' = beta2 * v + (rest2 * g) * g
+/// p' = p - lr_t * ((m' * c1) / (sqrt(v' * c2) + eps) + decay * p)
+/// ```
+///
+/// with the root and the quotient of the `Sqrt` and `Div` kernels. Its operands are
+/// [`ADAMW_OPERANDS`]: the buffers `p`, `g`, `m` and `v` of the result's type, the rank-0
+/// buffers `lr_t`, `c1` and `c2`, then the immediates `beta1`, `rest1`, `beta2`, `rest2`, `eps`
+/// and `decay`. It writes three bindings of the result's type, in place: `p'` into the
+/// parameter's view, `m'` and `v'` into the views `m` and `v` are read from
+/// ([`Kernel::written`]).
+pub const ADAMW_OP: &str = "AdamW";
+
+/// The operands of an [`ADAMW_OP`] kernel: seven buffers, then six immediates.
+pub const ADAMW_OPERANDS: usize = 13;
+
+/// The buffer operands of an [`ADAMW_OP`] kernel, its first operands.
+pub const ADAMW_BUFFERS: usize = 7;
+
+/// The rounded `f32` operations an [`ADAMW_OP`] kernel computes per element.
+pub const ADAMW_FLOP: u64 = 16;
+
 /// The Tensor IR ops an `elementwise` kernel implements, alone or in a chain.
 pub const ELEMENTWISE_OPS: [&str; 5] = ["Add", "Sub", "Mul", "Relu", "ReluGrad"];
 
@@ -999,9 +1028,13 @@ pub struct Kernel {
 impl Kernel {
     /// The bindings the kernel writes, after its buffer operands and the statistics it reads: 2
     /// for an epilogue that keeps the pre-activation and for an attention kernel that writes
-    /// softmax statistics ([`Kernel::writes_softmax_stats`]), else 1. Each has the result's type
-    /// but the statistics.
+    /// softmax statistics ([`Kernel::writes_softmax_stats`]), 3 for an [`ADAMW_OP`] kernel (the
+    /// update, then the next first and second moments), else 1. Each has the result's type but
+    /// the statistics.
     pub fn written(&self) -> usize {
+        if self.is_adamw() {
+            return 3;
+        }
         match self.epilogue {
             Some(Epilogue::Relu {
                 writes_pre_activation: true,
@@ -1009,6 +1042,11 @@ impl Kernel {
             _ if self.writes_softmax_stats() => 2,
             _ => 1,
         }
+    }
+
+    /// Whether the kernel is the AdamW update of one parameter ([`ADAMW_OP`]).
+    pub fn is_adamw(&self) -> bool {
+        self.kind == KernelKind::SgdUpdate && self.op == ADAMW_OP
     }
 
     /// Whether the kernel writes softmax statistics ([`Kernel::softmax_stats`]): an `Attention`
@@ -1120,8 +1158,8 @@ impl Kernel {
     /// The floating-point operations of one dispatch of the kernel under the counting rule of
     /// DESIGN.md § 3.1: `2·m·k·n` for a matmul, its epilogue adding none; per output element,
     /// one for `Add`, `Sub`, `Mul`, `Relu` and `ReluGrad`, one per op for an elementwise chain
-    /// ([`ElementwiseChain`]), and two for the scaled SGD update
-    /// `p - (lr * g)`; one per element of the buffer operands of a reduction stage or a loss
+    /// ([`ElementwiseChain`]), two for the scaled SGD update
+    /// `p - (lr * g)` and [`ADAMW_FLOP`] for the AdamW update ([`ADAMW_OP`]); one per element of the buffer operands of a reduction stage or a loss
     /// sum; none for a transpose or a broadcast. A row-wise kernel counts the operations of the
     /// CPU interpreter's definition of its op, each add, subtract, multiply, compare, division,
     /// square root and `exp` one and each fused multiply-add two: none for `Embedding` and the
@@ -1198,6 +1236,7 @@ impl Kernel {
                 chain => per_output(ElementwiseChain::parse(chain)?.ops().count() as u64),
             },
             KernelKind::SgdUpdate => match (self.op, self.operands.len()) {
+                (ADAMW_OP, ADAMW_OPERANDS) => per_output(ADAMW_FLOP),
                 ("Sub", 3) => per_output(2),
                 ("Sub", 2) => per_output(1),
                 _ => None,

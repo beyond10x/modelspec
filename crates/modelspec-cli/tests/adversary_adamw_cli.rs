@@ -58,21 +58,24 @@ fn adv_adamw_f1_compile_backend_cpu_writes_an_artifact() {
     assert!(out.join("artifact.json").exists());
 }
 
-/// `ir --stage kernel` prints the AdamW update as kernels, the `Sqrt` and the `Div` among them
-/// (coordinator decision D73); `ir --stage training` prints the moments.
+/// `ir --stage kernel` prints the AdamW update as one `sgd_update AdamW` kernel, which computes
+/// its `Sqrt` and its `Div` (coordinator decision D73,
+/// story:vulkan-adamw-one-dispatch-per-parameter); `ir --stage training` prints the moments.
 #[test]
-fn adamw_vulkan_paths_print_the_update_as_kernels() {
+fn adamw_vulkan_paths_print_the_update_as_one_kernel() {
     let output = modelspec(&["ir", FIXTURE, "--stage", "kernel"]);
     let stderr = text(&output.stderr);
     assert_eq!(output.status.code(), Some(0), "{stderr}");
     let stdout = text(&output.stdout);
+    let kernels = |op: &str| {
+        stdout
+            .lines()
+            .filter(|line| line.starts_with("kernel ") && line.contains(op))
+            .count()
+    };
+    assert_eq!(kernels(" sgd_update AdamW f32 "), 1, "{stdout}");
     for op in [" elementwise Sqrt f32 ", " elementwise Div f32 "] {
-        assert!(
-            stdout
-                .lines()
-                .any(|line| line.starts_with("kernel ") && line.contains(op)),
-            "{op}: {stdout}"
-        );
+        assert_eq!(kernels(op), 0, "{op}: {stdout}");
     }
     let output = modelspec(&["ir", FIXTURE, "--stage", "training"]);
     assert_eq!(output.status.code(), Some(0));

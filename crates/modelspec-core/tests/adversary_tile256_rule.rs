@@ -168,7 +168,10 @@ fn every_tile_a_profile_gets_is_staged_within_its_memory_and_a_block_keeps_its_p
                     if tile.cols_per_invocation > 1 && tile.b_pad != 0 {
                         wrong.push(format!("{case}: a register-blocked tile with b_pad"));
                     }
-                    if tile.workgroup_size != 128 && tile.workgroup_size != 256 {
+                    // 64 invocations are the long-`k` tile's, from `k` of 4,096
+                    // (story:vulkan-long-k-from-4096).
+                    let long_k = tile.workgroup_size == 64 && tile.long_k() && k >= 4096;
+                    if tile.workgroup_size != 128 && tile.workgroup_size != 256 && !long_k {
                         wrong.push(format!("{case}: {tile}"));
                     }
                     if invocations < 256 && tile != MatMulTile::of(m, k, n) {

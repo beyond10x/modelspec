@@ -251,14 +251,14 @@ mod device {
 
     /// `vendor_id`, `device_id` and `driver_version` of the device the recording was taken on:
     /// the RTX 3090 of the repository's device tests.
-    const RECORDED_DEVICE: (u64, u64, u64) = (4318, 8708, 2_559_459_584);
+    const RECORDED_DEVICE: (u64, u64, u64) = (4318, 8708, 2_580_660_800);
 
     /// The bits of the loss of steps 0 to 3 on the recorded device, as
     /// `bert_tiny_three_vulkan_steps_give_the_recorded_bits` records them.
-    const RECORDED_LOSSES: [u32; 4] = [0x4110_6b45, 0x4110_5fa8, 0x4110_562d, 0x410f_da54];
+    const RECORDED_LOSSES: [u32; 4] = [0x4110_6b45, 0x4110_5faa, 0x4110_562d, 0x410f_da56];
 
     /// FNV-1a 64 of the `param` lines of stdout, each with its newline, on the recorded device.
-    const RECORDED_PARAMETERS: u64 = 0x7e11_2f36_223d_7cb2;
+    const RECORDED_PARAMETERS: u64 = 0x003a_3321_277f_1eea;
 
     fn fnv1a(bytes: impl IntoIterator<Item = u8>) -> u64 {
         bytes.into_iter().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {

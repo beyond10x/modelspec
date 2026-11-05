@@ -771,7 +771,7 @@ pub fn kernel_bindings(kernel: &Kernel) -> Result<KernelBindings, ExecError> {
         KernelKind::Elementwise | KernelKind::Broadcast | KernelKind::SgdUpdate => operands
             .iter()
             .map(|&(scalar, _)| if scalar { 1 } else { count })
-            .chain([count])
+            .chain(std::iter::repeat_n(count, kernel.written()))
             .collect(),
         _ => kernel
             .bindings()

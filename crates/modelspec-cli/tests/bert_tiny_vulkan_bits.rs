@@ -11,6 +11,14 @@
 //! parameter changes it. A device's `exp`, division and square root are its own, so the recording
 //! belongs to one device and driver, named beside it; on another the test fails and names both.
 //!
+//! The recording stood through release 0.25.0 (losses `0x41106b45, 0x41105fa8, 0x4110562d,
+//! 0x410fda54`, parameters `0x7e112f36223d7cb2`). It was taken again on 2026-11-05 on driver
+//! 2580660800 after story:vulkan-cross-entropy-row-workgroup, a change of the tolerance class
+//! (DESIGN.md § 5.4) that moves the loss of steps 1 and 3 by two units in the last place. On
+//! that day and driver the 0.25.0 release binary still gave the former recording on this
+//! test's data, so the driver did not move it; the attention kernels' own bits are held by
+//! `vulkan_attention_bits` of `modelspec-runtime`.
+//!
 //! The case needs a Vulkan device and is ignored as the device tests are; run it with
 //! `cargo test --release -p modelspec-cli --features vulkan --test bert_tiny_vulkan_bits -- --ignored`.
 #![cfg(feature = "vulkan")]
@@ -24,13 +32,13 @@ const EXAMPLE: &str = "examples/bert_tiny.mspec";
 
 /// `vendor_id`, `device_id` and `driver_version` of the device the recording was taken on, as
 /// `inspect-device` prints them: the RTX 3090 of the repository's device tests.
-const RECORDED_DEVICE: (u64, u64, u64) = (4318, 8708, 2_559_459_584);
+const RECORDED_DEVICE: (u64, u64, u64) = (4318, 8708, 2_580_660_800);
 
 /// The bits of the loss of steps 0 to 3 on the recorded device.
-const RECORDED_LOSSES: [u32; 4] = [0x4110_6b45, 0x4110_5fa8, 0x4110_562d, 0x410f_da54];
+const RECORDED_LOSSES: [u32; 4] = [0x4110_6b45, 0x4110_5faa, 0x4110_562d, 0x410f_da56];
 
 /// FNV-1a 64 of the `param` lines of stdout, each with its newline, on the recorded device.
-const RECORDED_PARAMETERS: u64 = 0x7e11_2f36_223d_7cb2;
+const RECORDED_PARAMETERS: u64 = 0x003a_3321_277f_1eea;
 
 /// The rows, sequences, keys per sequence and vocabulary of `examples/bert_tiny.mspec`.
 const ROWS: usize = 4096;

@@ -83,6 +83,17 @@
 //! it in. The emitter rounds each op once, as the unfused kernels do, so the chain's result has
 //! the bits of the unfused plan.
 //!
+//! The AdamW update of a parameter is one `SgdUpdate` dispatch of [`ADAMW_OP`]
+//! (story:vulkan-adamw-one-dispatch-per-parameter): the sixteen ops
+//! [`crate::ir::training::attach_adamw`] appends for it, when each but the update and the two
+//! next moments is read once, by the next op of the rule, and none is the loss or the prediction
+//! ([`adamw_update`]). The kernel reads `p`, `g`, `m`, `v`, `lr_t`, `c1` and `c2`, takes the six
+//! constants as immediates, rounds each op once in the rule's order, and writes the update into
+//! the parameter's view and the next moments into the buffers `m` and `v` are read from; the
+//! thirteen values between them have no buffer. The updates of different parameters share no
+//! buffer but the three rank-0 inputs they read, so no `Barrier` stands between them. An update
+//! that does not fit keeps one dispatch per op or chain.
+//!
 //! There is no buffer reuse: every stored value has its own buffer, except that each SGD update
 //! writes its parameter's one view in place, each next optimizer state (an AdamW moment's next
 //! value) is written in place into the buffer of the `Input` its state is read from
@@ -110,9 +121,9 @@ use thiserror::Error;
 
 use crate::artifact::{DataRole, DataSpec, ParameterSpec, canonical_parameter_id};
 use crate::ir::kernel::{
-    BufferView, ChainLink, ElementwiseChain, Epilogue, ExecutionPlan, Kernel, KernelKind,
-    MIN_SHARED_MEMORY_BYTES, MatMulLimits, MatMulTile, Operand, PlanOp, PlanStep,
-    SOFTMAX_STATS_PER_QUERY,
+    ADAMW_BUFFERS, ADAMW_OP, BufferView, ChainLink, ElementwiseChain, Epilogue, ExecutionPlan,
+    Kernel, KernelKind, MIN_SHARED_MEMORY_BYTES, MatMulLimits, MatMulTile, Operand, PlanOp,
+    PlanStep, SOFTMAX_STATS_PER_QUERY,
 };
 use crate::ir::tensor::{DType, Dim, ParamId, TensorNode, TensorOp, TensorType, ValueId};
 use crate::ir::training::{TrainConfig, TrainingStep, sigreg_projection_inputs};
@@ -215,6 +226,124 @@ struct Fusions {
     transposed: BTreeMap<ValueId, ValueId>,
     /// Each fused elementwise chain, by the value of its last op.
     chains: BTreeMap<ValueId, Chain>,
+    /// Each AdamW update computed by one kernel, by the value of the update.
+    adamw: BTreeMap<ValueId, AdamwUpdate>,
+}
+
+/// The AdamW update of one parameter that one [`ADAMW_OP`] kernel computes (the module
+/// documentation).
+struct AdamwUpdate {
+    /// `p`, `g`, `m`, `v`, `lr_t`, `c1` and `c2`: the kernel's buffer operands.
+    buffers: [ValueId; ADAMW_BUFFERS],
+    /// `beta1`, `rest1`, `beta2`, `rest2`, `eps` and `decay`: its immediates.
+    immediates: [f32; 6],
+    /// The next first and second moments, written in place.
+    next: [ValueId; 2],
+    /// The thirteen ops between the operands and the three written values.
+    inner: [ValueId; 13],
+}
+
+/// The AdamW update whose last op is `update`, when the ops before it are the rule of
+/// [`crate::ir::training::attach_adamw`] and one kernel can compute them: `node_of` finds a
+/// node, `readers_of` the nodes that read a value, `constants` holds the compile-time scalars,
+/// `in_place` the state each next optimizer state is read from, and `kept` the values that keep
+/// a buffer or a dispatch of their own (the loss, the prediction, every update).
+fn adamw_update<'a>(
+    update: ValueId,
+    node_of: &dyn Fn(ValueId) -> Option<&'a TensorNode>,
+    readers_of: &dyn Fn(ValueId) -> &'a [&'a TensorNode],
+    constants: &BTreeMap<ValueId, f32>,
+    in_place: &BTreeMap<ValueId, ValueId>,
+    kept: &dyn Fn(ValueId) -> bool,
+) -> Option<AdamwUpdate> {
+    let binary = |value: ValueId, op: TensorOp| {
+        let node = node_of(value)?;
+        match node.operands[..] {
+            [a, b] if node.op == op => Some((a, b)),
+            _ => None,
+        }
+    };
+    let (p, scaled) = binary(update, TensorOp::Sub)?;
+    let (lr_t, step) = binary(scaled, TensorOp::Mul)?;
+    let (direction, shrink) = binary(step, TensorOp::Add)?;
+    let (m_hat, denominator) = binary(direction, TensorOp::Div)?;
+    let (decay, shrunk) = binary(shrink, TensorOp::Mul)?;
+    let (m_next, c1) = binary(m_hat, TensorOp::Mul)?;
+    let (root, eps) = binary(denominator, TensorOp::Add)?;
+    let v_hat = match node_of(root)? {
+        node if node.op == TensorOp::Sqrt => match node.operands[..] {
+            [v_hat] => v_hat,
+            _ => return None,
+        },
+        _ => return None,
+    };
+    let (v_next, c2) = binary(v_hat, TensorOp::Mul)?;
+    let (decayed_m, new_m) = binary(m_next, TensorOp::Add)?;
+    let (beta1, m) = binary(decayed_m, TensorOp::Mul)?;
+    let (rest1, g) = binary(new_m, TensorOp::Mul)?;
+    let (decayed_v, new_v) = binary(v_next, TensorOp::Add)?;
+    let (beta2, v) = binary(decayed_v, TensorOp::Mul)?;
+    let (scaled_g, g_again) = binary(new_v, TensorOp::Mul)?;
+    let (rest2, g_scaled) = binary(scaled_g, TensorOp::Mul)?;
+
+    // Each inner op with the one op that reads it.
+    let inner = [
+        (decayed_m, m_next),
+        (new_m, m_next),
+        (decayed_v, v_next),
+        (scaled_g, new_v),
+        (new_v, v_next),
+        (m_hat, direction),
+        (v_hat, root),
+        (root, denominator),
+        (denominator, direction),
+        (direction, step),
+        (shrink, step),
+        (step, scaled),
+        (scaled, update),
+    ];
+    let read_once = |value: ValueId, reader: ValueId| {
+        matches!(readers_of(value), [r] if r.id == reader) && !kept(value)
+    };
+    let ty = &node_of(update)?.ty;
+    let typed = |value: ValueId| node_of(value).is_some_and(|n| n.ty == *ty);
+    let rank0 = |value: ValueId| {
+        node_of(value).is_some_and(|n| n.ty.rank() == 0 && n.ty.dtype == DType::F32)
+    };
+    let buffers = [p, g, m, v, lr_t, c1, c2];
+    let scalars = [beta1, rest1, beta2, rest2, eps, decay];
+    let fits = shrunk == p
+        && g_again == g
+        && g_scaled == g
+        && ty.dtype == DType::F32
+        && matches!(node_of(p)?.op, TensorOp::ParamRead { .. })
+        && in_place.get(&m_next) == Some(&m)
+        && in_place.get(&v_next) == Some(&v)
+        && inner
+            .iter()
+            .all(|&(value, reader)| read_once(value, reader))
+        && matches!(readers_of(m_next), [r] if r.id == m_hat)
+        && matches!(readers_of(v_next), [r] if r.id == v_hat)
+        && [p, g, m, v].into_iter().all(typed)
+        && [lr_t, c1, c2].into_iter().all(rank0)
+        && buffers.iter().all(|value| !constants.contains_key(value))
+        && buffers
+            .iter()
+            .enumerate()
+            .all(|(i, value)| !buffers[..i].contains(value));
+    if !fits {
+        return None;
+    }
+    let mut immediates = [0.0; 6];
+    for (slot, scalar) in immediates.iter_mut().zip(scalars) {
+        *slot = *constants.get(&scalar)?;
+    }
+    Some(AdamwUpdate {
+        buffers,
+        immediates,
+        next: [m_next, v_next],
+        inner: inner.map(|(value, _)| value),
+    })
 }
 
 /// The most buffers a fused elementwise chain reads: with its result, 4 storage buffers, the
@@ -277,12 +406,14 @@ fn fold(op: &TensorOp, operands: &[f32]) -> Option<f32> {
 
 /// The fusions of `nodes`, whose updates are `updates`, the update of each parameter
 /// `update_of`, and whose loss, prediction and next optimizer states are `bound`: values a runner
-/// reads, which neither fold nor fuse into a reader.
+/// reads, which neither fold nor fuse into a reader. `in_place` is the state each next optimizer
+/// state is read from.
 fn fusions(
     nodes: &[TensorNode],
     updates: &BTreeMap<ValueId, usize>,
     update_of: &BTreeMap<ParamId, ValueId>,
     bound: &BTreeSet<ValueId>,
+    in_place: &BTreeMap<ValueId, ValueId>,
 ) -> Fusions {
     let mut readers: BTreeMap<ValueId, Vec<&TensorNode>> = BTreeMap::new();
     for node in nodes {
@@ -361,6 +492,31 @@ fn fusions(
         {
             scaled.insert(node.id, product);
             absorbed.insert(product);
+        }
+    }
+
+    // Each AdamW update one kernel computes: its inner ops and next moments dispatch nothing.
+    let by_id: BTreeMap<ValueId, &TensorNode> = nodes.iter().map(|n| (n.id, n)).collect();
+    let mut adamw = BTreeMap::new();
+    for &update in updates.keys() {
+        let kept = |value: ValueId| {
+            bound.contains(&value)
+                || updates.contains_key(&value)
+                || folded.contains_key(&value)
+                || absorbed.contains(&value)
+        };
+        let found = adamw_update(
+            update,
+            &|value| by_id.get(&value).copied(),
+            &readers_of,
+            &constants,
+            in_place,
+            &kept,
+        );
+        if let Some(found) = found.filter(|_| !bound.contains(&update)) {
+            absorbed.extend(found.inner);
+            absorbed.extend(found.next);
+            adamw.insert(update, found);
         }
     }
 
@@ -516,6 +672,7 @@ fn fusions(
         absorbed,
         transposed,
         chains,
+        adamw,
     }
 }
 
@@ -664,7 +821,13 @@ fn schedule_with(
         .into_iter()
         .chain(in_place.keys().copied())
         .collect();
-    let fused = fusions(&program.nodes, &updates, &step.optimizer.updates, &bound);
+    let fused = fusions(
+        &program.nodes,
+        &updates,
+        &step.optimizer.updates,
+        &bound,
+        &in_place,
+    );
     let tokens: BTreeSet<ValueId> = program
         .nodes
         .iter()
@@ -769,6 +932,59 @@ fn schedule_with(
                     operand: *operand,
                 })?;
             places.insert(node.id, place);
+            continue;
+        }
+
+        if let Some(adamw) = fused.adamw.get(&node.id) {
+            // One kernel reads the seven buffers and writes the update into the parameter's
+            // view and the next moments into the views their states are read from.
+            let view_of = |value: ValueId| match places.get(&value) {
+                Some(Place::View(view)) => Ok(*view),
+                _ => Err(ScheduleError::UndefinedOperand {
+                    value: node.id,
+                    operand: value,
+                }),
+            };
+            let mut operands = Vec::new();
+            let mut reads = Vec::new();
+            for &value in &adamw.buffers {
+                let ty = program
+                    .node(value)
+                    .ok_or(ScheduleError::UndefinedOperand {
+                        value: node.id,
+                        operand: value,
+                    })?
+                    .ty
+                    .clone();
+                operands.push(Operand::Buffer(ty));
+                reads.push(view_of(value)?);
+            }
+            operands.extend(adamw.immediates.map(Operand::Immediate));
+            let [_, _, m, v, ..] = adamw.buffers;
+            let at = updates[&node.id];
+            let writes = vec![parameters[at].views[0], view_of(m)?, view_of(v)?];
+            places.insert(node.id, Place::View(writes[0]));
+            for (next, view) in adamw.next.iter().zip(&writes[1..]) {
+                places.insert(*next, Place::View(*view));
+            }
+            let output = elements(&node.ty).ok_or_else(shape_error)?;
+            let kind = KernelKind::SgdUpdate;
+            let workgroups = spread(node, output.div_ceil(u64::from(kind.workgroup_size())))?;
+            let mut built = kernel(kind, node, operands, node.ty.clone(), None, workgroups);
+            built.op = ADAMW_OP;
+            built.id = Kernel::module_id(&built.signature());
+            let mut values = vec![node.id];
+            values.extend(adamw.next);
+            values.extend(adamw.inner);
+            works.push(Work {
+                value: node.id,
+                values,
+                kernels: vec![built],
+                reads,
+                writes,
+                partials: None,
+                allocates: None,
+            });
             continue;
         }
 
@@ -1717,6 +1933,59 @@ pub fn attention_tile(rows: u64, keys: u64) -> u64 {
     tile
 }
 
+/// The key rows of one workgroup of a blocked `AttentionGradK` or `AttentionGradV` kernel
+/// (story:vulkan-attention-blocked-key-tiles, `spirv/emit/attention_block.rs`).
+pub const ATTENTION_BLOCK_TILE: u64 = 32;
+
+/// The widest head, in columns, a blocked `AttentionGradK` or `AttentionGradV` kernel takes:
+/// its second phase stages a chunk of `32 · (d + 1)` values in workgroup memory.
+pub const ATTENTION_BLOCK_MAX_HEAD: u64 = 64;
+
+/// The tile of a blocked `AttentionGradK` or `AttentionGradV` kernel over sequences of `s`
+/// keys and `l` queries and heads of `d` columns, sharing its call's softmax statistics under a
+/// key mask (story:vulkan-attention-blocked-key-tiles): [`ATTENTION_BLOCK_TILE`] when `s` and
+/// `l` are multiples of it and `d` is a multiple of 16 of at most
+/// [`ATTENTION_BLOCK_MAX_HEAD`]; `None` for a shape the per-row kernel takes.
+pub fn attention_block_tile(l: u64, s: u64, d: u64) -> Option<u64> {
+    (s > 0
+        && l > 0
+        && s.is_multiple_of(ATTENTION_BLOCK_TILE)
+        && l.is_multiple_of(ATTENTION_BLOCK_TILE)
+        && d > 0
+        && d.is_multiple_of(16)
+        && d <= ATTENTION_BLOCK_MAX_HEAD)
+        .then_some(ATTENTION_BLOCK_TILE)
+}
+
+/// The workgroups of a key-side attention kernel of [`attention_loss_kernel`] once it shares
+/// its call's softmax statistics: one per sequence, head and tile of [`attention_block_tile`]
+/// key rows where that tile applies; `None` for any other kernel.
+fn blocked_attention_workgroups(kernel: &Kernel) -> Option<u64> {
+    if !matches!(kernel.op, "AttentionGradK" | "AttentionGradV") {
+        return None;
+    }
+    let heads = kernel.heads()?;
+    let (Some(Operand::Buffer(q)), Some(Operand::Buffer(mask))) =
+        (kernel.operands.first(), kernel.operands.get(3))
+    else {
+        return None;
+    };
+    if mask.dtype != DType::F32 {
+        return None;
+    }
+    let [n, h] = static_dims(q)?[..] else {
+        return None;
+    };
+    let [b, s] = static_dims(mask)?[..] else {
+        return None;
+    };
+    if b == 0 || heads == 0 || !n.is_multiple_of(b) || !h.is_multiple_of(heads) {
+        return None;
+    }
+    let tile = attention_block_tile(n / b, s, h / heads)?;
+    b.checked_mul(heads)?.checked_mul(s / tile)
+}
+
 /// The workgroups of an attention kernel that computes `rows` rows of each of `sequences`
 /// sequences of `keys` keys and `heads` heads: one per sequence, head and tile of
 /// [`attention_tile`] rows, the tiles of a head consecutive, the heads of a sequence consecutive.
@@ -1998,6 +2267,11 @@ pub fn softmax_stats_type(kernel: &Kernel) -> Option<TensorType> {
 /// `AttentionGradK` and `AttentionGradV` read them. `None` for another kernel.
 pub fn with_softmax_stats(mut kernel: Kernel) -> Option<Kernel> {
     kernel.softmax_stats = Some(softmax_stats_type(&kernel)?);
+    // A key-side gradient that shares the statistics runs the blocked kernel, one workgroup
+    // per tile of `ATTENTION_BLOCK_TILE` key rows (story:vulkan-attention-blocked-key-tiles).
+    if let Some(groups) = blocked_attention_workgroups(&kernel) {
+        kernel.workgroups = [u32::try_from(groups).ok()?, 1, 1];
+    }
     kernel.id = Kernel::module_id(&kernel.signature());
     Some(kernel)
 }

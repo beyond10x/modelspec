@@ -477,6 +477,7 @@ fn compiler_bug(what: &str, error: &dyn std::fmt::Display) -> Diagnostic {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ir::kernel::ADAMW_OP;
     use crate::ir::tensor::{Dim, TensorOp, ValueId};
 
     const EXAMPLE: &str = include_str!("../../../examples/linear_regression.mspec");
@@ -564,7 +565,7 @@ mod tests {
     }
 
     /// The example with `adamw(...)`: the step carries the rule, the moments and the step
-    /// inputs, and its Vulkan artifact dispatches the update as kernels (coordinator decision
+    /// inputs, and its Vulkan artifact dispatches the update as one kernel (coordinator decision
     /// D73).
     #[test]
     fn an_adamw_file_compiles_its_step_for_the_cpu_and_for_vulkan() {
@@ -588,7 +589,13 @@ mod tests {
             .iter()
             .map(|kernel| kernel.op)
             .collect();
-        assert!(ops.contains(&"Sqrt") && ops.contains(&"Div"), "{ops:?}");
+        // One kernel computes the update (story:vulkan-adamw-one-dispatch-per-parameter).
+        assert_eq!(
+            ops.iter().filter(|op| **op == ADAMW_OP).count(),
+            1,
+            "{ops:?}"
+        );
+        assert!(!ops.contains(&"Sqrt") && !ops.contains(&"Div"), "{ops:?}");
     }
 
     #[test]

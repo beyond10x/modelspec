@@ -1,10 +1,13 @@
-//! `story:vulkan-long-k-weight-grad-matmul`: a matmul whose `k` of at least 16,384 leaves its
-//! output too small for the square tile takes a long-`k` tile.
+//! `story:vulkan-long-k-weight-grad-matmul`: a matmul whose `k` of at least 4,096 (16,384 until
+//! `story:vulkan-long-k-from-4096`) leaves its output too small for the square tile takes a
+//! long-`k` tile.
 //!
 //! - The three weight-gradient matmuls of the decider model take [`MATMUL_LONG_K_NARROW_BLOCK`]
 //!   (`[256, 65536]ᵀ x [65536, 256]`) and [`MATMUL_LONG_K_BLOCK`] (`[256, 65536]ᵀ x
 //!   [65536, 1024]`, `[1024, 65536]ᵀ x [65536, 256]`), under every invocation limit.
-//! - A `k` below 16,384, fewer than 32 rows, or fewer workgroups than a long-`k` block's bound,
+//! - The masked-row gradient and the four feed-forward weight gradients of the BERT-tiny step
+//!   take [`MATMUL_LONG_K_NARROW_BLOCK`].
+//! - A `k` below 4,096, fewer than 32 rows, or fewer workgroups than a long-`k` block's bound,
 //!   keeps the tile it had; the shapes of `1..=10_000` are pinned by `matmul_tile_from_profile`.
 //! - Every long-`k` tile reads vectors, stages within the 16 KiB every Vulkan device provides
 //!   with either operand transposed, every stride and offset a multiple of 4 values, and is the
@@ -76,13 +79,36 @@ fn the_decider_weight_gradients_take_the_long_k_tiles() {
 }
 
 #[test]
+fn the_bert_tiny_long_k_gradients_take_the_narrow_long_k_tile() {
+    // `[832, 8192] x [8192, 128]ᵀ`, `[512, 4096]ᵀ x [4096, 128]` and `[128, 4096]ᵀ x [4096, 512]`
+    // (story:vulkan-long-k-from-4096), and one step below `k` of 4,096.
+    for ((m, k, n), workgroups) in [
+        ((832, 8192, 128), 104),
+        ((512, 4096, 128), 64),
+        ((128, 4096, 512), 64),
+    ] {
+        let tile = MatMulTile::of(m, k, n);
+        assert!(
+            is_block(&tile, &MATMUL_LONG_K_NARROW_BLOCK),
+            "[{m}, {k}] x [{k}, {n}]: {tile}"
+        );
+        assert_eq!(tile.workgroups(m, n), workgroups, "{tile}");
+        assert!(tile.long_k() && tile.vector_reads(), "{tile}");
+        let below = MatMulTile::of(m, 4095, n);
+        assert!(!below.long_k(), "[{m}, 4095] x [4095, {n}]: {below}");
+    }
+    assert_eq!(MATMUL_LONG_K_BLOCK.from_k, 4096);
+    assert_eq!(MATMUL_LONG_K_NARROW_BLOCK.from_k, 4096);
+}
+
+#[test]
 fn a_shorter_k_or_fewer_workgroups_keep_the_tile_they_had() {
     for (m, k, n) in [
-        (256, 16383, 256),
-        (256, 16383, 1024),
-        (784, 8192, 256),
+        (256, 4095, 256),
+        (256, 4095, 1024),
+        (784, 4095, 256),
         (128, 4096, 128),
-        (512, 4096, 128),
+        (512, 4095, 128),
         (128, 4096, 8192),
         // 63 workgroups of 32 by 32, 2 by 32, and `n` under 32.
         (224, 65536, 288),
@@ -117,7 +143,7 @@ fn every_long_k_tile_reads_vectors_and_stages_within_the_vulkan_minimum() {
     };
     let (mut narrow, mut block) = (0, 0);
     for _ in 0..20_000 {
-        let (m, k, n) = (next(4096), 16_383 + next(100_000), next(4096));
+        let (m, k, n) = (next(4096), 4095 + next(100_000), next(4096));
         for limit in [128, 256, 1024] {
             let tile = MatMulTile::of_invocations(m, k, n, limit);
             let case = format!("[{m}, {k}] x [{k}, {n}] at {limit}: {tile}");

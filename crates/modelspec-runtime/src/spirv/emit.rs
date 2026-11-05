@@ -62,8 +62,8 @@ use std::collections::{BTreeMap, VecDeque};
 use modelspec_core::artifact::{CompiledArtifact, ContentHash};
 use modelspec_core::device::DeviceProfile;
 use modelspec_core::ir::kernel::{
-    ElementwiseChain, Epilogue, Kernel, KernelKind, KernelModuleId, MatMulLayout, MatMulTile,
-    Operand,
+    ADAMW_BUFFERS, ADAMW_OPERANDS, ElementwiseChain, Epilogue, Kernel, KernelKind, KernelModuleId,
+    MatMulLayout, MatMulTile, Operand,
 };
 use modelspec_core::ir::tensor::{DType, Dim, TensorType};
 use rspirv::binary::Assemble;
@@ -74,6 +74,7 @@ use rspirv::spirv::{
 };
 
 mod attention;
+mod attention_block;
 mod heldout;
 mod rowwise;
 
@@ -349,6 +350,9 @@ enum Body {
     Elementwise(Arith, Vec<Source>),
     /// A fused elementwise chain ([`ElementwiseChain`]): each op and its inputs, in order.
     Chain(Vec<(Arith, Vec<Input>)>),
+    /// The AdamW update of one parameter ([`modelspec_core::ir::kernel::ADAMW_OP`]): its
+    /// [`ADAMW_OPERANDS`] operands in order.
+    Adamw([Source; ADAMW_OPERANDS]),
     Stage1,
     Stage2 {
         divide_by: Option<u32>,
@@ -684,7 +688,56 @@ fn chain_body(kernel: &Kernel, chain: &ElementwiseChain) -> Result<Body, EmitErr
     Ok(Body::Chain(ops))
 }
 
+/// The body of an AdamW update kernel: `p`, `g`, `m` and `v` of the result's type, the rank-0
+/// `lr_t`, `c1` and `c2`, then six immediates.
+fn adamw_body(kernel: &Kernel) -> Result<Body, EmitError> {
+    let mut sources = Vec::new();
+    for (binding, operand) in kernel.operands.iter().enumerate() {
+        let source = match operand {
+            Operand::Buffer(ty) if binding < 4 && *ty == kernel.result => Source::Buffer {
+                binding: binding as u32,
+                scalar: false,
+            },
+            Operand::Buffer(ty)
+                if (4..ADAMW_BUFFERS).contains(&binding)
+                    && ty.rank() == 0
+                    && ty.dtype == DType::F32 =>
+            {
+                Source::Buffer {
+                    binding: binding as u32,
+                    scalar: true,
+                }
+            }
+            Operand::Immediate(value) if binding >= ADAMW_BUFFERS => Source::Immediate(*value),
+            _ => {
+                return Err(operands_error(
+                    kernel,
+                    "an AdamW update reads p, g, m and v of its result's type, the rank-0 lr_t, \
+                     c1 and c2, then six immediates",
+                ));
+            }
+        };
+        sources.push(source);
+    }
+    let sources: [Source; ADAMW_OPERANDS] = sources.try_into().map_err(|_| {
+        operands_error(
+            kernel,
+            format!(
+                "{} operands, an AdamW update takes {ADAMW_OPERANDS}",
+                kernel.operands.len()
+            ),
+        )
+    })?;
+    if kernel.result.dtype != DType::F32 {
+        return Err(operands_error(kernel, "an AdamW update writes f32"));
+    }
+    Ok(Body::Adamw(sources))
+}
+
 fn elementwise(kernel: &Kernel) -> Result<Body, EmitError> {
+    if kernel.is_adamw() {
+        return adamw_body(kernel);
+    }
     if kernel.kind == KernelKind::Elementwise
         && let Some(chain) = ElementwiseChain::parse(kernel.op)
     {
@@ -799,7 +852,8 @@ fn build(
     // Every float add, subtract, multiply and fused multiply-add of a reduction, loss-sum,
     // transpose, matmul, row-wise, attention or cross-entropy module, the product and difference
     // of an SGD update with three operands, each op of a fused elementwise chain and every one of
-    // a `Sqrt` or `Div` module is decorated `NoContraction`; none is in a `fast_math` module
+    // a `Sqrt`, `Div` or AdamW update module is decorated `NoContraction`; none is in a
+    // `fast_math` module
     // (DESIGN.md § 3.1, § 5.4, § 12 ADR-008, ADR-009).
     let exact = !fast_math
         && match body {
@@ -822,6 +876,7 @@ fn build(
     match body {
         Body::Elementwise(arith, sources) => m.elementwise(arith, &sources)?,
         Body::Chain(ops) => m.chain(&ops)?,
+        Body::Adamw(sources) => m.adamw(&sources)?,
         Body::Stage1 => m.stage1()?,
         Body::Stage2 { divide_by } => m.stage2(divide_by)?,
         Body::LossSum {
@@ -1663,6 +1718,65 @@ impl Shell {
                 previous = Some(result);
             }
             m.write(index, previous.expect("a chain has ops"))
+        })
+    }
+
+    /// The AdamW update of one parameter element ([`modelspec_core::ir::kernel::ADAMW_OP`]):
+    /// the sixteen ops of the rule in its order, each rounded once and none contracted unless
+    /// the module is `fast_math`, the root and the quotient those of the `Sqrt` and `Div`
+    /// kernels ([`Shell::root`], [`Shell::quotient`]). Written binding 0 takes the update, 1 the
+    /// next first moment and 2 the next second moment; the values between stay in registers.
+    fn adamw(&mut self, sources: &[Source; ADAMW_OPERANDS]) -> Result<(), EmitError> {
+        let (index, count) = (self.index, self.count);
+        let inside = self.less(index, count)?;
+        self.when(inside, |s| {
+            let mut values = Vec::new();
+            for source in sources {
+                values.push(match *source {
+                    Source::Buffer { binding, scalar } => {
+                        let at = if scalar { s.uint(0) } else { index };
+                        s.read(binding as usize, at)?
+                    }
+                    Source::Immediate(value) => s.float(value),
+                });
+            }
+            let [
+                p,
+                g,
+                m,
+                v,
+                lr_t,
+                c1,
+                c2,
+                beta1,
+                rest1,
+                beta2,
+                rest2,
+                eps,
+                decay,
+            ] = values[..]
+            else {
+                unreachable!("an AdamW update has thirteen operands")
+            };
+            let decayed_m = s.f_mul(beta1, m)?;
+            let new_m = s.f_mul(rest1, g)?;
+            let m_next = s.f_add(decayed_m, new_m)?;
+            let decayed_v = s.f_mul(beta2, v)?;
+            let scaled_g = s.f_mul(rest2, g)?;
+            let new_v = s.f_mul(scaled_g, g)?;
+            let v_next = s.f_add(decayed_v, new_v)?;
+            let m_hat = s.f_mul(m_next, c1)?;
+            let v_hat = s.f_mul(v_next, c2)?;
+            let root = s.root(v_hat)?;
+            let denominator = s.f_add(root, eps)?;
+            let direction = s.quotient(m_hat, denominator)?;
+            let shrink = s.f_mul(decay, p)?;
+            let step = s.f_add(direction, shrink)?;
+            let scaled = s.f_mul(lr_t, step)?;
+            let update = s.f_sub(p, scaled)?;
+            s.write_to(0, index, update)?;
+            s.write_to(1, index, m_next)?;
+            s.write_to(2, index, v_next)
         })
     }
 
@@ -2708,7 +2822,10 @@ mod tests {
     /// Acceptance `transposed-staging-padded`: the staging stores of a transposed `a` and of a
     /// transposed `b` of a register-blocked tile take one address per bank per subgroup store on
     /// a device with the workgroup memory of the RTX 3090, for the tiles of 128 invocations, the
-    /// block of 256 and the `mlp_sweep` and MNIST shapes; unpadded they take 2 to 16.
+    /// block of 256 and the `mlp_sweep` and MNIST shapes; unpadded they take 2 to 16. A long-`k`
+    /// tile, which `k` of 4,096 or more gives some of these shapes since
+    /// story:vulkan-long-k-from-4096, stages fixed lines and is the subject of
+    /// `tests/adversary_matmul_long_k.rs`.
     #[test]
     fn a_transposed_operand_is_staged_into_workgroup_memory_without_bank_conflicts() {
         let shapes = SHAPES.iter().map(|&s| (s, 128)).chain([
@@ -2721,6 +2838,9 @@ mod tests {
         let mut checked = 0;
         for ((m, k, n), limit) in shapes {
             let tile = MatMulTile::of_invocations(m.into(), k.into(), n.into(), limit);
+            if tile.long_k() {
+                continue;
+            }
             for is_a in [true, false] {
                 if !padded(&tile, is_a) {
                     continue;
@@ -2740,7 +2860,8 @@ mod tests {
     /// shapes and both invocation limits, a padded operand stores without conflicts, any other
     /// transposed operand stores as unpadded, and the strides of a matmul reading neither
     /// operand transposed are those of the tile before the change, but for the `k`-major `a`
-    /// of a tile with vector reads ([`MatMulTile::vector_layout`]).
+    /// of a tile with vector reads ([`MatMulTile::vector_layout`]). Long-`k` tiles are left to
+    /// `tests/adversary_matmul_long_k.rs`.
     #[test]
     fn the_padding_removes_conflicts_and_leaves_an_operand_read_as_is_where_it_was() {
         let mut state = 0x5eed_u64;
@@ -2755,6 +2876,9 @@ mod tests {
             let (m, k, n) = (next(9000) as u32, next(9000) as u32, next(9000) as u32);
             for limit in [128, 256] {
                 let tile = MatMulTile::of_invocations(m.into(), k.into(), n.into(), limit);
+                if tile.long_k() {
+                    continue;
+                }
                 let plain = tile.layout([false, false]);
                 if tile.vector_reads() {
                     assert_eq!(plain.a_stride, tile.rows_per_workgroup() + 4, "{tile}");
@@ -2779,7 +2903,7 @@ mod tests {
     }
 
     /// The block of 256 invocations reads vectors ([`MatMulTile::vector_reads`]) and the tiles of
-    /// 128 do not; its layout stages both operands `k`-major, every stride, offset and buffer a
+    /// 128 do not, but for the long-`k` tiles; its layout stages both operands `k`-major, every stride, offset and buffer a
     /// multiple of 4 values so that each vector read is aligned, and its staging stores of `a`
     /// and `b`, read as is or transposed, take one address per bank per subgroup store, for the
     /// `mlp_sweep` b8192 h4096 shapes and sampled ones.
@@ -2801,9 +2925,14 @@ mod tests {
         let mut blocks = 0;
         for (m, k, n) in shapes {
             let tile = MatMulTile::of_invocations(m.into(), k.into(), n.into(), 256);
-            assert_eq!(tile.vector_reads(), tile.workgroup_size == 256, "{tile}");
-            assert!(!MatMulTile::of(m.into(), k.into(), n.into()).vector_reads());
-            if !tile.vector_reads() {
+            assert_eq!(
+                tile.vector_reads(),
+                tile.workgroup_size == 256 || tile.long_k(),
+                "{tile}"
+            );
+            let of = MatMulTile::of(m.into(), k.into(), n.into());
+            assert_eq!(of.vector_reads(), of.long_k(), "{of}");
+            if tile.workgroup_size != 256 {
                 continue;
             }
             blocks += 1;

@@ -8,6 +8,12 @@
 //! one sequence. The FNV-1a hash of every result's bits is the one recorded from the kernels of
 //! story:vulkan-attention-softmax-stats-reused.
 //!
+//! story:vulkan-attention-blocked-key-tiles: in the call that shares the statistics,
+//! `AttentionGradK` and `AttentionGradV` of the cases of 128, 256 and 32 keys and heads of 64
+//! columns run one workgroup per tile of 32 key rows, and give the recorded hashes. A second
+//! test runs further blocked shapes (heads of 16, 32 and 48 columns, 96 keys, a sequence
+//! masked whole) and compares each blocked result with the per-row kernel's, hash for hash.
+//!
 //! Ignored by default: it creates a Vulkan instance, which `task ci` never does. Run it with
 //! `MODELSPEC_VK_VALIDATION=1 cargo test -p modelspec-runtime --features vulkan --test vulkan_attention_bits -- --ignored`.
 #![cfg(feature = "vulkan")]
@@ -271,17 +277,14 @@ fn run(
         .collect()
 }
 
-#[test]
-#[ignore = "needs a Vulkan device"]
-fn the_attention_kernels_compute_the_bits_recorded_before_their_tiling() {
-    let vulkan = Vulkan::load().expect("the Vulkan loader opens");
-    let candidates = vulkan.candidates().expect("the devices are probed");
-    let negotiated = negotiate(&candidates[0].profile).expect("device 0 negotiates");
-    let device = vulkan
-        .create_device(0, &negotiated)
-        .expect("device 0 opens");
-    let mut seen = Vec::new();
-    for (b, s, h, heads, mask) in CASES {
+/// The hashes of one case: each kernel alone, then the shared statistics and the four results
+/// of the call that shares them; and the workgroups of that call's `AttentionGradK`.
+fn hashes_of(
+    vulkan: &Vulkan,
+    device: &Device,
+    (b, s, h, heads, mask): (u64, u64, u64, u64, Mask),
+) -> (Vec<u64>, u32) {
+    {
         let mut draw = Draw::new(0x6174_7465_6e74_6f6e ^ s ^ (h << 16));
         let n = b * s;
         let rows = TensorType::f32(&[n, h]);
@@ -303,21 +306,36 @@ fn the_attention_kernels_compute_the_bits_recorded_before_their_tiling() {
         let mut hashes = Vec::new();
         for op in &ops {
             let kernel = kernel_of(op, &rows, &mask_ty);
-            let out = run(&device, &[kernel], &inputs, 0);
+            let out = run(device, &[kernel], &inputs, 0);
             hashes.push(fnv(&out[1]));
         }
         let shared: Vec<Kernel> = ops
             .iter()
             .map(|op| with_softmax_stats(kernel_of(op, &rows, &mask_ty)).expect("shares"))
             .collect();
-        let out = run(&device, &shared, &inputs, (n * heads * 3) as usize);
+        let out = run(device, &shared, &inputs, (n * heads * 3) as usize);
         hashes.extend(out.iter().map(|values| fnv(values)));
         let messages = vulkan.take_validation_messages();
         assert!(
             messages.is_empty(),
             "[{b}, {s}] x {h} heads {heads} {mask:?}: {messages:?}"
         );
-        seen.push(hashes);
+        (hashes, shared[2].workgroups[0])
+    }
+}
+
+#[test]
+#[ignore = "needs a Vulkan device"]
+fn the_attention_kernels_compute_the_bits_recorded_before_their_tiling() {
+    let vulkan = Vulkan::load().expect("the Vulkan loader opens");
+    let candidates = vulkan.candidates().expect("the devices are probed");
+    let negotiated = negotiate(&candidates[0].profile).expect("device 0 negotiates");
+    let device = vulkan
+        .create_device(0, &negotiated)
+        .expect("device 0 opens");
+    let mut seen = Vec::new();
+    for case in CASES {
+        seen.push(hashes_of(&vulkan, &device, case).0);
     }
     let table: Vec<String> = seen
         .iter()
@@ -328,4 +346,42 @@ fn the_attention_kernels_compute_the_bits_recorded_before_their_tiling() {
         .collect();
     let expected: Vec<Vec<u64>> = RECORDED.iter().map(|r| r.to_vec()).collect();
     assert_eq!(seen, expected, "seen:\n{}", table.join("\n"));
+}
+
+/// Shapes `[b, s, h, heads]` the blocked key-side gradients take, beyond those of [`CASES`]:
+/// heads of 16, 32 and 48 columns, 96 keys, and a sequence whose keys are all masked.
+const BLOCKED_CASES: [(u64, u64, u64, u64, Mask); 6] = [
+    (2, 128, 128, 2, Mask::NoneOfOne),
+    (2, 64, 64, 2, Mask::Some),
+    (2, 32, 96, 2, Mask::Some),
+    (3, 96, 32, 2, Mask::NoneOfOne),
+    (3, 96, 32, 2, Mask::All),
+    (2, 64, 128, 4, Mask::Some),
+];
+
+/// story:vulkan-attention-blocked-key-tiles: on every shape of [`BLOCKED_CASES`] the call that
+/// shares the statistics runs `AttentionGradK` over one workgroup per sequence, head and tile
+/// of 32 key rows, and each of its four results has the hash of the kernel that runs alone, per
+/// row.
+#[test]
+#[ignore = "needs a Vulkan device"]
+fn the_blocked_key_side_gradients_compute_the_bits_of_the_per_row_kernels() {
+    let vulkan = Vulkan::load().expect("the Vulkan loader opens");
+    let candidates = vulkan.candidates().expect("the devices are probed");
+    let negotiated = negotiate(&candidates[0].profile).expect("device 0 negotiates");
+    let device = vulkan
+        .create_device(0, &negotiated)
+        .expect("device 0 opens");
+    for case in BLOCKED_CASES {
+        let (b, s, _, heads, _) = case;
+        let (hashes, workgroups) = hashes_of(&vulkan, &device, case);
+        assert_eq!(u64::from(workgroups), b * heads * (s / 32), "{case:?}");
+        assert_eq!(hashes[5..9], hashes[0..4], "{case:?}: {hashes:x?}");
+    }
+    // The recorded cases the blocked kernels take.
+    for case in &CASES[5..9] {
+        let (b, s, _, heads, _) = *case;
+        let (_, workgroups) = hashes_of(&vulkan, &device, *case);
+        assert_eq!(u64::from(workgroups), b * heads * (s / 32), "{case:?}");
+    }
 }

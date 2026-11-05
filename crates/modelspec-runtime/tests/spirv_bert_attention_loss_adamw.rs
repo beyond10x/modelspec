@@ -1,7 +1,9 @@
 //! story:bert-vulkan-kernels-attention-loss-adamw, DESIGN.md § 9 gate 6, no Vulkan instance: the
 //! eight kernels `Attention`, `AttentionGradQ`, `AttentionGradK`, `AttentionGradV`,
 //! `CrossEntropy`, `CrossEntropyGrad`, `Sqrt` and `Div` are scheduled as one dispatch each, but
-//! `CrossEntropy` (story:vulkan-cross-entropy-sum-per-row) and `CrossEntropyGrad` as two, with
+//! `CrossEntropy` (story:vulkan-cross-entropy-sum-per-row) and `CrossEntropyGrad` as two, and
+//! since story:vulkan-adamw-one-dispatch-per-parameter the twin's step computes each AdamW
+//! update, its `Sqrt` and `Div` included, in one `sgd_update` kernel of `ADAMW_OP`, with
 //! a kernel record, a workgroup size and a module id, printed by `ir --stage kernel` with a FLOP
 //! and byte count; each module passes `spirv-val --target-env vulkan1.2`, on the shapes of the
 //! hidden-32 twin's AdamW step and on shapes whose edges do not fill a workgroup, and decorates
@@ -26,7 +28,7 @@ use modelspec_core::artifact::{Backend, CompiledArtifact};
 use modelspec_core::compile::{CompiledTraining, compile_training};
 use modelspec_core::device::DeviceProfile;
 use modelspec_core::ir::kernel::{
-    DispatchCount, ExecutionPlan, Kernel, KernelKind, Operand, PlanOp,
+    ADAMW_OP, DispatchCount, ExecutionPlan, Kernel, KernelKind, Operand, PlanOp,
 };
 use modelspec_core::ir::print::print_kernel;
 use modelspec_core::ir::tensor::{Dim, TensorOp, TensorType};
@@ -35,7 +37,7 @@ use modelspec_core::ir::verify::verify_plan;
 use modelspec_core::schedule::{
     self, ATTENTION_WORKGROUP, attention_loss_kernel, host_inputs, schedule,
 };
-use modelspec_runtime::spirv::emit::{emit, emit_kernels};
+use modelspec_runtime::spirv::emit::{emit, emit_kernels, emit_module_with};
 use modelspec_runtime::spirv::validate::validate;
 
 const FIXTURE: &str = include_str!(concat!(
@@ -46,16 +48,16 @@ const FIXTURE: &str = include_str!(concat!(
 /// The hidden-32 twin of BERT-tiny: attention, cross-entropy, dropout and AdamW.
 const TWIN: &str = include_str!("../../modelspec-cli/tests/fixtures/bert_cpu.mspec");
 
-/// The eight ops by their Tensor IR names.
-const OPS: [&str; 8] = [
+/// The ops of the twin's step by their kernel names: six by their Tensor IR names, and the
+/// AdamW update that computes the step's `Sqrt` and `Div`.
+const OPS: [&str; 7] = [
     "Attention",
     "AttentionGradQ",
     "AttentionGradK",
     "AttentionGradV",
     "CrossEntropy",
     "CrossEntropyGrad",
-    "Sqrt",
-    "Div",
+    ADAMW_OP,
 ];
 
 fn twin() -> (CompiledTraining, ExecutionPlan) {
@@ -87,8 +89,8 @@ fn assert_valid(kernel: &Kernel) {
 }
 
 /// Scenario 2: the twin's AdamW step schedules for Vulkan, its plan verifies, every module of
-/// it passes `spirv-val` as `emit_kernels` builds it for the RTX 3090 profile, and the eight ops
-/// are all there.
+/// it passes `spirv-val` as `emit_kernels` builds it for the RTX 3090 profile, and the seven
+/// ops are all there.
 #[test]
 fn every_module_of_the_twin_step_passes_spirv_val() {
     let (_, plan) = twin();
@@ -109,12 +111,12 @@ fn every_module_of_the_twin_step_passes_spirv_val() {
     assert_eq!(ops, expected);
 }
 
-/// Each of the eight ops is one dispatch with a kernel record and a module id derived from it,
+/// Each of the seven ops is one dispatch with a kernel record and a module id derived from it,
 /// of workgroup size `ATTENTION_WORKGROUP` for attention and its gradients and 64 for the
 /// others; `ir --stage kernel` prints it with its kind and a FLOP and byte count, never
 /// `uncounted`. Attention and its gradients run per row, cross-entropy per row and then as the
-/// loss sum, its gradient per row and then per element, `Sqrt` and `Div` per element of the
-/// elementwise family.
+/// loss sum, its gradient per row and then per element, the AdamW update per element as an
+/// `sgd_update`.
 #[test]
 fn each_new_op_is_one_counted_dispatch_printed_with_its_kernel() {
     let artifact = twin_artifact();
@@ -126,7 +128,7 @@ fn each_new_op_is_one_counted_dispatch_printed_with_its_kernel() {
         let kinds: &[KernelKind] = match op {
             "CrossEntropy" => &[KernelKind::PerRow, KernelKind::LossSum],
             "CrossEntropyGrad" => &[KernelKind::PerRow, KernelKind::PerElement],
-            "Sqrt" | "Div" => &[KernelKind::Elementwise],
+            ADAMW_OP => &[KernelKind::SgdUpdate],
             _ => &[KernelKind::PerRow],
         };
         for kernel in kernels {
@@ -237,6 +239,26 @@ fn optimizer_kernels(shape: &[u64]) -> Vec<Kernel> {
     .collect()
 }
 
+/// The AdamW update kernel of a parameter of `shape`: the twin's, at that shape.
+fn adamw_kernel(shape: &[u64]) -> Kernel {
+    let mut kernel = twin_artifact()
+        .execution
+        .kernels
+        .into_iter()
+        .find(Kernel::is_adamw)
+        .expect("the twin's step has an AdamW update");
+    let ty = TensorType::f32(shape);
+    for operand in &mut kernel.operands[..4] {
+        *operand = Operand::Buffer(ty.clone());
+    }
+    kernel.result = ty;
+    let elements: u64 = shape.iter().product();
+    let groups = elements.div_ceil(u64::from(kernel.workgroup_size));
+    kernel.workgroups = [u32::try_from(groups).expect("few workgroups"), 1, 1];
+    kernel.id = Kernel::module_id(&kernel.signature());
+    kernel
+}
+
 /// `[b, s, h, heads]`: one row; edges one short of, at and one past a workgroup of 64; and 512
 /// keys, the longest softmax the device tests run.
 const ATTENTION_SHAPES: [(u64, u64, u64, u64); 6] = [
@@ -275,10 +297,12 @@ fn every_new_kernel_on_unaligned_shapes_passes_spirv_val() {
             assert_valid(kernel);
             modules += 1;
         }
+        assert_valid(&adamw_kernel(shape));
+        modules += 1;
     }
     assert_eq!(
         modules,
-        4 * ATTENTION_SHAPES.len() + 6 * CROSS_ENTROPY_SHAPES.len() + 5 * OPTIMIZER_SHAPES.len()
+        4 * ATTENTION_SHAPES.len() + 6 * CROSS_ENTROPY_SHAPES.len() + 6 * OPTIMIZER_SHAPES.len()
     );
 }
 
@@ -348,10 +372,11 @@ fn float_arithmetic(words: &[u32]) -> (usize, usize) {
     (total, exact)
 }
 
-/// ADR-009 for the eight kernels: in the deterministic mode every float add, subtract, multiply
-/// and `Fma` is decorated `NoContraction`; the `fast_math` modules carry none. Every kernel but
-/// `Sqrt` and `Div` sums products, each after the first fused by an `Fma`, and those two correct
-/// their quotient or root by one `Fma` residual step, so each has an `Fma`.
+/// ADR-009 for the seven kernels of the twin's step, and for `Sqrt` and `Div` on their own: in
+/// the deterministic mode every float add, subtract, multiply and `Fma` is decorated
+/// `NoContraction`; the `fast_math` modules carry none. Every kernel but the AdamW update,
+/// `Sqrt` and `Div` sums products, each after the first fused by an `Fma`, and those three
+/// correct their quotient or root by one `Fma` residual step, so each has an `Fma`.
 #[test]
 fn every_new_float_op_is_uncontracted_except_under_fast_math() {
     let artifact = twin_artifact();
@@ -381,6 +406,20 @@ fn every_new_float_op_is_uncontracted_except_under_fast_math() {
     }
     let expected: BTreeSet<&str> = OPS.into_iter().collect();
     assert_eq!(fused, expected);
+    // The kernels an update outside the rule keeps.
+    for kernel in optimizer_kernels(&[300, 32]) {
+        let off = emit_module_with(&kernel, &profile, false).expect("emits");
+        let on = emit_module_with(&kernel, &profile, true).expect("emits");
+        let (total, exact) = float_arithmetic(&off.spirv);
+        assert!(total > 0 && exact == total, "{}", kernel.signature());
+        let (fast_total, fast_exact) = float_arithmetic(&on.spirv);
+        assert_eq!(
+            (fast_total, fast_exact),
+            (total, 0),
+            "{}",
+            kernel.signature()
+        );
+    }
 }
 
 /// Every host input of the twin's step has a view of the plan: one `i32[2]` RNG token per
@@ -630,21 +669,23 @@ fn twin_counts(op: &str) -> Vec<(u64, u64)> {
 ///   f32[32, 32] 4,096 B written, 42,624 B; the position table 2,048 B + 128 B + 4,096 B, 6,272 B.
 /// - `Dropout` and `DropoutGrad`, five sites each on f32[32, 32]: 1,024 FLOP and 4,096 B +
 ///   the i32[2] token 8 B + 4,096 B = 8,200 B per dispatch.
-/// - `Sqrt` and `Div`, one each per parameter (41), of the parameter's shape: 28,684 FLOP per
+/// - The AdamW update, one per parameter (41), of the parameter's shape, 28,684 elements per
 ///   step in all (embeddings 9,600 + 512 + 64; per layer 4·(1,024 + 32) + 64 + 2,048 + 64 +
-///   2,048 + 32 + 64 = 8,544, twice; MLM head 1,024 + 32 + 64 + 300 = 1,420); `Sqrt` reads one
-///   and writes one parameter-shaped view, 2·4·28,684 = 229,472 B, `Div` reads two and writes
-///   one, 3·4·28,684 = 344,208 B.
+///   2,048 + 32 + 64 = 8,544, twice; MLM head 1,024 + 32 + 64 + 300 = 1,420): 16 FLOP per
+///   element, 458,944; it reads four parameter-shaped views and three rank-0 inputs and writes
+///   three parameter-shaped views, 7·4·28,684 + 41·12 = 803,644 B. The step has no `Sqrt` and
+///   no `Div` dispatch.
 #[test]
 fn the_twin_step_counts_its_new_kinds_by_hand() {
     assert_eq!(twin_counts("Embedding"), [(0, 6_272), (0, 42_624)]);
     assert_eq!(twin_counts("Dropout"), [(1_024, 8_200); 5]);
     assert_eq!(twin_counts("DropoutGrad"), [(1_024, 8_200); 5]);
-    for (op, bytes) in [("Sqrt", 229_472), ("Div", 344_208)] {
-        let counts = twin_counts(op);
-        assert_eq!(counts.len(), 41, "{op}: {counts:?}");
-        let flop: u64 = counts.iter().map(|(flop, _)| flop).sum();
-        let total: u64 = counts.iter().map(|(_, bytes)| bytes).sum();
-        assert_eq!((flop, total), (28_684, bytes), "{op}");
+    let counts = twin_counts(ADAMW_OP);
+    assert_eq!(counts.len(), 41, "{counts:?}");
+    let flop: u64 = counts.iter().map(|(flop, _)| flop).sum();
+    let total: u64 = counts.iter().map(|(_, bytes)| bytes).sum();
+    assert_eq!((flop, total), (16 * 28_684, 803_644));
+    for op in ["Sqrt", "Div"] {
+        assert!(twin_counts(op).is_empty(), "{op}");
     }
 }

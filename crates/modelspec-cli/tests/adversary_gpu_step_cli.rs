@@ -214,6 +214,33 @@ fn worst_parameter(cpu: &str, gpu: &str) -> (Worst, Vec<String>) {
     (worst, outside)
 }
 
+/// Every final parameter element of `gpu` outside the run tolerance of DESIGN.md § 9 against
+/// `cpu`, at most 16: an element of an attention key bias (`biases`), whose exact gradient is
+/// zero by structure, passes when `|g - c| <= biased` ([`zero_gradient_bound`], coordinator
+/// decision D74), every other element under the element rule.
+fn outside_the_run_tolerance(
+    cpu: &str,
+    gpu: &str,
+    biases: &std::collections::BTreeSet<String>,
+    biased: f64,
+) -> Vec<String> {
+    let (c_params, g_params) = (tensors(cpu, "param"), tensors(gpu, "param"));
+    let mut outside = Vec::new();
+    for (name, c) in &c_params {
+        for (i, (&g, &c)) in g_params[name].iter().zip(c).enumerate() {
+            let passes = if biases.contains(name) {
+                (f64::from(g) - f64::from(c)).abs() <= biased
+            } else {
+                within(g, c, c.abs(), GPU_RUN_ATOL, GPU_RUN_RTOL)
+            };
+            if !passes && outside.len() < 16 {
+                outside.push(format!("param @{name} [{i}]: gpu {g} cpu {c}"));
+            }
+        }
+    }
+    outside
+}
+
 /// Hypothesis 2: a sequence of 513 or 1,024 keys, and two sequences of 513, are E-TARGET-011 at
 /// the `attention` call of `compile --backend vulkan`, exit 1, nothing written to stdout; a
 /// sequence of exactly 512 keys compiles. No device: the compile reads a device profile file.
@@ -271,7 +298,8 @@ fn adv_gpu_step_attention_over_512_keys_is_e_target_011_at_its_call() {
 }
 
 /// Hypothesis 2: `examples/bert_tiny.mspec` (S = 128, V = 8,192, AdamW) schedules for Vulkan:
-/// `ir --stage kernel` exits 0 and prints each of the eight new kernel kinds.
+/// `ir --stage kernel` exits 0 and prints each of the new kernel kinds, the AdamW update in
+/// place of `Sqrt` and `Div`.
 #[test]
 fn adv_gpu_step_bert_tiny_schedules_the_eight_kernels() {
     let output = modelspec(&["ir", "examples/bert_tiny.mspec", "--stage", "kernel"]);
@@ -285,8 +313,9 @@ fn adv_gpu_step_bert_tiny_schedules_the_eight_kernels() {
         " loss_sum CrossEntropy ",
         " per_row CrossEntropyGrad ",
         " per_element CrossEntropyGrad ",
-        " elementwise Sqrt ",
-        " elementwise Div ",
+        // The AdamW update computes the step's `Sqrt` and `Div`
+        // (story:vulkan-adamw-one-dispatch-per-parameter).
+        " sgd_update AdamW ",
     ] {
         assert!(
             stdout
@@ -514,8 +543,15 @@ fn adv_gpu_step_device_dropout_sgd_matches_the_cpu_run_resume_and_divergence() {
 
 /// Hypothesis 1: the twin's run tolerance at 10, 20 and 40 steps (warm-up a fifth of the run):
 /// every printed step loss and every final parameter element within `1e-4 + 1e-3 |c|` of the
-/// CPU run. Prints the drift table: the worst element's ratio to its bound, its parameter, its
-/// CPU value and its difference.
+/// CPU run, an attention key bias under the rule of DESIGN.md § 9 for it
+/// ([`outside_the_run_tolerance`]). Prints the drift table: the worst element's ratio to the
+/// element bound, its parameter, its CPU value and its difference.
+///
+/// Until 2026-11-05 the key biases were held to the element bound here too, and passed with
+/// their margin set by rounding noise. story:vulkan-cross-entropy-row-workgroup (tolerance
+/// class) moved that noise: on the RTX 3090 the worst key-bias element at 40 steps is 1.29 of
+/// the element bound where the 0.25.0 binary gives 0.85 on the same driver, and the run with
+/// and without the one-dispatch AdamW update prints the same bytes.
 #[test]
 #[ignore = "needs a Vulkan device"]
 fn adv_gpu_step_device_twin_drift_over_10_20_and_40_steps() {
@@ -540,12 +576,14 @@ fn adv_gpu_step_device_twin_drift_over_10_20_and_40_steps() {
                 outside.push(format!("{steps} steps, step {k}: gpu {g} cpu {c}"));
             }
         }
-        let ((ratio, diff, name, i, c, g), mut out) = worst_parameter(&cpu_out, &gpu_out);
+        let ((ratio, diff, name, i, c, g), _) = worst_parameter(&cpu_out, &gpu_out);
         eprintln!(
             "{steps} | {diff:.3e} | {:.3e} | {ratio:.3} | @{name} [{i}] | {c} | {g} | {loss_diff:.3e}",
             bound(c)
         );
-        outside.append(&mut out);
+        let biased = zero_gradient_bound(steps, learning_rate(&file));
+        let mut out = outside_the_run_tolerance(&cpu_out, &gpu_out, &key_biases(&file), biased);
+        outside.extend(out.drain(..).map(|line| format!("{steps} steps, {line}")));
     }
     assert!(outside.is_empty(), "{outside:#?}");
 }
@@ -661,7 +699,9 @@ fn learning_rate(file: &str) -> f64 {
 /// passes with its worst element, a key bias, at 0.54 of the bound. On the unit's commit and the
 /// RTX 3090 all eight pass, the worst at 0.85 of the bound (seed 1), each worst element a key
 /// bias: the acceptance run holds, with its margin set by rounding noise. Prints the worst
-/// element per seed.
+/// element per seed. Since 2026-11-05 a key bias is held to the rule of DESIGN.md § 9 for it
+/// ([`outside_the_run_tolerance`]): after story:vulkan-cross-entropy-row-workgroup seed 1 is at
+/// 1.23 of the element bound, where the 0.25.0 binary gives 0.85 on the same driver.
 #[test]
 #[ignore = "needs a Vulkan device"]
 fn adv_gpu_step_device_twin_10_steps_within_the_run_tolerance_for_eight_seeds() {
@@ -684,12 +724,14 @@ fn adv_gpu_step_device_twin_10_steps_within_the_run_tolerance_for_eight_seeds() 
         assert_exit(&cpu, 0);
         let gpu = modelspec(&["train", &file, "--backend", "vulkan", "--data", path(&data)]);
         assert_exit(&gpu, 0);
-        let ((ratio, diff, name, i, c, _), mut out) =
-            worst_parameter(&text(&cpu.stdout), &text(&gpu.stdout));
+        let (cpu_out, gpu_out) = (text(&cpu.stdout), text(&gpu.stdout));
+        let ((ratio, diff, name, i, c, _), _) = worst_parameter(&cpu_out, &gpu_out);
         eprintln!(
             "{seed} | {diff:.3e} | {:.3e} | {ratio:.3} | @{name} [{i}]",
             bound(c)
         );
+        let biased = zero_gradient_bound(10, learning_rate(&file));
+        let mut out = outside_the_run_tolerance(&cpu_out, &gpu_out, &key_biases(&file), biased);
         out.truncate(4);
         outside.extend(out.into_iter().map(|line| format!("seed {seed}, {line}")));
     }

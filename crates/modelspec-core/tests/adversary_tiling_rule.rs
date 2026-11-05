@@ -4,7 +4,10 @@
 //!
 //! - The rule: the wide tile for an output of at least 128 columns, `k` of at least 64 and at
 //!   least 128 blocks of 64 by 128; else the square tile for an output of at least 64 columns
-//!   and at least 128 blocks of 64 by 64; else one column per invocation.
+//!   and at least 128 blocks of 64 by 64; else, for `k` of at least 4,096 and an output of at
+//!   least 32 rows and 32 columns, the long-`k` tile from 128 blocks of 64 by 32 and the narrow
+//!   long-`k` tile from 64 blocks of 32 by 32 (story:vulkan-long-k-weight-grad-matmul, from
+//!   4,096 since story:vulkan-long-k-from-4096); else one column per invocation.
 //! - Every tile the rule gives fits [`MAX_WORKGROUP_INVOCATIONS`] and
 //!   [`MIN_SHARED_MEMORY_BYTES`], covers its output, has whole column lanes and is a function of
 //!   the shape alone; `cols_per_invocation` is 1 whenever no block applies.
@@ -30,6 +33,8 @@ const EDGES: [u64; 46] = [
 enum Rule {
     Wide,
     Square,
+    LongK,
+    LongKNarrow,
     OneColumn,
 }
 
@@ -40,6 +45,10 @@ fn rule(m: u64, k: u64, n: u64) -> Rule {
         Rule::Wide
     } else if n >= 64 && square_blocks >= 128 {
         Rule::Square
+    } else if k >= 4096 && m >= 32 && n >= 32 && m.div_ceil(64) * n.div_ceil(32) >= 128 {
+        Rule::LongK
+    } else if k >= 4096 && m >= 32 && n >= 32 && m.div_ceil(32) * n.div_ceil(32) >= 64 {
+        Rule::LongKNarrow
     } else {
         Rule::OneColumn
     }
@@ -147,6 +156,32 @@ fn breaks(m: u64, k: u64, n: u64) -> Vec<String> {
                 && tile.b_pad == 0,
             "DESIGN.md § 5.2: the square tile, 8 by 4 of a block of 64 by 64, depth 16",
         ),
+        Rule::LongK => check(
+            (
+                tile.workgroup_size,
+                tile.cols,
+                tile.rows,
+                tile.cols_per_invocation,
+            ) == (64, 32, 8, 4)
+                && tile.rows_per_workgroup() == 64
+                && tile.depth == 16
+                && tile.ahead == 4
+                && tile.b_pad == 0,
+            "DESIGN.md § 5.2: the long-k tile, 8 by 4 of a block of 64 by 32, depth 16",
+        ),
+        Rule::LongKNarrow => check(
+            (
+                tile.workgroup_size,
+                tile.cols,
+                tile.rows,
+                tile.cols_per_invocation,
+            ) == (128, 32, 4, 2)
+                && tile.rows_per_workgroup() == 32
+                && tile.depth == 16
+                && tile.ahead == 4
+                && tile.b_pad == 0,
+            "DESIGN.md § 5.2: the narrow long-k tile, 4 by 2 of a block of 32 by 32, depth 16",
+        ),
         Rule::OneColumn => {
             check(
                 tile.cols_per_invocation == 1,
@@ -190,7 +225,7 @@ fn breaks(m: u64, k: u64, n: u64) -> Vec<String> {
 #[test]
 fn every_tile_on_the_boundary_grid_keeps_the_design_rule() {
     let mut wrong = Vec::new();
-    let mut taken = [0usize; 3];
+    let mut taken = [0usize; 5];
     for m in EDGES {
         for k in EDGES {
             for n in EDGES {
@@ -200,11 +235,13 @@ fn every_tile_on_the_boundary_grid_keeps_the_design_rule() {
         }
     }
     eprintln!(
-        "boundary grid: {} shapes, wide {} square {} one column {}",
+        "boundary grid: {} shapes, wide {} square {} long k {} narrow long k {} one column {}",
         EDGES.len().pow(3),
         taken[0],
         taken[1],
-        taken[2]
+        taken[2],
+        taken[3],
+        taken[4]
     );
     assert!(
         taken.iter().all(|&t| t > 0),
@@ -243,7 +280,7 @@ fn every_tile_of_200_000_drawn_shapes_keeps_the_design_rule() {
 #[test]
 fn the_thresholds_fall_where_the_design_puts_them() {
     // `[m, k, n]` and the tile DESIGN.md § 5.2 names, one step either side of each bound.
-    let cases: [((u64, u64, u64), Rule); 12] = [
+    let cases: [((u64, u64, u64), Rule); 20] = [
         ((8192, 64, 64), Rule::Square),
         ((8128, 64, 64), Rule::OneColumn),
         ((8192, 64, 63), Rule::OneColumn),
@@ -256,6 +293,14 @@ fn the_thresholds_fall_where_the_design_puts_them() {
         ((1, 1, 8192), Rule::Square),
         ((1, 1, 8128), Rule::OneColumn),
         ((784, 8192, 1024), Rule::Square),
+        ((2048, 4096, 127), Rule::LongK),
+        ((2048, 4095, 127), Rule::OneColumn),
+        ((512, 4096, 128), Rule::LongKNarrow),
+        ((512, 4095, 128), Rule::OneColumn),
+        ((480, 4096, 128), Rule::OneColumn),
+        ((31, 4096, 8128), Rule::OneColumn),
+        ((32, 4096, 2048), Rule::LongKNarrow),
+        ((8128, 4096, 31), Rule::OneColumn),
     ];
     for ((m, k, n), expected) in cases {
         assert_eq!(rule(m, k, n), expected, "[{m}, {k}] x [{k}, {n}]");
@@ -263,6 +308,8 @@ fn the_thresholds_fall_where_the_design_puts_them() {
         let (cols, per) = match expected {
             Rule::Wide => (128, 8),
             Rule::Square => (64, 4),
+            Rule::LongK => (32, 4),
+            Rule::LongKNarrow => (32, 2),
             Rule::OneColumn => (tile.cols, 1),
         };
         assert_eq!(
