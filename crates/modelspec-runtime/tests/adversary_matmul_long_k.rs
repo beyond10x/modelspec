@@ -671,6 +671,11 @@ fn module_hashes() -> BTreeMap<String, String> {
                 if kernel.matmul_tile().is_some_and(|tile| tile.long_k()) {
                     continue;
                 }
+                // So is the first stage of a split-K matmul (story:vulkan-matmul-split-k): the
+                // base wrote no partial products.
+                if kernel.matmul_slices().is_some_and(|slices| slices > 1) {
+                    continue;
+                }
                 let signature = kernel.signature();
                 if with_profile {
                     for fast in [false, true] {
