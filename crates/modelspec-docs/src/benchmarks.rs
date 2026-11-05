@@ -2458,8 +2458,8 @@ mod tests {
     }
 
     /// The entries of verification-report:bert-tiny-vs-pytorch-2026-10-28, -2026-10-29,
-    /// -2026-11-05 and -2026-11-05-split-k, one per side and report: ModelSpec
-    /// Vulkan, PyTorch CUDA eager and `torch.compile`, three runs each of the 10,000 steps of
+    /// -2026-11-05, -2026-11-05-split-k and -2026-11-05-segment-reuse, one per side and report:
+    /// ModelSpec Vulkan, PyTorch CUDA eager and `torch.compile`, three runs each of the 10,000 steps of
     /// `examples/bert_tiny.mspec`, all counted by one `MatmulOnly` FLOP figure. Each cites the
     /// three raw records of its side in run order, a re-run named `-r` or `-rN` after the run it
     /// replaces, and states their µs per step in that order;
@@ -2472,7 +2472,7 @@ mod tests {
         let bert: Vec<&Run> = runs.iter().filter(|run| run.workload == BERT).collect();
         let mut sides: Vec<&str> = bert.iter().map(|run| run.side.as_str()).collect();
         sides.sort_unstable();
-        assert_eq!(bert.len(), 12, "four reports of three sides");
+        assert_eq!(bert.len(), 15, "five reports of three sides");
         sides.dedup();
         assert_eq!(
             sides,
@@ -2591,10 +2591,54 @@ mod tests {
         }
     }
 
+    /// The latest `bert-tiny-pretrain` series, the last entry of each side in file order, is one
+    /// series (one date, one commit), and in it every ModelSpec run is under every run of
+    /// `torch.compile` and of eager in µs per step, and ModelSpec's median training seconds to
+    /// the target are under both. The Status page's row on the step against PyTorch rests on
+    /// this: a later series that overlaps fails here until the row is changed.
+    #[test]
+    fn the_latest_bert_tiny_pretrain_series_has_every_modelspec_run_under_both_pytorch_sides() {
+        let text = fs::read_to_string(root().join(RUNS)).unwrap();
+        let runs = read(&text, &schema()).unwrap();
+        let latest = |side: &str| {
+            runs.iter()
+                .rfind(|run| run.workload == BERT && run.side == side)
+                .unwrap_or_else(|| panic!("no {side} entry"))
+        };
+        let modelspec = latest("ModelSpecVulkan");
+        let slowest = modelspec
+            .repeats_us_per_step
+            .as_ref()
+            .unwrap()
+            .iter()
+            .copied()
+            .fold(f64::MIN, f64::max);
+        for side in ["PyTorchCudaCompile", "PyTorchCudaEager"] {
+            let opponent = latest(side);
+            assert_eq!(opponent.date, modelspec.date, "{side}");
+            assert_eq!(opponent.commit, modelspec.commit, "{side}");
+            let fastest = opponent
+                .repeats_us_per_step
+                .as_ref()
+                .unwrap()
+                .iter()
+                .copied()
+                .fold(f64::MAX, f64::min);
+            assert!(
+                slowest < fastest,
+                "{side}: its fastest run {fastest} is not above ModelSpec's slowest {slowest}"
+            );
+            assert!(
+                modelspec.seconds_to_target.unwrap() < opponent.seconds_to_target.unwrap(),
+                "{side}: seconds to target"
+            );
+        }
+    }
+
     /// The published `bert-tiny-pretrain` section holds the three sides' medians of
     /// verification-report:bert-tiny-vs-pytorch-2026-10-28 and, after each, those of
-    /// verification-report:bert-tiny-vs-pytorch-2026-10-29, -2026-11-05 and
-    /// -2026-11-05-split-k, each figure linked to its report.
+    /// verification-report:bert-tiny-vs-pytorch-2026-10-29, -2026-11-05,
+    /// -2026-11-05-split-k and -2026-11-05-segment-reuse, each figure linked to its report.
     #[test]
     fn the_published_page_has_the_bert_tiny_pretrain_figures_of_the_report() {
         let (page, _) = files(&root()).unwrap();
@@ -2623,6 +2667,9 @@ mod tests {
             |date: &str, build: &str, figures: [&str; 7]| of_report(date, "", build, figures);
         let split_row =
             |build: &str, figures: [&str; 7]| of_report("2026-11-05", "-split-k", build, figures);
+        let reuse_row = |build: &str, figures: [&str; 7]| {
+            of_report("2026-11-05", "-segment-reuse", build, figures)
+        };
         let row = |build: &str, figures: [&str; 7]| dated("2026-10-28", build, figures);
         let new_row = |build: &str, figures: [&str; 7]| dated("2026-10-29", build, figures);
         let timed_row = |build: &str, figures: [&str; 7]| dated("2026-11-05", build, figures);
@@ -2678,6 +2725,18 @@ mod tests {
                     "6.7675",
                 ],
             ),
+            reuse_row(
+                "0.25.0 (`63000d0`)",
+                [
+                    "3,697.139",
+                    "1,107,883.84",
+                    "10,128.6",
+                    target,
+                    "1,100",
+                    "4.024",
+                    "6.7675",
+                ],
+            ),
             row(
                 torch,
                 [
@@ -2726,6 +2785,18 @@ mod tests {
                     "6.7673",
                 ],
             ),
+            reuse_row(
+                torch_15,
+                [
+                    "7,517.975",
+                    "544,827.59",
+                    "4,981.0",
+                    target,
+                    "1,100",
+                    "8.252",
+                    "6.7673",
+                ],
+            ),
             row(
                 torch,
                 [
@@ -2771,6 +2842,18 @@ mod tests {
                     target,
                     "1,100",
                     "4.945",
+                    "6.7675",
+                ],
+            ),
+            reuse_row(
+                torch_15,
+                [
+                    "4,109.567",
+                    "996,698.709",
+                    "9,112.1",
+                    target,
+                    "1,100",
+                    "4.504",
                     "6.7675",
                 ],
             ),

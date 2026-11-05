@@ -2810,3 +2810,93 @@ runs:
     note: "torch.compile mode default, tf32 off; 1-minute load 10.5–30.8 (median 11.7) over the 3 runs; run 1, 5,117.7 µs per step, ran at load 22.3–30.8, runs 2 and 3 at 10.5–12.3"
     source: verification-report:bert-tiny-vs-pytorch-2026-11-05-split-k, raw records benchmarks/raw/2026-11-05-bert-tiny-pretrain-3/pytorch-compile-1.jsonl, pytorch-compile-2.jsonl, pytorch-compile-3.jsonl
     state: Recorded
+  - run_id: bert-tiny-pretrain-modelspec-vulkan-0.25.0-63000d0
+    date: "2026-11-05"
+    workload: bert-tiny-pretrain
+    side: ModelSpecVulkan
+    modelspec_version: "0.25.0"
+    commit: 63000d0e838ae53e6af088b7a80083bcd4e8f119
+    mode: Timed
+    batch: 32
+    tokens_per_step: 4096
+    flop_per_step: 37446746112
+    flop_rule: MatmulOnly
+    target_loss: 6.926537926202018
+    steps_to_target: 1100
+    seconds_to_target: 4.023787
+    train_seconds: 36.971385
+    eval_every: 100
+    final_heldout_loss: 6.767498
+    timed_steps: 10000
+    repeat_count: 3
+    repeats_us_per_step:
+      - 3641.5333
+      - 3697.1385
+      - 3768.7926
+    median_us_per_step: 3697.1385
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 615.71.09
+    sm_clock: "SM MHz 210–1935 (median 1860, n=404) over the 3 runs, held-out evaluations included; pstate P0, memory clock median 9751 MHz"
+    note: "release 0.25.0 plus the committed changes up to story:vulkan-segment-command-buffer-reuse at 63000d0e (binary SHA-256 b289ed00c845f3cc7c608eba2f986d1c969ca4beb2f211ffa5b06a6dfe7d421c), released as 0.26.0; the 101 held-out evaluations are timed into eval_seconds (28.0–28.6 s), outside the training clock, as on the PyTorch sides; 1-minute load 1.5–7.2 (median 3.4) over the 3 runs; the slowest of the 3 runs, 3,768.8 µs per step and 4.060 s to the target, is under torch.compile's fastest of this series, 4,096.0 µs and 4.432 s"
+    source: verification-report:bert-tiny-vs-pytorch-2026-11-05-segment-reuse, raw records benchmarks/raw/2026-11-05-bert-tiny-pretrain-4/modelspec-1.stdout.txt, modelspec-2.stdout.txt, modelspec-3.stdout.txt
+    state: Recorded
+  - run_id: bert-tiny-pretrain-pytorch-cuda-eager-0.25.0-63000d0
+    date: "2026-11-05"
+    workload: bert-tiny-pretrain
+    side: PyTorchCudaEager
+    commit: 63000d0e838ae53e6af088b7a80083bcd4e8f119
+    opponent_version: torch 2.15.0+cu132, CUDA 13.2
+    mode: Timed
+    batch: 32
+    tokens_per_step: 4096
+    flop_per_step: 37446746112
+    flop_rule: MatmulOnly
+    target_loss: 6.926537926202018
+    steps_to_target: 1100
+    seconds_to_target: 8.252034726378042
+    train_seconds: 75.17974627649528
+    eval_every: 100
+    final_heldout_loss: 6.767257661514877
+    timed_steps: 10000
+    repeat_count: 3
+    repeats_us_per_step:
+      - 7593.043173561456
+      - 7517.974627649528
+      - 7461.352597014047
+    median_us_per_step: 7517.974627649528
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 615.71.09
+    sm_clock: "SM MHz 210–1935 (median 1875, n=704) over the 3 runs, held-out evaluations included; pstate P2, memory clock median 9501 MHz"
+    note: "tf32 off; 1-minute load 1.9–9.1 (median 6.1) over the 3 runs"
+    source: verification-report:bert-tiny-vs-pytorch-2026-11-05-segment-reuse, raw records benchmarks/raw/2026-11-05-bert-tiny-pretrain-4/pytorch-eager-1.jsonl, pytorch-eager-2.jsonl, pytorch-eager-3.jsonl
+    state: Recorded
+  - run_id: bert-tiny-pretrain-pytorch-cuda-compile-0.25.0-63000d0
+    date: "2026-11-05"
+    workload: bert-tiny-pretrain
+    side: PyTorchCudaCompile
+    commit: 63000d0e838ae53e6af088b7a80083bcd4e8f119
+    opponent_version: torch 2.15.0+cu132, CUDA 13.2
+    mode: Timed
+    batch: 32
+    tokens_per_step: 4096
+    flop_per_step: 37446746112
+    flop_rule: MatmulOnly
+    target_loss: 6.926537926202018
+    steps_to_target: 1100
+    seconds_to_target: 4.50398459500866
+    train_seconds: 41.09566874371376
+    eval_every: 100
+    final_heldout_loss: 6.767507133651606
+    timed_steps: 10000
+    repeat_count: 3
+    repeats_us_per_step:
+      - 4095.971416617976
+      - 4109.566874371376
+      - 4118.425959919114
+    median_us_per_step: 4109.566874371376
+    gpu: NVIDIA GeForce RTX 3090
+    driver: 615.71.09
+    sm_clock: "SM MHz 210–1920 (median 1845, n=513) over the 3 runs, held-out evaluations included; pstate P2, memory clock median 9501 MHz"
+    note: "torch.compile mode default, tf32 off; 1-minute load 4.8–8.8 (median 7.3) over the 3 runs"
+    source: verification-report:bert-tiny-vs-pytorch-2026-11-05-segment-reuse, raw records benchmarks/raw/2026-11-05-bert-tiny-pretrain-4/pytorch-compile-1.jsonl, pytorch-compile-2.jsonl, pytorch-compile-3.jsonl
+    state: Recorded
