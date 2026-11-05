@@ -2,16 +2,17 @@
 format: aep.planning-md/3
 id: story:vulkan-embedding-sort-lanes
 kind: story
-status: active
+status: implemented
 title: Embedding-gradient sort runs 16 lanes per id
 summary: The EmbeddingGrad sort on Vulkan runs 16 invocations per id, each counting a stride of the staged block, the counts added in ascending lane order; 177 to 39 us in the BERT-tiny step.
 relations:
 - decomposes: epic:bert-tiny-parity-with-eager
 - serves: vision:modelspec
-revision: 4
+revision: 5
 transitions:
 - {from: "draft", to: "proposed", at: "2026-11-04T22:28:18Z", actor: "human:timo", revision: 2}
 - {from: "proposed", to: "active", at: "2026-11-04T22:28:19Z", actor: "human:timo", revision: 3}
+- {from: "active", to: "implemented", at: "2026-11-05T15:49:21Z", actor: "human:timo", revision: 5, decided_on: {"recorded":{"test_result":1}}}
 ---
 # Embedding-gradient sort runs 16 lanes per id
 

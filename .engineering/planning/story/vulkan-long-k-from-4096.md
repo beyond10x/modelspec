@@ -2,16 +2,17 @@
 format: aep.planning-md/3
 id: story:vulkan-long-k-from-4096
 kind: story
-status: active
+status: implemented
 title: Long-k matmul tiles from k of 4,096
 summary: MATMUL_LONG_K_BLOCK and MATMUL_LONG_K_NARROW_BLOCK take outputs from k of 4,096 instead of 16,384; the BERT-tiny masked-row gradient 533 to 423 us, four weight gradients 128 to 86 us.
 relations:
 - decomposes: epic:bert-tiny-parity-with-eager
 - serves: vision:modelspec
-revision: 4
+revision: 5
 transitions:
 - {from: "draft", to: "proposed", at: "2026-11-04T22:28:18Z", actor: "human:timo", revision: 2}
 - {from: "proposed", to: "active", at: "2026-11-04T22:28:18Z", actor: "human:timo", revision: 3}
+- {from: "active", to: "implemented", at: "2026-11-05T15:49:21Z", actor: "human:timo", revision: 5, decided_on: {"recorded":{"test_result":1}}}
 ---
 # Long-k matmul tiles from k of 4,096
 

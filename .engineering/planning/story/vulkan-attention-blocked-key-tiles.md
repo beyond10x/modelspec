@@ -2,16 +2,17 @@
 format: aep.planning-md/3
 id: story:vulkan-attention-blocked-key-tiles
 kind: story
-status: active
+status: implemented
 title: Blocked key tiles for AttentionGradK and AttentionGradV on Vulkan
 summary: AttentionGradK and AttentionGradV that share their call's softmax statistics run one workgroup per sequence, head and tile of 32 key rows, with the bits of the per-row kernel.
 relations:
 - decomposes: epic:bert-tiny-beats-torch-compile
 - serves: vision:modelspec
-revision: 4
+revision: 5
 transitions:
 - {from: "draft", to: "proposed", at: "2026-11-05T08:59:57Z", actor: "human:timo", revision: 3, executor: "agent:modelspec-a4fb0b"}
 - {from: "proposed", to: "active", at: "2026-11-05T08:59:57Z", actor: "human:timo", revision: 4, executor: "agent:modelspec-a4fb0b"}
+- {from: "active", to: "implemented", at: "2026-11-05T15:49:21Z", actor: "human:timo", revision: 5, decided_on: {"recorded":{"test_result":1}}}
 ---
 # Blocked key tiles for AttentionGradK and AttentionGradV on Vulkan
 

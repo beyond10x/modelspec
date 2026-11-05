@@ -1,0 +1,12 @@
+{
+  "at": "2026-11-05T15:45:23Z",
+  "actor": "human:timo",
+  "artifact": "story:vulkan-segment-command-buffer-reuse",
+  "kind": "story",
+  "revision": 4,
+  "change": {
+    "change": "evidence",
+    "kind": "test_result",
+    "source": "task ci on 52299aa9 (local, 2026-11-05 15:30Z to 15:45Z): 348 suites, 2263 passed, 0 failed, 316 ignored; the device tests with --ignored on 63000d0e's tree; series of 2026-11-05 at 63000d0e in benchmarks/runs.yaml"
+  }
+}

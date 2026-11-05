@@ -2,16 +2,17 @@
 format: aep.planning-md/3
 id: story:vulkan-segment-command-buffer-reuse
 kind: story
-status: active
+status: implemented
 title: A stepwise Vulkan run submits a recorded segment again
 summary: A segment of training steps is recorded once per upload buffer and step count and submitted again, so a run makes a fixed number of command pools and the device waits of 107 to 393 ms on a 27 ms segment end.
 relations:
 - decomposes: epic:bert-tiny-beats-torch-compile
 - serves: vision:modelspec
-revision: 4
+revision: 5
 transitions:
 - {from: "draft", to: "proposed", at: "2026-11-05T14:34:29Z", actor: "human:timo", revision: 3, executor: "agent:modelspec-a4fb0b"}
 - {from: "proposed", to: "active", at: "2026-11-05T14:34:29Z", actor: "human:timo", revision: 4, executor: "agent:modelspec-a4fb0b"}
+- {from: "active", to: "implemented", at: "2026-11-05T15:49:22Z", actor: "human:timo", revision: 5, decided_on: {"recorded":{"test_result":1}}}
 ---
 # A stepwise Vulkan run submits a recorded segment again
 

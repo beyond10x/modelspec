@@ -2,16 +2,17 @@
 format: aep.planning-md/3
 id: story:vulkan-adamw-one-dispatch-per-parameter
 kind: story
-status: active
+status: implemented
 title: One AdamW dispatch per parameter on Vulkan
 summary: The schedule gives the sixteen ops of one parameter's AdamW update one sgd_update AdamW kernel that writes the parameter and both moments in place, with the bits of the sixteen-op lowering.
 relations:
 - decomposes: epic:bert-tiny-beats-torch-compile
 - serves: vision:modelspec
-revision: 4
+revision: 5
 transitions:
 - {from: "draft", to: "proposed", at: "2026-11-05T08:59:57Z", actor: "human:timo", revision: 3, executor: "agent:modelspec-a4fb0b"}
 - {from: "proposed", to: "active", at: "2026-11-05T08:59:57Z", actor: "human:timo", revision: 4, executor: "agent:modelspec-a4fb0b"}
+- {from: "active", to: "implemented", at: "2026-11-05T15:49:21Z", actor: "human:timo", revision: 5, decided_on: {"recorded":{"test_result":1}}}
 ---
 # One AdamW dispatch per parameter on Vulkan
 
