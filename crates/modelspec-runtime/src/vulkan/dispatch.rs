@@ -17,6 +17,7 @@
 
 use std::cell::Cell;
 use std::marker::PhantomData;
+use std::rc::Rc;
 
 use ash::vk;
 use modelspec_core::ir::kernel::{Kernel, KernelKind, MatMulTile, Operand};
@@ -43,6 +44,8 @@ struct Commands<'r> {
     command: vk::CommandBuffer,
     descriptor_pools: Vec<vk::DescriptorPool>,
     counts: Counts,
+    /// Whether the buffer was begun for one submission.
+    once: bool,
 }
 
 impl Drop for Commands<'_> {
@@ -72,10 +75,17 @@ pub struct Recorded<'r> {
 /// A submitted command buffer and the fence it signals, with the command buffers of a
 /// [`Chain`] submitted before it, which the fence also covers.
 pub struct Submitted<'r> {
-    commands: Commands<'r>,
+    commands: Rc<Commands<'r>>,
     fence: vk::Fence,
     waited: bool,
     earlier: Vec<Commands<'r>>,
+}
+
+/// A recorded command buffer that [`Device::submit_again`] submits any number of times, one
+/// submission at a time: the pool and the buffer are made once, and the driver is not asked
+/// for a new pair per submission (story:vulkan-segment-command-buffer-reuse).
+pub struct Reusable<'r> {
+    commands: Rc<Commands<'r>>,
 }
 
 /// Command buffers submitted one after the other without a fence; [`Chain::finish`] fences the
@@ -391,13 +401,43 @@ impl TimestampPool<'_> {
 }
 
 impl<'d> Device<'d> {
-    /// Starts a recording on a new command pool of the device's queue family.
+    /// Starts a recording on a new command pool of the device's queue family, for one
+    /// submission.
     pub fn record<'r>(&'r self) -> Result<Recording<'r>, ExecError>
     where
         'd: 'r,
     {
+        self.record_for(true)
+    }
+
+    /// Starts a recording on a new command pool of the device's queue family that
+    /// [`Recorded::reusable`] keeps for any number of submissions.
+    pub fn record_reusable<'r>(&'r self) -> Result<Recording<'r>, ExecError>
+    where
+        'd: 'r,
+    {
+        self.record_for(false)
+    }
+
+    /// A recording for one submission when `once`, with the pool and usage flags that say
+    /// so, and without them otherwise.
+    fn record_for<'r>(&'r self, once: bool) -> Result<Recording<'r>, ExecError>
+    where
+        'd: 'r,
+    {
+        let (pool_flags, usage) = if once {
+            (
+                vk::CommandPoolCreateFlags::TRANSIENT,
+                vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT,
+            )
+        } else {
+            (
+                vk::CommandPoolCreateFlags::empty(),
+                vk::CommandBufferUsageFlags::empty(),
+            )
+        };
         let info = vk::CommandPoolCreateInfo::default()
-            .flags(vk::CommandPoolCreateFlags::TRANSIENT)
+            .flags(pool_flags)
             .queue_family_index(self.queue_family);
         // SAFETY: `info` outlives the call; the pool is destroyed by `Commands`' drop.
         let pool = unsafe { self.device.create_command_pool(&info, None) }
@@ -408,6 +448,7 @@ impl<'d> Device<'d> {
             command: vk::CommandBuffer::null(),
             descriptor_pools: Vec::new(),
             counts: Counts::default(),
+            once,
         };
         let info = vk::CommandBufferAllocateInfo::default()
             .command_pool(pool)
@@ -416,22 +457,37 @@ impl<'d> Device<'d> {
         // SAFETY: `pool` belongs to this device; the buffer is freed with it.
         commands.command = unsafe { self.device.allocate_command_buffers(&info) }
             .map_err(ExecError::call("vkAllocateCommandBuffers"))?[0];
-        let begin = vk::CommandBufferBeginInfo::default()
-            .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+        let begin = vk::CommandBufferBeginInfo::default().flags(usage);
         // SAFETY: the command buffer is new, in the initial state.
         unsafe { self.device.begin_command_buffer(commands.command, &begin) }
             .map_err(ExecError::call("vkBeginCommandBuffer"))?;
+        self.recordings.set(self.recordings.get() + 1);
         Ok(Recording { commands })
     }
 
     /// Submits `recorded` to the device's queue with a new fence.
     pub fn submit<'r>(&'r self, recorded: Recorded<'r>) -> Result<Submitted<'r>, ExecError> {
+        self.submit_shared(Rc::new(recorded.commands))
+    }
+
+    /// Submits `reusable` once more with a new fence, and counts it as [`Device::submit`]
+    /// counts a recording. [`ExecError::StillPending`] while a [`Submitted`] of it is alive:
+    /// a command buffer is not submitted while it is pending.
+    pub fn submit_again<'r>(&'r self, reusable: &Reusable<'r>) -> Result<Submitted<'r>, ExecError> {
+        if Rc::strong_count(&reusable.commands) > 1 {
+            return Err(ExecError::StillPending);
+        }
+        self.submit_shared(Rc::clone(&reusable.commands))
+    }
+
+    /// Submits `commands` with a new fence; the [`Submitted`] keeps them alive.
+    fn submit_shared<'r>(&'r self, commands: Rc<Commands<'r>>) -> Result<Submitted<'r>, ExecError> {
         let fence_info = vk::FenceCreateInfo::default();
         // SAFETY: `fence_info` outlives the call; the fence is destroyed by `Submitted`'s drop.
         let fence = unsafe { self.device.create_fence(&fence_info, None) }
             .map_err(ExecError::call("vkCreateFence"))?;
         let mut submitted = Submitted {
-            commands: recorded.commands,
+            commands,
             fence,
             waited: true,
             earlier: Vec::new(),
@@ -678,6 +734,20 @@ impl<'r> Recording<'r> {
             .map_err(ExecError::call("vkEndCommandBuffer"))?;
         Ok(Recorded {
             commands: self.commands,
+        })
+    }
+}
+
+impl<'r> Recorded<'r> {
+    /// The recording as one [`Device::submit_again`] submits, when
+    /// [`Device::record_reusable`] started it; [`ExecError::RecordedOnce`] when
+    /// [`Device::record`] did.
+    pub fn reusable(self) -> Result<Reusable<'r>, ExecError> {
+        if self.commands.once {
+            return Err(ExecError::RecordedOnce);
+        }
+        Ok(Reusable {
+            commands: Rc::new(self.commands),
         })
     }
 }

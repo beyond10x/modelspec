@@ -132,6 +132,10 @@ pub enum ExecError {
         bound: u32,
         needed: usize,
     },
+    /// [`dispatch::Recorded::reusable`] was called on a recording [`Device::record`] started,
+    /// which told the driver it is submitted once.
+    #[error("a command buffer recorded for one submission cannot be kept for more")]
+    RecordedOnce,
     /// A SPIR-V module declares no `LocalSize`.
     #[error("the SPIR-V module declares no LocalSize execution mode")]
     NoLocalSize,
@@ -139,6 +143,9 @@ pub enum ExecError {
     /// `u32`, or a reduction stage without the tensor it reduces.
     #[error("kernel {kernel} cannot be dispatched: {reason}")]
     KernelShape { kernel: String, reason: String },
+    /// A [`dispatch::Reusable`] was submitted again before its submission was waited for.
+    #[error("a recorded command buffer was submitted again while its submission is pending")]
+    StillPending,
     /// A Vulkan call failed.
     #[error("{call} failed: {result}")]
     Vulkan {
@@ -520,6 +527,7 @@ impl Vulkan {
             limits,
             host_waits: Cell::new(0),
             submits: Cell::new(0),
+            recordings: Cell::new(0),
             dispatches: Cell::new(0),
             bytes_uploaded: Cell::new(0),
             bytes_downloaded: Cell::new(0),
@@ -558,6 +566,7 @@ pub struct Device<'a> {
     limits: vk::PhysicalDeviceLimits,
     host_waits: Cell<u64>,
     submits: Cell<u64>,
+    recordings: Cell<u64>,
     dispatches: Cell<u64>,
     bytes_uploaded: Cell<u64>,
     bytes_downloaded: Cell<u64>,
@@ -574,6 +583,13 @@ impl Device<'_> {
     /// How many command buffers have been submitted to the device's queue.
     pub fn submits(&self) -> u64 {
         self.submits.get()
+    }
+
+    /// How many command buffers have been recorded on the device: one per
+    /// [`Device::record`] and [`Device::record_reusable`], however often a
+    /// [`dispatch::Reusable`] is submitted.
+    pub fn recordings(&self) -> u64 {
+        self.recordings.get()
     }
 
     /// How many dispatches the submitted command buffers recorded.

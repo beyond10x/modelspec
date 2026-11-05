@@ -131,7 +131,7 @@ use modelspec_core::passes::masked_rows;
 use modelspec_core::schedule::{MAX_SPAN_KEYS, host_inputs};
 
 use super::Device;
-use super::dispatch::{Bound, DescriptorArena, Recording, Submitted};
+use super::dispatch::{Bound, DescriptorArena, Recording, Reusable, Submitted};
 use super::memory::{Buffer, MemorySpan};
 use super::negotiate::Negotiated;
 use super::pipeline::{Pipeline, PipelineRequest, PipelineStatistics, reads_seed};
@@ -965,6 +965,12 @@ pub fn train_stepwise_profiled(
     let mut busy_since: Option<Instant> = None;
     // The upload, loss and timestamp buffers of the next segment: 0 or 1, in turn.
     let mut parity = 0usize;
+    // The command buffers of the segments of training steps alone, by parity and step count.
+    // Such a segment records the same commands every time: what differs from step to step
+    // comes in through its upload. Each is recorded once and submitted again, so a run asks
+    // the driver for a handful of command pools, not for one per segment
+    // (story:vulkan-segment-command-buffer-reuse).
+    let mut recorded_segments: BTreeMap<(usize, u64), Reusable<'_>> = BTreeMap::new();
     let mut next = Some(start);
     loop {
         for segment in waited.drain(..) {
@@ -1450,79 +1456,107 @@ pub fn train_stepwise_profiled(
         if busy_since.is_none() {
             busy_since = Some(Instant::now());
         }
-        let mut recording = device.record()?;
-        let mut stamps = pools[parity].as_ref().map(|pool| Stamps { pool, next: 0 });
-        if let Some(stamps) = &stamps {
-            recording.reset_timestamps(stamps.pool);
-        }
-        open(
-            &mut recording,
-            &mut opened,
-            first_upload.as_ref(),
-            &first_views,
-            &buffers,
-        )?;
-        copy_state(&mut recording, &state_views, &buffers, &backups[parity])?;
-        for s in k..=through {
-            let slot = s - k;
-            if slot > 0 {
-                // The barriers that open a command buffer, and one from the copies of the step
-                // before, so that this step's copies write its views after them.
-                recording.barrier(Barrier::ComputeToCompute);
-                recording.barrier(Barrier::ComputeToTransfer);
-                recording.barrier(Barrier::TransferToTransfer);
-            }
-            let barriers_before = recorded_barriers();
-            if let Some(upload) = &uploads[parity] {
-                let mut at = slot * step_bytes;
-                for (view, _) in &fed {
-                    recording.copy_region(
-                        upload,
-                        at,
-                        buffer(&buffers, view)?,
-                        view.offset,
-                        view.size_bytes,
-                    )?;
-                    at += view.size_bytes;
+        // Not the run's first command buffer, which copies the initial state up, not the last
+        // step's, not one that copies the state down, and not one that writes timestamps.
+        let plain = opened && through != end && !reads_state(through) && pools[parity].is_none();
+        let key = (parity, through - k + 1);
+        let again = match recorded_segments.get(&key) {
+            // Its submission before this one, two segments back, was waited for when the
+            // segment after it was submitted.
+            Some(reusable) if plain => Some(device.submit_again(reusable)?),
+            _ => None,
+        };
+        let (submitted, stamps) = match again {
+            Some(submitted) => (submitted, 0),
+            None => {
+                let mut recording = if plain {
+                    device.record_reusable()?
+                } else {
+                    device.record()?
+                };
+                let mut stamps = pools[parity].as_ref().map(|pool| Stamps { pool, next: 0 });
+                if let Some(stamps) = &stamps {
+                    recording.reset_timestamps(stamps.pool);
                 }
-            }
-            recording.barrier(Barrier::TransferToCompute);
-            let before = recording.dispatches();
-            if s == end {
-                record(
+                open(
                     &mut recording,
-                    loss_actions.iter().copied(),
+                    &mut opened,
+                    first_upload.as_ref(),
+                    &first_views,
                     &buffers,
-                    stamps.as_mut(),
                 )?;
-            } else {
-                record(
-                    &mut recording,
-                    train_actions.iter().copied(),
-                    &buffers,
-                    stamps.as_mut(),
-                )?;
-                dispatches_per_step = recording.dispatches() - before;
+                copy_state(&mut recording, &state_views, &buffers, &backups[parity])?;
+                for s in k..=through {
+                    let slot = s - k;
+                    if slot > 0 {
+                        // The barriers that open a command buffer, and one from the copies of the step
+                        // before, so that this step's copies write its views after them.
+                        recording.barrier(Barrier::ComputeToCompute);
+                        recording.barrier(Barrier::ComputeToTransfer);
+                        recording.barrier(Barrier::TransferToTransfer);
+                    }
+                    let barriers_before = recorded_barriers();
+                    if let Some(upload) = &uploads[parity] {
+                        let mut at = slot * step_bytes;
+                        for (view, _) in &fed {
+                            recording.copy_region(
+                                upload,
+                                at,
+                                buffer(&buffers, view)?,
+                                view.offset,
+                                view.size_bytes,
+                            )?;
+                            at += view.size_bytes;
+                        }
+                    }
+                    recording.barrier(Barrier::TransferToCompute);
+                    let before = recording.dispatches();
+                    if s == end {
+                        record(
+                            &mut recording,
+                            loss_actions.iter().copied(),
+                            &buffers,
+                            stamps.as_mut(),
+                        )?;
+                    } else {
+                        record(
+                            &mut recording,
+                            train_actions.iter().copied(),
+                            &buffers,
+                            stamps.as_mut(),
+                        )?;
+                        dispatches_per_step = recording.dispatches() - before;
+                    }
+                    recording.barrier(Barrier::ComputeToTransfer);
+                    recording.copy_region(
+                        loss,
+                        plan.loss_view.offset,
+                        &loss_downloads[parity],
+                        4 * slot,
+                        4,
+                    )?;
+                    if s != end {
+                        barriers_per_step = recorded_barriers() - barriers_before;
+                    }
+                }
+                if reads_state(through) {
+                    copy_state(&mut recording, &state_views, &buffers, &state_download)?;
+                }
+                recording.barrier(Barrier::TransferToHost);
+                let recorded = recording.finish()?;
+                first_submit.get_or_insert_with(Instant::now);
+                let stamps = stamps.map_or(0, |stamps| stamps.next);
+                let submitted = if plain {
+                    let reusable = recorded.reusable()?;
+                    let submitted = device.submit_again(&reusable)?;
+                    recorded_segments.insert(key, reusable);
+                    submitted
+                } else {
+                    device.submit(recorded)?
+                };
+                (submitted, stamps)
             }
-            recording.barrier(Barrier::ComputeToTransfer);
-            recording.copy_region(
-                loss,
-                plan.loss_view.offset,
-                &loss_downloads[parity],
-                4 * slot,
-                4,
-            )?;
-            if s != end {
-                barriers_per_step = recorded_barriers() - barriers_before;
-            }
-        }
-        if reads_state(through) {
-            copy_state(&mut recording, &state_views, &buffers, &state_download)?;
-        }
-        recording.barrier(Barrier::TransferToHost);
-        let recorded = recording.finish()?;
-        first_submit.get_or_insert_with(Instant::now);
-        let submitted = device.submit(recorded)?;
+        };
         let segment = Segment {
             first: k,
             through,
@@ -1530,7 +1564,7 @@ pub fn train_stepwise_profiled(
             metrics,
             dense_eval: dense_measured,
             trained,
-            stamps: stamps.map_or(0, |stamps| stamps.next),
+            stamps,
         };
         if let Some((behind, segment)) = in_flight.replace((submitted, segment)) {
             behind.wait()?;
