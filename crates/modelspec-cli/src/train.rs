@@ -364,8 +364,9 @@ pub struct Args {
     pub fast_math: bool,
     /// Compute the loss's row-local head, the vocabulary projection, its bias, the cross-entropy
     /// and its gradient on the rows of non-zero weight only, gathered at N rows per batch
-    /// (DESIGN.md § 3.3), with the bits of the step that computes every row; for a loss
-    /// `cross_entropy(logits, labels, weights)` of declared labels and weights. A batch with more
+    /// (DESIGN.md § 3.3), with the bits of the step that computes every row, or on Vulkan
+    /// within tolerance of it where a matmul of the step is split along k (DESIGN.md § 5.2);
+    /// for a loss `cross_entropy(logits, labels, weights)` of declared labels and weights. A batch with more
     /// such rows than N is refused (E-DATA-012), never truncated; 0, or N of at least the
     /// loss's rows, trains on every row. With --backend vulkan and a packed --data directory the
     /// gather is on without the flag, N the multiple of 64 at or above the batch's expected

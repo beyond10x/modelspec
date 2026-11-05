@@ -374,6 +374,8 @@ enum Body {
         m: u32,
         k: u32,
         n: u32,
+        /// The slices of `k` ([`Kernel::matmul_slices`]): 1 without split-K.
+        slices: u32,
         epilogue: Option<Epilogue>,
         tile: MatMulTile,
         /// Whether `a` and `b` are bound transposed ([`Kernel::transposed`]).
@@ -515,21 +517,30 @@ fn body_of(kernel: &Kernel, variant: Variant, shared_bytes: u32) -> Result<Body,
                 shapes[1].as_slice(),
                 result.as_slice(),
             ) {
-                ([m, k], [k2, n], [rm, rn])
+                ([m, k], [k2, n], [_, rn])
                     if k == k2
-                        && m == rm
                         && n == rn
                         && *k > 0
-                        && shapes.get(2).is_none_or(|x| *x == result) =>
+                        && kernel.matmul_slices().is_some()
+                        && shapes
+                            .get(2)
+                            .is_none_or(|x| *x == result && kernel.matmul_slices() == Some(1)) =>
                 {
-                    let tile = MatMulTile::of_invocations(*m, *k, *n, kernel.workgroup_size);
+                    // Split-K (`Kernel::matmul_slices`): the tile of the slices' matmul.
+                    let slices = kernel.matmul_slices().unwrap_or(1);
+                    let tile = MatMulTile::of_invocations(
+                        *m * slices,
+                        *k / slices,
+                        *n,
+                        kernel.workgroup_size,
+                    );
                     let covered = kernel
                         .workgroups
                         .iter()
                         .map(|&w| u64::from(w))
                         .product::<u64>();
                     if kernel.workgroup_size != tile.workgroup_size
-                        || covered < tile.workgroups(*m, *n)
+                        || covered < slices * tile.workgroups(*m, *n)
                     {
                         return Err(operands_error(
                             kernel,
@@ -550,10 +561,12 @@ fn body_of(kernel: &Kernel, variant: Variant, shared_bytes: u32) -> Result<Body,
                         });
                     }
                     u32_of(kernel, m.saturating_mul(*k).max(k.saturating_mul(*n)))?;
+                    u32_of(kernel, slices.saturating_mul(*m).saturating_mul(*n))?;
                     Body::MatMul {
                         m: u32_of(kernel, *m)?,
                         k: u32_of(kernel, *k)?,
                         n: u32_of(kernel, *n)?,
+                        slices: u32_of(kernel, slices)?,
                         epilogue: kernel.epilogue,
                         tile,
                         transposed: kernel.transposed,
@@ -826,7 +839,9 @@ fn build(
         _ => None,
     };
     let matmul_vars = match body {
-        Body::MatMul { k, tile, .. } => matmul_accumulators(&tile) + matmul_carried(k, &tile),
+        Body::MatMul {
+            k, slices, tile, ..
+        } => matmul_accumulators(&tile) + matmul_carried(k / slices, &tile),
         Body::Rowwise(rowwise) => rowwise.f32_vars(),
         Body::AttentionLoss(body) => body.f32_vars(),
         Body::HeldOut(body) => body.f32_vars(),
@@ -889,11 +904,12 @@ fn build(
             m: rows,
             k,
             n,
+            slices,
             epilogue,
             tile,
             transposed,
             layout,
-        } => m.matmul([rows, k, n], epilogue, tile, transposed, layout)?,
+        } => m.matmul([rows, k, n], slices, epilogue, tile, transposed, layout)?,
         Body::Rowwise(rowwise) => m.rowwise(rowwise)?,
         Body::AttentionLoss(body) => m.attention_loss(body)?,
         Body::HeldOut(body) => m.held_out(body)?,
@@ -2094,6 +2110,7 @@ impl Shell {
     fn matmul(
         &mut self,
         [m, k, n]: [u32; 3],
+        slices: u32,
         epilogue: Option<Epilogue>,
         tile: MatMulTile,
         transposed: [bool; 2],
@@ -2114,6 +2131,19 @@ impl Shell {
         let index = self.index;
         let size_c = self.uint(size);
         let group = self.b.u_div(u32_ty, None, index, size_c)?;
+        // Split-K (`Kernel::matmul_slices`): the workgroups of slice `s` follow those of slice
+        // `s - 1`, each slice laid out as the matmul without slices; the slice's values of `k`
+        // are `slice_k` from `s · slice_k`, and its output rows follow those of slice `s - 1`.
+        let slice_k = k / slices;
+        let (group, slice) = if slices > 1 {
+            let per_slice = self.uint(m.div_ceil(tile.rows_per_workgroup()) * n.div_ceil(cols));
+            (
+                self.b.u_mod(u32_ty, None, group, per_slice)?,
+                Some(self.b.u_div(u32_ty, None, group, per_slice)?),
+            )
+        } else {
+            (group, None)
+        };
         let col_blocks = self.uint(n.div_ceil(cols));
         let block_row = self.b.u_div(u32_ty, None, group, col_blocks)?;
         let block_col = self.b.u_mod(u32_ty, None, group, col_blocks)?;
@@ -2365,6 +2395,19 @@ impl Shell {
             }
         }
 
+        // Where the slice's first `k` lies in `a` and in `b`, past the element of `k = 0`.
+        let slice_bases = match slice {
+            Some(slice) => {
+                let along = |is_a: bool, transposed: bool| {
+                    Staging::of(&tile, m, k, n, is_a, transposed).along_stride
+                };
+                let a = self.uint(slice_k * along(true, a_transposed));
+                let b = self.uint(slice_k * along(false, b_transposed));
+                Some((self.mul(slice, a)?, self.mul(slice, b)?))
+            }
+            None => None,
+        };
+
         // Where a tile read starts along the contracting index: a constant `k`, or, in the tile
         // loop, its element offsets into `a` and `b`.
         #[derive(Clone, Copy)]
@@ -2389,6 +2432,9 @@ impl Shell {
                     }
                 };
                 let mut at = s.add(slot.at, offset)?;
+                if let Some((a, b)) = slice_bases {
+                    at = s.add(at, if slot.is_a { a } else { b })?;
+                }
                 if len < depth {
                     let len_c = s.uint(len);
                     let inside = s.less(slot.along, len_c)?;
@@ -2523,8 +2569,8 @@ impl Shell {
         // products of the tiles before it, and staged in buffer `i % 2`: one barrier per tile
         // both publishes it and frees the buffer of tile `i - 1` for tile `i + 1`.
         let ahead = tile.ahead.max(1) as usize;
-        let count = k.div_ceil(depth) as usize;
-        let len_of = |i: usize| (k - i as u32 * depth).min(depth);
+        let count = slice_k.div_ceil(depth) as usize;
+        let len_of = |i: usize| (slice_k - i as u32 * depth).min(depth);
         // The read of tile `i + ahead`, when there is one, for tile `i` emitted straight.
         let ahead_of = |i: usize| {
             (i + ahead < count).then(|| (Start::At((i + ahead) as u32 * depth), len_of(i + ahead)))
@@ -2564,7 +2610,7 @@ impl Shell {
         // The tile loop (`matmul_passes`): each pass computes `MATMUL_UNROLL` full tiles and
         // reads the full tiles `ahead` past them. The tiles read and not yet staged cross from
         // one pass to the next in function variables.
-        let passes = matmul_passes(k, &tile);
+        let passes = matmul_passes(slice_k, &tile);
         let mut resume = 1;
         if passes > 0 {
             let carried = self.matmul_vars[accumulators..].to_vec();
@@ -2626,6 +2672,13 @@ impl Shell {
         for &j in &local_cols {
             col_inside.push(self.less(j, n_c)?);
         }
+        let slice_at = match slice {
+            Some(slice) => {
+                let elements = self.uint(m * n);
+                Some(self.mul(slice, elements)?)
+            }
+            None => None,
+        };
         for (q, &row) in local_rows.iter().enumerate() {
             let row = self.add(row0, row)?;
             let row_inside = self.less(row, m_c)?;
@@ -2634,7 +2687,10 @@ impl Shell {
                 let inside = self.and(row_inside, col_inside)?;
                 let var = self.matmul_vars[q * per as usize + c];
                 self.when(inside, |s| {
-                    let at = s.add(row_at, j)?;
+                    let mut at = s.add(row_at, j)?;
+                    if let Some(slice_at) = slice_at {
+                        at = s.add(at, slice_at)?;
+                    }
                     let sum = s.b.load(s.f32_ty, None, var, None, [])?;
                     match epilogue {
                         None => s.write(at, sum),

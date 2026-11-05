@@ -321,6 +321,26 @@ pub const MATMUL_LONG_K_NARROW_BLOCK: MatMulBlock = MatMulBlock {
     from_m: 32,
 };
 
+/// The least `k` of a matmul the schedule splits along `k` (DESIGN.md § 5.2, split-K): the
+/// `from_k` of the long-`k` tiles it replaces there.
+pub const MATMUL_SPLIT_K_FROM: u64 = 4096;
+
+/// The `k` from which the schedule splits no matmul: split-K is measured on the `k` of 4,096
+/// of `examples/bert_tiny.mspec`, and a `k` of 16,384 or more keeps the long-`k` tiles measured
+/// there (story:vulkan-long-k-weight-grad-matmul).
+pub const MATMUL_SPLIT_K_BELOW: u64 = 16384;
+
+/// The values of `k` per slice of a split-K matmul: a `k` that is a multiple of it, of at least
+/// [`MATMUL_SPLIT_K_FROM`], is cut into `k / MATMUL_SPLIT_K_SLICE` slices, or fewer under
+/// [`MATMUL_SPLIT_K_MAX_SLICES`]. On the RTX 3090 the 200-step profile of
+/// `examples/bert_tiny.mspec` takes 3,674 to 3,721 µs per step at 128, 3,719 to 3,739 at 256,
+/// 3,790 to 3,802 at 512, 3,893 to 4,082 at 64 and 4,311 to 4,346 unsplit.
+pub const MATMUL_SPLIT_K_SLICE: u64 = 128;
+
+/// The most slices of a split-K matmul, so its partial products hold at most 64 times its
+/// output: a longer `k` takes slices of twice [`MATMUL_SPLIT_K_SLICE`], four times, and so on.
+pub const MATMUL_SPLIT_K_MAX_SLICES: u64 = 64;
+
 /// How a matmul kernel `[m, k] x [k, n] -> [m, n]` covers its output (DESIGN.md § 5.2): each
 /// workgroup of `workgroup_size` invocations computes a block of
 /// [`MatMulTile::rows_per_workgroup`] rows by `cols` columns, in `cols / cols_per_invocation`
@@ -1301,10 +1321,41 @@ impl Kernel {
     /// two static matrices.
     pub fn matmul_tile(&self) -> Option<MatMulTile> {
         match self.kind {
-            KernelKind::MatMul => Kernel::matmul_shape(&self.operands)
-                .map(|(m, k, n)| MatMulTile::of_invocations(m, k, n, self.workgroup_size)),
+            KernelKind::MatMul => {
+                let (m, k, n) = Kernel::matmul_shape(&self.operands)?;
+                let slices = self.matmul_slices().unwrap_or(1);
+                Some(MatMulTile::of_invocations(
+                    m * slices,
+                    k / slices,
+                    n,
+                    self.workgroup_size,
+                ))
+            }
             _ => None,
         }
+    }
+
+    /// The slices of `k` of a matmul kernel over `[m, k]` and `[k, n]` (split-K, DESIGN.md
+    /// § 5.2): 1 for a result `[m, n]`; `P` for a result `[P · m, n]` where `P` divides `k`,
+    /// whose rows `s · m ..` hold the partial product over the values `s · k / P ..` of `k`,
+    /// each element summed in ascending `k` from its slice's first product. Such a kernel
+    /// has the tile of a `[P · m, k / P] x [k / P, n]` matmul, laid over the `m` rows of each
+    /// slice, and no epilogue. `None` on another kind and on another result.
+    pub fn matmul_slices(&self) -> Option<u64> {
+        if self.kind != KernelKind::MatMul {
+            return None;
+        }
+        let (m, k, n) = Kernel::matmul_shape(&self.operands)?;
+        let (rows, cols) = match self.result.shape[..] {
+            [Dim::Static(rows), Dim::Static(cols)] => (rows, cols),
+            _ => return None,
+        };
+        if cols != n || m == 0 || !rows.is_multiple_of(m) {
+            return None;
+        }
+        let slices = rows / m;
+        (slices >= 1 && k.is_multiple_of(slices) && (slices == 1 || self.epilogue.is_none()))
+            .then_some(slices)
     }
 
     fn signature_with(&self, tile: Option<MatMulTile>) -> String {

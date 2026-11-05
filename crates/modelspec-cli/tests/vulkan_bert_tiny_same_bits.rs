@@ -19,7 +19,11 @@
 //! and with it 36 of the 41 parameter digests. On that day and driver the 0.25.0 release binary
 //! still gave the former values, and this tree gave the values below with the one-dispatch
 //! AdamW update (story:vulkan-adamw-one-dispatch-per-parameter) scheduled and not scheduled,
-//! so neither the driver nor the bit-keeping stories of that day moved them.
+//! so neither the driver nor the bit-keeping stories of that day moved them. They were recorded
+//! once more on the same day and driver with story:vulkan-matmul-split-k, a change of the
+//! tolerance class too (DESIGN.md ADR-010): the weight gradients' sums over slices of `k` move
+//! the loss of step 1 by one unit in the last place (`0x4110a2f1` before) and with it
+//! 38 of the 41 parameter digests.
 //!
 //! Run it with
 //! `MODELSPEC_GPU_PRETRAIN_DATA=<packed-dir> cargo test --release -p modelspec-cli --test vulkan_bert_tiny_same_bits -- --ignored`.
@@ -40,51 +44,51 @@ const DATA_LINE: &str = "data dataset 0ddcfa78-c328-8cc9-ae3b-490c096d55a5 token
                          0.15/0.8/0.1/0.1 binding 668f3433-dbd7-8871-a5a7-a421c2bd1816";
 
 /// The bits of the `f32` loss of steps 0, 1, 2 and 3.
-const LOSS_BITS: [u32; 4] = [0x4110_91cf, 0x4110_a2f1, 0x4110_a2d8, 0x4110_5628];
+const LOSS_BITS: [u32; 4] = [0x4110_91cf, 0x4110_a2f0, 0x4110_a2d8, 0x4110_5628];
 
 /// Per parameter path, the FNV-1a digest of its final values' bits ([`digest`]).
 const PARAM_DIGESTS: [(&str, u64); 41] = [
-    ("BertTiny.emb_ln_beta", 0x3d6a_a123_a88a_ec70),
+    ("BertTiny.emb_ln_beta", 0x65dd_e66c_2ee9_a1a4),
     ("BertTiny.emb_ln_gamma", 0xff56_b931_d60a_0742),
-    ("BertTiny.l0_b1", 0xcbbc_fce5_6d5a_581a),
-    ("BertTiny.l0_b2", 0x99cc_8187_12c4_4f7e),
-    ("BertTiny.l0_bk", 0x43e9_9565_efd2_d737),
-    ("BertTiny.l0_bo", 0x62a3_05c2_688b_e4d7),
-    ("BertTiny.l0_bq", 0x2c73_4e1f_f394_4768),
-    ("BertTiny.l0_bv", 0x7251_674f_ac2d_2737),
-    ("BertTiny.l0_ln1_beta", 0x33ed_b7a8_7ebe_7997),
-    ("BertTiny.l0_ln1_gamma", 0x608b_6bee_4040_6394),
-    ("BertTiny.l0_ln2_beta", 0xa3d0_e5c1_89d1_e2de),
-    ("BertTiny.l0_ln2_gamma", 0x17c8_5ae2_de64_802d),
-    ("BertTiny.l0_w1", 0x5335_f4d9_3be1_8e7e),
-    ("BertTiny.l0_w2", 0xfca1_e6ca_bcc3_b6a5),
-    ("BertTiny.l0_wk", 0x3448_c90d_8a63_6dc7),
-    ("BertTiny.l0_wo", 0x2ad9_b471_14f3_5194),
-    ("BertTiny.l0_wq", 0x7756_de45_9ff8_ae69),
-    ("BertTiny.l0_wv", 0x029e_c6a8_11f7_4c68),
-    ("BertTiny.l1_b1", 0x3fb2_537c_b905_6fe2),
-    ("BertTiny.l1_b2", 0x0408_c5bc_271f_ec58),
-    ("BertTiny.l1_bk", 0x02b5_456f_5377_f020),
-    ("BertTiny.l1_bo", 0x5eee_fe29_a4e9_73a9),
-    ("BertTiny.l1_bq", 0x782c_31d3_06f7_07fb),
-    ("BertTiny.l1_bv", 0x4da0_17e6_62ca_35d9),
-    ("BertTiny.l1_ln1_beta", 0xf290_d14f_415f_8ede),
+    ("BertTiny.l0_b1", 0x0ef0_46aa_f140_fa19),
+    ("BertTiny.l0_b2", 0x0eaa_bd0e_4a7b_f8f0),
+    ("BertTiny.l0_bk", 0x530b_e11e_0231_1b0b),
+    ("BertTiny.l0_bo", 0xc274_ab3a_a704_67ae),
+    ("BertTiny.l0_bq", 0x2891_6274_e1d3_def1),
+    ("BertTiny.l0_bv", 0x21fa_f811_44a4_4e26),
+    ("BertTiny.l0_ln1_beta", 0x32c0_348e_e23e_80e6),
+    ("BertTiny.l0_ln1_gamma", 0xb173_ddf0_271f_551f),
+    ("BertTiny.l0_ln2_beta", 0x7c5e_7198_aef8_77ca),
+    ("BertTiny.l0_ln2_gamma", 0x6aa2_2f19_e6e3_5914),
+    ("BertTiny.l0_w1", 0x8310_b188_c9f0_b399),
+    ("BertTiny.l0_w2", 0xdb17_3d60_6db1_0c91),
+    ("BertTiny.l0_wk", 0xc996_5c77_cf70_7a92),
+    ("BertTiny.l0_wo", 0x0570_5395_0306_50a6),
+    ("BertTiny.l0_wq", 0x1f01_cac8_f98d_22ba),
+    ("BertTiny.l0_wv", 0x7cd9_2c52_5347_7bac),
+    ("BertTiny.l1_b1", 0x1d54_5ba7_0614_3c39),
+    ("BertTiny.l1_b2", 0x5cb2_8832_27e5_ade3),
+    ("BertTiny.l1_bk", 0x3924_05ba_ff38_bc26),
+    ("BertTiny.l1_bo", 0x87dc_1a90_ede7_49d9),
+    ("BertTiny.l1_bq", 0x3a9e_efc0_1940_496b),
+    ("BertTiny.l1_bv", 0x2c5a_2a48_3cd8_8256),
+    ("BertTiny.l1_ln1_beta", 0x1a43_03fc_3a4d_f375),
     ("BertTiny.l1_ln1_gamma", 0x87f4_f9e0_4f7e_c5d1),
-    ("BertTiny.l1_ln2_beta", 0xd67c_5764_592d_9bbf),
-    ("BertTiny.l1_ln2_gamma", 0x9da9_8734_cc18_c188),
-    ("BertTiny.l1_w1", 0xe216_2558_61b1_4227),
-    ("BertTiny.l1_w2", 0x8abf_fc2a_ed13_6b3f),
-    ("BertTiny.l1_wk", 0x5dc1_5d08_b0c1_843f),
-    ("BertTiny.l1_wo", 0x0168_a3d3_7367_1b51),
-    ("BertTiny.l1_wq", 0xc124_fb60_5908_a648),
-    ("BertTiny.l1_wv", 0x37d6_fdc1_5493_ec6f),
-    ("BertTiny.mlm_b", 0x8726_8c21_1865_413b),
-    ("BertTiny.mlm_bias", 0x57e9_0263_4240_8d83),
-    ("BertTiny.mlm_ln_beta", 0x4274_188e_d021_3c54),
+    ("BertTiny.l1_ln2_beta", 0x0bcb_09cd_f059_e13e),
+    ("BertTiny.l1_ln2_gamma", 0x58d8_dcad_2a20_218d),
+    ("BertTiny.l1_w1", 0x2d61_036d_58dc_3d7e),
+    ("BertTiny.l1_w2", 0xf4c1_9622_0f36_06f0),
+    ("BertTiny.l1_wk", 0xe242_4886_d0f3_53fe),
+    ("BertTiny.l1_wo", 0x238d_19fb_54ed_c98c),
+    ("BertTiny.l1_wq", 0xeb2d_80df_5245_6c0a),
+    ("BertTiny.l1_wv", 0x813e_756e_9007_b971),
+    ("BertTiny.mlm_b", 0x3e46_f149_e509_9a8f),
+    ("BertTiny.mlm_bias", 0x7086_e3e2_83c3_24af),
+    ("BertTiny.mlm_ln_beta", 0x97e8_b0ec_adef_a035),
     ("BertTiny.mlm_ln_gamma", 0x7aac_d357_9d1a_06d1),
-    ("BertTiny.mlm_w", 0x9150_4e98_c871_21b4),
-    ("BertTiny.pos_table", 0xef9b_c014_42e6_5410),
-    ("BertTiny.tok_table", 0x2aa4_3fa2_88d1_6621),
+    ("BertTiny.mlm_w", 0x670a_ef04_95de_1afc),
+    ("BertTiny.pos_table", 0x1a21_169b_dfc8_51a2),
+    ("BertTiny.tok_table", 0x281c_33d5_bacb_b7ac),
 ];
 
 fn repo_root() -> PathBuf {

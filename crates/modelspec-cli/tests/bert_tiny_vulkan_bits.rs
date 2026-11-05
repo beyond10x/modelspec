@@ -17,7 +17,10 @@
 //! (DESIGN.md § 5.4) that moves the loss of steps 1 and 3 by two units in the last place. On
 //! that day and driver the 0.25.0 release binary still gave the former recording on this
 //! test's data, so the driver did not move it; the attention kernels' own bits are held by
-//! `vulkan_attention_bits` of `modelspec-runtime`.
+//! `vulkan_attention_bits` of `modelspec-runtime`. The parameters were taken once more on the
+//! same day and driver with story:vulkan-matmul-split-k, a change of the tolerance class too
+//! (DESIGN.md ADR-010): the four losses keep their bits and the parameters' hash moves
+//! (`0x003a3321277f1eea` before).
 //!
 //! The case needs a Vulkan device and is ignored as the device tests are; run it with
 //! `cargo test --release -p modelspec-cli --features vulkan --test bert_tiny_vulkan_bits -- --ignored`.
@@ -38,7 +41,7 @@ const RECORDED_DEVICE: (u64, u64, u64) = (4318, 8708, 2_580_660_800);
 const RECORDED_LOSSES: [u32; 4] = [0x4110_6b45, 0x4110_5faa, 0x4110_562d, 0x410f_da56];
 
 /// FNV-1a 64 of the `param` lines of stdout, each with its newline, on the recorded device.
-const RECORDED_PARAMETERS: u64 = 0x003a_3321_277f_1eea;
+const RECORDED_PARAMETERS: u64 = 0x5cc1_1b45_9dec_3325;
 
 /// The rows, sequences, keys per sequence and vocabulary of `examples/bert_tiny.mspec`.
 const ROWS: usize = 4096;

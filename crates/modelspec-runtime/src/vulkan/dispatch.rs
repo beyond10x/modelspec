@@ -716,6 +716,12 @@ fn matmul_invocations(kernel: &Kernel) -> Result<u64, ExecError> {
             kernel: kernel.signature(),
             reason: "a matmul reads static [m, k] and [k, n]".to_owned(),
         })?;
+    // A split-K kernel (`Kernel::matmul_slices`) runs the tile of its slices over each slice.
+    if let (Some(slices), Some(tile)) = (kernel.matmul_slices(), kernel.matmul_tile())
+        && slices > 1
+    {
+        return Ok(slices * tile.workgroups(m, n) * u64::from(tile.workgroup_size));
+    }
     let tile = MatMulTile::of(m, k, n);
     Ok(tile.workgroups(m, n) * u64::from(tile.workgroup_size))
 }

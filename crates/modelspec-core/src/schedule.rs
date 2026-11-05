@@ -122,7 +122,8 @@ use thiserror::Error;
 use crate::artifact::{DataRole, DataSpec, ParameterSpec, canonical_parameter_id};
 use crate::ir::kernel::{
     ADAMW_BUFFERS, ADAMW_OP, BufferView, ChainLink, ElementwiseChain, Epilogue, ExecutionPlan,
-    Kernel, KernelKind, MIN_SHARED_MEMORY_BYTES, MatMulLimits, MatMulTile, Operand, PlanOp,
+    Kernel, KernelKind, MATMUL_SPLIT_K_BELOW, MATMUL_SPLIT_K_FROM, MATMUL_SPLIT_K_MAX_SLICES,
+    MATMUL_SPLIT_K_SLICE, MIN_SHARED_MEMORY_BYTES, MatMulLimits, MatMulTile, Operand, PlanOp,
     PlanStep, SOFTMAX_STATS_PER_QUERY,
 };
 use crate::ir::tensor::{DType, Dim, ParamId, TensorNode, TensorOp, TensorType, ValueId};
@@ -843,6 +844,9 @@ fn schedule_with(
     // moments get a buffer after every other.
     let mut between: Vec<usize> = Vec::new();
     let mut prediction_view = None;
+    // Whether the step holds an op outside the bit-for-bit class of DESIGN.md § 5.4: only such
+    // a step takes split-K matmuls, which leave that class.
+    let tolerant = program.nodes.iter().any(|node| tolerance_class(&node.op));
     for node in &program.nodes {
         let shape_error = || ScheduleError::Shape {
             value: node.id,
@@ -1132,7 +1136,42 @@ fn schedule_with(
             }
             TensorOp::BroadcastScalar { .. } => (vec![one(KernelKind::Broadcast, operands)?], None),
             TensorOp::Transpose => (vec![one(KernelKind::Transpose, operands)?], None),
-            TensorOp::MatMul => (vec![one(KernelKind::MatMul, operands)?], None),
+            TensorOp::MatMul => {
+                let split = if tolerant && epilogue.is_none() {
+                    split_k(&operands, transposed, limits)
+                } else {
+                    None
+                };
+                match split {
+                    Some((slices, tile, m, n)) => {
+                        // Stage 1 writes one partial product per slice of `k`, stage 2 adds
+                        // the slices of each element in ascending order.
+                        let partial_ty = TensorType::f32(&[slices * m, n]);
+                        let partials =
+                            allocate(&mut buffers, &partial_ty).ok_or_else(shape_error)?;
+                        let workgroups = spread(node, slices * tile.workgroups(m, n))?;
+                        let mut stage1 = kernel(
+                            KernelKind::MatMul,
+                            node,
+                            operands,
+                            partial_ty,
+                            None,
+                            workgroups,
+                        );
+                        stage1.workgroup_size = tile.workgroup_size;
+                        stage1.transposed = transposed;
+                        stage1.id = Kernel::module_id(&stage1.signature());
+                        let stage2 = rowwise_kernel(
+                            &TensorOp::SumRows,
+                            vec![Operand::Buffer(TensorType::f32(&[slices, m * n]))],
+                            TensorType::f32(&[m * n]),
+                        )
+                        .ok_or_else(shape_error)?;
+                        (vec![stage1, stage2], Some(partials))
+                    }
+                    None => (vec![one(KernelKind::MatMul, operands)?], None),
+                }
+            }
             TensorOp::Mse => (vec![one(KernelKind::LossSum, operands)?], None),
             TensorOp::ReduceSum | TensorOp::ReduceMean => {
                 let reduced = program
@@ -2378,6 +2417,84 @@ pub fn cross_entropy_grad_kernels(
     let second = vec![Operand::Buffer(stats), logits, labels, weights, seed];
     let per_element = attention_loss_kernel(&op, second, result)?;
     Some([per_row, per_element])
+}
+
+/// Whether `op` computes a result outside the bit-for-bit class of DESIGN.md § 5.4: a
+/// transcendental function, a division or a square root.
+fn tolerance_class(op: &TensorOp) -> bool {
+    matches!(
+        op,
+        TensorOp::Gelu
+            | TensorOp::GeluGrad
+            | TensorOp::LayerNorm
+            | TensorOp::LayerNormGradX
+            | TensorOp::LayerNormGradGamma
+            | TensorOp::Softmax
+            | TensorOp::SoftmaxGrad
+            | TensorOp::CrossEntropy
+            | TensorOp::CrossEntropyGrad
+            | TensorOp::Attention { .. }
+            | TensorOp::AttentionGradQ { .. }
+            | TensorOp::AttentionGradK { .. }
+            | TensorOp::AttentionGradV { .. }
+            | TensorOp::Sqrt
+            | TensorOp::Div
+            | TensorOp::SigregColumns
+            | TensorOp::SigregColumnsGrad
+    )
+}
+
+/// The slices a split-K matmul cuts `k` into (DESIGN.md § 5.2): `k / MATMUL_SPLIT_K_SLICE`
+/// for a `k` of at least [`MATMUL_SPLIT_K_FROM`] and below [`MATMUL_SPLIT_K_BELOW`] that is a
+/// multiple of [`MATMUL_SPLIT_K_SLICE`], halved while it is even and above
+/// [`MATMUL_SPLIT_K_MAX_SLICES`], so the partial products hold at most that many times the
+/// output. `None` for another `k` and where the halving leaves more slices than the bound.
+/// The slices depend on `k` alone, never on a device profile (DESIGN.md § 3.3).
+pub fn matmul_split_k_slices(k: u64) -> Option<u64> {
+    if !(MATMUL_SPLIT_K_FROM..MATMUL_SPLIT_K_BELOW).contains(&k)
+        || !k.is_multiple_of(MATMUL_SPLIT_K_SLICE)
+    {
+        return None;
+    }
+    let mut slices = k / MATMUL_SPLIT_K_SLICE;
+    while slices > MATMUL_SPLIT_K_MAX_SLICES && slices.is_multiple_of(2) {
+        slices /= 2;
+    }
+    (2..=MATMUL_SPLIT_K_MAX_SLICES)
+        .contains(&slices)
+        .then_some(slices)
+}
+
+/// The split of a matmul over `operands` `[m, k]` and `[k, n]` along `k` (split-K, DESIGN.md
+/// § 5.2): its slices ([`matmul_split_k_slices`]), the tile of its first stage, `m` and `n`. A
+/// matmul is split when its `k` has slices and its output is too small for a register-blocked
+/// tile of short `k`, so that unsplit it takes a long-`k` tile or one column per invocation
+/// and each element's sum is one chain of `k` products. That is decided on the tile of every
+/// Vulkan device ([`MatMulTile::of`]), so the order of each sum is fixed by the shape alone and
+/// no device profile changes it; only the tile of the first stage, that of a
+/// `[slices · m, k / slices] x [k / slices, n]` matmul, is fitted to `limits`.
+fn split_k(
+    operands: &[Operand],
+    transposed: [bool; 2],
+    limits: Option<MatMulLimits>,
+) -> Option<(u64, MatMulTile, u64, u64)> {
+    let tile_of = |m: u64, k: u64, n: u64| match limits {
+        Some(limits) => MatMulTile::for_limits(m, k, n, transposed, limits),
+        None => MatMulTile::of(m, k, n),
+    };
+    let (m, k, n) = Kernel::matmul_shape(operands)?;
+    let slices = matmul_split_k_slices(k)?;
+    if operands.len() != 2 {
+        return None;
+    }
+    let whole = MatMulTile::of(m, k, n);
+    if !(whole.long_k() || whole.cols_per_invocation == 1) {
+        return None;
+    }
+    let slice = k / slices;
+    let rows = m.checked_mul(slices)?;
+    rows.checked_mul(n)?;
+    Some((slices, tile_of(rows, slice, n), m, n))
 }
 
 /// The tile of a matmul over `operands` `[m, k]` and `[k, n]`, reading the operands marked in

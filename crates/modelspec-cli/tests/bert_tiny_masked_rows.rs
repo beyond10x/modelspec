@@ -1,14 +1,20 @@
 //! `modelspec train --masked-rows <C>` (story:vulkan-mlm-masked-row-gather, DESIGN.md § 3.3): the
 //! step computes the MLM head, the vocabulary projection, its bias, the cross-entropy loss and
 //! its gradient on the rows of non-zero weight only, gathered at capacity `C`, and gives the bits
-//! of the step that computes every row.
+//! of the step that computes every row, but on Vulkan where a split-K matmul changes with the
+//! gathered rows (story:vulkan-matmul-split-k, DESIGN.md ADR-010): there it is within tolerance.
 //!
 //! The CPU cases train the hidden-32 twin of BERT-tiny (`tests/fixtures/bert_cpu.mspec`) for 3
 //! steps on a dense directory the test writes and compare the run with and without the gather
 //! byte for byte; a batch with more selected rows than the capacity is refused with E-DATA-012.
 //! The device cases, ignored as the device tests are, train `examples/bert_tiny.mspec` for 3
 //! steps on the data of `bert_tiny_three_vulkan_steps_give_the_recorded_bits` (the bits test of
-//! story:vulkan-attention-softmax-stats-reused) and compare with its recorded bits:
+//! story:vulkan-attention-softmax-stats-reused) and compare with its recorded bits. Since
+//! story:vulkan-matmul-split-k the step of every row splits the weight gradient of the head's
+//! dense layer (`k` 4,096) and the gathered step the gradient through the vocabulary
+//! projection (`k` 8,192, 768 rows), so the two runs keep the recorded loss bits, each has its
+//! own recorded parameters, and every parameter of one is within the tolerance of DESIGN.md
+//! § 9 gate 5 of the other:
 //! `cargo test --release -p modelspec-cli --features vulkan --test bert_tiny_masked_rows -- --ignored`.
 
 use std::path::{Path, PathBuf};
@@ -257,8 +263,28 @@ mod device {
     /// `bert_tiny_three_vulkan_steps_give_the_recorded_bits` records them.
     const RECORDED_LOSSES: [u32; 4] = [0x4110_6b45, 0x4110_5faa, 0x4110_562d, 0x410f_da56];
 
-    /// FNV-1a 64 of the `param` lines of stdout, each with its newline, on the recorded device.
-    const RECORDED_PARAMETERS: u64 = 0x003a_3321_277f_1eea;
+    /// FNV-1a 64 of the `param` lines of stdout, each with its newline, on the recorded device,
+    /// of the step that computes every row.
+    const RECORDED_PARAMETERS: u64 = 0x5cc1_1b45_9dec_3325;
+
+    /// The same of the step gathered at 768 rows.
+    const RECORDED_GATHERED_PARAMETERS: u64 = 0x9ff3_1297_dafc_f992;
+
+    /// The element tolerance of a GPU result (DESIGN.md § 9 gate 5).
+    const GPU_ATOL: f32 = 1e-5;
+    const GPU_RTOL: f32 = 1e-4;
+
+    /// The name and the values of a `param` line of stdout.
+    fn param(line: &str) -> (&str, Vec<f32>) {
+        let (name, values) = line.split_once(" = [").expect("a param line");
+        let values = values
+            .strip_suffix(']')
+            .expect("a closed list")
+            .split(", ")
+            .map(|value| value.parse::<f32>().expect("an f32"))
+            .collect();
+        (name, values)
+    }
 
     fn fnv1a(bytes: impl IntoIterator<Item = u8>) -> u64 {
         bytes.into_iter().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
@@ -297,8 +323,9 @@ mod device {
     }
 
     /// Acceptance 1: 3 Vulkan steps of `examples/bert_tiny.mspec` gathered at 768 rows give the
-    /// recorded loss of every step and the recorded parameters after step 3, bit for bit, as the
-    /// step that computes every row does.
+    /// recorded loss of every step, bit for bit, as the step that computes every row does; each
+    /// run gives its own recorded parameters after step 3, and every parameter of the gathered
+    /// run is within the element tolerance of the other's.
     #[test]
     #[ignore = "needs a Vulkan device"]
     fn bert_tiny_gathered_three_vulkan_steps_give_the_recorded_bits() {
@@ -313,9 +340,14 @@ mod device {
         let selected = write_data(&data, &BERT_TINY);
         assert!(selected.iter().all(|&n| n <= 768), "{selected:?}");
         let file = three_steps(&case, EXAMPLE, "warmup_steps = 1000);", "steps = 10000;");
-        for (name, extra) in [
-            ("full", &[][..]),
-            ("gathered", &["--masked-rows", "768"][..]),
+        let mut runs: Vec<Vec<String>> = Vec::new();
+        for (name, extra, recorded) in [
+            ("full", &[][..], RECORDED_PARAMETERS),
+            (
+                "gathered",
+                &["--masked-rows", "768"][..],
+                RECORDED_GATHERED_PARAMETERS,
+            ),
         ] {
             let recording = case.join(format!("{name}.jsonl"));
             let mut args = vec!["--record", path(&recording)];
@@ -341,11 +373,23 @@ mod device {
                 got, RECORDED_LOSSES,
                 "{name}: the loss bits of steps 0 to 3"
             );
-            assert_eq!(
-                hash, RECORDED_PARAMETERS,
-                "{name}: the parameters after step 3"
-            );
+            assert_eq!(hash, recorded, "{name}: the parameters after step 3");
+            runs.push(params.iter().map(|line| (*line).to_owned()).collect());
         }
+        let mut compared = 0;
+        for (full, gathered) in runs[0].iter().zip(&runs[1]) {
+            let ((name, full), (gathered_name, gathered)) = (param(full), param(gathered));
+            assert_eq!(name, gathered_name);
+            assert_eq!(full.len(), gathered.len(), "{name}");
+            for (at, (x, y)) in full.iter().zip(&gathered).enumerate() {
+                assert!(
+                    (x - y).abs() <= GPU_ATOL + GPU_RTOL * x.abs(),
+                    "{name}[{at}]: {x:?} with every row, {y:?} gathered"
+                );
+                compared += 1;
+            }
+        }
+        assert_eq!(compared, 1_486_720, "every parameter of BERT-tiny");
     }
 
     /// On Vulkan, the twin's 3 steps with the gather print what they print without it.
