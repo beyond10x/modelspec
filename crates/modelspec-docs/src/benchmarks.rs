@@ -2457,8 +2457,8 @@ mod tests {
         }
     }
 
-    /// The entries of verification-report:bert-tiny-vs-pytorch-2026-10-28, -2026-10-29 and
-    /// -2026-11-05, one per side and report: ModelSpec
+    /// The entries of verification-report:bert-tiny-vs-pytorch-2026-10-28, -2026-10-29,
+    /// -2026-11-05 and -2026-11-05-split-k, one per side and report: ModelSpec
     /// Vulkan, PyTorch CUDA eager and `torch.compile`, three runs each of the 10,000 steps of
     /// `examples/bert_tiny.mspec`, all counted by one `MatmulOnly` FLOP figure. Each cites the
     /// three raw records of its side in run order, a re-run named `-r` or `-rN` after the run it
@@ -2472,7 +2472,7 @@ mod tests {
         let bert: Vec<&Run> = runs.iter().filter(|run| run.workload == BERT).collect();
         let mut sides: Vec<&str> = bert.iter().map(|run| run.side.as_str()).collect();
         sides.sort_unstable();
-        assert_eq!(bert.len(), 9, "three reports of three sides");
+        assert_eq!(bert.len(), 12, "four reports of three sides");
         sides.dedup();
         assert_eq!(
             sides,
@@ -2593,8 +2593,8 @@ mod tests {
 
     /// The published `bert-tiny-pretrain` section holds the three sides' medians of
     /// verification-report:bert-tiny-vs-pytorch-2026-10-28 and, after each, those of
-    /// verification-report:bert-tiny-vs-pytorch-2026-10-29 and -2026-11-05, each figure linked
-    /// to its report.
+    /// verification-report:bert-tiny-vs-pytorch-2026-10-29, -2026-11-05 and
+    /// -2026-11-05-split-k, each figure linked to its report.
     #[test]
     fn the_published_page_has_the_bert_tiny_pretrain_figures_of_the_report() {
         let (page, _) = files(&root()).unwrap();
@@ -2607,16 +2607,22 @@ mod tests {
         let section = &page[start..end];
         // Date, build, then µs per step, tokens per second, GFLOP/s, target loss, steps to
         // target, training seconds to target and final held-out loss, each linked to the report
-        // of that date; eval every.
-        let dated = |date: &str, build: &str, figures: [&str; 7]| {
-            let url =
-                report_url(&format!("verification-report:bert-tiny-vs-pytorch-{date}")).unwrap();
+        // named after that date and `suffix`; eval every.
+        let of_report = |date: &str, suffix: &str, build: &str, figures: [&str; 7]| {
+            let url = report_url(&format!(
+                "verification-report:bert-tiny-vs-pytorch-{date}{suffix}"
+            ))
+            .unwrap();
             let figures: Vec<String> = figures
                 .iter()
                 .map(|figure| format!("[{figure}]({url})"))
                 .collect();
             format!("| {date} | {build} | {} | 100 |", figures.join(" | "))
         };
+        let dated =
+            |date: &str, build: &str, figures: [&str; 7]| of_report(date, "", build, figures);
+        let split_row =
+            |build: &str, figures: [&str; 7]| of_report("2026-11-05", "-split-k", build, figures);
         let row = |build: &str, figures: [&str; 7]| dated("2026-10-28", build, figures);
         let new_row = |build: &str, figures: [&str; 7]| dated("2026-10-29", build, figures);
         let timed_row = |build: &str, figures: [&str; 7]| dated("2026-11-05", build, figures);
@@ -2660,6 +2666,18 @@ mod tests {
                     "6.7675",
                 ],
             ),
+            split_row(
+                "0.25.0 (`1cf9e12`)",
+                [
+                    "4,130.349",
+                    "991,683.658",
+                    "9,066.2",
+                    target,
+                    "1,100",
+                    "4.123",
+                    "6.7675",
+                ],
+            ),
             row(
                 torch,
                 [
@@ -2696,6 +2714,18 @@ mod tests {
                     "6.7673",
                 ],
             ),
+            split_row(
+                torch_15,
+                [
+                    "7,883.785",
+                    "519,547.396",
+                    "4,749.8",
+                    target,
+                    "1,100",
+                    "8.976",
+                    "6.7673",
+                ],
+            ),
             row(
                 torch,
                 [
@@ -2729,6 +2759,18 @@ mod tests {
                     target,
                     "1,100",
                     "6.357",
+                    "6.7675",
+                ],
+            ),
+            split_row(
+                torch_15,
+                [
+                    "4,311.663",
+                    "949,981.453",
+                    "8,685.0",
+                    target,
+                    "1,100",
+                    "4.945",
                     "6.7675",
                 ],
             ),
