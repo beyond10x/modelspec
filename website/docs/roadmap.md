@@ -18,8 +18,8 @@ PyTorch measures the way there.
 |---|---|
 | Baseline | BERT-tiny timed against PyTorch CUDA eager and `torch.compile` on the same RTX 3090, per step and to a held-out loss. The transformer block's figures are released in 0.21.0 ([Benchmarks](/docs/benchmarks#transformer-block)) and the full model's in 0.23.0 ([Benchmarks](/docs/benchmarks#bert-tiny-pre-training-time-to-the-held-out-baseline)), where ModelSpec's training clock still includes its held-out evaluations and PyTorch's does not. |
 | A | The transformer block within 3× of PyTorch eager, measured the same day on the same device and driver. At batch 8 it is 23.8× today. |
-| E | Full BERT-tiny at parity with PyTorch eager. |
-| F | Faster than `torch.compile`, per step and to the held-out target. |
+| E | Full BERT-tiny at parity with PyTorch eager. Measured in 0.26.0: the median step is 0.492 of eager's in the series of 2026-11-05 ([Benchmarks](/docs/benchmarks#bert-tiny-pre-training-time-to-the-held-out-baseline)). |
+| F | Faster than `torch.compile`, per step and to the held-out target. Measured in 0.26.0 in one series of 3 runs per side: the median step is 0.900 of `torch.compile`'s and the median time to the target 0.893, with every run under every `torch.compile` run on both figures. Planned: the same over repeated series. |
 
 Each step is a sequence of measured units: profile where the step's time goes, change the largest
 site, keep the CPU-reference tests green, time it, publish the row on the Benchmarks page.
@@ -29,7 +29,7 @@ site, keep the CPU-reference tests green, time it, publish the row on the Benchm
 ## Milestones
 
 The milestones are those of [DESIGN.md § 1](https://github.com/beyond10x/modelspec/blob/main/DESIGN.md#1-scope-and-milestones).
-M0 is built and released as 0.1.0. M1 is in progress; the latest release is 0.25.0. Some M2 items
+M0 is built and released as 0.1.0. M1 is in progress; the latest release is 0.26.0. Some M2 items
 were done early, in M1. The current milestone is a small BERT, pre-trained from scratch, which is
 one of the two proof models of M3: its operators run on the CPU reference interpreter, the row-wise
 ones also have Vulkan kernels since 0.14.0, and `attention`, `cross_entropy` and AdamW have theirs
@@ -74,6 +74,7 @@ reference interpreter, and `modelspec check`, `ir` and `train --backend cpu`.
 | 0.23.0 | a BERT-tiny step 14.6 times faster than on 2026-10-28 with the same bits (15,245.2 against 222,576.0 µs per step on the RTX 3090, still 1.95× PyTorch eager and 3.61× `torch.compile`): held-out evaluation reduced on the device with `HeldOutRows` and `HeldOutSum`, one host wait per evaluated step; per-row and per-element `cross_entropy`, `cross_entropy` gradient and `EmbeddingGrad` kernels; attention kernels that share their softmax statistics and run one workgroup per sequence, head and tile; the MLM head and loss on the masked rows only (`--masked-rows`); one pipeline per SPIR-V module, created in parallel through a `VkPipelineCache` on disk; `train --profile` on a stepwise run |
 | 0.24.0 | the profiled steady BERT-tiny step at 0.55 of its time on the RTX 3090 (8,098.4 against 14,702.7 µs per step under `train --profile`, 5 alternating pairs; no new run against PyTorch): `EmbeddingGrad` over the batch's ids sorted once; coalesced column sums for `SumRows` and `LayerNormGradGamma`; `LayerNormGradGamma` row moments once per row; up to 8 steps per command buffer, one host wait per segment; the same bits, except that `rstd` on Vulkan is now the CPU's bits; a Vulkan `mse` loss that overflows names the step the CPU names |
 | 0.25.0 | the decider's first complete pre-training, 20,000 steps on the RTX 3090 at 175.47 ms per step and 66.3 minutes in all, on a build of the key spans (8eac87ea); the run aborted earlier that day ran 1,098.9 ms per step with another model layout, so no single ratio between them is this release's. Each against its own base on the decider model, the median of 3 interleaved pairs: attention kernels that stage rows in workgroup memory and skip masked keys, 52.3 against 207.9 ms per step; long-`k` weight-gradient matmuls on tiles of their own, 43.16 against 87.73 ms; `LayerNorm` and `LayerNormGradX` on whole rows staged coalesced, 10.73 against 40.38 ms, and `LayerNormGradGamma` 4.61 against 8.05; `attention` with fewer query rows than key rows, a device step of 222.4 against 279.8 ms; `attention` over `i32` key spans in place of a padded key mask, 135.3 against 219.2 ms; the same bits; no new run against PyTorch |
+| 0.26.0 | BERT-tiny pre-training under `torch.compile`'s in the series of 2026-11-05 on the RTX 3090, 3 runs per side: 3,641.5 to 3,768.8 µs per step against 4,096.0 to 4,118.4, medians 3,697.1 and 4,109.6, eager 7,518.0; 3.96 to 4.06 training seconds to the held-out baseline against 4.43 to 4.51; 0.243 of the 15,245.2 µs of 2026-10-29; `cross_entropy` rows on one workgroup per row; long-`k` matmul tiles from `k` of 4,096; the `EmbeddingGrad` sort on 16 lanes; one AdamW dispatch per parameter; blocked key tiles for `AttentionGradK` and `AttentionGradV`; split-K for long-`k` matmuls with a small output in steps of the tolerance class, whose result is within the GPU tolerance of the CPU reference where it had its bits (DESIGN.md ADR-010); a stepwise run that records the command buffer of a segment of training steps once and submits it again |
 
 The 9 acceptance boxes of DESIGN.md § 9 are not ticked.
 

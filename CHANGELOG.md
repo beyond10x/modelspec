@@ -9,6 +9,10 @@ history.
 
 ## [Unreleased]
 
+## [0.26.0] - 2026-11-05
+
+This release makes BERT-tiny pre-training on Vulkan faster than `torch.compile` in the series measured with it, per step and to the held-out baseline: on an RTX 3090 on 2026-11-05, `examples/bert_tiny.mspec` at batch 32 for 10,000 steps, 3 runs per side in turn at 63000d0e, ModelSpec took 3,641.5, 3,697.1 and 3,768.8 µs per step, `torch.compile` 4,096.0, 4,109.6 and 4,118.4, and PyTorch CUDA eager 7,461.4, 7,518.0 and 7,593.0. ModelSpec's median, 3,697.1, is 0.900 of `torch.compile`'s, 0.492 of eager's and 0.243 of the 15,245.2 µs published on 2026-10-29. To the held-out baseline ModelSpec's runs took 3.96, 4.02 and 4.06 training seconds, `torch.compile`'s 4.43, 4.50 and 4.51 and eager's 8.18, 8.25 and 8.44. Every ModelSpec run is under every `torch.compile` run on both figures, the nearest two 327.2 µs (8.0 %) apart per step and 0.37 s (8.4 %) to the baseline. It is one series of 3 runs per side with the clocks not locked, and the series before it that day, at 1cf9e12f, overlapped to the baseline, so the release states a measured series and no margin beyond it. Seven changes to the Vulkan backend got there: `cross_entropy` rows on one workgroup per row, long-`k` matmul tiles from `k` of 4,096, the `EmbeddingGrad` sort on 16 lanes, one AdamW dispatch per parameter, blocked key tiles for the attention gradients, split-K for long-`k` matmuls with a small output, and a stepwise run that submits the recorded command buffer of a segment again. Split-K changes a contract: in a step that holds an operator of the tolerance class such a matmul is summed in slices of `k` (DESIGN.md 0.84, ADR-010), so its result is within the GPU tolerance of the CPU reference where it had the CPU's bits, and a `--masked-rows` step on Vulkan is within tolerance of the step that computes every row where it had that step's bits. A step without such an operator keeps every matmul whole, and a `k` of 16,384 or more, the decider's weight gradients among them, is not split.
+
 ### Added
 
 - `bert-tiny-pretrain` runs at 63000d0e, the build that submits a recorded segment again (`benchmarks/runs.yaml`, raw records under `benchmarks/raw/2026-11-05-bert-tiny-pretrain-4/`), measured on the RTX 3090 as the runs at 1cf9e12f below, 3 runs per side in turn, 15:00Z to 15:15Z at a 1-minute load of 1.5 to 9.1. Medians: ModelSpec Vulkan 3,697.1 µs per step (1,107,884 tokens/s, 10,128.6 GFLOP/s), 4.02 training seconds to the held-out baseline; `torch.compile` 4,109.6 µs per step, 4.50 s; PyTorch CUDA eager 7,518.0 µs per step, 8.25 s. Every ModelSpec run of the series is under every `torch.compile` run on both figures, the first published series in which it is: per step ModelSpec 3,641.5, 3,697.1 and 3,768.8 µs against `torch.compile`'s 4,096.0, 4,109.6 and 4,118.4; to the baseline 3.96, 4.02 and 4.06 s against 4.43, 4.50 and 4.51 s. The margin between ModelSpec's slowest run and `torch.compile`'s fastest is 327.2 µs per step, 8.0 %, and 0.37 s to the baseline, 8.4 %, on 3 runs per side with the clocks not locked. ModelSpec's median is 0.900 of `torch.compile`'s per step and 0.893 to the baseline, 0.492 and 0.488 of eager's. No run of any side has a 100-step window above 1.15 times its median, where each ModelSpec run at 1cf9e12f had 8 or 9. All three sides first reach the baseline at step 1,100 (`epic:bert-tiny-beats-torch-compile`, verification-report:bert-tiny-vs-pytorch-2026-11-05-segment-reuse).
@@ -427,7 +431,8 @@ with `E-TARGET-001`.
 - `examples/linear_regression.mspec` checks and trains; `task check-examples` runs `modelspec check` on it
 - ESS contracts for the compiled artifact, checkpoint, device profile and training run in `spec/`
 
-[Unreleased]: https://github.com/beyond10x/modelspec/compare/0.25.0...HEAD
+[Unreleased]: https://github.com/beyond10x/modelspec/compare/0.26.0...HEAD
+[0.26.0]: https://github.com/beyond10x/modelspec/compare/0.25.0...0.26.0
 [0.25.0]: https://github.com/beyond10x/modelspec/compare/0.24.0...0.25.0
 [0.24.0]: https://github.com/beyond10x/modelspec/compare/0.23.0...0.24.0
 [0.23.0]: https://github.com/beyond10x/modelspec/compare/0.22.0...0.23.0

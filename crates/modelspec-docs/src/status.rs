@@ -16,7 +16,7 @@ use serde_json::{Value, json};
 pub const FILE: &str = "status.json";
 
 /// The date [`CAPABILITIES`] was last checked against `main` and the planning store.
-pub const AS_OF: &str = "2026-10-29";
+pub const AS_OF: &str = "2026-11-05";
 
 /// What holds a shipped capability.
 #[derive(Clone, Copy)]
@@ -615,11 +615,20 @@ pub const CAPABILITIES: &[Capability] = &[
         ),
         "/docs/benchmarks",
     ),
+    shipped(
+        "Training",
+        "BERT-tiny with a shorter step than PyTorch CUDA eager and torch.compile in the latest series",
+        "Since 0.26.0: `examples/bert_tiny.mspec` trained through Vulkan at batch 32 takes a median of 3,697.1 µs per step against 4,109.6 on `torch.compile` and 7,518.0 on PyTorch CUDA eager, and a median of 4.024 training seconds to the held-out baseline against 4.504 and 8.252, timed in turn on 2026-11-05 on the same RTX 3090 and driver, 3 runs per side with the clocks not locked; every ModelSpec run is under every run of both PyTorch sides per step, the nearest `torch.compile` run 8.0 % above.",
+        Evidence::Test(
+            "crates/modelspec-docs/src/benchmarks.rs::the_latest_bert_tiny_pretrain_series_has_every_modelspec_run_under_both_pytorch_sides",
+        ),
+        "/docs/benchmarks",
+    ),
     planned(
         "Training",
-        "BERT-tiny at parity with PyTorch CUDA eager per step",
-        "`examples/bert_tiny.mspec` trained through Vulkan at batch 32 with a median µs per step at most PyTorch CUDA eager's, timed the same day on the same RTX 3090 and driver.",
-        "epic:bert-tiny-parity-with-eager",
+        "BERT-tiny under torch.compile on every run, per step and to the held-out target",
+        "`examples/bert_tiny.mspec` trained through Vulkan at batch 32 with every run under every `torch.compile` run in µs per step and in training seconds to the held-out baseline, over repeated series. In the series of 2026-11-05 at 63000d0e every run is under on both figures (3.96 to 4.06 against 4.43 to 4.51 training seconds to the baseline); the series before it that day overlapped to the baseline.",
+        "epic:bert-tiny-beats-torch-compile",
         "/docs/roadmap",
     ),
 ];

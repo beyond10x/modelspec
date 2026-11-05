@@ -13,10 +13,12 @@ a runtime for one target: one use case, one operating system, one GPU chipset. E
 is checked against a CPU reference, so a change that alters a result is refused and only faster
 ones are kept ([Why ModelSpec](./concepts/north-star.md)).
 
-That speed is planned, not shipped. Today ModelSpec trains on one RTX 3090 through Vulkan, and on
-a transformer it is still many times slower than PyTorch: the BERT-tiny encoder block at batch 8
-takes 93,868.4 µs per step against 3,937.2 µs on PyTorch eager. Closing that gap on BERT-tiny,
-step by step, is the [roadmap](./roadmap.md).
+That speed is planned as a general result, and measured on one model. Today ModelSpec trains on
+one RTX 3090 through Vulkan. Pre-training BERT-tiny at batch 32, its step took a median of
+3,697.1 µs against 4,109.6 µs on `torch.compile` and 7,518.0 µs on PyTorch eager, 3 runs per side
+on 2026-11-05, the nearest ModelSpec and `torch.compile` runs 8.0 % apart
+([Benchmarks](/docs/benchmarks#bert-tiny-pre-training-time-to-the-held-out-baseline)). The steps
+that led there and what comes next are the [roadmap](./roadmap.md).
 
 ModelSpec is a declarative, statically typed language for differentiable tensor programs, and a
 compiler for it written in Rust. A `.mspec` file says what a model computes, what loss it is
@@ -53,11 +55,11 @@ train Fit {
 ## What works today
 
 ModelSpec is in milestone M1 (GPU execution), and its current goal is a small BERT pre-trained
-from scratch; the latest release is [0.25.0](https://github.com/beyond10x/modelspec/releases/tag/0.25.0).
+from scratch; the latest release is [0.26.0](https://github.com/beyond10x/modelspec/releases/tag/0.26.0).
 BERT-tiny pre-trained on one RTX 3090 for 10,000 steps reached a held-out loss of 6.7674994 nats,
 0.159 below the unigram baseline of 6.9265379 ([the run record](./runs/bert-tiny-gpu-pretraining.md)).
 
-| Works in 0.25.0 | Not built yet |
+| Works in 0.26.0 | Not built yet |
 |---|---|
 | `modelspec check`: parse and check names, types and shapes | `bench` |
 | `modelspec ir --stage tensor`, `--stage training` and `--stage kernel`: print the verified IR and the kernel plan | more than one device |
@@ -111,7 +113,7 @@ capability with the test that holds it, and [Roadmap](./roadmap.md) says what M1
 
 - [Why ModelSpec](./concepts/north-star.md): the north star, the BERT-tiny ladder against PyTorch,
   and what is shipped and what is planned.
-- [Getting started](./getting-started.md): download the 0.25.0 binary and train the examples on the CPU or a GPU.
+- [Getting started](./getting-started.md): download the 0.26.0 binary and train the examples on the CPU or a GPU.
 - [The language](./concepts/language.md): what a file may contain.
 - [Write a model](./guides/write-a-model.md): build a two-layer model step by step.
 - [Pitch deck](pathname:///modelspec/pitch/): the case for ModelSpec in slides.
