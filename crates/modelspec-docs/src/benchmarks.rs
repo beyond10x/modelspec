@@ -1879,11 +1879,16 @@ fn target_section(workload: &str, runs: &[&Run]) -> String {
         _ => "its runs".to_owned(),
     };
     // The clocks as each report's "training clock" row states them: 2026-10-28 excludes the
-    // held-out evaluations on every side, 2026-10-29 includes them on the ModelSpec side.
+    // held-out evaluations on every side, 2026-10-29 includes them on the ModelSpec side, and
+    // 2026-11-05 excludes them on every side again.
     let report = |date: &str| {
         report_url(&format!("verification-report:bert-tiny-vs-pytorch-{date}")).unwrap_or_default()
     };
-    let (excluded, included) = (report("2026-10-28"), report("2026-10-29"));
+    let (excluded, included, timed) = (
+        report("2026-10-28"),
+        report("2026-10-29"),
+        report("2026-11-05"),
+    );
     let mut out = format!(
         "## {title}, time to the held-out baseline\n\n`{workload}`: `examples/bert_tiny.mspec` \
          pre-trained by each side from the same initial weights on the same batches of the same \
@@ -1894,7 +1899,9 @@ fn target_section(workload: &str, runs: &[&Run]) -> String {
          that time on every side in [the report of 2026-10-28]({excluded}) and on the PyTorch \
          sides in [the report of 2026-10-29]({included}); the ModelSpec runs of 2026-10-29 \
          reduce each evaluation on the device inside the evaluated step's command buffer, so \
-         their training seconds, and with them their µs per step, include the evaluations. \
+         their training seconds, and with them their µs per step, include the evaluations; \
+         from [the report of 2026-11-05]({timed}) on, a ModelSpec run times each evaluation \
+         into its own `eval_seconds`, outside the training clock on every side. \
          µs per step is a run's training seconds over its steps, the mean of its steps, and the figure is the \
          median of {repeats}, the median of the run's repeats as for every workload; tokens per \
          second is its tokens per step · 10⁶ / µs per step, GFLOP/s its FLOP per step / µs per \
@@ -2450,8 +2457,8 @@ mod tests {
         }
     }
 
-    /// The entries of verification-report:bert-tiny-vs-pytorch-2026-10-28 and
-    /// verification-report:bert-tiny-vs-pytorch-2026-10-29, one per side and report: ModelSpec
+    /// The entries of verification-report:bert-tiny-vs-pytorch-2026-10-28, -2026-10-29 and
+    /// -2026-11-05, one per side and report: ModelSpec
     /// Vulkan, PyTorch CUDA eager and `torch.compile`, three runs each of the 10,000 steps of
     /// `examples/bert_tiny.mspec`, all counted by one `MatmulOnly` FLOP figure. Each cites the
     /// three raw records of its side in run order, a re-run named `-r` or `-rN` after the run it
@@ -2465,7 +2472,7 @@ mod tests {
         let bert: Vec<&Run> = runs.iter().filter(|run| run.workload == BERT).collect();
         let mut sides: Vec<&str> = bert.iter().map(|run| run.side.as_str()).collect();
         sides.sort_unstable();
-        assert_eq!(bert.len(), 6, "two reports of three sides");
+        assert_eq!(bert.len(), 9, "three reports of three sides");
         sides.dedup();
         assert_eq!(
             sides,
@@ -2586,7 +2593,8 @@ mod tests {
 
     /// The published `bert-tiny-pretrain` section holds the three sides' medians of
     /// verification-report:bert-tiny-vs-pytorch-2026-10-28 and, after each, those of
-    /// verification-report:bert-tiny-vs-pytorch-2026-10-29, each figure linked to its report.
+    /// verification-report:bert-tiny-vs-pytorch-2026-10-29 and -2026-11-05, each figure linked
+    /// to its report.
     #[test]
     fn the_published_page_has_the_bert_tiny_pretrain_figures_of_the_report() {
         let (page, _) = files(&root()).unwrap();
@@ -2611,8 +2619,10 @@ mod tests {
         };
         let row = |build: &str, figures: [&str; 7]| dated("2026-10-28", build, figures);
         let new_row = |build: &str, figures: [&str; 7]| dated("2026-10-29", build, figures);
+        let timed_row = |build: &str, figures: [&str; 7]| dated("2026-11-05", build, figures);
         let target = "6.926537926202018";
         let torch = "torch 2.14.1+cu130, CUDA 13.0";
+        let torch_15 = "torch 2.15.0+cu132, CUDA 13.2";
         let expected = [
             row(
                 "0.21.0 (`3b9869f`)",
@@ -2635,6 +2645,18 @@ mod tests {
                     target,
                     "1,100",
                     "16.569",
+                    "6.7675",
+                ],
+            ),
+            timed_row(
+                "0.25.0 (`3024779`)",
+                [
+                    "5,619.427",
+                    "728,899.965",
+                    "6,663.8",
+                    target,
+                    "1,100",
+                    "5.956",
                     "6.7675",
                 ],
             ),
@@ -2662,6 +2684,18 @@ mod tests {
                     "6.7673",
                 ],
             ),
+            timed_row(
+                torch_15,
+                [
+                    "10,169.538",
+                    "402,771.507",
+                    "3,682.2",
+                    target,
+                    "1,100",
+                    "9.68",
+                    "6.7673",
+                ],
+            ),
             row(
                 torch,
                 [
@@ -2683,6 +2717,18 @@ mod tests {
                     target,
                     "1,100",
                     "4.734",
+                    "6.7675",
+                ],
+            ),
+            timed_row(
+                torch_15,
+                [
+                    "5,663.632",
+                    "723,210.884",
+                    "6,611.8",
+                    target,
+                    "1,100",
+                    "6.357",
                     "6.7675",
                 ],
             ),
@@ -3879,9 +3925,12 @@ mod tests {
              [the report of 2026-10-28]({}) and on the PyTorch sides in [the report of \
              2026-10-29]({}); the ModelSpec runs of 2026-10-29 reduce each evaluation on the \
              device inside the evaluated step's command buffer, so their training seconds, and \
-             with them their µs per step, include the evaluations. µs per step",
+             with them their µs per step, include the evaluations; from [the report of \
+             2026-11-05]({}) on, a ModelSpec run times each evaluation into its own \
+             `eval_seconds`, outside the training clock on every side. µs per step",
             report("2026-10-28"),
-            report("2026-10-29")
+            report("2026-10-29"),
+            report("2026-11-05")
         );
         assert!(page.contains(&expected), "{expected}\n{page}");
         assert!(

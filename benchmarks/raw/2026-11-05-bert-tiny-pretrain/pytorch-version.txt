@@ -1,0 +1,2 @@
+Python 3.14.7
+torch 2.15.0+cu132 cuda 13.2
