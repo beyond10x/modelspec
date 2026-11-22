@@ -149,6 +149,14 @@ pub enum TensorOp {
     /// Any shape to rank 0.
     ReduceSum,
     ReduceMean,
+    /// Sum each consecutive group of `size` rows of a matrix.
+    GroupSum {
+        size: u64,
+    },
+    /// Repeat each row of a matrix `size` consecutive times.
+    RepeatRows {
+        size: u64,
+    },
     /// `sum((a - b)^2) / element_count(a)` for identical shapes, rank 0.
     Mse,
     /// Internal gradient op `where(A > 0, G, 0)` over operands `A, G` of one shape (DESIGN.md § 4).
@@ -189,6 +197,8 @@ pub enum TensorOp {
     LayerNormGradGamma,
     /// `x: f32[N, K] -> f32[N, K]`: per row `exp(x - max) / sum(exp(x - max))` (DESIGN.md § 4).
     Softmax,
+    /// First maximum column in each non-empty row. Its discrete indices take no gradient.
+    RowArgMax,
     /// Internal gradient op over operands `y`, `G` of one `[N, K]` shape, `y` the result of
     /// [`Self::Softmax`]: `y * (G - rowsum(G * y))` (DESIGN.md § 4).
     SoftmaxGrad,
@@ -287,6 +297,8 @@ impl TensorOp {
             TensorOp::Transpose => "Transpose",
             TensorOp::ReduceSum => "ReduceSum",
             TensorOp::ReduceMean => "ReduceMean",
+            TensorOp::GroupSum { .. } => "GroupSum",
+            TensorOp::RepeatRows { .. } => "RepeatRows",
             TensorOp::Mse => "Mse",
             TensorOp::ReluGrad => "ReluGrad",
             TensorOp::BroadcastScalar { .. } => "BroadcastScalar",
@@ -300,6 +312,7 @@ impl TensorOp {
             TensorOp::LayerNormGradX => "LayerNormGradX",
             TensorOp::LayerNormGradGamma => "LayerNormGradGamma",
             TensorOp::Softmax => "Softmax",
+            TensorOp::RowArgMax => "RowArgMax",
             TensorOp::SoftmaxGrad => "SoftmaxGrad",
             TensorOp::Attention { .. } => "Attention",
             TensorOp::AttentionGradQ { .. } => "AttentionGradQ",
@@ -757,6 +770,8 @@ mod tests {
             TensorOp::Transpose,
             TensorOp::ReduceSum,
             TensorOp::ReduceMean,
+            TensorOp::GroupSum { size: 2 },
+            TensorOp::RepeatRows { size: 2 },
             TensorOp::Mse,
             TensorOp::ReluGrad,
             TensorOp::BroadcastScalar { shape: Vec::new() },
@@ -772,6 +787,7 @@ mod tests {
             TensorOp::LayerNormGradX,
             TensorOp::LayerNormGradGamma,
             TensorOp::Softmax,
+            TensorOp::RowArgMax,
             TensorOp::SoftmaxGrad,
             TensorOp::Attention { heads: 1 },
             TensorOp::AttentionGradQ { heads: 1 },
@@ -801,6 +817,8 @@ mod tests {
                 | TensorOp::Transpose
                 | TensorOp::ReduceSum
                 | TensorOp::ReduceMean
+                | TensorOp::GroupSum { .. }
+                | TensorOp::RepeatRows { .. }
                 | TensorOp::Mse
                 | TensorOp::ReluGrad
                 | TensorOp::BroadcastScalar { .. }
@@ -814,6 +832,7 @@ mod tests {
                 | TensorOp::LayerNormGradX
                 | TensorOp::LayerNormGradGamma
                 | TensorOp::Softmax
+                | TensorOp::RowArgMax
                 | TensorOp::SoftmaxGrad
                 | TensorOp::Attention { .. }
                 | TensorOp::AttentionGradQ { .. }

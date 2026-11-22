@@ -147,10 +147,12 @@ use crate::cpu::HostTensor;
 use crate::spirv::emit::{
     HELD_OUT_STATE, HeldOutKernels, emit_kernels, emit_module_with, held_out_kernels, held_out_sums,
 };
+use crate::train::checkpoint::CheckpointError;
 use crate::train::data::{DataError, DenseBatch, DenseData, PackedBatch, synthetic};
 use crate::train::eval::{HeldOut, HeldOutMetrics};
 use crate::train::init::{Stream, dropout_token, initialize, sigreg_projection};
 use crate::train::masked;
+use crate::train::optimizer::{MomentValues, validate_moments};
 use crate::train::runner::{Data, Diverged, Eval, Feed, Run, RunError, correct_rows, non_finite};
 
 /// The held-out evaluation of a stepwise run: `held_out` at every multiple of `every` among the
@@ -206,6 +208,17 @@ pub struct StepwiseOptions<'o, 'h> {
     /// The most steps one command buffer records; `None` lets the runner choose
     /// ([`steps_per_submit`]).
     pub submit_steps: Option<u64>,
+}
+
+/// Full-state callbacks read the moments from the same device transfer as the parameters.
+pub type WriteState<'a> = dyn FnMut(u64, &BTreeMap<ParamId, HostTensor<f32>>, &MomentValues) -> Result<(), CheckpointError>
+    + 'a;
+
+/// Resume from optimizer slots and optionally save a resumable state at each interval.
+#[derive(Default)]
+pub struct OptimizerCheckpoints<'a> {
+    pub moments: Option<&'a MomentValues>,
+    pub interval: Option<(u64, &'a mut WriteState<'a>)>,
 }
 
 /// One step of a stepwise run as its observer sees it, after the host waited for it.
@@ -294,12 +307,33 @@ pub fn train_stepwise_on_device(
     options: StepwiseOptions<'_, '_>,
     observe: &mut Observe<'_>,
 ) -> Result<(Run, RunStats, Option<Profile>), DeviceRunError> {
+    train_stepwise_on_device_with_state(
+        device,
+        profiled,
+        compiled,
+        artifact,
+        options,
+        OptimizerCheckpoints::default(),
+        observe,
+    )
+}
+
+/// The device run with optimizer-state checkpoint I/O.
+pub fn train_stepwise_on_device_with_state(
+    device: Option<usize>,
+    profiled: bool,
+    compiled: &CompiledTraining,
+    artifact: &CompiledArtifact,
+    options: StepwiseOptions<'_, '_>,
+    checkpoint: OptimizerCheckpoints<'_>,
+    observe: &mut Observe<'_>,
+) -> Result<(Run, RunStats, Option<Profile>), DeviceRunError> {
     if let Some(refused) = long_span_refused(compiled, options.data, options.dense_eval) {
         return Err(DeviceRunError::Refused(refused));
     }
     on_device(device, profiled, artifact, |opened, profile, negotiated| {
-        Ok(train_stepwise_profiled(
-            opened, profile, negotiated, compiled, artifact, profiled, options, observe,
+        Ok(stepwise_with_state(
+            opened, profile, negotiated, compiled, artifact, profiled, options, checkpoint, observe,
         )?)
     })
 }
@@ -407,6 +441,31 @@ pub fn train_stepwise_profiled(
     options: StepwiseOptions<'_, '_>,
     observe: &mut Observe<'_>,
 ) -> Result<(Run, RunStats, Option<Profile>), VulkanRunError> {
+    stepwise_with_state(
+        device,
+        profile,
+        negotiated,
+        compiled,
+        artifact,
+        profiled,
+        options,
+        OptimizerCheckpoints::default(),
+        observe,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn stepwise_with_state(
+    device: &Device<'_>,
+    profile: &DeviceProfile,
+    negotiated: &Negotiated,
+    compiled: &CompiledTraining,
+    artifact: &CompiledArtifact,
+    profiled: bool,
+    options: StepwiseOptions<'_, '_>,
+    checkpoint: OptimizerCheckpoints<'_>,
+    observe: &mut Observe<'_>,
+) -> Result<(Run, RunStats, Option<Profile>), VulkanRunError> {
     check_device(artifact, profile).map_err(|refused| VulkanRunError::Plan(refused.to_string()))?;
     let plan = &artifact.execution;
     let config = &compiled.config;
@@ -441,7 +500,10 @@ pub fn train_stepwise_profiled(
         }
     };
     if let Some(adamw) = adamw {
-        if start > 0 {
+        if start > 0
+            && checkpoint.moments.is_none()
+            && !compiled.training.optimizer.moments.is_empty()
+        {
             return Err(refused(RunError::MomentsNotCheckpointed { start }));
         }
         if config.steps > 0 && adamw.warmup_steps >= end {
@@ -455,14 +517,24 @@ pub fn train_stepwise_profiled(
     let mut initial = initialize(&forward.program, config.seed, Stream::Init)
         .map_err(|error| refused(error.into()))?;
     initial.extend(init);
+    if let Some(saved) = checkpoint.moments {
+        validate_moments(&compiled.training, &initial, saved)
+            .map_err(|why| refused(RunError::InvalidMoments(why)))?;
+    }
     let mut feed = match data {
         Some(Data::Dense(dense)) => Feed::Dense(dense, DenseBatch::default()),
         Some(Data::Packed(packed)) => Feed::Packed(packed, PackedBatch::default()),
         None => Feed::Synthetic(synthetic(config, forward).map_err(|error| refused(error.into()))?),
     };
-    let (every, mut write) = match checkpoints {
-        Some(Checkpoints { every, write }) if every > 0 => (every, Some(write)),
-        _ => (0, None),
+    if checkpoints.is_some() && checkpoint.interval.is_some() {
+        return Err(VulkanRunError::Plan(
+            "two checkpoint intervals supplied".into(),
+        ));
+    }
+    let (every, mut write, mut write_state) = match (checkpoints, checkpoint.interval) {
+        (Some(Checkpoints { every, write }), _) if every > 0 => (every, Some(write), None),
+        (_, Some((every, write))) if every > 0 => (every, None, Some(write)),
+        _ => (0, None, None),
     };
     if let Some(eval) = &eval
         && eval.every == 0
@@ -616,7 +688,7 @@ pub fn train_stepwise_profiled(
         });
     }
 
-    // What goes up once: every parameter's initial value, then every moment, zero.
+    // What goes up once: every parameter, followed by its saved or initial zero moments.
     let mut first_words: Vec<f32> = Vec::new();
     let mut first_views: Vec<BufferView> = Vec::new();
     for parameter in &plan.parameters {
@@ -628,12 +700,15 @@ pub fn train_stepwise_profiled(
         first_words.extend_from_slice(value.data());
         first_views.push(view);
     }
-    for (view, param, _) in &moments {
+    for (view, param, moment) in &moments {
         let value = initial.get(param).ok_or_else(|| {
             VulkanRunError::Plan(format!("the moment of {param:?} has no parameter value"))
         })?;
         check_count(view, value.len())?;
-        first_words.extend(std::iter::repeat_n(0.0f32, value.len()));
+        match checkpoint.moments {
+            Some(saved) => first_words.extend_from_slice(saved[&(*param, *moment)].data()),
+            None => first_words.extend(std::iter::repeat_n(0.0f32, value.len())),
+        }
         first_views.push(*view);
     }
     let mut first_upload = staging(device, 4 * first_words.len() as u64)?;
@@ -756,14 +831,17 @@ pub fn train_stepwise_profiled(
     let mut prediction_download = download_buffer(device, download.prediction)?;
     let param_bytes: u64 = plan.parameters.iter().map(|p| p.views[0].size_bytes).sum();
     let moment_bytes: u64 = moments.iter().map(|(view, _, _)| view.size_bytes).sum();
-    let state_download = device.download_buffer(param_bytes + moment_bytes)?;
+    let state_bytes = param_bytes + moment_bytes;
+    let state_download = download_buffer(device, state_bytes)?;
     // The parameters and moments at the start of a segment, copied on the device as it starts,
     // one buffer per upload buffer: a run that diverges inside a segment the device ran past
     // restores them and runs the segment's steps again through the failing one (finding MS-2).
-    let backups = [
-        device.device_local_buffer(param_bytes + moment_bytes)?,
-        device.device_local_buffer(param_bytes + moment_bytes)?,
-    ];
+    let backup = || {
+        (state_bytes > 0)
+            .then(|| device.device_local_buffer(state_bytes))
+            .transpose()
+    };
+    let backups = [backup()?, backup()?];
 
     let dispatch_steps = plan
         .step
@@ -927,7 +1005,11 @@ pub fn train_stepwise_profiled(
         .chain(moments.iter().map(|(view, _, _)| *view))
         .collect();
     // The parameters and moments of a state read-back.
-    let read_state = |read: &[f32]| -> Result<_, VulkanRunError> {
+    let read_state = || -> Result<_, VulkanRunError> {
+        let read = match &state_download {
+            Some(buffer) => buffer.mapped_f32()?,
+            None => &[],
+        };
         let values = parameters(plan, &initial, read)?;
         let mut at = (param_bytes / 4) as usize;
         let mut read_moments = BTreeMap::new();
@@ -954,7 +1036,7 @@ pub fn train_stepwise_profiled(
         eval.as_ref()
             .is_some_and(|eval| s.is_multiple_of(eval.every) || s == end)
     };
-    let writes = write.is_some();
+    let writes = write.is_some() || write_state.is_some();
     let due = |s: u64| s < end && writes && (s + 1).is_multiple_of(every) && s + 1 < end;
     let reads_state = |s: u64| s == end || due(s);
     // The segment in flight, and the segments waited for and not yet shown to the observer.
@@ -989,7 +1071,7 @@ pub fn train_stepwise_profiled(
             let segment_losses: Vec<f32> =
                 loss_downloads[was].mapped_f32()?[..(through - first + 1) as usize].to_vec();
             let mut state = if reads_state(through) {
-                Some(read_state(state_download.mapped_f32()?)?)
+                Some(read_state()?)
             } else {
                 None
             };
@@ -1042,7 +1124,9 @@ pub fn train_stepwise_profiled(
                             recording.barrier(Barrier::ComputeToCompute);
                             recording.barrier(Barrier::ComputeToTransferWrite);
                             recording.barrier(Barrier::TransferToTransfer);
-                            restore_state(&mut recording, &state_views, &buffers, &backups[was])?;
+                            if let Some(backup) = &backups[was] {
+                                restore_state(&mut recording, &state_views, &buffers, backup)?;
+                            }
                             for r in (first..=s).filter(|r| *r != end) {
                                 let slot = r - first;
                                 if slot > 0 {
@@ -1073,11 +1157,13 @@ pub fn train_stepwise_profiled(
                             }
                             recording.barrier(Barrier::ComputeToTransfer);
                             recording.barrier(Barrier::TransferToTransfer);
-                            copy_state(&mut recording, &state_views, &buffers, &state_download)?;
+                            if let Some(state_download) = &state_download {
+                                copy_state(&mut recording, &state_views, &buffers, state_download)?;
+                            }
                             recording.barrier(Barrier::TransferToHost);
                             let recorded = recording.finish()?;
                             device.submit(recorded)?.wait()?;
-                            read_state(state_download.mapped_f32()?)?
+                            read_state()?
                         }
                     };
                     let version = if last { s } else { s + 1 };
@@ -1105,10 +1191,14 @@ pub fn train_stepwise_profiled(
                     })));
                 }
                 if let Some((values, read_moments)) = state_s {
-                    if due(s)
-                        && let Some(write) = write.as_mut()
-                    {
-                        write(s + 1, &values).map_err(|error| refused(error.into()))?;
+                    if due(s) {
+                        if let Some(write) = write.as_mut() {
+                            write(s + 1, &values).map_err(|error| refused(error.into()))?;
+                        }
+                        if let Some(write) = write_state.as_mut() {
+                            write(s + 1, &values, &read_moments)
+                                .map_err(|error| refused(error.into()))?;
+                        }
                     }
                     if last {
                         finished = Some((values, read_moments));
@@ -1485,7 +1575,9 @@ pub fn train_stepwise_profiled(
                     &first_views,
                     &buffers,
                 )?;
-                copy_state(&mut recording, &state_views, &buffers, &backups[parity])?;
+                if let Some(backup) = &backups[parity] {
+                    copy_state(&mut recording, &state_views, &buffers, backup)?;
+                }
                 for s in k..=through {
                     let slot = s - k;
                     if slot > 0 {
@@ -1539,8 +1631,10 @@ pub fn train_stepwise_profiled(
                         barriers_per_step = recorded_barriers() - barriers_before;
                     }
                 }
-                if reads_state(through) {
-                    copy_state(&mut recording, &state_views, &buffers, &state_download)?;
+                if reads_state(through)
+                    && let Some(state_download) = &state_download
+                {
+                    copy_state(&mut recording, &state_views, &buffers, state_download)?;
                 }
                 recording.barrier(Barrier::TransferToHost);
                 let recorded = recording.finish()?;

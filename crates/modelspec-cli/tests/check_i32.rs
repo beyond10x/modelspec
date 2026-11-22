@@ -1,9 +1,7 @@
 //! `modelspec check` on `i32` tensors (DESIGN.md § 2.2; story:bert-embedding-lookup).
 //!
-//! An `i32` tensor is declared only by an `input` or `target` of a train block or by a function
-//! parameter, and is read only as the ids of `embedding`. Any other use is refused with
-//! `E-TYPE-018` at the offending span: arithmetic with it, a `param` of type `i32`, and a
-//! function result of type `i32`. The fixtures are under `tests/fixtures/` of this crate.
+//! Integer inputs and function results retain their type. Float arithmetic on them and
+//! integer trainable parameters are refused with `E-TYPE-018` at the offending span.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -66,8 +64,10 @@ fn an_i32_param_is_refused_at_its_dtype() {
 }
 
 #[test]
-fn an_i32_function_result_is_refused_at_its_dtype() {
-    refused_at("i32_function_result.mspec", 4, 48, "`ids_of`");
+fn an_i32_function_result_checks_clean() {
+    let (output, _) = check("i32_function_result.mspec");
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(output.stdout.is_empty());
 }
 
 #[test]

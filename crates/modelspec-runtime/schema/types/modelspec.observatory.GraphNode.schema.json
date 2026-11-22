@@ -4,8 +4,8 @@
   "x-ess-provenance": {
     "system": "modelspec",
     "specification_version": "v1",
-    "source_digest": "ecf459b5256b83f59998404e1e8a39fe65ca33082d33c64f911d51a4c2dd623d",
-    "contract_digest": "slice-sha256/2:947ddd6778ae1cefc03115331349d60ab842776475e76f81cda199e3aaa2fecc",
+    "source_digest": "38d9bf62c735bd8fe6f42778d551289aa7430cbb5163311624c8c8aa16295502",
+    "contract_digest": "slice-sha256/2:fbb5f03aac67da9ecd27872a42b03063f6dc54bfb1e1d7994c36382109deeefb",
     "regenerate": "ess generate"
   },
   "$defs": {
@@ -112,6 +112,8 @@
         "Transpose",
         "ReduceSum",
         "ReduceMean",
+        "GroupSum",
+        "RepeatRows",
         "Mse",
         "ReluGrad",
         "BroadcastScalar",
@@ -125,6 +127,7 @@
         "LayerNormGradX",
         "LayerNormGradGamma",
         "Softmax",
+        "RowArgMax",
         "SoftmaxGrad",
         "Attention",
         "AttentionGradQ",

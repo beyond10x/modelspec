@@ -82,6 +82,8 @@ use crate::train::init::{dropout_keeps, token_id};
 /// Why the interpreter refused a program or its inputs (DESIGN.md § 8.1, runtime class).
 #[derive(Clone, Debug, PartialEq, Eq, Error)]
 pub enum RuntimeError {
+    #[error("integer output {value} needs the typed evaluation API")]
+    IntegerOutput { value: ValueId },
     #[error("program does not verify: {0}")]
     Verify(#[from] VerifyError),
     #[error("no value supplied for input `{name}`")]
@@ -503,11 +505,12 @@ impl Plan {
 /// that a moved output then allocates nothing and only a copy (an output listed again, or one
 /// that is a supplied tensor) does.
 pub struct Prepared<'p, T> {
-    program: &'p TensorProgram,
+    program: std::borrow::Cow<'p, TensorProgram>,
     plan: Plan,
     /// One tensor per storage slot, refilled in place by each value the slot holds: `None` until
     /// first used, and after its value was moved out and not given back.
     storage: Vec<Option<HostTensor<T>>>,
+    computed_ids: BTreeMap<usize, Vec<i32>>,
     /// The run's seed, the key of every dropout mask; `None` until [`Prepared::set_seed`].
     seed: Option<u64>,
 }
@@ -575,17 +578,30 @@ impl<'p, T: Element> Prepared<'p, T> {
     }
 
     /// The program this plan runs.
-    pub(crate) fn program(&self) -> &'p TensorProgram {
-        self.program
+    pub(crate) fn program(&self) -> &TensorProgram {
+        &self.program
     }
 
     fn planned(program: &'p TensorProgram, keep: Keep, kept: &[ValueId]) -> Self {
-        let plan = Plan::new(program, keep, kept);
+        Self::with_program(std::borrow::Cow::Borrowed(program), keep, kept)
+    }
+
+    pub(crate) fn owned_verified(program: TensorProgram) -> Prepared<'static, T> {
+        Prepared::with_program(std::borrow::Cow::Owned(program), Keep::Outputs, &[])
+    }
+
+    fn with_program(
+        program: std::borrow::Cow<'p, TensorProgram>,
+        keep: Keep,
+        kept: &[ValueId],
+    ) -> Self {
+        let plan = Plan::new(&program, keep, kept);
         let storage = (0..plan.slots).map(|_| None).collect();
         Self {
             program,
             plan,
             storage,
+            computed_ids: BTreeMap::new(),
             seed: None,
         }
     }
@@ -685,8 +701,8 @@ impl<'p, T: Element> Prepared<'p, T> {
         ids: &BTreeMap<String, HostTensor<i32>>,
         params: &BTreeMap<ParamId, HostTensor<T>>,
     ) -> Result<(), RuntimeError> {
-        check_inputs(self.program, inputs, ids)?;
-        check_params(self.program, params)?;
+        check_inputs(&self.program, inputs, ids)?;
+        check_params(&self.program, params)?;
         for &node in &self.plan.dropouts {
             let value = self.program.nodes[node].id;
             if self.seed.is_none() {
@@ -698,7 +714,10 @@ impl<'p, T: Element> Prepared<'p, T> {
             }
         }
         for &(node, rows) in &self.plan.id_reads {
-            let name = input_name(self.program, node);
+            if self.program.nodes[node].op == TensorOp::RowArgMax {
+                continue;
+            } // its range is statically verified
+            let name = input_name(&self.program, node);
             let outside = ids[name]
                 .data()
                 .iter()
@@ -726,14 +745,14 @@ impl<'p, T: Element> Prepared<'p, T> {
                     )?;
                 } else {
                     let mask = self.view(reads[3], inputs, params);
-                    check_key_mask(node.id, mask)?;
+                    check_key_mask(node.id, mask.shape, mask.data)?;
                 }
             }
             if matches!(node.op, TensorOp::CrossEntropy | TensorOp::CrossEntropyGrad) {
                 let reads = &self.plan.operands[i];
                 check_loss_rows(
                     node.id,
-                    input_name(self.program, reads[1]),
+                    input_name(&self.program, reads[1]),
                     self.ids(reads[1], ids),
                     self.view(reads[2], inputs, params).data,
                     self.plan.shapes[reads[0]][1],
@@ -741,6 +760,24 @@ impl<'p, T: Element> Prepared<'p, T> {
             }
             match self.plan.hold[i] {
                 Hold::InPlace(_) => continue,
+                Hold::Ids if node.op == TensorOp::RowArgMax => {
+                    let scores = self.view(self.plan.operands[i][0], inputs, params);
+                    let width = scores.shape[1] as usize;
+                    let indices = scores
+                        .data
+                        .chunks_exact(width)
+                        .map(|row| {
+                            let mut best = 0;
+                            for j in 1..row.len() {
+                                if row[j] > row[best] {
+                                    best = j;
+                                }
+                            }
+                            best as i32
+                        })
+                        .collect();
+                    self.computed_ids.insert(i, indices);
+                }
                 Hold::Supplied | Hold::Ids => {}
                 Hold::Stored(slot) => {
                     // A slot only ever holds values of one element count, so a tensor it holds
@@ -783,21 +820,30 @@ impl<'p, T: Element> Prepared<'p, T> {
         outputs.clear();
         for position in 0..self.plan.outputs.len() {
             let node = self.plan.outputs[position];
-            let output = match self.moved_slot(position) {
-                Some(slot) => self.storage[slot]
-                    .take()
-                    .expect("a finished run holds every output it moves"),
-                None => {
-                    let value = self.view(node, inputs, params);
-                    let id = self.program.nodes[node].id;
-                    let (mut data, _) = allocate(id, value.len() as u64)?;
-                    data.extend_from_slice(value.data);
-                    HostTensor::from_parts(value.shape.to_vec(), data)
-                }
-            };
-            outputs.push(output);
+            if self.program.nodes[node].ty.dtype == DType::I32 {
+                return Err(RuntimeError::IntegerOutput {
+                    value: self.program.nodes[node].id,
+                });
+            }
+            outputs.push(self.float_output(position, inputs, params)?);
         }
         Ok(())
+    }
+
+    fn float_output(
+        &mut self,
+        position: usize,
+        inputs: &BTreeMap<String, HostTensor<T>>,
+        params: &BTreeMap<ParamId, HostTensor<T>>,
+    ) -> Result<HostTensor<T>, RuntimeError> {
+        if let Some(slot) = self.moved_slot(position) {
+            return Ok(self.storage[slot].take().expect("completed output"));
+        }
+        let node = self.plan.outputs[position];
+        let v = self.view(node, inputs, params);
+        let (mut data, _) = allocate(self.program.nodes[node].id, v.len() as u64)?;
+        data.extend_from_slice(v.data);
+        Ok(HostTensor::from_parts(v.shape.to_vec(), data))
     }
 
     /// The value of node `i`, which is not a `transpose` read in place.
@@ -824,8 +870,12 @@ impl<'p, T: Element> Prepared<'p, T> {
     }
 
     /// The ids of the `i32` input node `i`.
-    fn ids<'v>(&self, i: usize, ids: &'v BTreeMap<String, HostTensor<i32>>) -> &'v [i32] {
-        ids[input_name(self.program, i)].data()
+    fn ids<'v>(&'v self, i: usize, ids: &'v BTreeMap<String, HostTensor<i32>>) -> &'v [i32] {
+        if self.program.nodes[i].op == TensorOp::RowArgMax {
+            &self.computed_ids[&i]
+        } else {
+            ids[input_name(&self.program, i)].data()
+        }
     }
 
     /// `values` under the dropout mask of the token node `token` at drop probability `p`, into
@@ -890,6 +940,7 @@ impl<'p, T: Element> Prepared<'p, T> {
         let n = self.count(i) as usize;
         debug_assert!(data.capacity() >= n, "a value's storage has room for it");
         match &node.op {
+            TensorOp::RowArgMax => unreachable!("discrete result has integer storage"),
             TensorOp::Input { name } => data.extend_from_slice(inputs[name].data()),
             TensorOp::ParamRead { param: id } => data.extend_from_slice(params[id].data()),
             TensorOp::Scalar(v) => data.push(T::from_f32(*v)),
@@ -947,6 +998,27 @@ impl<'p, T: Element> Prepared<'p, T> {
                         .chunks_exact(h)
                         .flat_map(|row| row.iter().zip(b.data).map(|(&x, &b)| x + b)),
                 );
+            }
+            TensorOp::GroupSum { size } => {
+                let x = arg(0);
+                let width = x.shape[1] as usize;
+                for group in x.data.chunks_exact(width * *size as usize) {
+                    let at = data.len();
+                    data.extend_from_slice(&group[..width]);
+                    for row in group[width..].chunks_exact(width) {
+                        for (sum, &value) in data[at..].iter_mut().zip(row) {
+                            *sum = *sum + value;
+                        }
+                    }
+                }
+            }
+            TensorOp::RepeatRows { size } => {
+                let x = arg(0);
+                for row in x.data.chunks_exact(x.shape[1] as usize) {
+                    for _ in 0..*size {
+                        data.extend_from_slice(row);
+                    }
+                }
             }
             TensorOp::SumRows => {
                 let g = arg(0);
@@ -1235,10 +1307,14 @@ fn cross_entropy_grad<T: Element>(
 /// Checks the key mask `mask` of the `attention` op or gradient op `value` before it runs:
 /// every value 0 or 1, and at least one 1 in each sequence (a row of `mask`), in ascending
 /// sequence order and, within one, ascending key order (coordinator decision D37).
-fn check_key_mask<T: Element>(value: ValueId, mask: View<'_, T>) -> Result<(), RuntimeError> {
+pub(crate) fn check_key_mask<T: Element>(
+    value: ValueId,
+    shape: &[u64],
+    data: &[T],
+) -> Result<(), RuntimeError> {
     let one = T::from_f32(1.0);
-    let s = mask.shape[1] as usize;
-    for (sequence, row) in mask.data.chunks_exact(s).enumerate() {
+    let s = shape[1] as usize;
+    for (sequence, row) in data.chunks_exact(s).enumerate() {
         if let Some(key) = row.iter().position(|&m| m != T::ZERO && m != one) {
             return Err(RuntimeError::KeyMaskValue {
                 value,
@@ -1699,18 +1775,44 @@ fn in_place_transposes(program: &TensorProgram) -> BTreeMap<ValueId, ValueId> {
         .collect()
 }
 
-/// The name of the Input node `i`.
+impl Prepared<'_, f32> {
+    /// Evaluate all declared outputs, preserving f32 and i32 representations.
+    pub fn run_typed(
+        &mut self,
+        inputs: &BTreeMap<String, HostTensor<f32>>,
+        ids: &BTreeMap<String, HostTensor<i32>>,
+        params: &BTreeMap<ParamId, HostTensor<f32>>,
+    ) -> Result<Vec<crate::execution::Output>, RuntimeError> {
+        self.execute(inputs, ids, params)?;
+        let mut out = Vec::with_capacity(self.plan.outputs.len());
+        for pos in 0..self.plan.outputs.len() {
+            let i = self.plan.outputs[pos];
+            out.push(if self.program.nodes[i].ty.dtype == DType::I32 {
+                crate::execution::Output::I32(HostTensor::from_parts(
+                    self.plan.shapes[i].clone(),
+                    self.ids(i, ids).to_vec(),
+                ))
+            } else {
+                crate::execution::Output::F32(self.float_output(pos, inputs, params)?)
+            });
+        }
+        Ok(out)
+    }
+}
+
+/// The name of the supplied or computed index tensor at node `i`.
 fn input_name(program: &TensorProgram, i: usize) -> &str {
     match &program.nodes[i].op {
         TensorOp::Input { name } => name,
-        _ => unreachable!("only an Input node is i32"),
+        TensorOp::RowArgMax => "row_argmax",
+        _ => unreachable!("an index is supplied or produced by row_argmax"),
     }
 }
 
 /// Every Input node has a supplied tensor of its declared shape, an `f32` one among `inputs` and
 /// an `i32` one among `ids`, and nothing else is supplied. A name supplied among the tensors of
 /// the other element type is [`RuntimeError::InputDType`].
-fn check_inputs<T: Element>(
+pub(crate) fn check_inputs<T: Element>(
     program: &TensorProgram,
     inputs: &BTreeMap<String, HostTensor<T>>,
     ids: &BTreeMap<String, HostTensor<i32>>,
@@ -1776,7 +1878,7 @@ fn check_inputs<T: Element>(
 
 /// Every parameter table entry has a supplied tensor of its declared shape, read by a node or
 /// not, and no undeclared parameter is supplied.
-fn check_params<T: Element>(
+pub(crate) fn check_params<T: Element>(
     program: &TensorProgram,
     params: &BTreeMap<ParamId, HostTensor<T>>,
 ) -> Result<(), RuntimeError> {
@@ -1822,7 +1924,7 @@ fn has_shape(shape: &[u64], ty: &TensorType) -> bool {
 }
 
 /// The static shape of a verified type.
-fn static_shape(ty: &TensorType) -> Vec<u64> {
+pub(crate) fn static_shape(ty: &TensorType) -> Vec<u64> {
     ty.shape
         .iter()
         .map(|dim| match *dim {

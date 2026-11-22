@@ -7,13 +7,11 @@
 //! not cascade into the expressions that contain it. Diagnostics are returned in source order.
 //!
 //! Beyond the registry's operator rules, the checker enforces the M0 rules of DESIGN.md § 2.2
-//! and the train-block rules: every declared tensor type has positive dimensions and element and
-//! byte counts within `u64`; an `i32` tensor is declared only by an `input`, a `target` or a
-//! function argument, and read only as the ids of `embedding` or the labels of `cross_entropy`
-//! (E-TYPE-018 for a parameter or a function result of `i32`; the registry refuses every other
-//! operand); the third use of `i32`, the RNG token of `dropout` ([`ops::token_operand`]), is no
-//! source value: the checker types the call with an `i32[2]` token in its place and the lowering
-//! supplies it; a parameter is initialized by `xavier_uniform()` and is rank 2; a
+//! and the train-block rules. Every declared tensor type has positive dimensions and element and
+//! byte counts within `u64`. Inputs, targets, function arguments and function results may use
+//! `i32`. A `row_argmax` result can supply the ids of `embedding` or the labels of
+//! `cross_entropy`. Learned parameters use `f32` (E-TYPE-018). Lowering supplies the implicit
+//! `i32[2]` RNG token of `dropout` ([`ops::token_operand`]). A
 //! function's `return` has its declared type; a `model.<function>(args)` call matches the
 //! function's arguments; the loss is rank 0 and calls `model.forward` exactly once, counting calls
 //! nested in the arguments of another (the prediction is that call's value, DESIGN.md § 2.1);
@@ -159,14 +157,12 @@ pub mod codes {
         /// A train block's loss that does not call `model.forward` exactly once: the prediction
         /// is the value of that one call.
         FORWARD_CALLS = "E-TYPE-017";
-        /// An `i32` tensor used other than as the ids of `embedding` or the labels of
-        /// `cross_entropy`: an operand of any other operator, the table of `embedding`, the
-        /// `logits` or `weights` of `cross_entropy`, an `f32` where those ids or labels go, a
-        /// `param` of type `i32`, or a function declared to return `i32` (DESIGN.md § 2.2). An
-        /// `i32` fourth operand of `attention` is its key spans only at rank 2 and width 2
-        /// (`[U, 2]`); of any other shape it is a key mask of the wrong element type. The
-        /// RNG token of `dropout`, the third use of `i32`, is supplied by the compiler, never by
-        /// a source value.
+        /// A parameter or operator operand has an unsupported element type (DESIGN.md § 2.2).
+        /// Parameters and the input of `row_argmax` require `f32`. An `i32` tensor, including
+        /// the result of `row_argmax`, can supply embedding ids, cross-entropy labels, or
+        /// attention key spans of shape `[U, 2]`. Embedding tables, cross-entropy logits and
+        /// weights, and dense attention masks require `f32`. The compiler supplies the implicit
+        /// `i32[2]` RNG token of `dropout`.
         DTYPE = "E-TYPE-018";
         /// A named operator argument whose value is not a literal of its kind, such as
         /// `heads = x` or `heads = 0` of `attention`, whose `heads` is an integer literal of at
@@ -427,20 +423,8 @@ impl Checker {
         }
     }
 
-    /// A function's declared result type; a result of `i32` is E-TYPE-018 at its dtype.
+    /// A discrete inference function may return a tensor of i32 indices.
     fn output(&mut self, f: &ast::Function) -> Option<TensorType> {
-        if f.output.dtype.kind != ast::DType::F32 {
-            self.report(
-                codes::DTYPE,
-                format!(
-                    "`{}` must return f32; `i32` is for the ids of `embedding` and the labels of \
-                     `cross_entropy` only",
-                    f.name.name
-                ),
-                &f.output.dtype.span,
-            );
-            return None;
-        }
         self.declared(&f.output)
     }
 
@@ -1464,6 +1448,10 @@ fn reads(expr: &HirExpr, let_reads: &[Reads], flows: &[Flow]) -> Reads {
             args: BTreeSet::from([r.0]),
         },
         HirExprKind::Let(r) => let_reads.get(r.0).cloned().unwrap_or_default(),
+        HirExprKind::Op {
+            op: TensorOp::RowArgMax,
+            ..
+        } => Reads::default(),
         HirExprKind::Op { args, .. } => args
             .iter()
             .map(|a| reads(a, let_reads, flows))
@@ -1574,7 +1562,7 @@ fn gradient_reads(
         },
         HirExprKind::Let(r) => lets.get(r.0).cloned().unwrap_or_default(),
         HirExprKind::Op {
-            op: TensorOp::StopGradient,
+            op: TensorOp::StopGradient | TensorOp::RowArgMax,
             args,
         } => args
             .iter()
@@ -1794,6 +1782,8 @@ fn op_diagnostic(
             format!("`{name}` needs `heads` to divide the width {width} of `q`, `k` and `v`; got heads = {heads}"),
         )
         .note("each head reads an equal slice of the width: H / heads columns"),
+        e @ OpError::IndexWidth { .. } => Diagnostic::new(codes::COUNT_OVERFLOW, e.to_string()),
+        e @ OpError::RowGroup { .. } => Diagnostic::new(codes::SHAPE_MISMATCH, e.to_string()),
         OpError::OperandDType {
             index,
             expected,

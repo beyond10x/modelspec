@@ -905,10 +905,9 @@ fn vulkan_refuses_what_the_cpu_refuses_with_the_same_codes() {
     assert!(differ.is_empty(), "{}", differ.join("\n"));
 }
 
-/// `InferenceOutputFile`: "the checker refuses a function that returns I32, E-TYPE-018".
-#[test]
-fn a_function_returning_i32_is_refused_with_e_type_018() {
-    let d = dir("i32result");
+/// Inference writes the declared integer dtype for input and computed results, block by block.
+fn integer_results(backend: &str) {
+    let d = dir(&format!("i32result-{backend}"));
     let file = model(
         &d,
         &source(
@@ -916,29 +915,47 @@ fn a_function_returning_i32_is_refused_with_e_type_018() {
     fn passthrough(ids: Tensor<i32, [4]>) -> Tensor<i32, [4]> {
         return ids;
     }
+    fn choose(x: Tensor<f32, [4, 3]>) -> Tensor<i32, [4]> {
+        return row_argmax(x);
+    }
 ",
         ),
     );
     let data = d.join("data");
     std::fs::create_dir_all(&data).unwrap();
-    write_i32(&data.join("ids.i32"), &ids(8));
+    let integers = [i32::MIN, -1, 0x7fc0_0001, 17, 2, i32::MAX, 4, -22];
+    write_i32(&data.join("ids.i32"), &integers);
+    let row_scores = [3., 3., 0., 0., 2., 2., -3., -2., -1., 4., 2., 0.];
+    write_f32(&data.join("x.f32"), &[row_scores, row_scores].concat());
     let out = d.join("ids.out");
-    let output = infer(
-        "cpu",
-        &file,
-        &d.join("none.msckpt"),
-        &data,
-        "passthrough",
-        &out,
-    );
-    assert_eq!(output.status.code(), Some(1), "{}", text(&output.stderr));
-    assert_eq!(
-        code(&output).as_deref(),
-        Some("E-TYPE-018"),
-        "{}",
-        text(&output.stderr)
-    );
-    assert!(!out.exists());
+    let ckpt = checkpoint(&d, &file);
+    for (name, expected) in [
+        ("passthrough", integers),
+        ("choose", [0, 1, 2, 0, 0, 1, 2, 0]),
+    ] {
+        let output = infer(backend, &file, &ckpt, &data, name, &out);
+        succeeded(&output);
+        assert!(text(&output.stdout).contains("blocks 2 rows 8"));
+        assert_eq!(
+            std::fs::read(&out).unwrap(),
+            expected
+                .into_iter()
+                .flat_map(i32::to_le_bytes)
+                .collect::<Vec<_>>()
+        );
+    }
+}
+
+#[test]
+fn cpu_functions_write_little_endian_integer_results() {
+    integer_results("cpu");
+}
+
+#[cfg(feature = "vulkan")]
+#[test]
+#[ignore = "needs a Vulkan device"]
+fn vulkan_functions_write_little_endian_integer_results() {
+    integer_results("vulkan");
 }
 
 /// `--data` and `--function` without `--out` is a usage error (exit 2), as the module

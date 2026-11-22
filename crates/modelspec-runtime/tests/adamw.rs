@@ -28,6 +28,7 @@ use modelspec_core::compile::{CompiledTraining, compile_training};
 use modelspec_core::ir::tensor::ParamId;
 use modelspec_core::ir::training::Moment;
 use modelspec_runtime::cpu::HostTensor;
+use modelspec_runtime::train::checkpoint::Checkpoint;
 use modelspec_runtime::train::data::dense;
 use modelspec_runtime::train::runner::{RunError, run_from, run_with};
 
@@ -330,16 +331,17 @@ fn zero_gradient_decays_the_moments() {
     }
 }
 
-/// D64, F6. A run of an AdamW file from a step above 0 is refused before its first step: the
-/// moments are not checkpointed, and moments restarted at 0 would take the bias corrections of
-/// the resumed step. An SGD file resumes from the same step.
+/// Starting from parameters alone cannot reproduce the saved AdamW step. SGD needs no moments.
 #[test]
-fn resumed_run_is_refused() {
+fn resumed_run_requires_saved_moments() {
     let adamw = compiled(&two_parameters(2, 10));
     let refused = run_from(&adamw, None, &BTreeMap::new(), 3, |_| {}, |_, _| Ok(()));
     match refused {
         Err(error @ RunError::MomentsNotCheckpointed { start: 3 }) => {
-            assert!(error.to_string().contains("not checkpointed"), "{error}");
+            assert!(
+                error.to_string().contains("saved optimizer moments"),
+                "{error}"
+            );
         }
         other => panic!("{:?}", other.map(|run| run.losses)),
     }
@@ -351,6 +353,46 @@ fn resumed_run_is_refused() {
         .expect("the optimizer line");
     let sgd = compiled(&source.replace(line, "    optimizer = sgd(lr = 0.01);"));
     assert!(run_from(&sgd, None, &BTreeMap::new(), 3, |_| {}, |_, _| Ok(())).is_ok());
+}
+
+#[test]
+fn adamw_resume_validates_every_saved_slot() {
+    let compiled = compiled(&two_parameters(2, 4));
+    let run = run_with(&compiled, None, &BTreeMap::new(), |_| {}).unwrap();
+    let saved =
+        Checkpoint::of_state_with_moments(&compiled, 4, &run.state.values, &run.state.moments);
+    assert_eq!(
+        saved.resume_state(&compiled).unwrap().moments,
+        run.state.moments
+    );
+    let legacy = Checkpoint::of_state(&compiled, 4, &run.state.values);
+    assert_eq!(legacy.parameters_for(&compiled).unwrap(), run.state.values);
+    let refuses = |mutation: fn(&mut Checkpoint)| {
+        let mut bad = saved.clone();
+        mutation(&mut bad);
+        let err = bad
+            .resume_state(&compiled)
+            .expect_err("incompatible optimizer state");
+        assert_eq!(err.code().unwrap().as_str(), "E-CKPT-003", "{err}");
+    };
+    refuses(|bad| bad.optimizer_slots.clear());
+    refuses(|bad| {
+        bad.optimizer_slots.pop();
+    });
+    refuses(|bad| bad.optimizer_slots[0].slot = "wrong".into());
+    refuses(|bad| bad.optimizer_slots.push(bad.optimizer_slots[0].clone()));
+    refuses(|bad| bad.optimizer_slots[0].value = HostTensor::new(vec![2], vec![0.0; 2]).unwrap());
+    refuses(|bad| bad.rng.seed ^= 1);
+    refuses(|bad| bad.rng.counter = 1);
+    refuses(|bad| {
+        let v = bad
+            .optimizer_slots
+            .iter_mut()
+            .find(|s| s.slot == "v")
+            .unwrap();
+        v.value = HostTensor::new(v.value.shape().to_vec(), vec![-1.; v.value.len()]).unwrap();
+    });
+    refuses(|bad| bad.step = 0);
 }
 
 /// Scenario 3. The learning rate the runner passes at every step from 0 to `warmup_steps + 2`

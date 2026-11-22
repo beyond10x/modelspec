@@ -619,7 +619,7 @@ impl Arith {
             (KernelKind::Elementwise, "ReluGrad") => Self::ReluGrad,
             (KernelKind::Elementwise, "Sqrt") => Self::Sqrt,
             (KernelKind::Elementwise, "Div") => Self::Div,
-            (KernelKind::Broadcast, "BroadcastScalar") => Self::Copy,
+            (KernelKind::Broadcast, "BroadcastScalar" | "Scalar") => Self::Copy,
             (kind, op) => return Err(EmitError::Unsupported { kind, op }),
         };
         Ok(arith)

@@ -126,8 +126,10 @@ use crate::ir::kernel::{
     MATMUL_SPLIT_K_SLICE, MIN_SHARED_MEMORY_BYTES, MatMulLimits, MatMulTile, Operand, PlanOp,
     PlanStep, SOFTMAX_STATS_PER_QUERY,
 };
-use crate::ir::tensor::{DType, Dim, ParamId, TensorNode, TensorOp, TensorType, ValueId};
-use crate::ir::training::{TrainConfig, TrainingStep, sigreg_projection_inputs};
+use crate::ir::tensor::{
+    DType, Dim, ParamId, TensorNode, TensorOp, TensorProgram, TensorType, ValueId,
+};
+use crate::ir::training::{Optimizer, TrainConfig, TrainingStep, sigreg_projection_inputs};
 use crate::ops;
 
 /// The most workgroups in one dimension of a dispatch on every Vulkan device.
@@ -136,6 +138,8 @@ pub const MAX_WORKGROUPS_PER_DIMENSION: u32 = 65_535;
 /// Why [`schedule`] refused a verified step: each is a compiler bug or a size M1 cannot dispatch.
 #[derive(Clone, Debug, PartialEq, Eq, Error)]
 pub enum ScheduleError {
+    #[error("a tensor execution plan needs at least one output")]
+    NoOutputs,
     #[error("{value} has unresolved or overflowing shape {ty}")]
     Shape { value: ValueId, ty: TensorType },
     #[error("`{name}` has unresolved or overflowing shape {ty}")]
@@ -763,24 +767,78 @@ fn schedule_with(
     limits: Option<MatMulLimits>,
     built: Kernels,
 ) -> Result<(ExecutionPlan, Vec<HostInput>), ScheduleError> {
-    let program = &step.training.program;
-    let mut buffers = Vec::new();
-
-    let mut data = Vec::new();
     let declared = config
         .inputs
         .iter()
         .map(|d| (d, DataRole::Input))
-        .chain(config.targets.iter().map(|d| (d, DataRole::Target)));
-    for (decl, role) in declared {
-        let view = allocate(&mut buffers, &decl.ty).ok_or(ScheduleError::DeclarationShape {
-            name: decl.name.clone(),
-            ty: decl.ty.clone(),
+        .chain(config.targets.iter().map(|d| (d, DataRole::Target)))
+        .map(|(d, role)| (d.name.as_str(), &d.ty, role));
+    let entry = ScheduleEntry {
+        program: &step.training.program,
+        optimizer: Some(&step.optimizer),
+        loss: step.training.loss,
+        prediction,
+        outputs: &[],
+    };
+    let (plan, host, _) = schedule_entry(entry, declared, limits, built)?;
+    Ok((plan, host))
+}
+
+/// Schedules a pure tensor program. All declared outputs are kept in their returned order,
+/// including intermediate values which an optimizer might otherwise fuse away. Every input
+/// is a caller binding. The shared plan's prediction and loss views both name its first output.
+pub fn schedule_tensor(
+    program: &TensorProgram,
+    limits: Option<MatMulLimits>,
+) -> Result<(ExecutionPlan, Vec<BufferView>), ScheduleError> {
+    let &first = program.outputs.first().ok_or(ScheduleError::NoOutputs)?;
+    let declared = program.nodes.iter().filter_map(|node| match &node.op {
+        TensorOp::Input { name } => Some((name.as_str(), &node.ty, DataRole::Input)),
+        _ => None,
+    });
+    let entry = ScheduleEntry {
+        program,
+        optimizer: None,
+        loss: first,
+        prediction: first,
+        outputs: &program.outputs,
+    };
+    let (plan, _, outputs) = schedule_entry(entry, declared, limits, Kernels::Vulkan)?;
+    Ok((plan, outputs))
+}
+
+struct ScheduleEntry<'p> {
+    program: &'p TensorProgram,
+    optimizer: Option<&'p Optimizer>,
+    loss: ValueId,
+    prediction: ValueId,
+    outputs: &'p [ValueId],
+}
+
+fn schedule_entry<'a>(
+    entry: ScheduleEntry<'_>,
+    declared: impl Iterator<Item = (&'a str, &'a TensorType, DataRole)>,
+    limits: Option<MatMulLimits>,
+    built: Kernels,
+) -> Result<(ExecutionPlan, Vec<HostInput>, Vec<BufferView>), ScheduleError> {
+    let ScheduleEntry {
+        program,
+        optimizer,
+        loss,
+        prediction,
+        outputs,
+    } = entry;
+    let mut buffers = Vec::new();
+    let mut data = Vec::new();
+    for (name, ty, role) in declared {
+        let view = allocate(&mut buffers, ty).ok_or(ScheduleError::DeclarationShape {
+            name: name.to_owned(),
+            ty: ty.clone(),
         })?;
         data.push(DataSpec {
-            name: decl.name.clone(),
+            name: name.to_owned(),
             role,
-            ty: decl.ty.clone(),
+            ty: ty.clone(),
             view,
         });
     }
@@ -800,9 +858,9 @@ fn schedule_with(
         });
     }
 
-    let updates: BTreeMap<ValueId, usize> = step
-        .optimizer
-        .updates
+    let empty = BTreeMap::new();
+    let updating = optimizer.map_or(&empty, |opt| &opt.updates);
+    let updates: BTreeMap<ValueId, usize> = updating
         .iter()
         .map(|(param, &value)| {
             let at = parameters.iter().position(|p| p.param == *param);
@@ -812,30 +870,25 @@ fn schedule_with(
 
     // Each next optimizer state is written in place into the buffer its state is read from, so
     // the next step reads it there; the runner reads it back from that view.
-    let in_place: BTreeMap<ValueId, ValueId> = step
-        .optimizer
-        .state_slots()
-        .iter()
+    let in_place: BTreeMap<ValueId, ValueId> = optimizer
+        .into_iter()
+        .flat_map(Optimizer::state_slots)
         .map(|slot| (slot.next, slot.input))
         .collect();
-    let bound: BTreeSet<ValueId> = [step.training.loss, prediction]
+    let bound: BTreeSet<ValueId> = [loss, prediction]
         .into_iter()
+        .chain(outputs.iter().copied())
         .chain(in_place.keys().copied())
         .collect();
-    let fused = fusions(
-        &program.nodes,
-        &updates,
-        &step.optimizer.updates,
-        &bound,
-        &in_place,
-    );
+    let fused = fusions(&program.nodes, &updates, updating, &bound, &in_place);
     let tokens: BTreeSet<ValueId> = program
         .nodes
         .iter()
         .filter_map(|n| ops::token_operand(&n.op).and_then(|i| n.operands.get(i).copied()))
-        .chain(step.optimizer.host_inputs())
+        .chain(optimizer.into_iter().flat_map(Optimizer::host_inputs))
         .chain(sigreg_projection_inputs(program))
         .chain(crate::passes::masked_rows::site_inputs(program))
+        .filter(|_| optimizer.is_some())
         .collect();
     let mut host_inputs = Vec::new();
     let mut places: BTreeMap<ValueId, Place> = BTreeMap::new();
@@ -843,7 +896,7 @@ fn schedule_with(
     // The works of each `EmbeddingGrad` and `LayerNormGradGamma`, whose sorted ids or row
     // moments get a buffer after every other.
     let mut between: Vec<usize> = Vec::new();
-    let mut prediction_view = None;
+    let mut leaf_outputs = BTreeMap::new();
     // Whether the step holds an op outside the bit-for-bit class of DESIGN.md § 5.4: only such
     // a step takes split-K matmuls, which leave that class.
     let tolerant = program.nodes.iter().any(|node| tolerance_class(&node.op));
@@ -852,14 +905,14 @@ fn schedule_with(
             value: node.id,
             ty: node.ty.clone(),
         };
-        if node.id == prediction
+        if (node.id == prediction || node.id == loss || outputs.contains(&node.id))
             && matches!(
                 node.op,
                 TensorOp::Input { .. } | TensorOp::ParamRead { .. } | TensorOp::Scalar(_)
             )
         {
             let own = allocate(&mut buffers, &node.ty).ok_or_else(shape_error)?;
-            prediction_view = Some(own);
+            leaf_outputs.insert(node.id, own);
             works.push(match &node.op {
                 TensorOp::Scalar(value) => {
                     let output = elements(&node.ty).ok_or_else(shape_error)?;
@@ -1239,12 +1292,15 @@ fn schedule_with(
             },
             TensorOp::Embedding
             | TensorOp::AddRows
+            | TensorOp::GroupSum { .. }
+            | TensorOp::RepeatRows { .. }
             | TensorOp::SumRows
             | TensorOp::Gelu
             | TensorOp::GeluGrad
             | TensorOp::LayerNorm
             | TensorOp::LayerNormGradX
             | TensorOp::Softmax
+            | TensorOp::RowArgMax
             | TensorOp::SoftmaxGrad
             | TensorOp::Dropout { .. }
             | TensorOp::DropoutGrad { .. }
@@ -1423,11 +1479,17 @@ fn schedule_with(
         Some(Place::View(view)) => Ok(*view),
         _ => Err(ScheduleError::MissingValue { value }),
     };
-    let loss_view = view_of(step.training.loss)?;
-    let prediction_view = match prediction_view {
-        Some(view) => view,
-        None => view_of(prediction)?,
+    let output_view = |value| match leaf_outputs.get(&value) {
+        Some(view) => Ok(*view),
+        None => view_of(value),
     };
+    let loss_view = output_view(loss)?;
+    let prediction_view = output_view(prediction)?;
+    let output_views = outputs
+        .iter()
+        .copied()
+        .map(output_view)
+        .collect::<Result<_, _>>()?;
 
     if let Some((buffer, &bytes)) = buffers
         .iter()
@@ -1480,7 +1542,7 @@ fn schedule_with(
         loss_view,
         prediction_view,
     };
-    Ok((plan, host_inputs))
+    Ok((plan, host_inputs, output_views))
 }
 
 /// The bound view an `Input` or `ParamRead` node reads.
@@ -1707,7 +1769,15 @@ fn rowwise_shape(
         dtypes.push(ty.dtype);
     }
     let out = static_dims(result)?;
-    if result.dtype != DType::F32 || out.contains(&0) || shapes.iter().flatten().any(|&d| d == 0) {
+    if result.dtype
+        != (if op == &TensorOp::RowArgMax {
+            DType::I32
+        } else {
+            DType::F32
+        })
+        || out.contains(&0)
+        || shapes.iter().flatten().any(|&d| d == 0)
+    {
         return None;
     }
     let f32s =
@@ -1726,6 +1796,16 @@ fn rowwise_shape(
         }
         (TensorOp::AddRows, [[n, h], [bh]], [rn, rh]) if h == bh && (n, h) == (rn, rh) => {
             f32s(&[0, 1]).then_some((KernelKind::PerElement, out_elements))?
+        }
+        (TensorOp::GroupSum { size }, [[n, h]], [rn, rh])
+            if h == rh && rn.checked_mul(*size) == Some(*n) =>
+        {
+            f32s(&[0]).then_some((KernelKind::PerElement, out_elements))?
+        }
+        (TensorOp::RepeatRows { size }, [[n, h]], [rn, rh])
+            if h == rh && n.checked_mul(*size) == Some(*rn) =>
+        {
+            f32s(&[0]).then_some((KernelKind::PerElement, out_elements))?
         }
         (TensorOp::SumRows, [[_, h]], [rh]) if h == rh => {
             f32s(&[0]).then_some((KernelKind::PerColumn, column_groups(op, *h)?))?
@@ -1754,6 +1834,9 @@ fn rowwise_shape(
         }
         (TensorOp::LayerNormGradGamma, [[n, h], g], [rh]) if h == rh && *g == [*n, *h] => {
             f32s(&[0, 1]).then_some((KernelKind::PerColumn, column_groups(op, *h)?))?
+        }
+        (TensorOp::RowArgMax, [[n, h]], [rn]) if n == rn && *h <= i32::MAX as u64 + 1 => {
+            f32s(&[0]).then_some((KernelKind::PerRow, *n))?
         }
         (TensorOp::Softmax, [[n, h]], [rn, rh]) if (n, h) == (rn, rh) => {
             f32s(&[0]).then_some((KernelKind::PerRow, *n))?
@@ -2430,6 +2513,7 @@ fn tolerance_class(op: &TensorOp) -> bool {
             | TensorOp::LayerNormGradX
             | TensorOp::LayerNormGradGamma
             | TensorOp::Softmax
+            | TensorOp::RowArgMax
             | TensorOp::SoftmaxGrad
             | TensorOp::CrossEntropy
             | TensorOp::CrossEntropyGrad

@@ -181,6 +181,14 @@ pub(super) enum Rowwise {
     AddRows {
         width: u32,
     },
+    GroupSum {
+        size: u32,
+        width: u32,
+    },
+    RepeatRows {
+        size: u32,
+        width: u32,
+    },
     SumRows {
         rows: u32,
         width: u32,
@@ -213,6 +221,9 @@ pub(super) enum Rowwise {
     /// The column sum of `LayerNormGradGamma` over the moments, `x` and `g`.
     LayerNormGradGamma {
         rows: u32,
+        width: u32,
+    },
+    RowArgMax {
         width: u32,
     },
     Softmax {
@@ -258,7 +269,7 @@ impl Rowwise {
         let out = fits(elements(&result)).ok_or_else(|| wrong("a result of 0 or 2^32 elements"))?;
         // The sort of `EmbeddingGrad` writes ids and positions; every other kernel writes f32.
         let writes = match (kernel.op, kernel.kind) {
-            ("EmbeddingGrad", KernelKind::PerRow) => DType::I32,
+            ("EmbeddingGrad" | "RowArgMax", KernelKind::PerRow) => DType::I32,
             _ => DType::F32,
         };
         if kernel.dtype != writes || kernel.result.dtype != writes {
@@ -326,6 +337,22 @@ impl Rowwise {
                 },
             ),
             ("Gelu", [F32], [x], r, []) if *x == r => (PerElement, out, Rowwise::Gelu),
+            ("GroupSum", [F32], [[n, w]], [rn, rw], []) if w == rw && n.is_multiple_of(*rn) => (
+                PerElement,
+                out,
+                Rowwise::GroupSum {
+                    size: u(n / rn),
+                    width: u(*w),
+                },
+            ),
+            ("RepeatRows", [F32], [[n, w]], [rn, rw], []) if w == rw && rn.is_multiple_of(*n) => (
+                PerElement,
+                out,
+                Rowwise::RepeatRows {
+                    size: u(rn / n),
+                    width: u(*w),
+                },
+            ),
             ("GeluGrad", [F32, F32], [x, g], r, []) if *x == r && *g == r => {
                 (PerElement, out, Rowwise::GeluGrad)
             }
@@ -385,6 +412,9 @@ impl Rowwise {
                         width: u(*h),
                     },
                 )
+            }
+            ("RowArgMax", [F32], [[n, h]], [rn], []) if n == rn && *h <= i32::MAX as u64 + 1 => {
+                (PerRow, u(*n), Rowwise::RowArgMax { width: u(*h) })
             }
             ("Softmax", [F32], [[n, h]], [rn, rh], []) if (n, h) == (rn, rh) => {
                 (PerRow, u(*n), Rowwise::Softmax { width: u(*h) })
@@ -787,6 +817,60 @@ impl Shell {
         let inside = self.less(index, count)?;
         self.when(inside, |m| match rowwise {
             Rowwise::Embedding { table, width } => m.embedding(table, width),
+            Rowwise::GroupSum { size, width } => {
+                let width = m.uint(width);
+                let size = m.uint(size);
+                let row = m.div(index, width)?;
+                let column = m.rem(index, width)?;
+                let group = m.mul(row, size)?;
+                let start = m.mul(group, width)?;
+                let first = m.add(start, column)?;
+                let value = m.read(0, first)?;
+                m.b.store(m.f32_var, value, None, [])?;
+                let one = m.uint(1);
+                m.counted(m.u32_vars[0], one, size, one, |m, i| {
+                    let offset = m.mul(i, width)?;
+                    let at = m.add(first, offset)?;
+                    let value = m.read(0, at)?;
+                    m.accumulate(value)
+                })?;
+                let sum = m.b.load(m.f32_ty, None, m.f32_var, None, [])?;
+                m.write(index, sum)
+            }
+            Rowwise::RepeatRows { size, width } => {
+                let width = m.uint(width);
+                let size = m.uint(size);
+                let row = m.div(index, width)?;
+                let column = m.rem(index, width)?;
+                let group = m.div(row, size)?;
+                let base = m.mul(group, width)?;
+                let at = m.add(base, column)?;
+                let value = m.read(0, at)?;
+                m.write(index, value)
+            }
+            Rowwise::RowArgMax { width } => {
+                let w = m.uint(width);
+                let base = m.mul(index, w)?;
+                let (zero, one) = (m.uint(0), m.uint(1));
+                let first = m.read(0, base)?;
+                m.b.store(m.f32_var, first, None, [])?;
+                m.b.store(m.u32_vars[1], zero, None, [])?;
+                m.counted(m.u32_vars[0], one, w, one, |m, j| {
+                    let at = m.add(base, j)?;
+                    let v = m.read(0, at)?;
+                    let best = m.b.load(m.f32_ty, None, m.f32_var, None, [])?;
+                    let arg = m.b.load(m.u32_ty, None, m.u32_vars[1], None, [])?;
+                    let better = m.b.f_ord_greater_than(m.bool_ty, None, v, best)?;
+                    let best = m.b.select(m.f32_ty, None, better, v, best)?;
+                    let arg = m.b.select(m.u32_ty, None, better, j, arg)?;
+                    m.b.store(m.f32_var, best, None, [])?;
+                    m.b.store(m.u32_vars[1], arg, None, [])?;
+                    Ok(())
+                })?;
+                let arg = m.b.load(m.u32_ty, None, m.u32_vars[1], None, [])?;
+                let bits = m.b.bitcast(m.f32_ty, None, arg)?;
+                m.write(index, bits)
+            }
             Rowwise::AddRows { width } => {
                 let w = m.uint(width);
                 let j = m.rem(index, w)?;

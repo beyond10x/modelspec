@@ -545,8 +545,8 @@ fn adversary_embedding_verifier_refuses_misshapen_lookups() {
     );
 }
 
-/// Attack 2: a declared type that disagrees with the lookup's inferred `[N, H]` is refused, and
-/// an `i32` parameter or output is refused.
+/// A lookup must declare its inferred float shape. Integer IDs can be returned through the
+/// typed interface, and the float-only interface reports the offending output.
 #[test]
 fn adversary_embedding_verifier_holds_the_result_type_parameters_and_outputs() {
     let mut b = TensorProgramBuilder::new();
@@ -567,9 +567,19 @@ fn adversary_embedding_verifier_holds_the_result_type_parameters_and_outputs() {
     assert!(verify(&int_out).is_err(), "an i32 lookup result is refused");
     let mut ids_out = good;
     ids_out.outputs = vec![ids_in];
+    assert_eq!(verify(&ids_out), Ok(()));
+    let mut plan = Prepared::<f32>::new(&ids_out).unwrap();
+    let supplied = ids(&[0, 2, 1, 0]);
+    let params = BTreeMap::new();
     assert_eq!(
-        verify(&ids_out),
-        Err(VerifyError::IntegerOutput { output: ids_in })
+        plan.run_with_ids(&table(), &supplied, &params),
+        Err(RuntimeError::IntegerOutput { value: ids_in })
+    );
+    assert_eq!(
+        plan.run_typed(&table(), &supplied, &params).unwrap(),
+        [modelspec_runtime::execution::Output::I32(
+            supplied["ids"].clone()
+        )]
     );
 }
 

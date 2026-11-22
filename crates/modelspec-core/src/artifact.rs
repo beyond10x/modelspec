@@ -1116,7 +1116,7 @@ const KINDS: [(WireKind, KernelKind); 11] = [
 ];
 
 /// The Tensor IR op names a kernel can implement (`TensorOp::name`).
-const OPS: [&str; 37] = [
+const OPS: &[&str] = &[
     "Input",
     "ParamRead",
     "Scalar",
@@ -1135,6 +1135,8 @@ const OPS: [&str; 37] = [
     "EmbeddingGrad",
     "AddRows",
     "SumRows",
+    "GroupSum",
+    "RepeatRows",
     "Gelu",
     "GeluGrad",
     "Dropout",
@@ -1143,6 +1145,7 @@ const OPS: [&str; 37] = [
     "LayerNormGradX",
     "LayerNormGradGamma",
     "Softmax",
+    "RowArgMax",
     "SoftmaxGrad",
     "Attention",
     "AttentionGradQ",
@@ -1388,6 +1391,10 @@ impl WireKernel {
             .iter()
             .copied()
             .find(|op| *op == self.op)
+            .or_else(|| {
+                (self.kind == WireKind::SgdUpdate && self.op == crate::ir::kernel::ADAMW_OP)
+                    .then_some(crate::ir::kernel::ADAMW_OP)
+            })
             .or_else(chain)
             .ok_or_else(|| format!("kernel {id} names no Tensor IR op (`{}`)", self.op))?;
         let kernel = Kernel {

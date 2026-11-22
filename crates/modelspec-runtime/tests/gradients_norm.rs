@@ -28,6 +28,37 @@ const K: u64 = 6;
 /// Width of the input of the `matmul` before each operator.
 const D: u64 = 3;
 
+/// Non-uniform targets distinguish adjacent groups and columns in both adjoints.
+#[test]
+fn grouped_row_gradients_match_central_differences() {
+    for (name, rows, op, adjoint) in [
+        (
+            "group_sum",
+            6,
+            TensorOp::GroupSum { size: 3 },
+            TensorOp::RepeatRows { size: 3 },
+        ),
+        (
+            "repeat_rows",
+            2,
+            TensorOp::RepeatRows { size: 3 },
+            TensorOp::GroupSum { size: 3 },
+        ),
+    ] {
+        let training = gradient_check(name, |b| {
+            let x = param(b, "x", &[rows, 4]);
+            let y = b.push(op, &[x]).unwrap();
+            mse_to_target(b, y)
+        });
+        let dx = training
+            .program
+            .node(*training.gradients.values().next().unwrap())
+            .unwrap();
+        assert_eq!(dx.op, adjoint);
+        assert_eq!(dx.ty, TensorType::f32(&[rows, 4]));
+    }
+}
+
 /// `mse(layer_norm(matmul(x, w), gamma, beta), t)` with `N = 4` and `H = 5`: the gradients of
 /// `w`, `gamma` and `beta` are within `TOL_F64` of central differences in `f64` and `TOL_F32` in
 /// `f32`; the gradient of `gamma` is a `LayerNormGradGamma`, that of `beta` a `SumRows`, and the

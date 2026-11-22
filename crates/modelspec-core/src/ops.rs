@@ -13,6 +13,8 @@ use crate::ir::tensor::{DType, Dim, TensorOp, TensorType, ValueId};
 /// Why an op's operands do not satisfy its rule.
 #[derive(Clone, Debug, PartialEq, Eq, Error)]
 pub enum OpError {
+    #[error("{op} has more columns than an i32 index can address or no columns")]
+    IndexWidth { op: &'static str },
     #[error("{op} takes {expected} operand(s); got {got}")]
     Arity {
         op: &'static str,
@@ -21,6 +23,12 @@ pub enum OpError {
     },
     #[error("{op} needs a declared result type")]
     MissingDeclaredType { op: &'static str },
+    #[error("{op} cannot group {rows} rows with size {size}")]
+    RowGroup {
+        op: &'static str,
+        rows: Dim,
+        size: u64,
+    },
     #[error("{op} operand {index} must be {expected}; got {got}")]
     OperandDType {
         op: &'static str,
@@ -151,6 +159,11 @@ const HEADS: NamedParameter = NamedParameter {
     kind: NamedKind::PositiveInteger,
 };
 
+const GROUP_SIZE: NamedParameter = NamedParameter {
+    name: "size",
+    kind: NamedKind::PositiveInteger,
+};
+
 /// `p = <float>` of `dropout`, the probability that an element is dropped.
 const P: NamedParameter = NamedParameter {
     name: "p",
@@ -168,6 +181,7 @@ const SLICES: NamedParameter = NamedParameter {
 pub fn named_parameters(op: &TensorOp) -> &'static [NamedParameter] {
     match op {
         TensorOp::Attention { .. } => &[HEADS],
+        TensorOp::GroupSum { .. } | TensorOp::RepeatRows { .. } => &[GROUP_SIZE],
         TensorOp::Dropout { .. } => &[P],
         TensorOp::Sigreg { .. } => &[SLICES],
         _ => &[],
@@ -214,6 +228,12 @@ pub fn with_named(op: &TensorOp, values: &[NamedValue]) -> TensorOp {
             TensorOp::Attention { heads: *heads }
         }
         (TensorOp::Dropout { .. }, [NamedValue::Float(p)]) => TensorOp::Dropout { p: *p },
+        (TensorOp::GroupSum { .. }, [NamedValue::Integer(size)]) => {
+            TensorOp::GroupSum { size: *size }
+        }
+        (TensorOp::RepeatRows { .. }, [NamedValue::Integer(size)]) => {
+            TensorOp::RepeatRows { size: *size }
+        }
         (TensorOp::Sigreg { .. }, [NamedValue::Integer(slices)]) => {
             TensorOp::Sigreg { slices: *slices }
         }
@@ -264,10 +284,13 @@ pub fn arity(op: &TensorOp) -> usize {
         | TensorOp::Transpose
         | TensorOp::ReduceSum
         | TensorOp::ReduceMean
+        | TensorOp::GroupSum { .. }
+        | TensorOp::RepeatRows { .. }
         | TensorOp::BroadcastScalar { .. }
         | TensorOp::SumRows
         | TensorOp::Gelu
         | TensorOp::Softmax
+        | TensorOp::RowArgMax
         | TensorOp::StopGradient
         | TensorOp::Sqrt
         | TensorOp::Sigreg { .. }
@@ -472,6 +495,27 @@ pub fn infer(
                 shape: vec![g.shape[1]],
             })
         }
+        TensorOp::GroupSum { size } | TensorOp::RepeatRows { size } => {
+            let x = operands[0];
+            rank(name, x, 2)?;
+            let rows = match x.shape[0] {
+                Dim::Static(n) if *size > 0 => match op {
+                    TensorOp::GroupSum { .. } if n.is_multiple_of(*size) => Some(n / size),
+                    TensorOp::RepeatRows { .. } => n.checked_mul(*size),
+                    _ => None,
+                },
+                _ => None,
+            }
+            .ok_or(OpError::RowGroup {
+                op: name,
+                rows: x.shape[0],
+                size: *size,
+            })?;
+            Ok(TensorType {
+                dtype: x.dtype,
+                shape: vec![Dim::Static(rows), x.shape[1]],
+            })
+        }
         TensorOp::LayerNorm => {
             let (x, gamma, beta) = (operands[0], operands[1], operands[2]);
             rows_of(name, x, &[gamma, beta])?;
@@ -490,6 +534,17 @@ pub fn infer(
             Ok(TensorType {
                 dtype: x.dtype,
                 shape: vec![x.shape[1]],
+            })
+        }
+        TensorOp::RowArgMax => {
+            let x = operands[0];
+            rank(name, x, 2)?;
+            if matches!(x.shape[1], Dim::Static(n) if n == 0 || n > i32::MAX as u64 + 1) {
+                return Err(OpError::IndexWidth { op: name });
+            }
+            Ok(TensorType {
+                dtype: DType::I32,
+                shape: vec![x.shape[0].clone()],
             })
         }
         TensorOp::Softmax => {
@@ -717,11 +772,14 @@ pub trait GradientSink {
 /// | `Transpose` | `transpose(G)` | | |
 /// | `ReduceSum` | `broadcast_scalar(G, shape(A))` | | |
 /// | `ReduceMean` | `broadcast_scalar(G * (1 / numel(A)), shape(A))` | | |
+/// | `GroupSum` | `repeat_rows(G, size)` | | |
+/// | `RepeatRows` | `group_sum(G, size)` | | |
 /// | `Mse` | `(A - B) * (G * (2 / numel(A)))` | `-dA` | |
 /// | `Embedding` | `embedding_grad(B, G, rows(A))` (`EmbeddingGrad`: row `G[n]` added to row `B[n]`) | none: `B` is `i32` ids | |
 /// | `AddRows` | `G` | `sum_rows(G)` (`SumRows`: the rows of `G` summed in ascending order) | |
 /// | `Gelu` | `gelu_grad(A, G)` (`GeluGrad`: `gelu'(A) * G`) | | |
 /// | `LayerNorm` | `layer_norm_grad_x(A, B, G)` (`LayerNormGradX`: `rstd * (G B - mean(G B) - xhat * mean(G B xhat))` per row) | `layer_norm_grad_gamma(A, G)` (`LayerNormGradGamma`: the rows of `G * xhat` summed in ascending order) | `sum_rows(G)` |
+/// | `RowArgMax` | none: discrete integer code index | | |
 /// | `Softmax` | `softmax_grad(Y, G)` (`SoftmaxGrad`: `Y * (G - rowsum(G * Y))`) | | |
 /// | `Attention` | `attention_grad_q(A, B, C, D, G)` (`AttentionGradQ`: `scale * dS K` per sequence and head) | `attention_grad_k(A, B, C, D, G)` (`AttentionGradK`: `scale * dS^T Q`, 0 at a masked key) | `attention_grad_v(A, B, C, D, G)` (`AttentionGradV`: `P^T G`, 0 at a masked key) |
 /// | `CrossEntropy` | `cross_entropy_grad(A, B, C, G)` (`CrossEntropyGrad`: `G * C[n] / sum(C) * (P[n, v] - [v = B[n]])`) | none: `B` is `i32` labels | none: `C` is constant weights |
@@ -807,6 +865,16 @@ pub fn gradient<S: GradientSink + ?Sized>(
         TensorOp::Transpose => {
             if want(0) {
                 out[0] = Some(sink.emit(TensorOp::Transpose, &[g])?);
+            }
+        }
+        TensorOp::GroupSum { size } => {
+            if want(0) {
+                out[0] = Some(sink.emit(TensorOp::RepeatRows { size: *size }, &[g])?);
+            }
+        }
+        TensorOp::RepeatRows { size } => {
+            if want(0) {
+                out[0] = Some(sink.emit(TensorOp::GroupSum { size: *size }, &[g])?);
             }
         }
         TensorOp::ReduceSum => {
@@ -900,7 +968,7 @@ pub fn gradient<S: GradientSink + ?Sized>(
                 out[0] = Some(sink.emit(TensorOp::DropoutGrad { p: *p }, &[operands[1], g])?);
             }
         }
-        TensorOp::StopGradient => {}
+        TensorOp::StopGradient | TensorOp::RowArgMax => {}
         TensorOp::SigregColumns => {
             if want(0) {
                 out[0] = Some(sink.emit(TensorOp::SigregColumnsGrad, &[operands[0], g])?);
@@ -1025,6 +1093,25 @@ mod tests {
 
     fn i32(shape: &[u64]) -> TensorType {
         TensorType::i32(shape)
+    }
+
+    #[test]
+    fn row_groups_require_complete_groups_and_representable_output_rows() {
+        let sum = TensorOp::GroupSum { size: 3 };
+        let repeat = TensorOp::RepeatRows { size: 3 };
+        assert_eq!(infer(&sum, &[&f32(&[6, 2])], None), Ok(f32(&[2, 2])));
+        assert_eq!(infer(&repeat, &[&f32(&[2, 2])], None), Ok(f32(&[6, 2])));
+        for (op, rows) in [
+            (sum, 4),
+            (repeat, u64::MAX),
+            (TensorOp::GroupSum { size: 0 }, 4),
+            (TensorOp::RepeatRows { size: 0 }, 4),
+        ] {
+            assert!(matches!(
+                infer(&op, &[&f32(&[rows, 2])], None),
+                Err(OpError::RowGroup { .. })
+            ));
+        }
     }
 
     #[test]

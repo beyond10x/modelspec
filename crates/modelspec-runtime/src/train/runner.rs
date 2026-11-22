@@ -16,9 +16,9 @@
 //! Under AdamW the host computes the learning rate of step `k` by the warmup schedule at
 //! `t = k + 1` of a run that ends at step `start + steps`, and the two bias corrections, and
 //! hands them to the step ([`PreparedStep::schedule`], story:bert-adamw-warmup); a warmup not
-//! shorter than that is refused before the first step ([`RunError::Schedule`]). The moments are
-//! not checkpointed yet, so an AdamW run from a step above 0 is refused before its first step
-//! ([`RunError::MomentsNotCheckpointed`]). A moment that is NaN or ±inf after an update stops the
+//! shorter than that is refused before the first step ([`RunError::Schedule`]). A resumed AdamW
+//! run takes the saved first and second moments in [`run_checked_with_moments`]. Without them a
+//! nonzero start is refused ([`RunError::MomentsNotCheckpointed`]). A non-finite moment stops the
 //! run with [`E_TRAIN_001`], as a non-finite loss or parameter does. Under Muon the host hands the
 //! step the scheduled Muon rate too, the warmup is refused the same way, and a run from a step
 //! above 0 is refused ([`RunError::MuonStateNotCheckpointed`]); a momentum buffer that stops
@@ -59,7 +59,7 @@ use super::init::{
     InitError, Stream, dropout_token, initialize, sigreg_projections, with_projections,
 };
 use super::masked;
-use super::optimizer::{ParamState, PreparedStep, StepError};
+use super::optimizer::{MomentValues, ParamState, PreparedStep, StepError, validate_moments};
 use crate::cpu::{HostTensor, RuntimeError, evaluate_all_with_ids, evaluate_with_ids};
 
 /// No `i32` tensors, the step inputs of synthetic data.
@@ -115,14 +115,11 @@ pub enum RunError {
          learning rate would have no steps to decay over"
     )]
     Schedule { warmup_steps: u64, steps: u64 },
-    /// An AdamW run from a step above 0: the moments are not checkpointed yet, and moments
-    /// restarted at 0 would take the bias corrections of step `start + 1`.
-    #[error(
-        "an AdamW run cannot resume at step {start}: its moments are not checkpointed yet, and \
-         moments restarted at 0 would take the bias corrections of step {}",
-        start.saturating_add(1)
-    )]
+    /// A caller supplied parameters from a later AdamW step without the corresponding moments.
+    #[error("an AdamW run cannot resume at step {start} without its saved optimizer moments")]
     MomentsNotCheckpointed { start: u64 },
+    #[error("invalid optimizer moments: {0}")]
+    InvalidMoments(String),
     /// A Muon run from a step above 0: its momentum buffers and moments are not checkpointed.
     #[error(
         "a Muon run cannot resume at step {start}: its momentum buffers and moments are not \
@@ -367,6 +364,19 @@ pub fn run_checked(
     data: Option<Data<'_>>,
     init: &BTreeMap<ParamId, HostTensor<f32>>,
     start: u64,
+    observe: impl FnMut(&Observed<'_>) -> Result<(), Box<RunError>>,
+    after: impl FnMut(u64, &ParamState) -> Result<(), CheckpointError>,
+) -> Result<Run, RunError> {
+    run_checked_with_moments(compiled, data, init, start, None, observe, after)
+}
+
+/// As [`run_checked`], with the AdamW moments captured at the starting step.
+pub fn run_checked_with_moments(
+    compiled: &CompiledTraining,
+    data: Option<Data<'_>>,
+    init: &BTreeMap<ParamId, HostTensor<f32>>,
+    start: u64,
+    saved_moments: Option<&MomentValues>,
     mut observe: impl FnMut(&Observed<'_>) -> Result<(), Box<RunError>>,
     mut after: impl FnMut(u64, &ParamState) -> Result<(), CheckpointError>,
 ) -> Result<Run, RunError> {
@@ -377,21 +387,30 @@ pub fn run_checked(
     })?;
     let scheduled = match compiled.training.optimizer.rule {
         OptimizerRule::Sgd => None,
-        OptimizerRule::AdamW(adamw) => Some((adamw, RunError::MomentsNotCheckpointed { start })),
+        OptimizerRule::AdamW(adamw) => {
+            if start > 0
+                && saved_moments.is_none()
+                && !compiled.training.optimizer.moments.is_empty()
+            {
+                return Err(RunError::MomentsNotCheckpointed { start });
+            }
+            Some(adamw)
+        }
         OptimizerRule::Muon(muon) => {
-            Some((muon.adamw, RunError::MuonStateNotCheckpointed { start }))
+            if start > 0 {
+                return Err(RunError::MuonStateNotCheckpointed { start });
+            }
+            Some(muon.adamw)
         }
     };
-    if let Some((adamw, not_checkpointed)) = scheduled {
-        if start > 0 {
-            return Err(not_checkpointed);
-        }
-        if config.steps > 0 && adamw.warmup_steps >= end {
-            return Err(RunError::Schedule {
-                warmup_steps: adamw.warmup_steps,
-                steps: end,
-            });
-        }
+    if let Some(adamw) = scheduled
+        && config.steps > 0
+        && adamw.warmup_steps >= end
+    {
+        return Err(RunError::Schedule {
+            warmup_steps: adamw.warmup_steps,
+            steps: end,
+        });
     }
     let forward = &compiled.forward.program;
     let mut initial = initialize(forward, config.seed, Stream::Init)?;
@@ -402,6 +421,11 @@ pub fn run_checked(
         None => Feed::Synthetic(synthetic(config, &compiled.forward)?),
     };
     let mut state = ParamState::new(&compiled.training, initial.clone());
+    if let Some(moments) = saved_moments {
+        validate_moments(&compiled.training, &state.values, moments)
+            .map_err(RunError::InvalidMoments)?;
+        state.moments.clone_from(moments);
+    }
     for param in compiled.training.optimizer.updates.keys() {
         if let Some(version) = state.versions.get_mut(param) {
             version.0 = version.0.saturating_add(start);

@@ -7,6 +7,7 @@
 
 pub mod cpu;
 pub mod dataset;
+pub mod execution;
 pub mod train;
 
 #[cfg(feature = "vulkan")]

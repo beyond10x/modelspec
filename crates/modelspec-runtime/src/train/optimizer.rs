@@ -58,6 +58,43 @@ impl SgdConfig {
     }
 }
 
+/// A saved optimizer tensor, keyed by the parameter and the slot the compiled step uses.
+pub type MomentValues = BTreeMap<(ParamId, Moment), HostTensor<f32>>;
+
+/// Check caller-supplied optimizer buffers against the state reads of a compiled step.
+pub(crate) fn validate_moments(
+    step: &TrainingStep,
+    values: &BTreeMap<ParamId, HostTensor<f32>>,
+    moments: &MomentValues,
+) -> Result<(), String> {
+    let slots = step.optimizer.state_slots();
+    if slots.len() != moments.len() {
+        return Err(format!(
+            "expected {} optimizer slots, got {}",
+            slots.len(),
+            moments.len()
+        ));
+    }
+    for slot in slots {
+        let id = slot.param;
+        let moment = slot.moment;
+        let value = values
+            .get(&id)
+            .ok_or_else(|| format!("slot {moment} has no parameter {id:?}"))?;
+        let tensor = moments
+            .get(&(id, moment))
+            .ok_or_else(|| format!("missing optimizer slot {moment} of {id:?}"))?;
+        if tensor.shape() != value.shape() {
+            return Err(format!(
+                "slot {moment} of {id:?} has shape {:?}, expected {:?}",
+                tensor.shape(),
+                value.shape()
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// The persistent parameter state of a run: each declared parameter's value and version, and
 /// under AdamW the two moments of each parameter with an update, under Muon the moments or the
 /// buffer of each.
@@ -68,7 +105,7 @@ pub struct ParamState {
     /// Each moment of each parameter with an AdamW update and the buffer `b`
     /// ([`Moment::Momentum`]) of each parameter with a Muon update, at the parameter's version;
     /// empty under SGD.
-    pub moments: BTreeMap<(ParamId, Moment), HostTensor<f32>>,
+    pub moments: MomentValues,
 }
 
 impl ParamState {

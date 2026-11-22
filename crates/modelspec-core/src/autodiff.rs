@@ -167,7 +167,7 @@ fn dependent_nodes(
 ) -> Vec<bool> {
     let mut reaches = vec![false; nodes.len()];
     for (i, node) in nodes.iter().enumerate() {
-        reaches[i] = node.op != TensorOp::StopGradient
+        reaches[i] = !matches!(node.op, TensorOp::StopGradient | TensorOp::RowArgMax)
             && (is_source(node) || node.operands.iter().any(|o| reaches[position[o]]));
     }
     reaches

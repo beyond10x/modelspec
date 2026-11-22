@@ -236,16 +236,28 @@ impl Buffer<'_> {
     /// held-out batch's logits are 134 MB on `examples/bert_tiny.mspec`, and copying them took
     /// about 50 ms per batch on the RTX 3090 host (story:bert-tiny-vs-pytorch-cuda).
     pub fn mapped_f32(&self) -> Result<&[f32], ExecError> {
+        let (at, count) = self.word_mapping(std::mem::align_of::<f32>())?;
+        // SAFETY: word_mapping checked the alignment and extent; every bit pattern is an f32.
+        Ok(unsafe { std::slice::from_raw_parts(at.cast::<f32>(), count) })
+    }
+
+    /// The same completed download as [`Self::mapped_f32`], viewed as integer tensor elements.
+    pub(super) fn mapped_i32(&self) -> Result<&[i32], ExecError> {
+        let (at, count) = self.word_mapping(std::mem::align_of::<i32>())?;
+        // SAFETY: word_mapping checked the alignment and extent; every bit pattern is an i32.
+        Ok(unsafe { std::slice::from_raw_parts(at.cast::<i32>(), count) })
+    }
+
+    /// The aligned address and number of complete 32-bit words of this live mapping.
+    fn word_mapping(&self, alignment: usize) -> Result<(*mut u8, usize), ExecError> {
         let at = self.mapped.ok_or(ExecError::NotHostVisible)?;
         let count = (self.bytes / 4) as usize;
         // A mapping starts at `minMemoryMapAlignment`, at least 64 bytes, and the buffer at its
         // memory's offset 0, so the words are aligned; anything else is refused, never read.
-        if at.align_offset(std::mem::align_of::<f32>()) != 0 {
+        if at.align_offset(alignment) != 0 {
             return Err(ExecError::NotHostVisible);
         }
-        // SAFETY: the mapping covers `bytes` bytes, at least `4 * count`, is aligned for `f32`
-        // (checked above) and stays mapped while `self` lives; every bit pattern is an `f32`.
-        Ok(unsafe { std::slice::from_raw_parts(at.cast::<f32>(), count) })
+        Ok((at, count))
     }
 }
 

@@ -23,12 +23,12 @@
 //!
 //! `--data <dir> --function <name> --out <path>` (story:decider-infer-on-data;
 //! `spec/domains/data.yaml`, `InferenceOutputFile`) runs the model function `name` instead,
-//! compiled as an entry of its own ([`compile::compile_function`]): it need not be `forward`
+//! compiled as an entry of its own ([`compile::compile_inference`]): it need not be `forward`
 //! and need not return a loss. Each argument binds the dense file of `<dir>` with its name,
 //! `<name>.f32` or `<name>.i32` by its dtype, as `train --eval` binds a declaration; the function
 //! runs with the checkpoint's parameters on every block of `B` samples in block order, and its
 //! results, one row per sample, are written to `<path>` once every block has run, row-major
-//! little-endian `f32` with no header, through a temporary file in its directory renamed over
+//! little-endian `f32` or `i32` by the result type, with no header, through a temporary file renamed over
 //! it, so an existing `<path>` is replaced whole or not at all ([`replace`]). Stdout is one
 //! line, `function <name> blocks <blocks> rows <rows> out <path>`. Refused before anything is
 //! written, exit 1: a name that is not a function of the model with E-DATA-010 naming its
@@ -41,20 +41,18 @@
 //! with E-DATA-010 naming the model's functions. `--function` or `--out` without `--data`, and
 //! `--data` without both, is a usage error (exit 2). A function that calls `sigreg` reads, at
 //! every site, the projection of the checkpoint's step on both backends, as the forward program
-//! without `--data` does on the CPU. On `--backend vulkan` the function's step runs stepwise
-//! with 0 steps from the checkpoint's step ([`modelspec_runtime::vulkan::stepwise`]): one
-//! command buffer and host wait per block, each block's result read back before the next, then
-//! one for that step.
+//! without `--data` does on the CPU. Each block runs on the same prepared CPU or Vulkan plan.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use modelspec_core::compile::{self, CompiledTraining, FunctionError};
+use modelspec_core::compile::{self, CompiledFunction, CompiledTraining, FunctionError};
 #[cfg(not(feature = "vulkan"))]
 use modelspec_core::diag::Diagnostic;
 use modelspec_core::ir::tensor::{ParamId, TensorOp};
-use modelspec_runtime::cpu::{HostTensor, evaluate_all, evaluate_all_with_ids};
+use modelspec_runtime::cpu::{HostTensor, evaluate_all};
+use modelspec_runtime::execution::{ExecutionError, ExecutionPlan, Output};
 use modelspec_runtime::train::checkpoint;
 use modelspec_runtime::train::data::{self, DataError, DenseBatch, DenseData};
 use modelspec_runtime::train::init::sigreg_projections;
@@ -90,7 +88,7 @@ pub struct Args {
     #[arg(long, value_name = "NAME", requires = "data")]
     pub function: Option<String>,
     /// With --data, write the function's result for every block, in block order, to FILE: one
-    /// row per sample, row-major little-endian f32 with no header, written once every block has
+    /// row per sample, row-major little-endian f32 or i32 by result type, written once every block has
     /// run and not at all on a refusal; an existing FILE is replaced whole or kept. A FILE that
     /// is the model file, the checkpoint or an argument's file of DIR is refused.
     #[arg(long, value_name = "FILE", requires = "data")]
@@ -281,6 +279,15 @@ enum Stop {
     Failed(String),
 }
 
+impl From<ExecutionError> for Stop {
+    fn from(error: ExecutionError) -> Self {
+        match error {
+            ExecutionError::Target(diagnostic) => Self::Refused(vec![diagnostic.to_string()]),
+            other => Self::Failed(other.to_string()),
+        }
+    }
+}
+
 impl From<DataError> for Stop {
     fn from(error: DataError) -> Self {
         match error {
@@ -318,7 +325,7 @@ impl FunctionRun<'_> {
     /// Runs it and returns the exit code.
     fn run(&self, args: &Args, stdout: &mut dyn Write, stderr: &mut dyn Write) -> u8 {
         match self.results(args) {
-            Ok((blocks, rows, values)) => self.write(blocks, rows, &values, stdout, stderr),
+            Ok((blocks, rows, bytes)) => self.write(blocks, rows, &bytes, stdout, stderr),
             Err(Stop::Refused(diagnostics)) => {
                 for diagnostic in diagnostics {
                     let _ = writeln!(stderr, "{diagnostic}");
@@ -336,41 +343,15 @@ impl FunctionRun<'_> {
     /// order: refused in the order of the module documentation, an `--out` that names a file
     /// the run reads once the function compiles and before anything else is read, the
     /// checkpoint read before the data.
-    fn results(&self, args: &Args) -> Result<(usize, usize, Vec<f32>), Stop> {
-        let mut function =
-            compile::compile_function(self.file, self.source, self.name).map_err(function_stop)?;
-        function.config.steps = 0;
+    fn results(&self, args: &Args) -> Result<(usize, usize, Vec<u8>), Stop> {
+        let function =
+            compile::compile_inference(self.file, self.source, self.name).map_err(function_stop)?;
         let mut reads = vec![
             ("model".to_owned(), args.path.clone()),
             ("checkpoint".to_owned(), args.checkpoint.clone()),
         ];
         reads.extend(data::function_files(self.dir, &function.config));
         data::refuse_out_reading(self.out, &reads)?;
-        let functions: Vec<String> = compile::compile_hir(self.file, self.source)
-            .map_err(|diagnostics| {
-                Stop::Refused(diagnostics.iter().map(ToString::to_string).collect())
-            })?
-            .model
-            .functions
-            .iter()
-            .map(|f| f.name.clone())
-            .collect();
-        #[cfg(feature = "vulkan")]
-        let artifact = match args.backend {
-            Backend::Cpu => None,
-            Backend::Vulkan => {
-                use modelspec_core::artifact::Backend as Target;
-                Some(
-                    compile::compile_function_artifact(
-                        self.file,
-                        self.source,
-                        self.name,
-                        Target::Vulkan,
-                    )
-                    .map_err(function_stop)?,
-                )
-            }
-        };
         let (params, step) = checkpoint::read(&args.checkpoint)
             .and_then(|c| Ok((c.parameters_for(self.compiled)?, c.step)))
             .map_err(|error| Stop::Refused(vec![error.to_string()]))?;
@@ -379,30 +360,24 @@ impl FunctionRun<'_> {
             self.name,
             &function.config,
             &function.forward,
-            &functions,
+            &function.functions,
         )?;
         let forward = &function.forward;
         let node = forward
             .program
             .node(forward.prediction)
             .ok_or_else(|| Stop::Failed("the function's program defines no result value".into()))?;
-        let row = data::row_elements(self.name, &node.ty, dense.batch(), &functions)?;
+        let row = data::row_elements(self.name, &node.ty, dense.batch(), &function.functions)?;
         let blocks = dense.samples() / dense.batch();
-        #[cfg(feature = "vulkan")]
-        let values = match &artifact {
-            Some(artifact) => on_device(args.device, &function, artifact, &params, &dense, step)?,
-            None => on_cpu(&function, &dense, &params, step)?,
-        };
-        #[cfg(not(feature = "vulkan"))]
-        let values = on_cpu(&function, &dense, &params, step)?;
-        if values.len() != dense.samples() * row {
+        let bytes = run_blocks(function, &dense, &params, step, args)?;
+        let elements = bytes.len() / 4;
+        if elements != dense.samples() * row {
             return Err(Stop::Failed(format!(
-                "the function's results hold {} values, not {} rows of {row}",
-                values.len(),
+                "the function's results hold {elements} values, not {} rows of {row}",
                 dense.samples()
             )));
         }
-        Ok((blocks, dense.samples(), values))
+        Ok((blocks, dense.samples(), bytes))
     }
 
     /// Writes `values` to the output file ([`replace`]), then the stdout line, and returns the
@@ -411,12 +386,11 @@ impl FunctionRun<'_> {
         &self,
         blocks: usize,
         rows: usize,
-        values: &[f32],
+        bytes: &[u8],
         stdout: &mut dyn Write,
         stderr: &mut dyn Write,
     ) -> u8 {
-        let bytes: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
-        if let Err(error) = replace(self.out, &bytes) {
+        if let Err(error) = replace(self.out, bytes) {
             let _ = writeln!(
                 stderr,
                 "modelspec infer {}: cannot write {}: {error}",
@@ -481,87 +455,52 @@ fn replace(out: &Path, bytes: &[u8]) -> std::io::Result<()> {
     written
 }
 
-/// The result of `function`, compiled by [`compile::compile_function`], on every block of
-/// `dense` on the CPU interpreter with the parameters `params` of the checkpoint of step
-/// `step`, in block order. Each block feeds the arguments the function's program reads, and
-/// every `sigreg` site of the function the projection of `step`, as `infer` without `--data`
-/// reads it (story:jepa-sigreg-cpu).
-fn on_cpu(
-    function: &CompiledTraining,
+/// Run each block on the same native plan and append its typed, little-endian words.
+fn run_blocks(
+    function: CompiledFunction,
     dense: &DenseData,
     params: &BTreeMap<ParamId, HostTensor<f32>>,
     step: u64,
-) -> Result<Vec<f32>, Stop> {
-    let forward = &function.forward;
-    let program = &forward.program;
-    let projections = sigreg_projections(program, function.config.seed, step)
+    args: &Args,
+) -> Result<Vec<u8>, Stop> {
+    let program = function.forward.program;
+    let projections = sigreg_projections(&program, function.config.seed, step)
         .map_err(|error| Stop::Failed(error.to_string()))?;
-    let read: BTreeSet<&str> = program
-        .inputs
+    let read: BTreeSet<String> = program
+        .nodes
         .iter()
-        .filter_map(|&value| match &program.node(value)?.op {
-            TensorOp::Input { name } => Some(name.as_str()),
+        .filter_map(|node| match &node.op {
+            TensorOp::Input { name } => Some(name.clone()),
             _ => None,
         })
         .collect();
+    let backend = match args.backend {
+        Backend::Cpu => modelspec_core::artifact::Backend::Cpu,
+        Backend::Vulkan => modelspec_core::artifact::Backend::Vulkan,
+    };
+    let mut plan = ExecutionPlan::new_on_device(program, backend, args.device)?;
     let mut batch = DenseBatch::default();
-    let mut values = Vec::with_capacity(dense.samples());
-    for b in 0..dense.samples() / dense.batch() {
-        dense.fill_eval_batch(b, &mut batch);
-        let inputs: BTreeMap<String, HostTensor<f32>> = batch
+    let mut bytes = Vec::new();
+    for block in 0..dense.samples() / dense.batch() {
+        dense.fill_eval_batch(block, &mut batch);
+        let inputs = batch
             .inputs()
             .iter()
-            .filter(|(name, _)| read.contains(name.as_str()))
-            .map(|(name, value)| (name.clone(), value.clone()))
+            .filter(|(name, _)| read.contains(*name))
+            .map(|(name, tensor)| (name.clone(), tensor.clone()))
             .chain(projections.clone())
             .collect();
-        let ids: BTreeMap<String, HostTensor<i32>> = batch
+        let ids = batch
             .ids()
             .iter()
-            .filter(|(name, _)| read.contains(name.as_str()))
-            .map(|(name, value)| (name.clone(), value.clone()))
+            .filter(|(name, _)| read.contains(*name))
+            .map(|(name, tensor)| (name.clone(), tensor.clone()))
             .collect();
-        let mut evaluated = evaluate_all_with_ids(program, &inputs, &ids, params)
-            .map_err(|error| Stop::Failed(error.to_string()))?;
-        let result = evaluated
-            .values
-            .remove(&forward.prediction)
-            .ok_or_else(|| Stop::Failed(format!("block {b} has no result value")))?;
-        values.extend_from_slice(result.data());
-    }
-    Ok(values)
-}
-
-/// [`on_cpu`] on Vulkan device `device` (0 when `None`): the step of `function` runs stepwise
-/// with 0 steps from the checkpoint's step `step` and `dense` as its data and its dense eval
-/// data, each block's prediction kept; every block reads the `sigreg` projections of the step
-/// it is evaluated at, `step`, as [`on_cpu`] does ([`modelspec_runtime::vulkan::stepwise`]).
-#[cfg(feature = "vulkan")]
-fn on_device(
-    device: Option<usize>,
-    function: &CompiledTraining,
-    artifact: &modelspec_core::artifact::CompiledArtifact,
-    params: &BTreeMap<ParamId, HostTensor<f32>>,
-    dense: &DenseData,
-    step: u64,
-) -> Result<Vec<f32>, Stop> {
-    use modelspec_runtime::train::runner::Data;
-    use modelspec_runtime::vulkan::runner::DeviceRunError;
-    use modelspec_runtime::vulkan::stepwise::{StepwiseOptions, train_stepwise_on_device};
-    let mut kept = Vec::with_capacity(dense.samples());
-    let options = StepwiseOptions {
-        start: step,
-        init: params.clone(),
-        data: Some(Data::Dense(dense)),
-        dense_eval: Some(dense),
-        dense_predictions: Some(&mut kept),
-        ..StepwiseOptions::default()
-    };
-    match train_stepwise_on_device(device, false, function, artifact, options, &mut |_| Ok(())) {
-        Ok(_) => Ok(kept),
-        Err(DeviceRunError::Refused(diagnostic)) => {
-            Err(Stop::Refused(vec![diagnostic.to_string()]))
+        let mut outputs = plan.run_typed(&inputs, &ids, params)?;
+        match outputs.pop().expect("a compiled function has one output") {
+            Output::F32(tensor) => bytes.extend(tensor.data().iter().flat_map(|v| v.to_le_bytes())),
+            Output::I32(tensor) => bytes.extend(tensor.data().iter().flat_map(|v| v.to_le_bytes())),
         }
-        Err(DeviceRunError::Failed(error)) => Err(Stop::Failed(error.to_string())),
     }
+    Ok(bytes)
 }

@@ -29,12 +29,13 @@ use modelspec_core::artifact::{ContentHash, schema_hash};
 use modelspec_core::compile::CompiledTraining;
 use modelspec_core::diag::{Code, Diagnostic};
 use modelspec_core::ir::tensor::{DType, Dim, ParamId, TensorType};
-use modelspec_core::ir::training::{AdamW, OptimizerRule};
+use modelspec_core::ir::training::{AdamW, Moment, OptimizerRule};
 use serde::de::{DeserializeSeed, Deserializer, IgnoredAny, SeqAccess, Visitor};
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 use thiserror::Error;
 
+use super::optimizer::{MomentValues, ParamState};
 use crate::cpu::HostTensor;
 
 /// Not a readable checkpoint: it cannot be opened, or its magic, format version, endian marker,
@@ -192,6 +193,14 @@ pub struct Parameter {
     pub value: HostTensor<f32>,
 }
 
+/// A checkpoint's optimizer tensor, identified independently of compiler parameter ids.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OptimizerSlot {
+    pub path: String,
+    pub slot: String,
+    pub value: HostTensor<f32>,
+}
+
 /// A checkpoint in memory: what the manifest and payload hold besides the layout.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Checkpoint {
@@ -202,6 +211,7 @@ pub struct Checkpoint {
     pub rng: RngState,
     /// In path order.
     pub parameters: Vec<Parameter>,
+    pub optimizer_slots: Vec<OptimizerSlot>,
 }
 
 /// Why a checkpoint was not read, matched or written.
@@ -444,46 +454,83 @@ impl Checkpoint {
                 counter: 0,
             },
             parameters,
+            optimizer_slots: Vec::new(),
         }
+    }
+
+    /// Capture the optimizer state at the same completed update as the parameters.
+    pub fn of_state_with_moments(
+        compiled: &CompiledTraining,
+        step: u64,
+        values: &BTreeMap<ParamId, HostTensor<f32>>,
+        moments: &MomentValues,
+    ) -> Self {
+        let mut checkpoint = Self::of_state(compiled, step, values);
+        // At step zero the optimizer starts from zero, as in existing v1 checkpoints.
+        if checkpoint.optimizer.kind == OptimizerKind::AdamW && step > 0 {
+            checkpoint.optimizer_slots = moments
+                .iter()
+                .map(|(&(param, moment), value)| OptimizerSlot {
+                    path: compiled.forward.program.params[&param].path.clone(),
+                    slot: moment.to_string(),
+                    value: value.clone(),
+                })
+                .collect();
+            checkpoint
+                .optimizer_slots
+                .sort_by(|a, b| (&a.path, &a.slot).cmp(&(&b.path, &b.slot)));
+        }
+        checkpoint
     }
 
     /// The file's bytes.
     pub fn encode(&self) -> Vec<u8> {
         let mut payload = Vec::new();
         let mut relative = Vec::new();
-        for parameter in &self.parameters {
+        let tensors = self
+            .parameters
+            .iter()
+            .map(|p| (&p.path, None, &p.value))
+            .chain(
+                self.optimizer_slots
+                    .iter()
+                    .map(|s| (&s.path, Some(&s.slot), &s.value)),
+            );
+        for (_, _, value) in tensors.clone() {
             let at = (payload.len() as u64).next_multiple_of(ALIGNMENT);
             payload.resize(at as usize, 0);
-            for v in parameter.value.data() {
+            for v in value.data() {
                 payload.extend_from_slice(&v.to_le_bytes());
             }
             relative.push((at, payload.len() as u64 - at));
         }
         let payload_hash = blake3::hash(&payload).to_hex().to_string();
 
-        let manifest_at = |start: u64, checkpoint_id: &str| Manifest {
-            checkpoint_id: checkpoint_id.to_owned(),
-            file_size: start + payload.len() as u64,
-            alignment: ALIGNMENT,
-            schema_hash: self.schema_hash.0.clone(),
-            step: self.step,
-            payload_hash: payload_hash.clone(),
-            optimizer: self.optimizer,
-            optimizer_slots: Vec::new(),
-            rng: self.rng,
-            parameters: self
-                .parameters
-                .iter()
+        let manifest_at = |start: u64, checkpoint_id: &str| {
+            let (parameters, optimizer_slots) = tensors
+                .clone()
                 .zip(&relative)
-                .map(|(p, &(at, length))| Record {
-                    path: p.path.clone(),
-                    slot: None,
+                .map(|((path, slot, value), &(at, length))| Record {
+                    path: path.clone(),
+                    slot: slot.cloned(),
                     dtype: ManifestDType::F32,
-                    shape: p.value.shape().to_vec(),
+                    shape: value.shape().to_vec(),
                     offset: start + at,
                     length,
                 })
-                .collect(),
+                .partition(|record| record.slot.is_none());
+            Manifest {
+                checkpoint_id: checkpoint_id.to_owned(),
+                file_size: start + payload.len() as u64,
+                alignment: ALIGNMENT,
+                schema_hash: self.schema_hash.0.clone(),
+                step: self.step,
+                payload_hash: payload_hash.clone(),
+                optimizer: self.optimizer,
+                optimizer_slots,
+                rng: self.rng,
+                parameters,
+            }
         };
         let json = |start: u64, id: &str| {
             serde_json::to_vec(&manifest_at(start, id)).expect("JSON of a manifest")
@@ -597,6 +644,12 @@ impl Checkpoint {
         &self,
         compiled: &CompiledTraining,
     ) -> Result<BTreeMap<ParamId, HostTensor<f32>>, CheckpointError> {
+        Ok(self.resume_state(compiled)?.values)
+    }
+
+    /// Restore canonical parameters and validated optimizer slots. A v1 step-zero file
+    /// can omit all its zero moments. Inference can use parameters from any optimizer.
+    pub fn resume_state(&self, compiled: &CompiledTraining) -> Result<ParamState, CheckpointError> {
         let values = self.parameters_for(compiled)?;
         let ours = OptimizerConfig::of(compiled);
         if ours != self.optimizer {
@@ -609,7 +662,66 @@ impl Checkpoint {
                 .with("compiled file", describe(&ours)),
             ));
         }
-        Ok(values)
+        let mut state = ParamState::new(&compiled.training, values);
+        if ours.kind == OptimizerKind::AdamW {
+            let refused =
+                |text: String| CheckpointError::Refused(Diagnostic::new(E_CKPT_003, text));
+            if self.rng.seed != compiled.config.seed || self.rng.counter != 0 {
+                return Err(refused(
+                    "the checkpoint RNG differs from the AdamW run's seed or counter".into(),
+                ));
+            }
+            if self.step > 0 || !self.optimizer_slots.is_empty() {
+                let mut saved: BTreeMap<_, _> = self
+                    .optimizer_slots
+                    .iter()
+                    .map(|slot| ((slot.path.clone(), slot.slot.clone()), &slot.value))
+                    .collect();
+                if saved.len() != self.optimizer_slots.len() {
+                    return Err(refused(
+                        "the checkpoint repeats an AdamW optimizer slot".into(),
+                    ));
+                }
+                for (&(id, kind), value) in &mut state.moments {
+                    let path = &compiled.forward.program.params[&id].path;
+                    let key = (path.clone(), kind.to_string());
+                    let incoming = saved.remove(&key).ok_or_else(|| {
+                        refused(format!(
+                            "the checkpoint lacks AdamW slot `{kind}` of `{path}`"
+                        ))
+                    })?;
+                    if value.shape() != incoming.shape() {
+                        return Err(refused(format!(
+                            "AdamW slot `{kind}` of `{path}` has shape {:?}, expected {:?}",
+                            incoming.shape(),
+                            value.shape()
+                        )));
+                    }
+                    if incoming.data().iter().any(|&x| {
+                        !x.is_finite()
+                            || (kind == Moment::Second && x < 0.)
+                            || (self.step == 0 && x != 0.)
+                    }) {
+                        return Err(refused(format!(
+                            "invalid AdamW slot `{kind}` of `{path}` at step {}",
+                            self.step
+                        )));
+                    }
+                    value.clone_from(incoming);
+                }
+                if let Some(((path, slot), _)) = saved.first_key_value() {
+                    return Err(refused(format!(
+                        "unexpected AdamW slot `{slot}` of `{path}`"
+                    )));
+                }
+            }
+        }
+        for param in compiled.training.optimizer.updates.keys() {
+            if let Some(version) = state.versions.get_mut(param) {
+                version.0 = version.0.saturating_add(self.step);
+            }
+        }
+        Ok(state)
     }
 }
 
@@ -638,17 +750,24 @@ fn uuid_of(hash: &[u8; 32]) -> String {
 /// [`read`] would refuse, is not written. The bytes go to `<path>.tmp` beside it, are synced and
 /// then renamed over `path`, so a write that fails part-way leaves the earlier file at `path`.
 pub fn write(path: &Path, checkpoint: &Checkpoint) -> Result<(), CheckpointError> {
-    if let Some(p) = checkpoint
+    if let Some((name, value)) = checkpoint
         .parameters
         .iter()
-        .find(|p| p.value.shape().len() > MAX_RANK)
+        .map(|p| (&p.path, &p.value))
+        .chain(
+            checkpoint
+                .optimizer_slots
+                .iter()
+                .map(|s| (&s.path, &s.value)),
+        )
+        .find(|(_, value)| value.shape().len() > MAX_RANK)
     {
         return Err(CheckpointError::Write {
             path: path.display().to_string(),
             message: format!(
                 "parameter `{}` has {} dimensions, more than the {MAX_RANK} a checkpoint holds",
-                p.path,
-                p.value.shape().len()
+                name,
+                value.shape().len()
             ),
         });
     }
@@ -842,8 +961,7 @@ pub fn read(path: &Path) -> Result<Checkpoint, CheckpointError> {
                 .with("file", shown.clone()),
         ));
     }
-    let mut parameters = Vec::with_capacity(manifest.parameters.len());
-    for record in &manifest.parameters {
+    let decode = |record: &Record| -> Result<HostTensor<f32>, CheckpointError> {
         let from = (record.offset - payload_start) as usize;
         let bytes = &payload[from..from + record.length as usize];
         let data: Vec<f32> = bytes
@@ -852,19 +970,37 @@ pub fn read(path: &Path) -> Result<Checkpoint, CheckpointError> {
             .iter()
             .map(|c| f32::from_le_bytes(*c))
             .collect();
-        let value = HostTensor::new(record.shape.clone(), data)
-            .map_err(|error| bad(format!("parameter `{}`: {error}", record.path)))?;
-        parameters.push(Parameter {
-            path: record.path.clone(),
-            value,
-        });
-    }
+        HostTensor::new(record.shape.clone(), data)
+            .map_err(|error| bad(format!("parameter `{}`: {error}", record.path)))
+    };
+    let parameters = manifest
+        .parameters
+        .iter()
+        .map(|record| {
+            Ok(Parameter {
+                path: record.path.clone(),
+                value: decode(record)?,
+            })
+        })
+        .collect::<Result<Vec<_>, CheckpointError>>()?;
+    let optimizer_slots = manifest
+        .optimizer_slots
+        .iter()
+        .map(|record| {
+            Ok(OptimizerSlot {
+                path: record.path.clone(),
+                slot: record.slot.clone().expect("slot name checked above"),
+                value: decode(record)?,
+            })
+        })
+        .collect::<Result<Vec<_>, CheckpointError>>()?;
     Ok(Checkpoint {
         step: manifest.step,
         schema_hash: ContentHash(manifest.schema_hash),
         optimizer: manifest.optimizer,
         rng: manifest.rng,
         parameters,
+        optimizer_slots,
     })
 }
 

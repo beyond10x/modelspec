@@ -15,7 +15,7 @@ use crate::device::DeviceProfile;
 use crate::diag::Diagnostic;
 use crate::hir::{DataRef, DataRole, Hir, HirData, HirExpr, HirExprKind, HirTrain};
 use crate::ir::kernel::MatMulLimits;
-use crate::ir::tensor::{TensorOp, TensorProgram, TensorType, ValueId};
+use crate::ir::tensor::{DType, TensorNode, TensorOp, TensorProgram, TensorType, ValueId};
 use crate::ir::training::{OptimizerRule, TrainConfig, TrainingStep, attach};
 use crate::ir::verify::{verify, verify_plan_for, verify_step};
 use crate::lower::{self, LoweredProgram};
@@ -170,27 +170,30 @@ pub enum FunctionError {
     },
 }
 
-/// The model function `name` of the file compiled as an inference entry
-/// (story:decider-infer-on-data): a [`CompiledTraining`] whose `train` block reads one `input`
-/// per argument of the function, named and typed as the argument and at its span, whose loss
-/// is the function's result itself when it is rank 0 and its `mean` otherwise, and whose
-/// prediction ([`LoweredProgram::prediction`]) is the function's result. The function's body
-/// is lowered as the training loss inlines it, with every dropout the identity
-/// ([`lower::without_dropout`]), into the same parameter table as the file's `train` block, so
-/// a checkpoint of the file supplies its parameters; the step differentiates that loss and
-/// attaches `sgd` at the block's learning rate whatever the block's optimizer, so a Vulkan plan
-/// can be scheduled for it, and nothing ever runs its update. The configuration keeps the
-/// block's seed and steps. The function need not be `forward` and need not return a loss.
-pub fn compile_function(
+/// A verified named function. Its only output is its declared result, and its parameter IDs
+/// match a checkpoint of the source model. The configuration declares the function's arguments.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CompiledFunction {
+    /// The named function's typed result and any inputs it reads.
+    pub forward: LoweredProgram,
+    /// The source arguments and model's initialization seed.
+    pub config: TrainConfig,
+    /// The model's functions in source order, for entry and data diagnostics.
+    pub functions: Vec<String>,
+}
+
+/// Lower the function as a forward-only entry, with inference-mode dropout.
+pub fn compile_inference(
     path: &str,
     source: &str,
     name: &str,
-) -> Result<CompiledTraining, FunctionError> {
+) -> Result<CompiledFunction, FunctionError> {
     let hir = compile_hir(path, source).map_err(FunctionError::Diagnostics)?;
+    let functions = hir.model.functions.iter().map(|f| f.name.clone()).collect();
     let Some(entry) = function_entry(&hir, name) else {
         return Err(FunctionError::Unknown {
             name: name.to_owned(),
-            functions: hir.model.functions.iter().map(|f| f.name.clone()).collect(),
+            functions,
         });
     };
     let config = TrainConfig::from_hir(&entry.train);
@@ -213,11 +216,62 @@ pub fn compile_function(
             &format!("prediction {} is not defined", lowered.prediction),
         )]));
     }
-    let training = training_stage(&lowered.program, config.lr, OptimizerRule::Sgd)
+    Ok(CompiledFunction {
+        forward: lowered,
+        config,
+        functions,
+    })
+}
+
+/// Compile a function into the training-step representation used by existing artifact callers.
+/// A float result has its mean as the scalar loss, or its own value if scalar. A discrete
+/// result has an independent zero loss and no trainable gradient. For direct execution use
+/// [`compile_inference`], which keeps just the typed result.
+pub fn compile_function(
+    path: &str,
+    source: &str,
+    name: &str,
+) -> Result<CompiledTraining, FunctionError> {
+    let CompiledFunction {
+        mut forward,
+        config,
+        ..
+    } = compile_inference(path, source, name)?;
+    let prediction = forward
+        .program
+        .node(forward.prediction)
+        .expect("verified result");
+    if prediction.ty.dtype == DType::I32 || prediction.ty.rank() != 0 {
+        let (op, operands) = match prediction.ty.dtype {
+            DType::I32 => (TensorOp::Scalar(0.0), Vec::new()),
+            DType::F32 => (TensorOp::ReduceMean, vec![forward.prediction]),
+        };
+        let id = forward
+            .program
+            .nodes
+            .last()
+            .and_then(|n| n.id.0.checked_add(1))
+            .ok_or_else(|| {
+                FunctionError::Diagnostics(vec![compiler_bug(
+                    "cannot add a scalar loss to the function",
+                    &"value IDs exhausted",
+                )])
+            })?;
+        let node = TensorNode {
+            op,
+            operands,
+            id: ValueId(id),
+            ty: TensorType::f32(&[]),
+            source_span: Some(config.span.clone()),
+        };
+        forward.program.outputs = vec![node.id];
+        forward.program.nodes.push(node);
+    }
+    let training = training_stage(&forward.program, config.lr, OptimizerRule::Sgd)
         .map_err(FunctionError::Diagnostics)?;
     Ok(CompiledTraining {
         training,
-        forward: lowered,
+        forward,
         config,
     })
 }
@@ -264,22 +318,10 @@ fn function_entry(hir: &Hir, name: &str) -> Option<Hir> {
         ty: function.output.clone(),
         span: function.span.clone(),
     };
-    let loss = if function.output.rank() == 0 {
-        call
-    } else {
-        HirExpr {
-            kind: HirExprKind::Op {
-                op: TensorOp::ReduceMean,
-                args: vec![call],
-            },
-            ty: TensorType::f32(&[]),
-            span: function.span.clone(),
-        }
-    };
     let mut entry = hir.clone();
     entry.train = HirTrain {
         data,
-        loss,
+        loss: call,
         optimizer: OptimizerRule::Sgd,
         span: function.span.clone(),
         ..hir.train.clone()
@@ -412,8 +454,17 @@ pub fn compile_hir(path: &str, source: &str) -> Result<Hir, Vec<Diagnostic>> {
 /// [`compile_hir`], then lowering ([`lower::lower`]), dead-code elimination ([`dce::eliminate`])
 /// and verification ([`verify`]).
 pub fn compile_tensor(path: &str, source: &str) -> Result<LoweredProgram, Vec<Diagnostic>> {
+    compile_tensor_with_optimizer(path, source).map(|(program, _)| program)
+}
+
+/// Compile the tensor program and retain the checked optimizer declaration for callers
+/// that accumulate gradients across several evaluations before applying one update.
+pub fn compile_tensor_with_optimizer(
+    path: &str,
+    source: &str,
+) -> Result<(LoweredProgram, OptimizerRule), Vec<Diagnostic>> {
     let hir = compile_hir(path, source)?;
-    tensor_stage(&hir, dce::eliminate)
+    Ok((tensor_stage(&hir, dce::eliminate)?, hir.train.optimizer))
 }
 
 /// Lowers `hir`, runs `passes` over the program, then verifies the result and that the

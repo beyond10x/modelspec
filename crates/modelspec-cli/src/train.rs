@@ -153,10 +153,10 @@
 //! parameters and step `s`: the run ends at `s + steps`, its `init` lines are the values at `s`,
 //! and its `step` lines start at `s`. A checkpoint that cannot be read or does not match the file
 //! and its optimizer is refused with its `E-CKPT` code before anything is served or run; a
-//! checkpoint that cannot be written fails the run on one line. A file whose optimizer is
-//! `adamw(...)` or `muon(...)` takes neither `--checkpoint` nor `--resume`, a usage error, since a
-//! checkpoint does not hold its moments or momentum buffers yet (DESIGN.md § 6, coordinator
-//! decisions D50 and D67), except `--checkpoint` on a run of `--steps 0` without
+//! checkpoint that cannot be written fails the run on one line. AdamW checkpoints save both
+//! moments of each updated parameter and resume at the absolute step. For Muon, checkpoint and
+//! resume flags are usage errors because its momentum buffers are not saved, except for
+//! `--checkpoint` on a run of `--steps 0` without
 //! `--checkpoint-every`, whose moments and buffers are still 0: it writes the step-0 checkpoint
 //! of the initial parameters, from which another implementation starts
 //! (story:bert-tiny-vs-pytorch-cuda).
@@ -223,6 +223,8 @@ use modelspec_runtime::train::eval::{
     HELDOUT_MLM_ACCURACY, HELDOUT_MLM_LOSS, HeldOut, HeldOutMetrics,
 };
 use modelspec_runtime::train::init;
+#[cfg(feature = "vulkan")]
+use modelspec_runtime::train::optimizer::MomentValues;
 use modelspec_runtime::train::optimizer::ParamState;
 use modelspec_runtime::train::runner::{self, Data, Diverged, Eval, Observed, Run, RunError};
 
@@ -308,7 +310,7 @@ pub struct Args {
     #[arg(long, value_name = "N", hide = true, value_parser = clap::value_parser!(u64).range(1..))]
     pub submit_steps: Option<u64>,
     /// After the last step, write the parameters, step and optimizer to the .msckpt file PATH. A
-    /// file trained with adamw or muon takes it only with --steps 0 and without
+    /// file trained with muon takes it only with --steps 0 and without
     /// --checkpoint-every: the checkpoint of the initial parameters.
     #[arg(long, value_name = "PATH")]
     pub checkpoint: Option<PathBuf>,
@@ -497,8 +499,8 @@ struct Files {
     eval_every: Option<u64>,
     checkpoint: Option<PathBuf>,
     checkpoint_every: Option<u64>,
-    /// The step and parameters of `--resume`, read and matched before the server binds.
-    resume: Option<(u64, BTreeMap<ParamId, HostTensor<f32>>)>,
+    /// The step, parameters and optimizer slots of `--resume`, matched before the server binds.
+    resume: Option<(u64, ParamState)>,
     /// `--clock`: stdout carries the training clock.
     clock: bool,
     /// The hidden `--submit-steps`: the steps of one stepwise command buffer at most.
@@ -562,7 +564,7 @@ impl Files {
             (None, _) => None,
         };
         let init = match (&self.init, &self.resume) {
-            (_, Some((_, values))) => values.clone(),
+            (_, Some((_, state))) => state.values.clone(),
             (Some(dir), None) => init::read_params(dir, &forward.program).map_err(plain)?,
             (None, None) => BTreeMap::new(),
         };
@@ -694,8 +696,7 @@ pub fn run(args: Args, stdout: &mut dyn Write, stderr: &mut dyn Write) -> u8 {
         compiled.config.steps = steps;
     }
     let unsaved = match compiled.training.optimizer.rule {
-        OptimizerRule::Sgd => None,
-        OptimizerRule::AdamW(_) => Some(("adamw", "its first and second moments")),
+        OptimizerRule::Sgd | OptimizerRule::AdamW(_) => None,
         OptimizerRule::Muon(_) => Some(("muon", "its momentum buffers and moments")),
     };
     if let Some((optimizer, state)) = unsaved {
@@ -829,7 +830,7 @@ pub fn run(args: Args, stdout: &mut dyn Write, stderr: &mut dyn Write) -> u8 {
     let resume = match &args.resume {
         None => None,
         Some(path) => {
-            match checkpoint::read(path).and_then(|c| Ok((c.step, c.resume_into(&compiled)?))) {
+            match checkpoint::read(path).and_then(|c| Ok((c.step, c.resume_state(&compiled)?))) {
                 Ok(resume) => Some(resume),
                 Err(error) => {
                     let _ = writeln!(stderr, "{error}");
@@ -1069,12 +1070,6 @@ fn train(
                 }
                 out
             };
-            let mut write = |k: u64, values: &BTreeMap<ParamId, HostTensor<f32>>| match files
-                .every_path(k)
-            {
-                Some(path) => checkpoint::write(&path, &Checkpoint::of_state(compiled, k, values)),
-                None => Ok(()),
-            };
             // A run the host feeds before each step: one command buffer and one host wait per
             // segment of steps, each step streamed after its segment's wait (coordinator decision
             // D73, story:vulkan-stepwise-multi-step-submit).
@@ -1103,6 +1098,22 @@ fn train(
                     }
                     _ => None,
                 };
+                let mut write_state =
+                    |k: u64,
+                     values: &BTreeMap<ParamId, HostTensor<f32>>,
+                     moments: &MomentValues| match files.every_path(k) {
+                        Some(path) => checkpoint::write(
+                            &path,
+                            &Checkpoint::of_state_with_moments(compiled, k, values, moments),
+                        ),
+                        None => Ok(()),
+                    };
+                let slots = stepwise::OptimizerCheckpoints {
+                    moments: files.resume.as_ref().map(|(_, state)| &state.moments),
+                    interval: files
+                        .checkpoint_every
+                        .map(|every| (every, &mut write_state as &mut stepwise::WriteState<'_>)),
+                };
                 let options = stepwise::StepwiseOptions {
                     start: files.start(),
                     init: loaded.init.clone(),
@@ -1117,10 +1128,7 @@ fn train(
                         }),
                     dense_eval: loaded.eval.as_ref(),
                     dense_predictions: None,
-                    checkpoints: files.checkpoint_every.map(|every| Checkpoints {
-                        every,
-                        write: &mut write,
-                    }),
+                    checkpoints: None,
                     submit_steps: files.submit_steps,
                 };
                 // The `--eval` result, which the last step carries.
@@ -1143,12 +1151,13 @@ fn train(
                     step_completed(seen.step, seen.loss, metrics, parameters);
                     Ok(())
                 };
-                break 'run match stepwise::train_stepwise_on_device(
+                break 'run match stepwise::train_stepwise_on_device_with_state(
                     *device,
                     profile.is_some(),
                     compiled,
                     artifact,
                     options,
+                    slots,
                     &mut observe,
                 ) {
                     Ok((run, counted, profiled)) => {
@@ -1161,7 +1170,12 @@ fn train(
                         match &files.checkpoint {
                             Some(path) => checkpoint::write(
                                 path,
-                                &Checkpoint::of_state(compiled, end, &run.state.values),
+                                &Checkpoint::of_state_with_moments(
+                                    compiled,
+                                    end,
+                                    &run.state.values,
+                                    &run.state.moments,
+                                ),
                             )
                             .map(|()| (run, dense_eval, clock))
                             .map_err(|error| RunError::from(error).into()),
@@ -1185,12 +1199,18 @@ fn train(
                     Err(DeviceRunError::Failed(error)) => Err(Failure::Failed(error.to_string())),
                 };
             }
+            let mut write = |k: u64, values: &BTreeMap<ParamId, HostTensor<f32>>| match files
+                .every_path(k)
+            {
+                Some(path) => checkpoint::write(&path, &Checkpoint::of_state(compiled, k, values)),
+                None => Ok(()),
+            };
             let options = RunOptions {
                 start: files.start(),
                 init: files
                     .resume
                     .as_ref()
-                    .map(|(_, values)| values.clone())
+                    .map(|(_, state)| state.values.clone())
                     .unwrap_or_default(),
                 checkpoints: files.checkpoint_every.map(|every| Checkpoints {
                     every,
@@ -1281,9 +1301,10 @@ fn train(
             trained.set(started.get().elapsed().saturating_sub(left_out.get()));
             let writing = Instant::now();
             let written = match (files.checkpoint_every, files.every_path(k)) {
-                (Some(n), Some(path)) if k.is_multiple_of(n) && k < end => {
-                    checkpoint::write(&path, &Checkpoint::of_state(compiled, k, &state.values))
-                }
+                (Some(n), Some(path)) if k.is_multiple_of(n) && k < end => checkpoint::write(
+                    &path,
+                    &Checkpoint::of_state_with_moments(compiled, k, &state.values, &state.moments),
+                ),
                 _ => Ok(()),
             };
             left_out.set(left_out.get() + writing.elapsed());
@@ -1322,11 +1343,12 @@ fn train(
             Ok(())
         };
         started.set(Instant::now());
-        let run = match runner::run_checked(
+        let run = match runner::run_checked_with_moments(
             compiled,
             loaded.data.as_ref().map(TrainData::as_data),
             &loaded.init,
             start,
+            files.resume.as_ref().map(|(_, state)| &state.moments),
             observe,
             after,
         ) {
@@ -1345,7 +1367,12 @@ fn train(
             },
         };
         if let Some(path) = &files.checkpoint {
-            let last = Checkpoint::of_state(compiled, end, &run.state.values);
+            let last = Checkpoint::of_state_with_moments(
+                compiled,
+                end,
+                &run.state.values,
+                &run.state.moments,
+            );
             if let Err(error) = checkpoint::write(path, &last) {
                 break 'run Err(RunError::from(error).into());
             }

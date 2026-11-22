@@ -57,6 +57,26 @@ fn modules(compiled: &CompiledArtifact, fast_math: bool) -> Vec<KernelModuleFile
 }
 
 #[test]
+fn fused_adamw_artifact_accepts_its_own_kernel_after_round_trip() {
+    let source = include_str!("../../../examples/linear_regression.mspec").replace(
+        "sgd(lr = 0.1)",
+        "adamw(lr = 0.1, weight_decay = 0.01, beta1 = 0.9, beta2 = 0.999, eps = 1e-8, warmup_steps = 1)",
+    );
+    let artifact =
+        modelspec_core::compile::compile_artifact("adamw.mspec", &source, Backend::Vulkan).unwrap();
+    assert!(
+        artifact
+            .execution
+            .kernels
+            .iter()
+            .any(|kernel| kernel.is_adamw())
+    );
+    let dir = scratch("adamw");
+    artifact::write(&dir, &artifact, &modules(&artifact, false)).unwrap();
+    assert_eq!(artifact::read(&dir).unwrap().artifact, artifact);
+}
+
+#[test]
 fn write_records_fast_math_and_read_gives_it_back_in_a_different_hash() {
     let deterministic = mnist(Backend::Vulkan);
     assert!(

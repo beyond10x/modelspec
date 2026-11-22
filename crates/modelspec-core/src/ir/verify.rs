@@ -89,8 +89,8 @@ pub enum VerifyError {
     UndefinedOutput { output: ValueId },
     #[error("parameter {param} has type {ty}; parameters are f32")]
     ParamDType { param: ParamId, ty: TensorType },
-    #[error("output {output} is not f32; an i32 value is read only as ids")]
-    IntegerOutput { output: ValueId },
+    #[error("computed integer indices at {node} exceed the bounds of the consuming operation")]
+    IndexBounds { node: ValueId },
     /// A source operator the lowering expands ([`ops::expanded`]), such as `Sigreg`.
     #[error("{node} is the source operator {op}, which lowering expands; Tensor IR never holds it")]
     Expanded { node: ValueId, op: &'static str },
@@ -137,7 +137,7 @@ pub mod counters {
 /// Order: the parameter table (concrete f32 types, unique canonical paths), then value uniqueness,
 /// then each node in definition order (operands defined earlier, parameter declared, concrete
 /// type, registry rule), then the input list (exactly the Input nodes, each once, in node order,
-/// names unique) and the output list (each defined, each f32).
+/// names unique) and the output list (each value defined, retaining its element type).
 pub fn verify(program: &TensorProgram) -> Result<(), VerifyError> {
     counters::bump(&counters::VERIFY);
     let mut paths: BTreeMap<&str, ParamId> = BTreeMap::new();
@@ -185,6 +185,27 @@ pub fn verify(program: &TensorProgram) -> Result<(), VerifyError> {
                 }
             }
         }
+        // A derived index never needs a host readback for bounds checking. RowArgMax's
+        // source width bounds every value; refuse a consumer that needs a tighter bound.
+        for (slot, operand) in node.operands.iter().enumerate() {
+            let index = &program.nodes[position[operand]];
+            if index.op != TensorOp::RowArgMax {
+                continue;
+            }
+            let scores = &program.nodes[position[&index.operands[0]]].ty;
+            let bound = match (&node.op, slot) {
+                (TensorOp::Embedding, 1) => operand_types[0].shape.first(),
+                (TensorOp::EmbeddingGrad { rows }, 0) => Some(rows),
+                (TensorOp::CrossEntropy | TensorOp::CrossEntropyGrad, 1) => {
+                    operand_types[0].shape.get(1)
+                }
+                _ => None,
+            };
+            if !matches!((scores.shape.get(1),bound),(Some(Dim::Static(n)),Some(Dim::Static(m))) if n<=m)
+            {
+                return Err(VerifyError::IndexBounds { node: node.id });
+            }
+        }
         let declared = match &node.op {
             TensorOp::Input { .. } => &node.ty,
             TensorOp::ParamRead { param } => {
@@ -223,11 +244,8 @@ pub fn verify(program: &TensorProgram) -> Result<(), VerifyError> {
 
     check_inputs(program)?;
     for &output in &program.outputs {
-        let Some(&i) = position.get(&output) else {
+        if !position.contains_key(&output) {
             return Err(VerifyError::UndefinedOutput { output });
-        };
-        if program.nodes[i].ty.dtype != DType::F32 {
-            return Err(VerifyError::IntegerOutput { output });
         }
     }
     Ok(())
@@ -1390,7 +1408,22 @@ pub fn verify_plan_for(
     plan: &ExecutionPlan,
     profile: Option<&DeviceProfile>,
 ) -> Result<(), PlanVerifyError> {
-    verify_execution(plan, false, max_workgroup_invocations(profile))
+    verify_execution(plan, false, max_workgroup_invocations(profile), &[])
+}
+
+/// Verifies an in-memory tensor entry scheduled by [`crate::schedule::schedule_tensor`].
+/// It returns arbitrary typed outputs and has no optimizer or scalar loss.
+pub fn verify_tensor_plan_for(
+    plan: &ExecutionPlan,
+    outputs: &[BufferView],
+    profile: &DeviceProfile,
+) -> Result<(), PlanVerifyError> {
+    verify_execution(
+        plan,
+        false,
+        max_workgroup_invocations(Some(profile)),
+        outputs,
+    )
 }
 
 /// [`verify_plan`] for a plan scheduled within `limits` ([`crate::schedule::schedule_for`]):
@@ -1402,7 +1435,7 @@ pub fn verify_plan_within(
     limits: Option<MatMulLimits>,
 ) -> Result<(), PlanVerifyError> {
     let max = limits.map_or(MAX_WORKGROUP_INVOCATIONS, |limits| limits.invocations);
-    verify_execution(plan, false, max)
+    verify_execution(plan, false, max, &[])
 }
 
 /// Whether the device `profile` describes runs a plan scheduled within `recorded`: it reports
@@ -1470,7 +1503,7 @@ pub fn verify_recorded_back_to_back_for(
     let mut joined = plan.clone();
     joined.step = repeat(&plan.step);
     joined.forward = repeat(&plan.forward);
-    verify_execution(&joined, true, max_workgroup_invocations(profile))
+    verify_execution(&joined, true, max_workgroup_invocations(profile), &[])
 }
 
 /// [`verify_plan_for`], or with `back_to_back` the check of
@@ -1480,6 +1513,7 @@ fn verify_execution(
     plan: &ExecutionPlan,
     back_to_back: bool,
     max_invocations: u32,
+    tensor_outputs: &[BufferView],
 ) -> Result<(), PlanVerifyError> {
     for parameter in &plan.parameters {
         match parameter.views.len() {
@@ -1581,13 +1615,22 @@ fn verify_execution(
         }
     }
 
-    if plan.loss_view.element_count != 1 {
+    if tensor_outputs.is_empty() && plan.loss_view.element_count != 1 {
         return Err(PlanVerifyError::LossViewNotScalar {
             count: plan.loss_view.element_count,
         });
     }
     let writes =
         |steps: &[PlanStep], view: &BufferView| steps.iter().any(|s| s.writes.contains(view));
+    for (index, view) in tensor_outputs.iter().enumerate() {
+        check_view(&plan.buffers, view)?;
+        if !writes(&plan.step, view) {
+            return Err(PlanVerifyError::BoundViewNotWritten {
+                name: format!("output {index}"),
+                plan: PlanName::Step,
+            });
+        }
+    }
     let bound = [
         ("loss", &plan.loss_view, PlanName::Step, &plan.step),
         (
@@ -2581,6 +2624,19 @@ mod tests {
     }
 
     #[test]
+    fn argmax_columns_must_fit_the_indexed_table() {
+        let mut b = crate::ir::tensor::TensorProgramBuilder::new();
+        let scores = b.input("scores", TensorType::f32(&[2, 4])).unwrap();
+        let indices = b.push(TensorOp::RowArgMax, &[scores]).unwrap();
+        let table = b.input("table", TensorType::f32(&[3, 5])).unwrap();
+        let found = b.push(TensorOp::Embedding, &[table, indices]).unwrap();
+        b.output(found).unwrap();
+        assert!(
+            matches!(verify(&b.finish()), Err(VerifyError::IndexBounds { node }) if node == found)
+        );
+    }
+
+    #[test]
     fn the_bounded_passes_find_what_a_search_of_every_earlier_step_finds() {
         let plan = kernels_of_every_kind();
         let parameters = BTreeSet::from([0, 1]);
@@ -2798,16 +2854,13 @@ mod tests {
         );
     }
 
-    /// Outputs are `f32`: an `i32` input is read only as ids.
+    /// In-memory entrypoints can return native integer outputs.
     #[test]
-    fn an_i32_output_is_refused() {
+    fn an_i32_output_verifies() {
         let mut program = lookup();
         let ids = program.inputs[1];
         program.outputs.push(ids);
-        assert_eq!(
-            verify(&program),
-            Err(VerifyError::IntegerOutput { output: ids })
-        );
+        assert_eq!(verify(&program), Ok(()));
     }
 
     /// A `Dropout` verifies with an `i32[2]` token input and `p` in `[0, 1)`; a token of another

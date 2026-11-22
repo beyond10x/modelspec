@@ -88,28 +88,92 @@ fn adamw_vulkan_paths_print_the_update_as_one_kernel() {
     }
 }
 
-/// `--checkpoint` with `--checkpoint-every`, and with `--backend vulkan`, are the same usage
-/// error, exit 2, one line, nothing written.
+/// Each stepwise readback includes the post-update moments of exactly the checkpointed step.
+#[cfg(feature = "vulkan")]
 #[test]
-fn adamw_checkpoint_flags_are_refused_on_every_backend() {
-    let path = scratch("every.msckpt");
-    for backend in ["cpu", "vulkan"] {
-        let output = modelspec(&[
-            "train",
-            FIXTURE,
-            "--backend",
-            backend,
-            "--checkpoint",
-            path.to_str().unwrap(),
-            "--checkpoint-every",
-            "5",
-        ]);
-        let stderr = text(&output.stderr);
-        assert_eq!(output.status.code(), Some(2), "{backend}: {stderr}");
-        assert_eq!(stderr.lines().count(), 1, "{backend}: {stderr}");
-        assert!(output.stdout.is_empty());
-        assert!(!path.exists());
-    }
+#[ignore = "requires a Vulkan compute device"]
+fn adamw_vulkan_checkpoint_resumes_bit_exactly() {
+    let full = scratch("gpu.msckpt");
+    let intermediate = scratch("gpu-7.msckpt");
+    let resumed = scratch("gpu-resumed.msckpt");
+    let run = |args: &[&str]| {
+        let mut command = vec!["train", FIXTURE, "--backend", "vulkan"];
+        command.extend_from_slice(args);
+        let output = modelspec(&command);
+        assert!(output.status.success(), "{}", text(&output.stderr));
+    };
+    run(&[
+        "--steps",
+        "18",
+        "--checkpoint",
+        full.to_str().unwrap(),
+        "--checkpoint-every",
+        "7",
+    ]);
+    run(&[
+        "--steps",
+        "11",
+        "--resume",
+        intermediate.to_str().unwrap(),
+        "--checkpoint",
+        resumed.to_str().unwrap(),
+    ]);
+    assert_eq!(
+        std::fs::read(full).unwrap(),
+        std::fs::read(resumed).unwrap()
+    );
+    let cpu = scratch("gpu-state-on-cpu.msckpt");
+    let restored = modelspec(&[
+        "train",
+        FIXTURE,
+        "--backend",
+        "cpu",
+        "--steps",
+        "0",
+        "--resume",
+        intermediate.to_str().unwrap(),
+        "--checkpoint",
+        cpu.to_str().unwrap(),
+    ]);
+    assert!(restored.status.success(), "{}", text(&restored.stderr));
+    assert_eq!(
+        std::fs::read(cpu).unwrap(),
+        std::fs::read(intermediate).unwrap()
+    );
+}
+
+#[cfg(feature = "vulkan")]
+#[test]
+#[ignore = "requires a Vulkan compute device"]
+fn vulkan_runs_a_parameter_free_training_graph() {
+    let dir = scratch("stateless");
+    std::fs::create_dir_all(&dir).unwrap();
+    let source = dir.join("multiply.mspec");
+    std::fs::write(&source, "
+        model Transform {
+            fn forward(x: Tensor<f32, [1, 1]>) -> Tensor<f32, [1, 1]> { return mul(x, 2.0); }
+        }
+        train Apply {
+            model = Transform;
+            input x: Tensor<f32, [1, 1]>;
+            loss = sum(model.forward(x));
+            optimizer = adamw(lr = 0.1, weight_decay = 0.01, beta1 = 0.9, beta2 = 0.999, eps = 1e-8, warmup_steps = 0);
+            steps = 1;
+            seed = 42;
+            device = cpu;
+        }
+    ").unwrap();
+    std::fs::write(dir.join("x.f32"), 3f32.to_le_bytes()).unwrap();
+    let run = modelspec(&[
+        "train",
+        source.to_str().unwrap(),
+        "--data",
+        dir.to_str().unwrap(),
+        "--backend",
+        "vulkan",
+    ]);
+    assert!(run.status.success(), "{}", text(&run.stderr));
+    assert!(text(&run.stdout).contains("step 1 loss 6"));
 }
 
 /// `--steps` equal to the warm-up stops the run before its first step, exit 1, one line naming

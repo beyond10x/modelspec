@@ -1273,7 +1273,8 @@ impl Kernel {
                 }),
             KernelKind::Transpose | KernelKind::Broadcast => Some(0),
             KernelKind::PerElement => match self.op {
-                "Embedding" => Some(0),
+                "Embedding" | "RepeatRows" => Some(0),
+                "GroupSum" => elements(operand(0)?)?.checked_sub(elements(&self.result)?),
                 "EmbeddingGrad" => elements(operand(1)?),
                 "CrossEntropyGrad" => per_output(7),
                 "AddRows" | "Dropout" | "DropoutGrad" => per_output(1),

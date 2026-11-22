@@ -30,6 +30,24 @@ struct Examples {
 
 const EXAMPLES: &[Examples] = &[
     Examples {
+        operator: "row_argmax",
+        named: &[],
+        accepted: &[&[&[6, 4]]],
+        refused: &[&[&[6]], &[&[2, 3, 4]]],
+    },
+    Examples {
+        operator: "group_sum",
+        named: &[NamedValue::Integer(2)],
+        accepted: &[&[&[6, 3]]],
+        refused: &[&[&[5, 3]], &[&[6]]],
+    },
+    Examples {
+        operator: "repeat_rows",
+        named: &[NamedValue::Integer(2)],
+        accepted: &[&[&[6, 3]]],
+        refused: &[&[&[6]]],
+    },
+    Examples {
         operator: "matmul",
         named: &[],
         accepted: &[&[&[8, 4], &[4, 1]]],
