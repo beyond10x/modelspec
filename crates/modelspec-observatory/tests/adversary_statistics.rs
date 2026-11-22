@@ -79,13 +79,9 @@ fn assert_matches_definition(values: &[f32], h: &Histogram) {
     assert_eq!((h.bin_edges.len(), h.counts.len()), (33, 32), "{h:?}");
     assert_eq!(h.bin_edges[0], min);
     assert_eq!(h.bin_edges[32], max, "the last edge is max itself");
-    for i in 0..32 {
+    for (i, observed) in h.bin_edges[..32].iter().enumerate() {
         let edge = min + (max - min) * i as f64 / 32.0;
-        assert_eq!(
-            h.bin_edges[i].to_bits(),
-            edge.to_bits(),
-            "edge {i}: {values:?}"
-        );
+        assert_eq!(observed.to_bits(), edge.to_bits(), "edge {i}: {values:?}");
     }
     for w in h.bin_edges.windows(2) {
         assert!(w[0] < w[1], "the edges ascend strictly: {h:?}");
