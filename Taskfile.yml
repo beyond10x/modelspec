@@ -12,7 +12,7 @@ tasks:
   lint:
     cmds:
       - cargo fmt --check
-      - cargo clippy --workspace --all-targets -- -D warnings
+      - cargo clippy --workspace --all-targets --keep-going -- -D warnings
 
   core-no-vulkan:
     cmds:

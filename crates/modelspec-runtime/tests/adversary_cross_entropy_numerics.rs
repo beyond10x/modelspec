@@ -149,8 +149,8 @@ impl Case<'_> {
     fn reference_grad<T: Element>(&self, g: f32) -> Vec<T> {
         let g = T::from_f32(g);
         let mut wide = f64::from(self.weights[0]);
-        for n in 1..self.n() {
-            wide += f64::from(self.weights[n]);
+        for &weight in &self.weights[1..self.n()] {
+            wide += f64::from(weight);
         }
         let denominator = T::from_f64(wide);
         let mut out = Vec::new();
