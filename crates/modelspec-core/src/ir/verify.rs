@@ -89,6 +89,9 @@ pub enum VerifyError {
     UndefinedOutput { output: ValueId },
     #[error("parameter {param} has type {ty}; parameters are f32")]
     ParamDType { param: ParamId, ty: TensorType },
+    /// Legacy diagnostic for callers that handle artifacts verified with the float-only output contract.
+    #[error("output {output} is not f32")]
+    IntegerOutput { output: ValueId },
     #[error("computed integer indices at {node} exceed the bounds of the consuming operation")]
     IndexBounds { node: ValueId },
     /// A source operator the lowering expands ([`ops::expanded`]), such as `Sigreg`.
@@ -1176,12 +1179,13 @@ fn check_effects(step: &TrainingStep) -> Result<Vec<(ParamId, ValueId)>, Trainin
         .collect())
 }
 
-/// The parameters `value` reads, through its operands, in `ParamId` order.
+/// Parameters reached by the loss through differentiable values, in `ParamId` order.
+/// An argmax index influences the forward value but has no derivative.
 fn params_read_by(program: &TensorProgram, value: ValueId) -> BTreeSet<ParamId> {
     let mut live = BTreeSet::from([value]);
     let mut params = BTreeSet::new();
     for node in program.nodes.iter().rev() {
-        if !live.contains(&node.id) {
+        if !live.contains(&node.id) || node.op == TensorOp::RowArgMax {
             continue;
         }
         live.extend(node.operands.iter().copied());
@@ -2621,6 +2625,29 @@ mod tests {
                 .unwrap_or_default()
                 .to_owned(),
         }
+    }
+
+    #[test]
+    fn a_parameter_used_only_to_select_rows_has_no_gradient() {
+        use crate::ir::tensor::{Initializer, TensorProgramBuilder};
+        let mut b = TensorProgramBuilder::new();
+        let scores = b
+            .declare_param("M.scores", TensorType::f32(&[2, 3]), Initializer::Zeros)
+            .unwrap();
+        let table = b
+            .declare_param("M.table", TensorType::f32(&[3, 1]), Initializer::Ones)
+            .unwrap();
+        let logits = b.param_read(scores).unwrap();
+        let indices = b.push(TensorOp::RowArgMax, &[logits]).unwrap();
+        let codebook = b.param_read(table).unwrap();
+        let selection = b.embedding(codebook, indices).unwrap();
+        let loss = b.reduce_sum(selection).unwrap();
+        b.output(loss).unwrap();
+        let training = crate::autodiff::differentiate(&b.finish(), loss).unwrap();
+        assert_eq!(
+            training.gradients.keys().copied().collect::<Vec<_>>(),
+            [table]
+        );
     }
 
     #[test]

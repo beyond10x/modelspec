@@ -166,11 +166,11 @@ impl DevicePlan {
         let changed: Params = params
             .iter()
             .filter(|(id, value)| {
-                !self.uploaded.get(id).is_some_and(|old| {
+                self.uploaded.get(id).is_none_or(|old| {
                     old.data()
                         .iter()
                         .zip(value.data())
-                        .all(|(a, b)| a.to_bits() == b.to_bits())
+                        .any(|(a, b)| a.to_bits() != b.to_bits())
                 })
             })
             .map(|(id, value)| (*id, value.clone()))

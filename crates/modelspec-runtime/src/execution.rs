@@ -38,7 +38,7 @@ pub enum ExecutionError {
 }
 
 enum Target {
-    Cpu(Prepared<'static, f32>),
+    Cpu(Box<Prepared<'static, f32>>),
     #[cfg(feature = "vulkan")]
     Vulkan(crate::vulkan::execution::DevicePlan),
 }
@@ -74,7 +74,7 @@ impl ExecutionPlan {
         });
         let target = match backend {
             Backend::Cpu if device.is_some() => return Err(ExecutionError::CpuDevice),
-            Backend::Cpu => Target::Cpu(Prepared::owned_verified(program)),
+            Backend::Cpu => Target::Cpu(Box::new(Prepared::owned_verified(program))),
             #[cfg(feature = "vulkan")]
             Backend::Vulkan => Target::Vulkan(crate::vulkan::execution::DevicePlan::new(
                 program,
@@ -160,7 +160,8 @@ mod tests {
             .unwrap();
         let loss = b.reduce_mean(decoded).unwrap();
         let bias = b.scalar(-0.75);
-        for output in [indices, decoded, table, x, passthrough, bias, indices] {
+        let sum = b.reduce_sum(bias).unwrap();
+        for output in [indices, decoded, table, x, passthrough, bias, sum, indices] {
             b.output(output).unwrap();
         }
         let ir = b.finish();
@@ -189,6 +190,7 @@ mod tests {
                     Output::F32(codes),
                     Output::F32(scores.clone()),
                     Output::I32(token.clone()),
+                    Output::F32(HostTensor::scalar(-0.75)),
                     Output::F32(HostTensor::scalar(-0.75)),
                     picked,
                 ]

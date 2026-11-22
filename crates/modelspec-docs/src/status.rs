@@ -16,7 +16,7 @@ use serde_json::{Value, json};
 pub const FILE: &str = "status.json";
 
 /// The date [`CAPABILITIES`] was last checked against `main` and the planning store.
-pub const AS_OF: &str = "2026-11-05";
+pub const AS_OF: &str = "2026-11-22";
 
 /// What holds a shipped capability.
 #[derive(Clone, Copy)]
@@ -389,11 +389,29 @@ pub const CAPABILITIES: &[Capability] = &[
     shipped(
         "Language",
         "`i32` row ids",
-        "Since 0.10.0: a tensor may be `i32` where an operator reads row ids (`embedding`) or labels (`cross_entropy`); every other use is a type error.",
+        "`embedding` reads `i32` row ids and `cross_entropy` reads `i32` labels. A named function can also return integer ids.",
         Evidence::Test(
             "crates/modelspec-cli/tests/check_i32.rs::ids_read_only_by_embedding_check_clean",
         ),
         "/docs/concepts/language",
+    ),
+    shipped(
+        "Language",
+        "`row_argmax`",
+        "Returns the first maximum index in each row. The same integer ids drive codebook lookup and are available as CPU and Vulkan outputs.",
+        Evidence::Test(
+            "crates/modelspec-runtime/src/execution.rs::cpu_in_memory_execution_reuses_plans_and_preserves_typed_outputs",
+        ),
+        "/docs/reference/operators",
+    ),
+    shipped(
+        "Language",
+        "`group_sum` and `repeat_rows`",
+        "Sums consecutive groups of rows or repeats each row. Each operation supplies the reverse-mode gradient of the other.",
+        Evidence::Test(
+            "crates/modelspec-runtime/tests/gradients_norm.rs::grouped_row_gradients_match_central_differences",
+        ),
+        "/docs/reference/operators",
     ),
     shipped(
         "Language",

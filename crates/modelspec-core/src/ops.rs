@@ -544,7 +544,7 @@ pub fn infer(
             }
             Ok(TensorType {
                 dtype: DType::I32,
-                shape: vec![x.shape[0].clone()],
+                shape: vec![x.shape[0]],
             })
         }
         TensorOp::Softmax => {
