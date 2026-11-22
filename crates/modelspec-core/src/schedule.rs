@@ -900,12 +900,31 @@ fn schedule_entry<'a>(
     // Whether the step holds an op outside the bit-for-bit class of DESIGN.md § 5.4: only such
     // a step takes split-K matmuls, which leave that class.
     let tolerant = program.nodes.iter().any(|node| tolerance_class(&node.op));
+    // A literal can be a tensor operand of a reduction or row kernel in an arbitrary graph.
+    // Those kernels load a storage binding. Arithmetic kernels can still embed other literals.
+    let buffered: BTreeSet<ValueId> = if optimizer.is_none() {
+        program
+            .nodes
+            .iter()
+            .filter(|node| {
+                !takes_immediate(&node.op)
+                    && !matches!(
+                        node.op,
+                        TensorOp::Sqrt | TensorOp::Div | TensorOp::CrossEntropyGrad
+                    )
+            })
+            .flat_map(|node| node.operands.iter().copied())
+            .collect()
+    } else {
+        BTreeSet::new()
+    };
     for node in &program.nodes {
         let shape_error = || ScheduleError::Shape {
             value: node.id,
             ty: node.ty.clone(),
         };
-        if (node.id == prediction || node.id == loss || outputs.contains(&node.id))
+        let scalar_buffer = matches!(node.op, TensorOp::Scalar(_)) && buffered.contains(&node.id);
+        if (node.id == prediction || node.id == loss || outputs.contains(&node.id) || scalar_buffer)
             && matches!(
                 node.op,
                 TensorOp::Input { .. } | TensorOp::ParamRead { .. } | TensorOp::Scalar(_)
@@ -968,7 +987,12 @@ fn schedule_entry<'a>(
                 continue;
             }
             TensorOp::Scalar(value) => {
-                places.insert(node.id, Place::Immediate(*value));
+                let place = if scalar_buffer {
+                    Place::View(leaf_outputs[&node.id])
+                } else {
+                    Place::Immediate(*value)
+                };
+                places.insert(node.id, place);
                 continue;
             }
             _ => {}
