@@ -138,7 +138,37 @@ fn adamw_vulkan_checkpoint_resumes_bit_exactly() {
     assert!(restored.status.success(), "{}", text(&restored.stderr));
     assert_eq!(
         std::fs::read(cpu).unwrap(),
-        std::fs::read(intermediate).unwrap()
+        std::fs::read(&intermediate).unwrap()
+    );
+
+    // The process must exit successfully after its last function plan destroys the device.
+    let input = scratch("gpu-forward-input");
+    std::fs::create_dir_all(&input).unwrap();
+    std::fs::write(input.join("x.f32"), [0u8; 8 * 4 * 4]).unwrap();
+    let prediction = scratch("gpu-forward.f32");
+    let inferred = modelspec(&[
+        "infer",
+        FIXTURE,
+        "--backend",
+        "vulkan",
+        "--checkpoint",
+        intermediate.to_str().unwrap(),
+        "--data",
+        input.to_str().unwrap(),
+        "--function",
+        "forward",
+        "--out",
+        prediction.to_str().unwrap(),
+    ]);
+    assert!(inferred.status.success(), "{}", text(&inferred.stderr));
+    let prediction = std::fs::read(prediction).unwrap();
+    assert_eq!(prediction.len(), 8 * 4);
+    assert!(
+        prediction
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .all(|&v| f32::from_le_bytes(v) == 0.)
     );
 }
 

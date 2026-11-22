@@ -53,9 +53,13 @@ enum Command {
     Prepare(Arc<TensorProgram>, Reply<u64>),
     Run(u64, Call, Reply<Vec<Output>>),
     Remove(u64),
+    Shutdown,
 }
 
-struct Queue(mpsc::Sender<Command>);
+struct Queue {
+    commands: mpsc::Sender<Command>,
+    worker: Option<std::thread::JoinHandle<()>>,
+}
 static QUEUES: Mutex<BTreeMap<usize, Weak<Queue>>> = Mutex::new(BTreeMap::new());
 
 impl Queue {
@@ -66,7 +70,7 @@ impl Queue {
         }
         let (send, commands) = mpsc::channel();
         let (ready, started) = mpsc::channel();
-        std::thread::Builder::new()
+        let worker = std::thread::Builder::new()
             .name(format!("modelspec-vulkan-{index}"))
             .spawn(move || {
                 if let Err(cause) = serve(index, &ready, commands) {
@@ -74,16 +78,30 @@ impl Queue {
                 }
             })
             .map_err(error)?;
+        let queue = Arc::new(Self {
+            commands: send,
+            worker: Some(worker),
+        });
         started.recv().map_err(error)??;
-        let queue = Arc::new(Self(send));
         old.insert(index, Arc::downgrade(&queue));
         Ok(queue)
     }
 
     fn request<T>(&self, command: impl FnOnce(Reply<T>) -> Command) -> GpuResult<T> {
         let (send, result) = mpsc::channel();
-        self.0.send(command(send)).map_err(error)?;
+        self.commands.send(command(send)).map_err(error)?;
         result.recv().map_err(error)?
+    }
+}
+
+impl Drop for Queue {
+    fn drop(&mut self) {
+        // Destroy plans, device and loader on their owning thread before a CLI can exit
+        // and its driver libraries begin process-wide teardown.
+        let _ = self.commands.send(Command::Shutdown);
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
     }
 }
 
@@ -122,6 +140,7 @@ fn serve(index: usize, ready: &Reply<()>, commands: mpsc::Receiver<Command>) -> 
             Command::Remove(id) => {
                 plans.remove(&id);
             }
+            Command::Shutdown => break,
         }
     }
     Ok(())
@@ -202,7 +221,7 @@ impl DevicePlan {
 
 impl Drop for DevicePlan {
     fn drop(&mut self) {
-        let _ = self.queue.0.send(Command::Remove(self.id));
+        let _ = self.queue.commands.send(Command::Remove(self.id));
     }
 }
 
