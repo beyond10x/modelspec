@@ -504,6 +504,7 @@ struct Files {
     /// `--clock`: stdout carries the training clock.
     clock: bool,
     /// The hidden `--submit-steps`: the steps of one stepwise command buffer at most.
+    #[cfg(feature = "vulkan")]
     submit_steps: Option<u64>,
 }
 
@@ -942,6 +943,7 @@ pub fn run(args: Args, stdout: &mut dyn Write, stderr: &mut dyn Write) -> u8 {
         checkpoint_every: args.checkpoint_every,
         resume,
         clock: args.clock,
+        #[cfg(feature = "vulkan")]
         submit_steps: args.submit_steps,
     };
     emit(RunEventBody::RunStarted(RunStarted {
