@@ -416,14 +416,14 @@ fn adv_lngg_bert_moments_buffers_are_numbered_between_and_never_shared() {
     };
     let mut moments: BTreeMap<u32, (usize, u64)> = BTreeMap::new();
     let mut sorted: BTreeSet<u32> = BTreeSet::new();
-    for at in 0..plan.step.len() {
+    for (at, step) in plan.step.iter().enumerate() {
         let Some(kernel) = kernel_of(at) else {
             continue;
         };
         if kernel.kind != KernelKind::PerRow {
             continue;
         }
-        let written: Vec<u32> = plan.step[at].writes.iter().map(|v| v.buffer).collect();
+        let written: Vec<u32> = step.writes.iter().map(|v| v.buffer).collect();
         match kernel.op {
             "LayerNormGradGamma" => {
                 let rows = kernel.result.shape.first().map_or(0, |d| match d {

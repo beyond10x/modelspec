@@ -65,11 +65,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends libvulkan-dev spirv-tools fonts-dejavu-core
 
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
-        with:
-          toolchain: stable
-          components: rustfmt, clippy
+      - name: Select the repository Rust toolchain
+        run: rustup show active-toolchain
 
       - name: Install Node
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38

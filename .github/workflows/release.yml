@@ -67,10 +67,8 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
-        with:
-          toolchain: stable
+      - name: Select the repository Rust toolchain
+        run: rustup show active-toolchain
 
       - name: Build the modelspec binary
         run: cargo build --locked --release -p modelspec-cli --bin modelspec
