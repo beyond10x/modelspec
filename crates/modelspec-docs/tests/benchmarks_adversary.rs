@@ -1,7 +1,6 @@
 //! Adversarial cases for `benchmarks/runs.yaml` (story:benchmark-history), driven through the
 //! `modelspec-docs` binary the way `task docs-generate` and `task docs-check` run it: each case
-//! copies the repository into its own directory under `CARGO_TARGET_TMPDIR`, changes one thing in
-//! the copy and runs `generate` there.
+//! runs `generate` in an isolated copy of its inputs under `CARGO_TARGET_TMPDIR`.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -29,13 +28,33 @@ fn copy(from: &Path, to: &Path) {
     }
 }
 
-/// A fresh copy of the repository named `case`.
+/// The workspace sources, evidence and site files that `generate` reads.
 fn sandbox(case: &str) -> PathBuf {
     let root = Path::new(env!("CARGO_TARGET_TMPDIR"))
         .join("benchmarks-adversary")
         .join(case);
     let _ = fs::remove_dir_all(&root);
-    copy(&repository(), &root);
+    let source = repository();
+    for dir in [
+        "crates",
+        "examples",
+        ".engineering/planning",
+        "website/docs",
+        "website/data",
+        "website/static/img/benchmarks",
+    ] {
+        copy(&source.join(dir), &root.join(dir));
+    }
+    fs::create_dir_all(root.join("benchmarks")).unwrap();
+    for file in [
+        "Cargo.toml",
+        "Cargo.lock",
+        "rust-toolchain.toml",
+        "Taskfile.yml",
+        "benchmarks/runs.yaml",
+    ] {
+        fs::copy(source.join(file), root.join(file)).unwrap();
+    }
     root
 }
 
@@ -206,67 +225,44 @@ fn adversary_a_commit_with_a_multibyte_character_does_not_panic() {
     );
 }
 
-/// A drift case: its name, what it plants in the copy, and what `--check` must report.
-type DriftCase<'a> = (&'a str, &'a dyn Fn(&Path), &'a str);
-
 #[test]
 fn adversary_check_fails_on_a_stale_chart_a_stale_page_a_missing_chart_and_a_stray_chart() {
-    let images = "website/static/img/benchmarks";
-    let cases: [DriftCase; 4] = [
-        (
-            "stale-chart",
-            &|root| {
-                let path = root.join(images).join("mnist-784-64-10.svg");
-                let text = fs::read_to_string(&path).unwrap();
-                fs::write(&path, text.replacen("#1d4ed8", "#1d4ed9", 1)).unwrap();
-            },
-            "stale or edited mnist-784-64-10.svg",
-        ),
-        (
-            "stale-page",
-            &|root| {
-                let path = root.join("website/docs/benchmarks.md");
-                let text = fs::read_to_string(&path).unwrap();
-                assert!(text.contains("27.14"));
-                fs::write(&path, text.replacen("27.14", "27.15", 1)).unwrap();
-            },
-            "stale or edited benchmarks.md",
-        ),
-        (
-            "missing-chart",
-            &|root| fs::remove_file(root.join(images).join("mlp-784-h-10-batch-100.svg")).unwrap(),
-            "missing mlp-784-h-10-batch-100.svg",
-        ),
-        (
-            "stray-chart",
-            &|root| fs::write(root.join(images).join("old.svg"), "<svg/>").unwrap(),
-            "not generated old.svg",
-        ),
-    ];
-    for (case, plant, expected) in cases {
-        let root = sandbox(case);
-        assert_eq!(
-            generate(&root, true).code,
-            Some(0),
-            "{case}: the copy is not current"
-        );
-        plant(&root);
-        let outcome = generate(&root, true);
-        assert_eq!(outcome.code, Some(1), "{case}: {}", outcome.stderr);
-        assert!(
-            outcome.stderr.contains(expected),
-            "{case}: {}",
-            outcome.stderr
-        );
-    }
-    // A changed figure in runs.yaml makes the committed page stale too.
-    let root = sandbox("stale-figure");
+    let root = sandbox("benchmark-drift");
+    let check = || generate(&root, true);
+    let baseline = check();
+    assert_eq!(baseline.code, Some(0), "{}", baseline.stderr);
+
+    let runs = root.join("benchmarks/runs.yaml");
+    let original_runs = fs::read(&runs).unwrap();
     edit_runs(
         &root,
         "    median_us_per_step: 27.14\n",
         "    median_us_per_step: 26.14\n",
     );
-    let outcome = generate(&root, true);
-    assert_eq!(outcome.code, Some(1), "{}", outcome.stderr);
-    assert!(outcome.stderr.contains("has drifted"), "{}", outcome.stderr);
+    assert_refused(&check(), "stale or edited benchmarks.md");
+    fs::write(runs, original_runs).unwrap();
+
+    let page = root.join("website/docs/benchmarks.md");
+    let original_page = fs::read_to_string(&page).unwrap();
+    assert!(original_page.contains("27.14"));
+    fs::write(&page, original_page.replacen("27.14", "27.15", 1)).unwrap();
+    assert_refused(&check(), "stale or edited benchmarks.md");
+    fs::write(page, original_page).unwrap();
+
+    let charts = root.join("website/static/img/benchmarks");
+    let edited = charts.join("mnist-784-64-10.svg");
+    let svg = fs::read_to_string(&edited).unwrap();
+    assert!(svg.contains("#1d4ed8"));
+    fs::write(&edited, svg.replacen("#1d4ed8", "#1d4ed9", 1)).unwrap();
+    assert_refused(&check(), "stale or edited mnist-784-64-10.svg");
+    fs::write(edited, svg).unwrap();
+
+    let missing = charts.join("mlp-784-h-10-batch-100.svg");
+    let original_chart = fs::read(&missing).unwrap();
+    fs::remove_file(&missing).unwrap();
+    assert_refused(&check(), "missing mlp-784-h-10-batch-100.svg");
+    fs::write(missing, original_chart).unwrap();
+
+    fs::write(charts.join("old.svg"), "<svg/>").unwrap();
+    assert_refused(&check(), "not generated old.svg");
 }

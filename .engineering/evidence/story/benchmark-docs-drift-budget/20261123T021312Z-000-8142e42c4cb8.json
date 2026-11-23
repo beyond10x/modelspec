@@ -1,0 +1,13 @@
+{
+  "at": "2026-11-23T02:13:12Z",
+  "actor": "human:timo",
+  "artifact": "story:benchmark-docs-drift-budget",
+  "kind": "story",
+  "revision": 3,
+  "change": {
+    "change": "evidence",
+    "kind": "test_result",
+    "source": "modelspec-docs: 106 passes in 48.957 s, including all five independent drift refusals in 28.035 s; previously this test timed out at 60.638 s",
+    "reference": "crates/modelspec-docs/tests/benchmarks_adversary.rs"
+  }
+}
