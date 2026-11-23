@@ -13,6 +13,26 @@ and runs that step `steps` times on the CPU reference interpreter; `--backend vu
 one Vulkan device. The steps, learning rate and seed come from the `train` block; the backend
 comes from `--backend`, not from the block's `device`.
 
+## Training from Rust
+
+`modelspec_runtime::train::session::TrainingSession` accepts an AdamW training step compiled
+with `modelspec_core::compile::compile_training`. Use `TrainingSnapshot::fresh(parameters)`
+for the initial parameters. An application can supply a new named batch and learning rate at
+every call.
+
+```rust
+let mut session = TrainingSession::new(compiled.training, Backend::Vulkan, None, initial)?;
+let loss = session.update(&float_inputs, &integer_inputs, 0.001)?;
+let checkpoint = session.snapshot()?;
+```
+
+The returned loss is the loss before that update. A Vulkan session keeps weights, gradients
+and AdamW moments on the device. With caller-provided masks and weights, each update downloads
+one scalar. A program that computes its own mask or loss weights also returns those values
+internally for validation. `device_stats()` reports the submitted commands and transferred
+bytes. The snapshot supplies all parameter values, first and second moments and the completed
+step count for a later call to `TrainingSession::new` on either backend.
+
 ## What it prints
 
 One line each, to stdout:

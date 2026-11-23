@@ -1916,7 +1916,7 @@ fn open<'r>(
 }
 
 /// Copies the views `views` of `buffers`, one after the other, to the start of `download`.
-fn copy_state<'r>(
+pub(super) fn copy_state<'r>(
     recording: &mut Recording<'r>,
     views: &[BufferView],
     buffers: &'r [Buffer<'_>],
@@ -1938,7 +1938,7 @@ fn copy_state<'r>(
 
 /// Copies `from`, laid out as [`copy_state`] lays out its download, back into the views `views`
 /// of `buffers`.
-fn restore_state<'r>(
+pub(super) fn restore_state<'r>(
     recording: &mut Recording<'r>,
     views: &[BufferView],
     buffers: &'r [Buffer<'_>],

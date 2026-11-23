@@ -52,6 +52,15 @@ pub(super) struct Checks {
 impl Checks {
     /// Append each computed control tensor once. The caller truncates these private outputs.
     pub(super) fn prepare(program: &mut TensorProgram) -> Self {
+        Self::prepare_with(program, false)
+    }
+
+    /// A mutable device parameter used as a control must be checked at its forward value.
+    pub(super) fn prepare_training(program: &mut TensorProgram) -> Self {
+        Self::prepare_with(program, true)
+    }
+
+    fn prepare_with(program: &mut TensorProgram, resident: bool) -> Self {
         let mut checks = Self::default();
         let mut outputs = program.outputs.clone();
         for node in &program.nodes {
@@ -65,7 +74,7 @@ impl Checks {
                 let control = operand(slot);
                 let source = match &control.op {
                     TensorOp::Input { name } => Source::Input(name.clone()),
-                    TensorOp::ParamRead { param } => Source::Param(*param),
+                    TensorOp::ParamRead { param } if !resident => Source::Param(*param),
                     _ => {
                         let i = outputs
                             .iter()

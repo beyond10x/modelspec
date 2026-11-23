@@ -34,6 +34,7 @@ mod probe;
 pub mod profile;
 pub mod runner;
 pub mod select;
+pub(crate) mod session;
 pub mod stepwise;
 pub mod sync;
 

@@ -30,11 +30,11 @@ type GpuResult<T> = Result<T, ExecutionError>;
 type Params = BTreeMap<ParamId, HostTensor<f32>>;
 type Reply<T> = mpsc::Sender<GpuResult<T>>;
 
-fn error(reason: impl std::fmt::Display) -> ExecutionError {
+pub(super) fn error(reason: impl std::fmt::Display) -> ExecutionError {
     ExecutionError::Vulkan(reason.to_string())
 }
 
-fn checked<T>(loader: &Vulkan, result: GpuResult<T>) -> GpuResult<T> {
+pub(super) fn checked<T>(loader: &Vulkan, result: GpuResult<T>) -> GpuResult<T> {
     let messages = loader.take_validation_messages();
     if !messages.is_empty() {
         return Err(error(messages.join("\n")));
@@ -106,6 +106,15 @@ impl Drop for Queue {
 }
 
 fn serve(index: usize, ready: &Reply<()>, commands: mpsc::Receiver<Command>) -> GpuResult<()> {
+    with_device(index, |loader, device, profile, cache| {
+        serve_plans(loader, device, profile, cache, ready, commands)
+    })
+}
+
+pub(super) fn with_device<T>(
+    index: usize,
+    use_device: impl FnOnce(&Vulkan, &Device<'_>, &DeviceProfile, &PipelineCache<'_>) -> GpuResult<T>,
+) -> GpuResult<T> {
     let loader = Vulkan::load().map_err(ExecutionError::Target)?;
     let candidates = loader.candidates().map_err(ExecutionError::Target)?;
     let index = select_device(&candidates, Some(index)).map_err(ExecutionError::Target)?[0];
@@ -115,14 +124,25 @@ fn serve(index: usize, ready: &Reply<()>, commands: mpsc::Receiver<Command>) -> 
         .create_device(index, &negotiated)
         .map_err(ExecutionError::Target)?;
     let cache = device.pipeline_cache(profile, None).map_err(error)?;
+    use_device(&loader, &device, profile, &cache)
+}
+
+fn serve_plans(
+    loader: &Vulkan,
+    device: &Device<'_>,
+    profile: &DeviceProfile,
+    cache: &PipelineCache<'_>,
+    ready: &Reply<()>,
+    commands: mpsc::Receiver<Command>,
+) -> GpuResult<()> {
     let mut plans = BTreeMap::new();
     let mut next = 0;
     ready.send(Ok(())).map_err(error)?;
     for command in commands {
         match command {
             Command::Prepare(program, reply) => {
-                let compiled = Compiled::new(&device, profile, &cache, &program);
-                let result = checked(&loader, compiled).map(|plan| {
+                let compiled = Compiled::new(device, profile, cache, &program);
+                let result = checked(loader, compiled).map(|plan| {
                     let id = next;
                     next += 1;
                     plans.insert(id, plan);
@@ -134,8 +154,8 @@ fn serve(index: usize, ready: &Reply<()>, commands: mpsc::Receiver<Command>) -> 
                 let result = plans
                     .get_mut(&id)
                     .ok_or_else(|| error("plan was released"))
-                    .and_then(|plan| plan.run(&device, &cache, call));
-                let _ = reply.send(checked(&loader, result));
+                    .and_then(|plan| plan.run(device, cache, call));
+                let _ = reply.send(checked(loader, result));
             }
             Command::Remove(id) => {
                 plans.remove(&id);
@@ -237,7 +257,7 @@ struct Compiled<'d> {
     outputs: Vec<(BufferView, Vec<u64>)>,
 }
 
-fn pipelines<'d>(
+pub(super) fn pipelines<'d>(
     device: &'d Device<'_>,
     cache: &PipelineCache<'_>,
     plan: &ExecutionPlan,

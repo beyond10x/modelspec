@@ -807,6 +807,55 @@ pub fn schedule_tensor(
     Ok((plan, outputs))
 }
 
+/// A stateful training plan with application-bound inputs. The optimizer writes its
+/// parameters and moments in place. Extra output views retain forward controls for validation.
+pub struct ResidentPlan {
+    pub plan: ExecutionPlan,
+    pub host: Vec<HostInput>,
+    pub outputs: Vec<BufferView>,
+}
+
+/// Schedule a verified training step without inventing a source-level training-data declaration.
+pub fn schedule_training_session(
+    step: &TrainingStep,
+    outputs: &[ValueId],
+    limits: Option<MatMulLimits>,
+) -> Result<ResidentPlan, ScheduleError> {
+    let program = &step.training.program;
+    let hosted = hosted_values(program, Some(&step.optimizer));
+    let declared = program.nodes.iter().filter_map(|node| match &node.op {
+        TensorOp::Input { name } if !hosted.contains(&node.id) => {
+            Some((name.as_str(), &node.ty, DataRole::Input))
+        }
+        _ => None,
+    });
+    let entry = ScheduleEntry {
+        program,
+        optimizer: Some(&step.optimizer),
+        loss: step.training.loss,
+        prediction: step.training.loss,
+        outputs,
+    };
+    let (plan, host, outputs) = schedule_entry(entry, declared, limits, Kernels::Vulkan)?;
+    Ok(ResidentPlan {
+        plan,
+        host,
+        outputs,
+    })
+}
+
+fn hosted_values(program: &TensorProgram, optimizer: Option<&Optimizer>) -> BTreeSet<ValueId> {
+    program
+        .nodes
+        .iter()
+        .filter_map(|n| ops::token_operand(&n.op).and_then(|i| n.operands.get(i).copied()))
+        .chain(optimizer.into_iter().flat_map(Optimizer::host_inputs))
+        .chain(sigreg_projection_inputs(program))
+        .chain(crate::passes::masked_rows::site_inputs(program))
+        .filter(|_| optimizer.is_some())
+        .collect()
+}
+
 struct ScheduleEntry<'p> {
     program: &'p TensorProgram,
     optimizer: Option<&'p Optimizer>,
@@ -881,15 +930,7 @@ fn schedule_entry<'a>(
         .chain(in_place.keys().copied())
         .collect();
     let fused = fusions(&program.nodes, &updates, updating, &bound, &in_place);
-    let tokens: BTreeSet<ValueId> = program
-        .nodes
-        .iter()
-        .filter_map(|n| ops::token_operand(&n.op).and_then(|i| n.operands.get(i).copied()))
-        .chain(optimizer.into_iter().flat_map(Optimizer::host_inputs))
-        .chain(sigreg_projection_inputs(program))
-        .chain(crate::passes::masked_rows::site_inputs(program))
-        .filter(|_| optimizer.is_some())
-        .collect();
+    let tokens = hosted_values(program, optimizer);
     let mut host_inputs = Vec::new();
     let mut places: BTreeMap<ValueId, Place> = BTreeMap::new();
     let mut works: Vec<Work> = Vec::new();

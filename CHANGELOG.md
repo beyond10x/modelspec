@@ -9,6 +9,9 @@ history.
 
 ## [Unreleased]
 
+- Rust applications can train a resident `TrainingSession` on named minibatches with a
+  caller-selected AdamW learning rate and resume its `TrainingSnapshot` on CPU or Vulkan.
+
 ## [0.27.0] - 2026-11-23
 
 - `group_sum` and `repeat_rows` group or expand matrix rows on both native backends and implement each other's gradient. `row_argmax` returns an integer column per row, including from a named inference function.

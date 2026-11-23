@@ -35,6 +35,8 @@ pub enum ExecutionError {
     IntegerOutput,
     #[error("a tensor execution plan needs at least one output")]
     MissingOutput,
+    #[error("training session: {0}")]
+    Training(String),
 }
 
 enum Target {
