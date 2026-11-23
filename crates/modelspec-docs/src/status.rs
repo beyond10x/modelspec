@@ -580,6 +580,15 @@ pub const CAPABILITIES: &[Capability] = &[
     ),
     shipped(
         "Training",
+        "Resident AdamW training from Rust",
+        "A Rust `TrainingSession` accepts named minibatches and a learning rate for each update on CPU or Vulkan. A `TrainingSnapshot` preserves the parameters, both AdamW moments and the completed step.",
+        Evidence::Test(
+            "crates/modelspec-runtime/src/train/session.rs::resident_vulkan_updates_and_resume_match_cpu",
+        ),
+        "/docs/concepts/training#training-from-rust",
+    ),
+    shipped(
+        "Training",
         "AdamW with a warm-up schedule",
         "Since 0.12.0: `optimizer = adamw(...)` trains on the CPU with decoupled weight decay and a learning rate that warms up linearly from 0 and decays linearly to 0 at the last step, compiled into the training step; its first three steps match an `f32` reference bit for bit.",
         Evidence::Test("crates/modelspec-runtime/tests/adamw.rs::one_step"),

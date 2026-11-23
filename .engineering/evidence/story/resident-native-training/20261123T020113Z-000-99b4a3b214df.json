@@ -1,0 +1,13 @@
+{
+  "at": "2026-11-23T02:01:13Z",
+  "actor": "human:timo",
+  "artifact": "story:resident-native-training",
+  "kind": "story",
+  "revision": 5,
+  "change": {
+    "change": "evidence",
+    "kind": "test_result",
+    "source": "modelspec-runtime CPU (0.08 s) and Khronos-validated Vulkan (9.92 s): three AdamW updates, rejected input and learning rate, resume and device counters",
+    "reference": "crates/modelspec-runtime/src/train/session.rs"
+  }
+}

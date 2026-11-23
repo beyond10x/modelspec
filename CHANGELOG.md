@@ -9,6 +9,8 @@ history.
 
 ## [Unreleased]
 
+## [0.28.0] - 2026-11-23
+
 - Rust applications can train a resident `TrainingSession` on named minibatches with a
   caller-selected AdamW learning rate and resume its `TrainingSnapshot` on CPU or Vulkan.
 
@@ -443,7 +445,8 @@ with `E-TARGET-001`.
 - `examples/linear_regression.mspec` checks and trains; `task check-examples` runs `modelspec check` on it
 - ESS contracts for the compiled artifact, checkpoint, device profile and training run in `spec/`
 
-[Unreleased]: https://github.com/beyond10x/modelspec/compare/0.27.0...HEAD
+[Unreleased]: https://github.com/beyond10x/modelspec/compare/0.28.0...HEAD
+[0.28.0]: https://github.com/beyond10x/modelspec/compare/0.27.0...0.28.0
 [0.27.0]: https://github.com/beyond10x/modelspec/compare/0.26.0...0.27.0
 [0.26.0]: https://github.com/beyond10x/modelspec/compare/0.25.0...0.26.0
 [0.25.0]: https://github.com/beyond10x/modelspec/compare/0.24.0...0.25.0

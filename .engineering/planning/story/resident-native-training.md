@@ -2,7 +2,7 @@
 format: aep.planning-md/3
 id: story:resident-native-training
 kind: story
-status: active
+status: implemented
 title: Train an in-memory ModelSpec program across application batches
 summary: The native training session owns parameters and AdamW moments across caller-provided batches and exposes them at checkpoints.
 relations:
@@ -23,10 +23,11 @@ scope:
   path: crates/modelspec-runtime/src/vulkan
 - confidence: cited
   path: website/docs/concepts/training.md
-revision: 5
+revision: 6
 transitions:
 - {from: "draft", to: "proposed", at: "2026-11-23T01:42:04Z", actor: "human:timo", revision: 3}
 - {from: "proposed", to: "active", at: "2026-11-23T01:42:04Z", actor: "human:timo", revision: 4}
+- {from: "active", to: "implemented", at: "2026-11-23T02:01:14Z", actor: "human:timo", revision: 6, decided_on: {"recorded":{"test_result":1}}}
 ---
 # Train an in-memory program across application batches
 
