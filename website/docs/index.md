@@ -55,11 +55,11 @@ train Fit {
 ## What works today
 
 ModelSpec is in milestone M1 (GPU execution), and its current goal is a small BERT pre-trained
-from scratch; the latest release is [0.26.0](https://github.com/beyond10x/modelspec/releases/tag/0.26.0).
+from scratch; the latest release is [0.27.0](https://github.com/beyond10x/modelspec/releases/tag/0.27.0).
 BERT-tiny pre-trained on one RTX 3090 for 10,000 steps reached a held-out loss of 6.7674994 nats,
 0.159 below the unigram baseline of 6.9265379 ([the run record](./runs/bert-tiny-gpu-pretraining.md)).
 
-| Works in 0.26.0 | Not built yet |
+| Works in 0.27.0 | Not built yet |
 |---|---|
 | `modelspec check`: parse and check names, types and shapes | `bench` |
 | `modelspec ir --stage tensor`, `--stage training` and `--stage kernel`: print the verified IR and the kernel plan | more than one device |
@@ -69,7 +69,7 @@ BERT-tiny pre-trained on one RTX 3090 for 10,000 steps reached a held-out loss o
 | `embedding`, `add_rows`, `gelu`, `layer_norm`, `softmax`, `attention`, `cross_entropy` and `dropout`, with `i32` row ids, on the CPU reference; all eight also have Vulkan kernels | |
 | `modelspec data prepare`, `data tokenizer` and `data pack`: split a corpus, train a WordPiece tokenizer and pack token sequences | |
 | `modelspec train --backend cpu --data <packed-dir> [--eval-every <n>]`: train a masked-language model on packed sequences and evaluate the held-out split during the run | |
-| `optimizer = adamw(...)`: AdamW with decoupled weight decay and a linear warm-up and decay of the learning rate, on the CPU reference and one Vulkan device | checkpoints of an AdamW run |
+| `optimizer = adamw(...)`: AdamW with decoupled weight decay and a linear warm-up and decay of the learning rate, on the CPU reference and one Vulkan device. Checkpoints save both moments and resume training on either backend | |
 | `optimizer = muon(...)`: orthogonalized momentum for the matrix parameters and AdamW for the rest, on the CPU reference | Muon on a Vulkan device, and checkpoints of a Muon run |
 | `modelspec train --checkpoint`, `--resume` and `modelspec infer --backend cpu\|vulkan`: checkpoints and inference on the CPU or one Vulkan device | |
 | `modelspec compile --backend cpu\|vulkan --output <dir>`: a sealed artifact directory | |
@@ -113,7 +113,7 @@ capability with the test that holds it, and [Roadmap](./roadmap.md) says what M1
 
 - [Why ModelSpec](./concepts/north-star.md): the north star, the BERT-tiny ladder against PyTorch,
   and what is shipped and what is planned.
-- [Getting started](./getting-started.md): download the 0.26.0 binary and train the examples on the CPU or a GPU.
+- [Getting started](./getting-started.md): download the 0.27.0 binary and train the examples on the CPU or a GPU.
 - [The language](./concepts/language.md): what a file may contain.
 - [Write a model](./guides/write-a-model.md): build a two-layer model step by step.
 - [Pitch deck](pathname:///modelspec/pitch/): the case for ModelSpec in slides.

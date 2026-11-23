@@ -9,6 +9,8 @@ history.
 
 ## [Unreleased]
 
+## [0.27.0] - 2026-11-23
+
 - `group_sum` and `repeat_rows` group or expand matrix rows on both native backends and implement each other's gradient. `row_argmax` returns an integer column per row, including from a named inference function.
 - AdamW checkpoints retain both optimizer moments and resume CPU or Vulkan training.
 - Rust callers can execute a tensor program in memory on CPU or Vulkan, including its named
@@ -438,7 +440,8 @@ with `E-TARGET-001`.
 - `examples/linear_regression.mspec` checks and trains; `task check-examples` runs `modelspec check` on it
 - ESS contracts for the compiled artifact, checkpoint, device profile and training run in `spec/`
 
-[Unreleased]: https://github.com/beyond10x/modelspec/compare/0.26.0...HEAD
+[Unreleased]: https://github.com/beyond10x/modelspec/compare/0.27.0...HEAD
+[0.27.0]: https://github.com/beyond10x/modelspec/compare/0.26.0...0.27.0
 [0.26.0]: https://github.com/beyond10x/modelspec/compare/0.25.0...0.26.0
 [0.25.0]: https://github.com/beyond10x/modelspec/compare/0.24.0...0.25.0
 [0.24.0]: https://github.com/beyond10x/modelspec/compare/0.23.0...0.24.0

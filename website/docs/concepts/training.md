@@ -125,9 +125,9 @@ adds around it.
   step's `Optimizer` subgraph. Each parameter's first and second moments start at 0 and are
   versioned with it, and the learning rate rises linearly from 0 over `warmup_steps` and falls
   linearly to 0 at the run's last step. `E-TYPE-023` and `E-TYPE-024` refuse out-of-range
-  arguments, `E-TRAIN-001` also stops the run when a moment is not finite, and `train
-  --checkpoint` and `--resume` refuse an AdamW run because a checkpoint does not carry the moments
-  yet.
+  arguments. `E-TRAIN-001` stops the run when a moment is not finite. On CPU and Vulkan,
+  `train --checkpoint` stores the parameters and both moments. Use `--resume` to continue
+  the run from that step.
 - `muon(lr = F, momentum = F, weight_decay = F, ns_steps = N, warmup_steps = N, adam_lr = F,
   beta1 = F, beta2 = F, eps = F)` trains each parameter of rank 2 that no `embedding` reads with
   Muon on the CPU reference, and every other parameter, a tied embedding table included, with
