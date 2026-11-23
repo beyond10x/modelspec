@@ -16,7 +16,7 @@ use serde_json::{Value, json};
 pub const FILE: &str = "status.json";
 
 /// The date [`CAPABILITIES`] was last checked against `main` and the planning store.
-pub const AS_OF: &str = "2026-11-22";
+pub const AS_OF: &str = "2026-11-23";
 
 /// What holds a shipped capability.
 #[derive(Clone, Copy)]
